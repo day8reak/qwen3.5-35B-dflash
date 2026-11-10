@@ -37,7 +37,9 @@ Convstate 的辅助 `linear_update_tensor` 使用原 CPro 导出声明的零 INT
 
 以下变量由实际环境设置：`REPO_DIR` 指向本仓库，`TARGET_SOURCE` 指向原项目（含 inference.py、utils.py、models/），`AI_RUN_DIR` 指向仓库外的输出目录。激活原来的 PyTorch/torch_npu 环境，保留原来工作的配置和推理参数。
 
-### 当前入口：直接调用原 inference 的步骤
+用户已确认切换环境后新旧入口均可运行。本轮继续使用已跑通的 `inference_target_probe.py` 和其采集结果；已有 CAPTURED 批次可直接进入导出/编译，无须换入口重新生成。
+
+### 备选入口：直接调用原 inference 的步骤
 
 用户要求直接提取推理步骤，新增 `inference_target_steps.py`。导入原 `inference.py` 的函数定义，**不执行其 main，不使用 runpy**。流程为原 wrapper 构造（工厂仅创建前四层、CPU）→ 原 `quant_model_inplace(...quant_bits=4)` → 仅搬运量化后的四层模型 → 原 `prefill()` → 其实际 logits 的 argmax 和返回 cache → 原 `decoder()`。不改 forward、量化算法、dtype、group_sizes、ACLNN 版本或 GE converter，不安装 V4/V5 桥接库。
 
@@ -62,7 +64,7 @@ python "$REPO_DIR/targets/cpro/tools/inference_target_steps.py" \
 
 2026-11-09 的环境报告确认：已加载的 custom QuantMatmul 库导出 V4 pair，没有 V5 pair；当前失败调用为 V5，属主规则对照通过。用户补充的 `QuantBatchMatmulV4444` / `GroupedMatmulV555` 打印来自 **AIR 导出**，不能当成 310P eager 成功执行记录。这些是 GE op type，不能直接作为 ACLNN API 版本。直接步骤入口保留原调用；若同样报 V5 错误，仍需恢复原成功运行的源代码/环境组合，不能把错误归为 CPro 数值偏差。
 
-### 旧入口：执行原主程序并逐层搬运
+### 本轮沿用的入口：执行原主程序并逐层搬运
 
 ```bash
 cd "$TARGET_SOURCE"
@@ -146,15 +148,21 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 
 ## 3. DDK 服务器批量编译
 
-在该服务器设置 `BATCH` 为迁移后的 air-batch 目录，并保证它位于该服务器的 `AI_RUN_DIR` 下。使用已选定的 X90 DDK，不换芯片或安装目录。
+在该服务器设置 `BATCH` 为迁移后的 air-batch 目录。`OMC_BATCH` 必须是该服务器 `AI_RUN_DIR` 下的新目录，与 AIR batch 和 DDK 目录互不包含。使用已选定的 X90 DDK，不换芯片或安装目录。
 
 ```bash
+OMC_BATCH="$AI_RUN_DIR/target-layer-accuracy/omc-batch-001"
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
-  --batch "$BATCH" --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --batch "$BATCH" --output "$OMC_BATCH" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --tbe-diagnosis "$TBE_DIAGNOSIS"
 ```
 
-`TBE_DIAGNOSIS` 使用此前已经完成的兼容诊断目录；无须该兼容选项的环境可省略该参数。保持原编译使用的 format 选项；需要时显式传 `--use-origin-format`。不设置 weight_data_type，保持量化载体。小图要求权重内嵌 OMC。每个编译结果和原始日志分别保留在 `models/<case>/omc/`，不覆盖失败任务重试。
+`TBE_DIAGNOSIS` 使用此前已经完成的兼容诊断目录；无须该兼容选项的环境可省略该参数。保持原编译使用的 format 选项；需要时显式传 `--use-origin-format`。不设置 weight_data_type，保持量化载体。小图要求权重内嵌 OMC。每个编译结果和原始日志分别保留在 `$OMC_BATCH/models/<case>/omc/`，总报告是 `$OMC_BATCH/compile.json`。
+
+旧版若全部报 `compilation output must be outside the source and DDK directories`，是脚本把输出放进 AIR 源目录导致的编译前失败。更新代码后直接用上述新 `--output` 重试，无须重新采集或导出 AIR，也无须删除原 `compile.json`。其他编译失败重试同样换用 `omc-batch-002` 等新目录。底层 OMG 仍使用 `--output=model`，由脚本设置独立工作目录。
+
+OMC batch 保存 AIR manifest 的快照，并以相对路径引用原 AIR batch 的输入和 golden；上板准备前会校验两份 manifest 及夹具的哈希。保留原 AIR batch，迁移时将两个目录一起移动并保持相对位置。
 
 ## 4. 批量上板与回收
 
@@ -169,7 +177,7 @@ python "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
 
 ```bash
 python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$BATCH" --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --compiled "$OMC_BATCH" --config "$AI_RUN_DIR/runtime/runtime.json" \
   --output "$AI_RUN_DIR/target-layer-accuracy/execution" --apply
 ```
 

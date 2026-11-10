@@ -28,7 +28,8 @@ def main():
             s.add_argument('--region', required=True)
             s.add_argument('--output-index', required=True, type=int)
     s = sub.add_parser('compile')
-    s.add_argument('--batch', required=True)
+    s.add_argument('--batch', required=True, help='existing AIR batch (read-only)')
+    s.add_argument('--output', required=True, help='fresh OMC batch below AI_RUN_DIR, outside the AIR batch and DDK')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'), required=not bool(os.environ.get('CPRO_DDK_ROOT')))
     s.add_argument('--ddk-id', default=os.environ.get('CPRO_DDK_ID'), required=not bool(os.environ.get('CPRO_DDK_ID')))
     s.add_argument('--tbe-diagnosis')
@@ -60,7 +61,7 @@ def main():
         from qwen35_moe_dflash.target.layer_probe.replay import export_one
         result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2)
     elif a.command == 'compile':
-        result = batch.compile_batch(a.batch, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
+        result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format)
     elif a.command == 'compare':
         result = batch.compare(a.fixture, a.native, atol=a.atol, rtol=a.rtol)

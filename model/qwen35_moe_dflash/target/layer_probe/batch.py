@@ -81,17 +81,26 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     return report
 
 
-def compile_batch(root, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900, use_origin_format=None):
+def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900, use_origin_format=None):
+    """Read an AIR batch and write a fresh, separate compilation batch."""
+    from qwen35_moe_dflash.common.artifacts import output_path
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
-    root = Path(root).resolve()
+    root, ddk, output = Path(root).resolve(), Path(ddk).resolve(), output_path(output)
+    for source in (root, ddk):
+        if output == source or source in output.parents or output in source.parents:
+            raise ValueError('compilation output must be separate from the AIR batch and DDK directories; '
+                             'use --output with a fresh sibling directory')
     manifest = json.loads((root/'manifest.json').read_text())
     if manifest.get('artifact_kind') != KIND or manifest.get('status') not in ('EXPORTED', 'PARTIAL'):
         raise ValueError('requires region AIR batch')
-    if (root/'compile.json').exists():
-        raise FileExistsError('retain previous compile evidence; use a fresh batch for changed compilation')
+    output = new_output(output)
+    # Keep a small manifest snapshot for the board entry's batch detection. AIR,
+    # weights and golden fixtures remain in the original, read-only source batch.
+    shutil.copyfile(root/'manifest.json', output/'manifest.json')
     report = dict(artifact_kind=KIND, status='COMPILING', cases={}, ddk_id=ddk_id,
-        platform='kirinx90', manifest_sha256=sha(root/'manifest.json'))
-    save_json(root/'compile.json', report)
+        platform='kirinx90', manifest_sha256=sha(output/'manifest.json'),
+        source_batch=os.path.relpath(root, output))
+    save_json(output/'compile.json', report)
     for case in manifest['cases']:
         row = report['cases'][case['id']] = dict(status='NOT_EXPORTED')
         if case['status'] != 'EXPORTED':
@@ -100,18 +109,19 @@ def compile_batch(root, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900, use_ori
             exported = json.loads(checked(root, case['export']).read_text())
             folder = root/'models'/case['id']
             air = checked(folder, exported['air'])
+            destination = output/'models'/case['id']/'omc'
             print('compile', case['id'], flush=True)
-            compiled = compile_existing_air(air, folder/'omc', ddk, ddk_id=ddk_id,
+            compiled = compile_existing_air(air, destination, ddk, ddk_id=ddk_id,
                 timeout_seconds=timeout, save_weights_as_external_data=False,
                 use_origin_format=use_origin_format, tbe_diagnosis=tbe_diagnosis)
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(compiled.get('error', 'OMG failed; inspect retained omc/report.json'))
-            row.update(status='COMPILED', omc=identity(folder/'omc'/compiled['omc']['path'], root))
+            row.update(status='COMPILED', omc=identity(destination/compiled['omc']['path'], output))
         except Exception as exc:
             row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
-        save_json(root/'compile.json', report)
+        save_json(output/'compile.json', report)
     report['status'] = 'COMPILED' if all(r['status'] == 'COMPILED' for r in report['cases'].values()) else 'PARTIAL'
-    save_json(root/'compile.json', report)
+    save_json(output/'compile.json', report)
     return report
 
 
@@ -158,11 +168,17 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     from qwen35_moe_dflash.execution.hdc_run import _file_record
     from qwen35_moe_dflash.draft.incremental.torch_export import _compiled_observation
-    root, out = Path(root), Path(out)
+    root, out = Path(root).resolve(), Path(out)
     manifest = json.loads((root/'manifest.json').read_text())
     compiled = json.loads((root/'compile.json').read_text())
     if compiled['manifest_sha256'] != sha(root/'manifest.json') or compiled['ddk_id'] != ddk_id:
         raise ValueError('compile source/DDK identity changed')
+    # Legacy batches colocate fixtures and OMCs. New batches reference the source
+    # relatively so both directories can be moved together without rewriting evidence.
+    source_root = (root/compiled.get('source_batch', '.')).resolve()
+    if not (source_root/'manifest.json').is_file() or sha(source_root/'manifest.json') != compiled['manifest_sha256']:
+        raise ValueError('AIR source manifest is missing or changed; retain the original AIR batch '
+                         'at the relative source_batch path recorded in compile.json')
     available = {r['id']: r for r in manifest['cases'] if compiled['cases'].get(r['id'], {}).get('status') == 'COMPILED'}
     selected = list(available) if selection is None else list(selection)
     if not selected or len(set(selected)) != len(selected) or set(selected)-set(available):
@@ -171,8 +187,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
     enums, cases = _enum_fields(schema), []
     for name in selected:
         case = available[name]
-        exported = json.loads(checked(root, case['export']).read_text())
-        folder = root/'models'/name
+        exported = json.loads(checked(source_root, case['export']).read_text())
+        folder = source_root/'models'/name
         model = checked(root, compiled['cases'][name]['omc'])
         parts = [p for p in read_container(model)['partitions'] if p['type'] == 0]
         if len(parts) != 1 or any(model.parent.glob('*.weight')):
