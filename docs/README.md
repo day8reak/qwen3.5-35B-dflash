@@ -10,3 +10,4 @@
 - [完整流程执行](run-end-to-end.md)
 - [当前阶段：Target 四层整图精度定位](current-status.md)
 - [OMC 编译／精度状态表与四层 dump 流程](target-accuracy-status.md)
+- [四层 dump 批量比较脚本与所需信息](target-dump-compare.md)

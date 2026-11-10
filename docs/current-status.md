@@ -2,6 +2,8 @@
 
 更新：2026-11-10。当前编译、执行、精度和稳定性分别汇总在[Target OMC 与精度状态表](target-accuracy-status.md)。主线改为复用四层 T64 整图 OMC，通过 `--enable_item=2` 一次采集算子输入输出，离线定位首个异常层／融合区域；独立小图用于随后复现已缩小的问题。已有整图直接复用，本轮不编译 40 层。
 
+用户确认沿用现有“35”环境的四层推理入口，CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
+
 最新 T256 GDN 在增加 `--use_origin_format=true` 后仍 SIGSEGV；不再重复该参数实验。历史 GDN、CacheUpdate 已编译产物继续保留，其成功不转移给当前捕获图。新四层 dump 尚未执行，不能登记精度通过。下一步采用[用户提供的四层转换与 dump 流程](target-accuracy-status.md#4-用户服务器执行入口)。
 
 ## 2026-11-09 独立诊断记录
