@@ -1,4 +1,12 @@
-# 当前阶段：检查Target自定义、融合与量化算子
+# 当前阶段：Target 四层整图 dump 与精度定位
+
+更新：2026-11-10。当前编译、执行、精度和稳定性分别汇总在[Target OMC 与精度状态表](target-accuracy-status.md)。主线改为复用四层 T64 整图 OMC，通过 `--enable_item=2` 一次采集算子输入输出，离线定位首个异常层／融合区域；独立小图用于随后复现已缩小的问题。已有整图直接复用，本轮不编译 40 层。
+
+最新 T256 GDN 在增加 `--use_origin_format=true` 后仍 SIGSEGV；不再重复该参数实验。历史 GDN、CacheUpdate 已编译产物继续保留，其成功不转移给当前捕获图。新四层 dump 尚未执行，不能登记精度通过。下一步采用[用户提供的四层转换与 dump 流程](target-accuracy-status.md#4-用户服务器执行入口)。
+
+## 2026-11-09 独立诊断记录
+
+以下保留当时的设备证据和复现命令；其中“下一步”和单算子优先级为历史安排，当前执行顺序以上方四层整图流程为准。
 
 更新：2026-11-09。按用户提供的patch使用master源码，先检查原40层Target实际使用的算子，覆盖Prefill64／Decode1。当前优先Linear Attention与Self Attention中的非矩阵乘算子；量化MatMul与MoE数值排查后移。暂停离线权重转置及其它Draft性能实验，保留最新packed基线。
 

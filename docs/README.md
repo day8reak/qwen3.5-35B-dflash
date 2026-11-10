@@ -8,4 +8,5 @@
 - [当前结果：时延与接受率](results.md)
 - [环境配置](environment-setup.md)
 - [完整流程执行](run-end-to-end.md)
-- [当前阶段：归档Draft、清空测试、转向Target精度](current-status.md)
+- [当前阶段：Target 四层整图精度定位](current-status.md)
+- [OMC 编译／精度状态表与四层 dump 流程](target-accuracy-status.md)

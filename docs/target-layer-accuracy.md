@@ -1,5 +1,7 @@
 # Target W4：310P golden → CPro 小子图精度定位
 
+2026-11-10：当前主线已调整为[四层整图 dump 与 OMC／精度状态表](target-accuracy-status.md)。本页保留独立边界捕获、重放和编译排查的方法，用于整图首次偏差已经缩小后的复现；不再要求先逐个编译通过所有边界图。
+
 首批仅覆盖原模型第 0～3 层的 prefill 和第一个 decode。**导出阶段不构造整模型，不构造整层再裁图。** 每个进程只导一个 CPro 边界的一个输出，退出后再处理下一个。MoE 专家大子图不在本批导出范围内。
 
 原 `inference.py` 和私有模型文件保留原样。用户确认这里的可信参考是 `inference.py` 四层运行，整网分段运行使用另一个 `inference_segment.py`。当前直接步骤入口固定四层；旧 probe 入口默认 `--model-layers 4`。两者都在原 `load_npu_model` 构造时传入 `layer_num=4`，缓存分配也使用四层，不会先构造 40 层再裁剪。decode 使用这四层加原 norm/lm_head 的输出，不声称是完整 40 层模型生成。
@@ -237,7 +239,9 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 
 当前失败边界与上述基线有实质差异：TorchAir 七输入、静态 T256、g 为 FP32、末态声明 FP32、只接出 core，原失败命令未带 `use_origin_format`。原失败批次的 TBE 记录是 `PASSTHROUGH`（请求本来就是 `Ascend310B1`），且 CastT prebuild 已成功；不能把 `NOT_OBSERVED` 当成旧名称错误再次发生，也不能凭这一条记录确认所有 GDN worker 均无问题。入口对照失败后，优先核对这些已知图合同和编译配置差异；保持当前 AIR、golden 和七输入语义，不直接删除有效长度或将 FP32 数据改成 FP16 来冒充修复。
 
-2026-11-10 用户回传的 AIR 和 DDK `100.520.020.010` 日志支持以下判断。修正后的 OMG 结果尚待用户执行；这些编译证据不代表板端数值通过。
+后续 `accuracy-gdn-origin-005` 已实测 `--use_origin_format=true`：相同 AIR 仍返回 SIGSEGV，CastT prebuild 成功，末条完整主进程日志进入 GDN OpPreBuild。这排除了“单加此开关即可修复本例”，没有定位崩溃函数；停止重复同项尝试，优先执行四层整图 dump。
+
+2026-11-10 用户回传的 AIR 和 DDK `100.520.020.010` 日志支持以下判断。普通 Norm／Conv1d 的导出修正仍待新 OMG 结果；这些编译证据不代表板端数值通过。
 
 | 边界 | 已观察的失败点 | 当前处理 |
 | --- | --- | --- |
