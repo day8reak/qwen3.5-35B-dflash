@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 import json
+import os
 from pathlib import Path
 
 from qwen35_moe_dflash.common.artifacts import output_path
@@ -63,7 +64,11 @@ def graph_metadata(path, schema):
 def retained_ir(job):
     """Prefer the compiler's retained, hash-bound inventory over scratch paths."""
     folders = [job/'diagnostics', job/'compile-work/generated/dump_graph']
-    inventory = dict(searched_directories=[str(p.relative_to(job)) for p in folders], skipped=[])
+    files = [job/'diagnostics/dump_graph', job/'compile-work/generated/dump_graph']
+    inventory = dict(searched_directories=[str(p.relative_to(job)) for p in folders],
+        searched_files=[str(p.relative_to(job)) for p in files],
+        dump_graph_path_kind=('SYMLINK' if files[1].is_symlink() else 'FILE' if files[1].is_file()
+                              else 'DIRECTORY' if files[1].is_dir() else 'ABSENT'), skipped=[])
     manifest = folders[0]/'manifest.json'
     if manifest.is_file():
         retained = json.loads(bounded_bytes(manifest, 8 << 20))
@@ -73,15 +78,20 @@ def retained_ir(job):
             if item.get('role') != 'graph-dump':
                 continue
             name = item['name']
-            if Path(name).name != name or not name.endswith('.irpb'):
+            if Path(name).name != name or not (name.endswith('.irpb') or name == 'dump_graph'):
                 raise ValueError('invalid retained IR name: ' + name)
             if item['status'] != 'RETAINED':
                 inventory['skipped'].append({k: item[k] for k in ('name', 'status', 'bytes')})
                 continue
             records.append((folders[0]/name, dict(path=name, bytes=item['bytes'], sha256=item['sha256'])))
+        # Old retention manifests may contain a pre-check report but omit this
+        # extensionless file entirely. Do not bypass an explicit budget skip.
+        if not any(item.get('name') == 'dump_graph' for item in retained['files']):
+            records.extend((p, None) for p in files if p.is_file() and not p.is_symlink())
     else:
         # Older runs may have only loose diagnostics or the original scratch files.
-        records = [(p, None) for folder in folders for p in sorted(folder.glob('*.irpb'))
+        records = [(p, None) for p in [*files, *(p for folder in folders if folder.is_dir()
+                                                for p in sorted(folder.glob('*.irpb')))]
                    if p.is_file() and not p.is_symlink()]
     records.sort(key=lambda item: (0 if 'fail' in item[0].name else
                                    1 if item[0].name.startswith('05_') else 2, str(item[0])))
@@ -89,7 +99,47 @@ def retained_ir(job):
     return inventory, records
 
 
-def inspect_compilation(batch, output, cases, *, ddk_root=None):
+ENVIRONMENT_KEYS = ('PATH', 'LD_LIBRARY_PATH', 'LD_PRELOAD', 'PYTHONPATH', 'PYTHONHOME',
+    'DDK_PATH', 'TOOLCHAIN_HOME', 'HIAI_VERSION', 'CCE_LIB_DIR', 'SOC_VERSION', 'KIRIN_CONF_JSON_PATH',
+    'ASCEND_HOME_PATH', 'ASCEND_TOOLKIT_HOME', 'ASCEND_OPP_PATH', 'ASCEND_CUSTOM_OPP_PATH',
+    'ASCEND_AICPU_PATH', 'CANN_ROOT', 'TMPDIR', 'TMP', 'TEMP', 'PYTHONDONTWRITEBYTECODE')
+
+
+def compiler_entry_metadata(ddk, inherited=None):
+    """Read exact entry files and compare environment construction without executing them."""
+    from qwen35_moe_dflash.toolchain.compile import omg_environment
+    ddk = Path(ddk).resolve()
+    inherited = dict(os.environ if inherited is None else inherited)
+    result = dict(status='INSPECTED', scripts={}, wrapper_execution='NOT_RUN',
+        environment_source='CURRENT_PROCESS; NOT_A_RECORD_OF_THE_HISTORIC_SUCCESSFUL_RUN')
+    for relative in ('tools/tools_ascendc/set_ascendc_env.sh', 'tools/tools_omg/omg'):
+        path = ddk/relative
+        try:
+            with path.open('rb') as stream:
+                signature = stream.read(4)
+            item = dict(identity(path, ddk), resolved_path=str(path.resolve()))
+            if signature == b'\x7fELF':
+                item['format'] = 'ELF'
+            else:
+                item.update(format='TEXT', text=bounded_bytes(path, 256 << 10).decode('utf-8'))
+            result['scripts'][relative] = item
+        except Exception as exc:
+            result['scripts'][relative] = dict(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
+            result['status'] = 'PARTIAL'
+    result['current_environment'] = {k: inherited[k] for k in ENVIRONMENT_KEYS if k in inherited}
+    try:
+        binary, prepared = omg_environment(ddk, inherited=inherited)
+        result['probe_binary'] = identity(binary, ddk)
+        result['probe_prepared_environment'] = {k: prepared[k] for k in ENVIRONMENT_KEYS if k in prepared}
+        result['probe_environment_changes'] = {k: dict(inherited=inherited.get(k), prepared=prepared.get(k))
+            for k in ENVIRONMENT_KEYS if inherited.get(k) != prepared.get(k)}
+        result['scope'] = 'BASE_ENVIRONMENT_ONLY; RUN_LOCAL_TBE_AND_IPC_ADAPTATIONS_NOT_EXECUTED'
+    except Exception as exc:
+        result.update(status='PARTIAL', preparation_error=f'{type(exc).__name__}: {exc}')
+    return result
+
+
+def inspect_compilation(batch, output, cases, *, ddk_root=None, compiler_entry=False):
     root = Path(batch).resolve()
     compiled = json.loads((root/'compile.json').read_text())
     manifest = json.loads((root/'manifest.json').read_text())
@@ -102,6 +152,8 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None):
     if (not cases or len(set(cases)) != len(cases) or set(cases)-set(by_name)
             or any(Path(name).name != name or name in ('.', '..') for name in cases)):
         raise ValueError('select distinct cases from the AIR manifest')
+    if compiler_entry and not ddk_root:
+        raise ValueError('compiler-entry inspection requires the selected DDK root')
     output = output_path(output)
     for original in (root, source, *([Path(ddk_root).resolve()] if ddk_root else [])):
         if output == original or original in output.parents or output in original.parents:
@@ -111,6 +163,10 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None):
         manifest=identity(root/'manifest.json', root), compilation=identity(root/'compile.json', root),
         cases={}, model_compilation='NOT_RUN', device_execution='NOT_RUN', numerical_validation='NOT_RUN')
     compiler_schema = None
+    if compiler_entry:
+        result['compiler_entry'] = compiler_entry_metadata(ddk_root)
+        if result['compiler_entry']['status'] != 'INSPECTED':
+            result['status'] = 'PARTIAL'
     if ddk_root:
         try:
             compiler_schema = load_schema(Path(ddk_root)/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
@@ -140,7 +196,14 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None):
             report = json.loads(bounded_bytes(receipt, 8 << 20))
             row['compiler_report'] = dict(identity(receipt, root),
                 **{k: report.get(k) for k in ('stage', 'returncode', 'error', 'requested_options', 'ddk_id',
-                                             'tbe_compatibility', 'compiler_diagnostics')})
+                                             'omg_path', 'omg_sha256', 'tbe_compatibility', 'compiler_diagnostics')})
+        environment = job/'omg-environment.json'
+        if compiler_entry and environment.is_file():
+            prior = json.loads(bounded_bytes(environment, 8 << 20)).get('environment', {})
+            row['recorded_compiler_environment'] = dict(identity(environment, root),
+                environment={k: prior[k] for k in ENVIRONMENT_KEYS if k in prior},
+                unrecorded_keys=[k for k in ENVIRONMENT_KEYS if k not in prior],
+                scope='RETAINED_FAILED_INVOCATION; UNRECORDED_KEYS_ARE_UNKNOWN')
         log = job/'compile.log'
         if log.is_file():
             with log.open('rb') as stream:

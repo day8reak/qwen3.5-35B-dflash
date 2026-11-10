@@ -177,9 +177,37 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
   --output "$AI_RUN_DIR/target/tests/accuracy-inspection-001"
 ```
 
-`report.json` 保留各节点端口、shape、schema 对应 dtype、属性和连线；不包含权重 Tensor payload。空 shape 标记未解析，不补写预期值。优先从 `omc/diagnostics/manifest.json` 读取已保存的 IR 并校验 SHA256；旧批次兼容 `omc/diagnostics/*.irpb` 和 `omc/compile-work/generated/dump_graph/*.irpb`。每图最多解读 12 份 IR，优先失败推形和分区后的快照；无法解码的 IR 保留路径、哈希和错误，不按另一种 schema 猜测。缺失、超出保存预算、文件变化和缺少 DDK schema 均使检查状态为 `PARTIAL`，`ir_inventory` 记录查找范围及保存状态。此入口依赖已迁移的 AIR batch 及其 schema 文件，不要求导出服务器上的 torch_npu 环境。
+`report.json` 保留各节点端口、shape、schema 对应 dtype、属性和连线；不包含权重 Tensor payload。空 shape 标记未解析，不补写预期值。优先从 `omc/diagnostics/manifest.json` 读取已保存的 IR 并校验 SHA256；旧批次兼容 `omc/diagnostics/*.irpb`、`omc/compile-work/generated/dump_graph/*.irpb`，以及无扩展名的普通文件 `omc/diagnostics/dump_graph`、`omc/compile-work/generated/dump_graph`。每图最多解读 12 份 IR，优先失败推形和分区后的快照；无法解码的 IR 保留路径、哈希和错误，不按另一种 schema 猜测。缺失、超出保存预算、文件变化和缺少 DDK schema 均使检查状态为 `PARTIAL`，`ir_inventory` 记录查找范围、文件类型及保存状态。此入口依赖已迁移的 AIR batch 及其 schema 文件，不要求导出服务器上的 torch_npu 环境。
 
 旧检查器仅搜索临时 `dump_graph/`，遗漏了 `diagnostics/`。更新后可以直接检查现有失败批次，无须为收集已保存的 IR 再次编译。若仍为空，结合 `compiler_report.compiler_diagnostics` 和 `ir_inventory` 判断是否实际保存，不能仅凭日志中的 “dump file ... create” 认定文件存在。
+
+后续回传的三个 case 均为 `NOT_EMITTED` / `NOT_FOUND`，说明仅补目录仍未找到文件。项目此前的同版 DDK 记录还出现过 `dump_graph` 普通文件（无扩展名）；原保存器和小图检查器都只按目录处理，已一起修正。旧报告的 `NOT_EMITTED` 不证明不存在这种文件；也不能在未读到新结果前认定本批使用了该格式。普通文件也可能是最后一次覆盖保存，不能据文件名推断为某个编译阶段。
+
+### 与已成功整网编译的条件对照
+
+用户补充的成功命令先 source `tools/tools_ascendc/set_ascendc_env.sh`，再调用 `tools/tools_omg/omg`，使用 `--limit_partition_size=false`、外置权重和动态档位 64/1。它为对照基线提供了执行条件，但尚未证明本批小图复现了这些条件。
+
+| 条件 | 用户报告成功的整网 | 当前小图 |
+| --- | --- | --- |
+| 入口 | 外层 `tools/tools_omg/omg` | 直接调用 `tools/tools_omg/master/omg`，显式 `--platform=kirinx90` |
+| 环境 | source 原 AscendC 环境脚本 | 继承调用进程后，过滤已知外部 CANN 路径、重排库和 Python 搜索路径，并设置 SOC/配置路径；若启用 TBE 兼容选项，还使用局部 wheel |
+| shape | `--dynamic_dims=64,64,64,64,64;1,1,1,1,1` | 本次 prefill 为静态 256；decode 为静态 1 |
+| 状态与连接 | 80 个 `RefData`，保留完整消费关系 | 独立 `Data` 输入，每个图仅保留一个输出 |
+| 分区与权重 | `limit_partition_size=false`，外置权重 | 未显式指定分区限制，权重内嵌 |
+
+同名算子在独立图和完整图中可能经过不同融合、布局转换与实现选择。ConvState 的第二输出在整网连接后续卷积，单输出探针可能失去该融合条件；这是待原图/日志验证的假设。整网成功不证明静态 256 的单输出版本可独立编译，小图失败也不能推出 DDK 全局缺少算子。外置权重本身没有证据可解释 V4444 的八倍宽度差异。
+
+先在原成功命令使用的环境中执行下面的只读检查。新增 `--compiler-entry` 读取环境脚本和外层入口的内容/哈希，记录当前 shell 的指定工具链变量、脚本基础环境调整差异，以及旧失败任务保存的环境。它不执行这两个脚本、不运行 OMG，也不证明当前环境就是历史成功时的环境；未记录的变量标为未知。只检查两个固定入口文件，不递归扫描 DDK 或读取模型权重。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
+  --batch "$OMC_BATCH" --ddk-root "$CPRO_DDK_ROOT" --compiler-entry \
+  --cases l00_c00_linear_attn_in_proj_qkv_o0 \
+          l00_c00_convstate_update_o0 l00_c00_gdn_o0 \
+  --output "$AI_RUN_DIR/target/tests/accuracy-entry-inspection-003"
+```
+
+先核对外层入口是否调用同一个二进制、追加参数或设置注册路径，再对齐环境和图结构。若对齐后 GDN 仍 SIGSEGV，才对同一小图抓调用栈。整个流程复用现有 AIR，不重新导出或编译 40 层模型。
 
 2026-11-10 用户回传的 AIR 和 DDK `100.520.020.010` 日志支持以下判断。修正后的 OMG 结果尚待用户执行；这些编译证据不代表板端数值通过。
 

@@ -40,6 +40,7 @@ def main():
     s.add_argument('--output', required=True)
     s.add_argument('--cases', nargs='+', required=True)
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
+    s.add_argument('--compiler-entry', action='store_true', help='also read OMG/env entry scripts and compare current shell with probe environment preparation; executes neither script nor compiler')
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
@@ -70,7 +71,7 @@ def main():
                                      timeout=a.timeout, use_origin_format=a.use_origin_format)
     elif a.command == 'inspect-compile':
         from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
-        report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root)
+        report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root, compiler_entry=a.compiler_entry)
         result = dict(status=report['status'], report=str(Path(a.output).resolve()/'report.json'),
             model_compilation='NOT_RUN', device_execution='NOT_RUN',
             cases={name: dict(compilation=row['compilation'].get('status'),

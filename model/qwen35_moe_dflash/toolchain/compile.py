@@ -778,7 +778,10 @@ def _retain_compiler_diagnostics(scratch, folder, *, failure=False, max_bytes=16
     if not report.is_symlink() and report.is_file():
         candidates.append(report)
     source = scratch / "dump_graph"
-    if not source.is_symlink() and source.is_dir():
+    # Some internal DDKs write one extensionless GraphDef at this path.
+    if not source.is_symlink() and source.is_file():
+        candidates.append(source)
+    elif not source.is_symlink() and source.is_dir():
         candidates.extend(path for path in source.glob("*.irpb")
                           if not path.is_symlink() and path.is_file())
     scope = ("Host compiler diagnostics only. Pre-check support is not final placement; "

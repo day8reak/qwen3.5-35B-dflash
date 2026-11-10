@@ -69,11 +69,11 @@ class InspectionTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def inspect(self):
+    def inspect(self, **kwargs):
         with patch.object(inspection, 'Schema', FakeSchema), \
              patch.object(inspection, 'load_schema', return_value=FakeSchema()), \
              patch('subprocess.run', side_effect=AssertionError('must not run a compiler')):
-            return inspection.inspect_compilation(self.compiled, self.root/'inspection', [self.name], ddk_root=self.root/'ddk')
+            return inspection.inspect_compilation(self.compiled, self.root/'inspection', [self.name], ddk_root=self.root/'ddk', **kwargs)
 
     def test_observed_source_and_failed_ir_shapes_remain_distinct(self):
         before = {p: sha(p) for p in self.root.rglob('*') if p.is_file()}
@@ -167,6 +167,79 @@ class InspectionTest(unittest.TestCase):
         result = self.inspect()
         self.assertEqual(result['status'], 'PARTIAL')
         self.assertEqual(result['cases'][self.name]['ir_inventory']['status'], 'UNAVAILABLE')
+
+    def extensionless_dump(self):
+        for path in self.dumps.iterdir():
+            path.unlink()
+        self.dumps.rmdir()
+        self.dumps.write_bytes(b'IR')
+
+    def test_extensionless_scratch_graph_is_inspected(self):
+        self.extensionless_dump()
+        result = self.inspect()
+        self.assertEqual(result['status'], 'INSPECTED')
+        row = result['cases'][self.name]
+        self.assertEqual(row['ir_inventory']['dump_graph_path_kind'], 'FILE')
+        self.assertEqual(row['ir_dumps'][0]['status'], 'INSPECTED')
+        self.assertEqual(row['ir_dumps'][0]['path'], str(self.dumps.relative_to(self.compiled)))
+
+    def test_compiler_retains_extensionless_dump_with_hash(self):
+        from qwen35_moe_dflash.toolchain.compile import _retain_compiler_diagnostics
+        self.extensionless_dump()
+        kept = _retain_compiler_diagnostics(self.dumps.parent, self.job, failure=True)
+        self.assertEqual(kept['status'], 'RETAINED')
+        self.dumps.unlink()
+        result = self.inspect()
+        self.assertEqual(result['status'], 'INSPECTED')
+        item = result['cases'][self.name]['ir_dumps'][0]
+        self.assertTrue(item['path'].endswith('/diagnostics/dump_graph'))
+        self.assertEqual(item['retention_binding'], 'SHA256_VERIFIED')
+
+    def test_old_manifest_does_not_mask_unrecorded_extensionless_file(self):
+        self.extensionless_dump()
+        save_json(self.job/'diagnostics/manifest.json', dict(status='RETAINED', files=[]))
+        result = self.inspect()
+        self.assertEqual(result['status'], 'INSPECTED')
+        self.assertEqual(result['cases'][self.name]['ir_dumps'][0]['retention_binding'], 'UNBOUND_LEGACY_FILE')
+
+    def make_ddk_entries(self):
+        ddk = self.root/'ddk'
+        for relative, content in (
+            ('tools/tools_omg/omg', b'#!/bin/sh\nexit 91\n'),
+            ('tools/tools_omg/master/omg', b'\x7fELFhost fixture'),
+            ('tools/tools_ascendc/set_ascendc_env.sh', b'export ASCEND_CUSTOM_OPP_PATH=/example/vendor\n'),
+        ):
+            path = ddk/relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        return ddk
+
+    def test_entry_comparison_reads_scripts_and_only_declared_environment_keys(self):
+        ddk = self.make_ddk_entries()
+        before = {p:sha(p) for p in ddk.rglob('*') if p.is_file()}
+        env = dict(PATH='/usr/bin', LD_LIBRARY_PATH='/old/lib', SOC_VERSION='original',
+                   ASCEND_CUSTOM_OPP_PATH='/example/custom', UNRELATED_TOKEN='do-not-record')
+        with patch('subprocess.run', side_effect=AssertionError('must not execute vendor code')):
+            result = inspection.compiler_entry_metadata(ddk, inherited=env)
+        self.assertEqual(result['status'], 'INSPECTED')
+        self.assertEqual(result['wrapper_execution'], 'NOT_RUN')
+        self.assertEqual(result['scripts']['tools/tools_omg/omg']['format'], 'TEXT')
+        self.assertIn('exit 91', result['scripts']['tools/tools_omg/omg']['text'])
+        self.assertEqual(result['probe_environment_changes']['SOC_VERSION'], dict(inherited='original',prepared='kirinx90'))
+        self.assertEqual(result['probe_prepared_environment']['ASCEND_CUSTOM_OPP_PATH'], '/example/custom')
+        self.assertNotIn('do-not-record', json.dumps(result))
+        self.assertEqual(env['SOC_VERSION'], 'original')
+        self.assertEqual({p:sha(p) for p in before}, before)
+
+    def test_entry_inspection_includes_old_environment_without_claiming_missing_keys_absent(self):
+        self.make_ddk_entries()
+        save_json(self.job/'omg-environment.json', dict(environment={'SOC_VERSION':'kirinx90','UNRELATED_TOKEN':'secret'}))
+        result = self.inspect(compiler_entry=True)
+        self.assertEqual(result['status'], 'INSPECTED')
+        prior = result['cases'][self.name]['recorded_compiler_environment']
+        self.assertEqual(prior['environment'], {'SOC_VERSION':'kirinx90'})
+        self.assertIn('ASCEND_CUSTOM_OPP_PATH', prior['unrecorded_keys'])
+        self.assertNotIn('secret',json.dumps(result))
 
     def test_changed_source_manifest_is_rejected_before_writes(self):
         with (self.source/'manifest.json').open('a') as stream:
