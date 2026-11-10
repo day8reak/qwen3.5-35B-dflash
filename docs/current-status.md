@@ -1,12 +1,14 @@
 # 当前阶段：Target 四层整图 dump 与精度定位
 
-最新安排：用户已确认此前环境选用了错误算子，先进行一次修正环境后的[批量重编 OMC、上板、回收与比较](target-batch-rerun.md)。DDK 在 35 服务器，310P golden 仍来自原权重服务器；若错误算子影响了 AIR 导出，先重导 AIR。旧失败保留为旧环境记录，新结果回传前不宣称修复通过。该复测不替代后续四层整图验证。
+最新回传：修正算子环境后的 `environment-recheck-001` 共 **158 项，120 项 OMC 编译成功、38 项失败**；GDN 两个输出和所有量化投影均已编译。38 项失败为普通 Norm 20 项、ConvState 12 项、Conv1d 6 项。上板入口在 prepare 阶段报 `compiled input shape/dtype changed: arg6_1`，本批设备执行和精度均为 `NOT_RUN`。
+
+主机检查器已发现并修复 `INT16/DT_INT16` 映射遗漏：GDN 的 INT16 有效长度即使编译后类型保持一致，也会被旧检查器识别为未知类型并拒绝。主机测试已复现该误报并验证修复；真实 OMC 的本轮绑定仍待用户复跑确认。下一步直接复用这 120 个 OMC，按[prepare 失败后的继续命令](target-batch-rerun.md#本轮已编译从-prepare-失败处继续)更新代码、换 execution 目录后上板。DDK 在 35 服务器，310P golden 仍来自原权重服务器。
 
 更新：2026-11-10。当前编译、执行、精度和稳定性分别汇总在[Target OMC 与精度状态表](target-accuracy-status.md)。主线改为复用四层 T64 整图 OMC，通过 `--enable_item=2` 一次采集算子输入输出，离线定位首个异常层／融合区域；独立小图用于随后复现已缩小的问题。已有整图直接复用，本轮不编译 40 层。
 
 用户确认 DDK／OMG 编译在 **35 服务器**，310P golden 仍在此前的**权重服务器**通过已跑通的四层推理入口采集；35 不是 Python 环境名，147 仅为此前参考命令来源。CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
 
-最新 T256 GDN 在增加 `--use_origin_format=true` 后仍 SIGSEGV；不再重复该参数实验。历史 GDN、CacheUpdate 已编译产物继续保留，其成功不转移给当前捕获图。新四层 dump 尚未执行，不能登记精度通过。下一步采用[用户提供的四层转换与 dump 流程](target-accuracy-status.md#4-用户服务器执行入口)。
+旧环境 `accuracy-gdn-origin-005` 的 SIGSEGV 保留为历史记录，不能继续作为本轮 GDN 编译状态。新四层 dump 尚未执行，不能登记精度通过；后续整图流程见[用户提供的四层转换与 dump 流程](target-accuracy-status.md#4-用户服务器执行入口)。
 
 ## 2026-11-09 独立诊断记录
 

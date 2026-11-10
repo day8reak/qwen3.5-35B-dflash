@@ -1,16 +1,42 @@
 # Target OMC 与精度状态：转向四层整图 dump
 
-用户已确认此前环境选用了错误算子，正准备[修正环境后的批量复测](target-batch-rerun.md)。下表保留旧环境证据；本轮新结果尚未回传，不将旧失败直接作为算子实现错误的结论。
+用户已回传[修正环境后的批量复测](target-batch-rerun.md)：`environment-recheck-001` **120/158 项编译成功，38 项失败**。本批在上板前的 prepare 阶段被输入类型检查拦截，设备执行和精度均尚未开始。旧环境失败与新结果分开记录。
 
 更新：2026-11-10。当前主线为**复用四层整图 OMC，一次采集算子输入输出，离线定位首个偏差**。独立子图用于复现已缩小的问题；不再把所有小图逐个编译通过作为整图精度排查的前置条件。
 
 主机侧已提供[批量 dump 比较脚本](target-dump-compare.md)，复用原四层入口的捕获清单。当前支持显式映射和离线比较；CPro dump 尚无样例，自动格式适配与节点映射待首批元数据。
 
-本页整理已收到的用户回传和仓库历史记录。本地主机未连接服务器或板子，也未重新核验远端 OMC。当前没有完整、绑定同一批次的全部 case 结果，因此不计算“全部 OMC 成功率”。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
+本页整理已收到的用户回传和仓库历史记录。本地主机未连接服务器或板子，也未重新核验远端 OMC。当前计数依据用户提供的本批完整 compile.json；它只覆盖已选的 158 个边界输出图，不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
 
 ## 1. 当前捕获边界批次
 
-范围：原模型第 0～3 层，已捕获的 Prefill T256／首次 Decode T1。下面的失败详情主要来自 `accuracy-find`、入口对照 `accuracy-entry-compare-004` 和 `accuracy-gdn-origin-005`；不能将某个代表 case 的状态推广到所有层和阶段。
+范围：原模型第 0～3 层，已捕获的 Prefill T256／首次 Decode T1。本轮 DDK 为 `100.520.020.010`，平台 `kirinx90`，profile 为 `isolated-kirinx90`，保留 `use_origin_format=true`、内嵌权重。compile.json 为 `PARTIAL`、`ALL_MANIFEST_CASES`，`diagnostic_only=false`。
+
+| 模块（c00／c01） | case 数 | 编译成功 | 编译失败 | 本批设备／精度 |
+|---|---:|---:|---:|---|
+| 量化投影：Linear Attention qkv/z/b/a/out、Self Attention q/k/v/o | 38 | 38 | 0 | NOT_RUN |
+| GDN core／state 两个输出 | 12 | 12 | 0 | NOT_RUN |
+| repeat Q/K 两个输出 | 12 | 12 | 0 | NOT_RUN |
+| recurrent state 回写 | 6 | 6 | 0 | NOT_RUN |
+| attention／MLP residual | 16 | 16 | 0 | NOT_RUN |
+| Conv SiLU、decay/beta、门控 Norm | 24 | 24 | 0 | NOT_RUN |
+| RoPE Q/K 两个输出 | 4 | 4 | 0 | NOT_RUN |
+| Cache K/V | 4 | 4 | 0 | NOT_RUN |
+| FusedAttention、attention layout/gate | 4 | 4 | 0 | NOT_RUN |
+| 普通 Norm：input/post-attention、Self Attention Q/K Norm | 20 | 0 | 20 | NOT_RUN |
+| ConvState 两个输出 | 12 | 0 | 12 | NOT_RUN |
+| Conv1d | 6 | 0 | 6 | NOT_RUN |
+| **合计** | **158** | **120** | **38** | **尚无本批精度结论** |
+
+本轮 manifest SHA256 为 `9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`，source_batch 为 `../../../air-batch`，与此前 AIR 批清单相同。剩余 Norm／Conv 先核对已实现的导出修正是否进入实际 AIR，再读取每类代表 case 的新 compile.log；仅凭 exit 1 不能认定这 38 项沿用旧根因，无需重编已成功的 120 项。
+
+代表产物：`l00_c00_gdn_o0` 70306 字节，SHA256 `9b4a621df37bdb583c85e212efc07e5e4fc28b898468b83170d2923a3a1d2352`；`l00_c00_linear_attn_in_proj_qkv_o0` 8698908 字节，SHA256 `45d90205590770405d2f08e756f256ddddf2b34cd106157c824ab9ba3ebb96d8`。这些来自用户回传，尚未取得其设备数值结果。
+
+prepare 报错为 `compiled input shape/dtype changed: arg6_1`。源 GDN 的该输入是 `effective_length: int16[1]`；本地主机复现了检查器缺少 `INT16/DT_INT16` 别名造成的同样误报。修复仅补齐基于编译 schema 名称的解析，保持源输入字节和严格 ABI 检查；若仍有真正的 shape/dtype 差异，错误会列出 case、源描述、编译描述和 schema 枚举名。真实新 OMC 的绑定结果待用户复跑，不提前宣称全部可上板。
+
+### 旧环境编译记录
+
+下面保留 `accuracy-find`、入口对照 `accuracy-entry-compare-004` 和 `accuracy-gdn-origin-005` 的历史结果；其中 QLinear／GDN 编译失败已被上面的新环境成功结果更新。
 
 | 模块／case | OMC 编译 | 设备执行 | 精度结论 | 当前证据与处理 |
 |---|---|---|---|---|
@@ -36,7 +62,7 @@
 | FusedAttention | 已有数值结果摘要 | 大误差／不稳定 | 待原报告复核；不能记通过 |
 | Decode CacheUpdate | 已有数值结果摘要 | 缓存逐位不一致 | 失败线索；与下表独立 CacheUpdate 诊断分开保留 |
 
-**最新 GDN 005 的确定结论：**相同 6361 字节 AIR（SHA256 `4cbc27e1ac15809e25ceb48bb865cc12844d5a06d0b60fc2c98075c6b10abd12`），DDK `100.520.020.010`，`isolated-kirinx90` 加 `--use_origin_format=true` 后仍返回 `-11`。CastT prebuild 成功，最后完整主进程日志进入 `ChunkGatedDeltaRule OpPreBuild`；这不能确定崩溃函数。TBE 审计事件为 `PASSTHROUGH`，请求／原生 SOC 都是 Ascend310B1，不能套用此前平台名称错误的修复结论。空的 `*_bt.log` 没有调用栈证据。本轮停止无新证据的同参数重试。
+**旧环境 GDN 005 的确定结论：**相同 6361 字节 AIR（SHA256 `4cbc27e1ac15809e25ceb48bb865cc12844d5a06d0b60fc2c98075c6b10abd12`），DDK `100.520.020.010`，`isolated-kirinx90` 加 `--use_origin_format=true` 后仍返回 `-11`。CastT prebuild 成功，最后完整主进程日志进入 `ChunkGatedDeltaRule OpPreBuild`；这不能确定崩溃函数。TBE 审计事件为 `PASSTHROUGH`，请求／原生 SOC 都是 Ascend310B1，不能套用此前平台名称错误的修复结论。空的 `*_bt.log` 没有调用栈证据。本轮停止无新证据的同参数重试。
 
 小图以各自独立捕获的 310P 输入运行，不能把它们的误差自动解释为上游误差传播。整图 dump 才能观察同一次执行中的真实传播关系。
 

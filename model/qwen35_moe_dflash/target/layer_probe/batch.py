@@ -168,8 +168,14 @@ def bind_compiled(document, source_inputs, golden, enums):
         name = reference[:-2]
         spec = by_name[name]
         descs = data[name].get('output_desc', [])
-        if len(descs) != 1 or any(_observed_desc(descs[0], enums)[k] != spec[k] for k in ('shape', 'dtype')):
-            raise ValueError('compiled input shape/dtype changed: ' + name)
+        observed = [_observed_desc(desc, enums) for desc in descs]
+        if len(observed) != 1 or any(observed[0][k] != spec[k] for k in ('shape', 'dtype')):
+            for desc in observed:
+                desc['schema_dtype_names'] = [alias for alias, code in enums.get('dtype', {}).get('values', {}).items()
+                                              if code == desc['raw_dtype']]
+            expected = {k: spec[k] for k in ('shape', 'dtype')}
+            raise ValueError(f'compiled input shape/dtype changed: {name}; '
+                             f'expected={json.dumps(expected)}; observed={json.dumps(observed)}')
         inputs.append(dict(spec, index=slot))
     nets = [n for n in nodes if n['type'] == 'NetOutput']
     if len(nets) != 1 or len(nets[0].get('input_desc', [])) != 1:
@@ -218,7 +224,10 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         if len(parts) != 1 or any(model.parent.glob('*.weight')):
             raise ValueError('requires embedded weights and one main metadata partition')
         doc = schema.decode(read_partition(model, parts[0]), 'ModelDef')
-        io = bind_compiled(doc, exported['source_inputs'], exported['golden'], enums)
+        try:
+            io = bind_compiled(doc, exported['source_inputs'], exported['golden'], enums)
+        except ValueError as exc:
+            raise ValueError(f'{name}: {exc}') from exc
         fixture = out/'fixture'/name
         fixture.mkdir(parents=True)
         plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']

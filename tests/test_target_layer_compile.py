@@ -1,5 +1,6 @@
 """Host regressions for separate AIR/OMC batches; no device/compiler success claim."""
 from contextlib import ExitStack
+import json
 import os
 from pathlib import Path
 import shutil
@@ -68,18 +69,17 @@ class CompileBatchTest(unittest.TestCase):
             result = compile_batch(self.air, output or self.output, self.ddk, 'test-ddk', **kwargs)
         return result, compiler
 
-    def fixtures(self, compiled=None, output=None, **kwargs):
+    def fixtures(self, compiled=None, output=None, input_dtype=37, **kwargs):
         doc = {'graph': [{'input': ['input:0'], 'op': [
-            dict(type='Data', name='input', output_desc=[{}]),
-            dict(type='NetOutput', name='out', input_desc=[{}])]}]}
+            dict(type='Data', name='input', output_desc=[dict(shape={'dim': [2]}, dtype=input_dtype)]),
+            dict(type='NetOutput', name='out', input_desc=[dict(shape={'dim': [2]}, dtype=37)])]}]}
         schema = SimpleNamespace(decode=lambda *args: doc, evidence={'kind': 'host fixture'})
         with ExitStack() as stack:
             for target, value in (
                 ('toolchain.omc_container.read_container', {'partitions': [{'type': 0}]}),
                 ('toolchain.omc_container.read_partition', b'host metadata'),
                 ('toolchain.omc_wire.load_schema', schema),
-                ('draft.ir_inspect._enum_fields', {}),
-                ('draft.compile_precision._observed_desc', {'shape': [2], 'dtype': 'float16'}),
+                ('draft.ir_inspect._enum_fields', {'dtype': {'values': {'DT_FLOAT16': 37, 'DT_INT16': 91}}}),
                 ('draft.incremental.torch_export._compiled_observation', {'graphop_counts': {}}),
             ):
                 stack.enter_context(patch('qwen35_moe_dflash.' + target, return_value=value))
@@ -161,6 +161,37 @@ class CompileBatchTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'AIR source manifest is missing or changed'):
             self.fixtures()
         self.assertFalse((self.root/'execution').exists())
+
+    def test_fixture_preserves_int16_bytes_with_real_descriptor_decoding(self):
+        manifest = json.loads((self.air/'manifest.json').read_text())
+        payload = struct.pack('<2h', -32768, 32767)
+        for case in manifest['cases']:
+            folder = self.air/'models'/case['id']
+            path = folder/'fixture/input.bin'
+            path.write_bytes(payload)
+            exported = json.loads((folder/'export.json').read_text())
+            exported['source_inputs'] = [dict(identity(path, folder), name='input', dtype='int16', shape=[2])]
+            save_json(folder/'export.json', exported)
+            case['export'] = identity(folder/'export.json', self.air)
+        save_json(self.air/'manifest.json', manifest)
+        self.compile()
+        meta = self.fixtures(input_dtype=91)
+        for case in meta['cases']:
+            spec = case['inputs'][0]
+            self.assertEqual(spec['dtype'], 'int16')
+            self.assertEqual(spec['bytes'], 4)
+            self.assertEqual(spec['fixture_sha256'], spec['sha256'])
+            fixture = self.root/'execution/fixture'/case['case']
+            self.assertEqual((fixture/'input_0.bin').read_bytes(), payload)
+            self.assertIn('input 0 input_0 int16 2\n', (fixture/'plan.txt').read_text())
+
+    def test_fixture_abi_error_identifies_case_and_descriptors(self):
+        self.compile()
+        with self.assertRaises(ValueError) as caught:
+            self.fixtures(input_dtype=91)
+        for evidence in (self.names[0], 'input', 'float16', 'int16', 'expected=', 'observed=', 'DT_INT16'):
+            self.assertIn(evidence, str(caught.exception))
+        self.assertFalse((self.root/'execution/fixture/manifest.json').exists())
 
     def test_source_payload_and_compiled_omc_hashes_remain_enforced(self):
         self.compile()

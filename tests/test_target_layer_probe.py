@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from qwen35_moe_dflash.target.layer_probe.common import KIND, identity, metrics, read_array, save_json
+from qwen35_moe_dflash.target.layer_probe.common import KIND, DTYPES, identity, metrics, read_array, save_json
 from qwen35_moe_dflash.target.layer_probe.capture import Capture, cpu
 from qwen35_moe_dflash.target.layer_probe.replay import Region, source_bindings, export_input_identity, check_adjusted_graph
 from qwen35_moe_dflash.target.layer_probe.batch import bind_compiled, compare
@@ -98,6 +98,43 @@ class FixtureTest(unittest.TestCase):
             doc['graph'][0]['input'] = ['v:0', 'v:0']
             with self.assertRaises(ValueError):
                 bind_compiled(doc, specs, dict(shape=[1,2], dtype='float16'), {})
+
+    def test_compiled_binding_decodes_all_fixture_types_from_schema_names(self):
+        # Deliberately nonstandard enum numbers: source AIR codes are not the
+        # compiled schema. Exercise the real decoder, not a mocked dtype result.
+        aliases = dict(float16=('DT_FLOAT16', 'HALF'), float32=('DT_FLOAT', 'FLOAT'),
+                       int16=('DT_INT16', 'INT16'), int32=('DT_INT32', 'INT32'),
+                       int64=('DT_INT64', 'INT64'))
+        self.assertEqual(set(aliases), set(DTYPES))
+        for dtype, names in aliases.items():
+            for alias in names:
+                with self.subTest(dtype=dtype, alias=alias):
+                    desc = dict(shape={'dim': [1]}, dtype=51)
+                    golden_desc = dict(shape={'dim': [1]}, dtype=71)
+                    doc = {'graph': [{'input': ['arg6_1:0'], 'op': [
+                        dict(name='arg6_1', type='Data', output_desc=[desc]),
+                        dict(name='out', type='NetOutput', input_desc=[golden_desc])]}]}
+                    enums = {'dtype': {'values': {alias: 51, 'FP16': 71}}}
+                    source = dict(name='arg6_1', shape=[1], dtype=dtype)
+                    result = bind_compiled(doc, [source], dict(shape=[1], dtype='float16'), enums)
+                    self.assertEqual(result['inputs'], [dict(source, index=0)])
+
+    def test_compiled_binding_rejects_real_mismatches_and_unknown_enum(self):
+        desc = dict(shape={'dim': [1]}, dtype=51)
+        golden_desc = dict(shape={'dim': [1]}, dtype=71)
+        doc = {'graph': [{'input': ['arg6_1:0'], 'op': [
+            dict(name='arg6_1', type='Data', output_desc=[desc]),
+            dict(name='out', type='NetOutput', input_desc=[golden_desc])]}]}
+        source = dict(name='arg6_1', shape=[1], dtype='int16')
+        for alias, shape in (('DT_INT32', [1]), ('DT_INT16', [2]), ('UNRECOGNIZED', [1])):
+            with self.subTest(alias=alias, shape=shape):
+                desc['shape']['dim'] = shape
+                enums = {'dtype': {'values': {alias: 51, 'FP16': 71}}}
+                with self.assertRaises(ValueError) as caught:
+                    bind_compiled(doc, [source], dict(shape=[1], dtype='float16'), enums)
+                message = str(caught.exception)
+                for evidence in ('arg6_1', 'expected=', 'observed=', alias, 'raw_dtype', '51'):
+                    self.assertIn(evidence, message)
 
     def make_native(self, *, runtime_dtype='float16', delta=0, stable=True):
         fixture, native = self.root/'fixture', self.root/'native'

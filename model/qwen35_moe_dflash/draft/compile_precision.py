@@ -28,6 +28,7 @@ _MAX_REQUIREMENTS = 1024
 _TYPES = {"SelectV2": {"SelectV2", "Select"}, "SoftmaxV2": {"SoftmaxV2", "Softmax"}}
 _DTYPES = {"FLOAT": "float32", "DT_FLOAT": "float32", "FLOAT32": "float32", "FP32": "float32",
            "HALF": "float16", "DT_FLOAT16": "float16", "FLOAT16": "float16", "FP16": "float16",
+           "INT16": "int16", "DT_INT16": "int16",
            "INT32": "int32", "DT_INT32": "int32", "INT64": "int64", "DT_INT64": "int64",
            "BOOL": "bool", "DT_BOOL": "bool"}
 _SCOPE = ("Static CPUCL ownership, descriptor and FP32 edge checks only; "
