@@ -225,15 +225,15 @@ Prefill／Decode、o0／o1 目前都在同一 format config 环节失败。先�
 : "${AI_RUN_DIR:?}"
 export CONVSTATE_BATCH="$AI_RUN_DIR/target/tests/environment-recheck-001/omc"
 
-rg -n -C 5 'LinearAttentionConvstateUpdate|CheckSupport|substore|subStore|format config' \
+grep -n -E -C 5 'LinearAttentionConvstateUpdate|CheckSupport|substore|subStore|format config' \
   "$CONVSTATE_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
   "$CONVSTATE_BATCH/models/l00_c01_convstate_update_o0/omc/compile.log"
 
-rg -n 'GetKernelbinAddr|libai_npucore_ascendc_kernel' \
+grep -n -E 'GetKernelbinAddr|libai_npucore_ascendc_kernel' \
   "$CONVSTATE_BATCH/models/l00_c00_convstate_update_o0/omc/compile.log" \
   "$CONVSTATE_BATCH/models/l00_c00_gdn_o0/omc/compile.log"
 ```
 
-第二条若没有匹配，`rg` 退出码 1 只表示没找到文字。若成功 GDN 也有同条库消息，就不能将其直接当作全部失败的共同根因；即使只有 ConvState 有，也需要继续核对该算子实际使用的 store／库。先依据日志定位到具体注册或支持条件，再读相应实现，保持共享 DDK 不变。只有实现选择已核对且证据指向独立图边界时，才尝试原 Target 的双输出＋卷积／状态写回连续子图。
+上述命令使用 `grep`，无需安装 `rg`。第二条若没有匹配，`grep` 退出码 1 只表示没找到文字。若成功 GDN 也有同条库消息，就不能将其直接当作全部失败的共同根因；即使只有 ConvState 有，也需要继续核对该算子实际使用的 store／库。先依据日志定位到具体注册或支持条件，再读相应实现，保持共享 DDK 不变。只有实现选择已核对且证据指向独立图边界时，才尝试原 Target 的双输出＋卷积／状态写回连续子图。
 
 只读工具此前已通过 18 项主机检查；本次更新用户回传证据、源码核对结论和执行命令，尚未确定 ConvState 修复。数值异常与已完成项继续见[状态表](target-accuracy-status.md)。
