@@ -1,0 +1,141 @@
+"""Read-only compilation evidence checks with synthetic graph schemas."""
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from qwen35_moe_dflash.target.layer_probe import inspection
+from qwen35_moe_dflash.target.layer_probe.common import KIND, identity, save_json, sha
+
+
+class FakeSchema:
+    package = 'ge.proto'
+    enums = {'ge.proto.DataType': {'DT_FLOAT16': 1, 'DT_INT32': 3}}
+    evidence = {'scope': 'host fake schema'}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def decode(self, raw, kind):
+        if kind != 'ModelDef' or raw not in (b'SOURCE', b'IR'):
+            raise ValueError('not a synthetic ModelDef')
+        shape = {} if raw == b'SOURCE' else {'dim': [256, 1024]}
+        graph = dict(name='region', op=[
+            dict(name='weight', type='Const', attr=[dict(key='value', value={'t': {'data': 'PRIVATE_PAYLOAD'}})],
+                 output_desc=[dict(shape={'dim': [2048, 1024]}, dtype=3)]),
+            dict(name='qmatmul', type='QuantBatchMatmulV4444', input=['x:0', 'weight:0'],
+                 attr=[dict(key='transpose_x2', value={'b': False})],
+                 output_desc=[dict(shape=shape, dtype=1)]),
+            dict(name='reshape', type='Reshape', input=['qmatmul:0'],
+                 output_desc=[dict(shape={'dim': [1, 256, 8192]}, dtype=1)]),
+            dict(name='out', type='NetOutput', input=['reshape:0'])])
+        return dict(graph=[graph])
+
+
+class InspectionTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=os.environ['AI_RUN_DIR'])
+        self.root = Path(self.temp.name)
+        self.source, self.compiled = self.root/'air', self.root/'omc'
+        self.name = 'l00_c00_linear_attn_in_proj_qkv_o0'
+        self.folder = self.source/'models'/self.name
+        self.folder.mkdir(parents=True)
+        (self.folder/'export.air').write_bytes(b'SOURCE')
+        (self.folder/'air-schema.pb').write_bytes(b'host descriptor')
+        (self.folder/'weight').mkdir()
+        self.weight = self.folder/'weight/large-weight'
+        self.weight.write_bytes(b'NEVER_READ_WEIGHT')
+        save_json(self.folder/'export.json', dict(status='EXPORTED',
+            schema={'schema_file': 'ge_ir.proto', 'schema_package': 'ge.proto'},
+            air=identity(self.folder/'export.air', self.folder),
+            source_inputs=[dict(name='x', shape=[1, 256, 2048], dtype='float16')],
+            golden=dict(shape=[1, 256, 8192], dtype='float16')))
+        manifest = dict(artifact_kind=KIND, status='EXPORTED', cases=[dict(id=self.name,
+            status='EXPORTED', export=identity(self.folder/'export.json', self.source))])
+        save_json(self.source/'manifest.json', manifest)
+        save_json(self.compiled/'manifest.json', manifest)
+        save_json(self.compiled/'compile.json', dict(artifact_kind=KIND, status='PARTIAL',
+            manifest_sha256=sha(self.source/'manifest.json'), source_batch='../air',
+            cases={self.name: dict(status='FAILED', error='shape failure')}))
+        self.job = self.compiled/'models'/self.name/'omc'
+        self.dumps = self.job/'compile-work/generated/dump_graph'
+        self.dumps.mkdir(parents=True)
+        (self.dumps/'02_after_infershape_1_fail.irpb').write_bytes(b'IR')
+        save_json(self.job/'report.json', dict(stage='omg', returncode=1, error='shape failure'))
+        (self.job/'compile.log').write_text('compilation failed\n')
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def inspect(self):
+        with patch.object(inspection, 'Schema', FakeSchema), \
+             patch.object(inspection, 'load_schema', return_value=FakeSchema()), \
+             patch('subprocess.run', side_effect=AssertionError('must not run a compiler')):
+            return inspection.inspect_compilation(self.compiled, self.root/'inspection', [self.name], ddk_root=self.root/'ddk')
+
+    def test_observed_source_and_failed_ir_shapes_remain_distinct(self):
+        before = {p: sha(p) for p in self.root.rglob('*') if p.is_file()}
+        original_open = Path.open
+        weight = self.weight
+        def guarded(path, *args, **kwargs):
+            if path == weight:
+                raise AssertionError('external weights must not be read')
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', guarded):
+            result = self.inspect()
+        self.assertEqual(result['status'], 'INSPECTED')
+        row = result['cases'][self.name]
+        source = row['source_graph']['graphs'][0]['nodes'][1]['output_desc'][0]
+        inferred = row['ir_dumps'][0]['graphs'][0]['nodes'][1]['output_desc'][0]
+        self.assertEqual(source['shape_evidence'], 'UNRESOLVED_EMPTY_OR_DYNAMIC_DESCRIPTOR')
+        self.assertEqual(inferred['shape'], [256, 1024])
+        self.assertEqual(row['golden']['shape'], [1, 256, 8192])
+        self.assertEqual(row['compiler_report']['returncode'], 1)
+        self.assertNotIn('PRIVATE_PAYLOAD', json.dumps(result))
+        self.assertEqual(row['source_graph']['graphs'][0]['nodes'][0]['omitted_attributes'], ['value'])
+        self.assertEqual({p: sha(p) for p in before}, before)
+        self.assertEqual(result['device_execution'], 'NOT_RUN')
+
+    def test_unknown_ir_schema_is_recorded_without_guessing_shapes(self):
+        (self.dumps/'02_after_infershape_1_fail.irpb').write_bytes(b'UNKNOWN_SCHEMA')
+        result = self.inspect()
+        self.assertEqual(result['status'], 'PARTIAL')
+        item = result['cases'][self.name]['ir_dumps'][0]
+        self.assertEqual(item['status'], 'UNAVAILABLE')
+        self.assertNotIn('graphs', item)
+
+    def test_changed_source_manifest_is_rejected_before_writes(self):
+        with (self.source/'manifest.json').open('a') as stream:
+            stream.write('\n')
+        with self.assertRaisesRegex(ValueError, 'binding changed'):
+            self.inspect()
+        self.assertFalse((self.root/'inspection').exists())
+
+    def test_existing_diagnostics_are_not_overwritten(self):
+        self.inspect()
+        old = sha(self.root/'inspection/report.json')
+        with self.assertRaises(FileExistsError):
+            self.inspect()
+        self.assertEqual(sha(self.root/'inspection/report.json'), old)
+
+    def test_missing_source_schema_still_reports_compiler_failure(self):
+        (self.folder/'air-schema.pb').unlink()
+        result = self.inspect()
+        row = result['cases'][self.name]
+        self.assertEqual(result['status'], 'PARTIAL')
+        self.assertIn('source_error', row)
+        self.assertEqual(row['compiler_report']['stage'], 'omg')
+        self.assertEqual(row['ir_dumps'][0]['status'], 'INSPECTED')
+
+    def test_unknown_cases_and_output_inside_batch_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'select distinct cases'):
+            inspection.inspect_compilation(self.compiled, self.root/'inspection', ['missing'])
+        with self.assertRaisesRegex(ValueError, 'must be separate'):
+            inspection.inspect_compilation(self.compiled, self.compiled/'inspection', [self.name])
+        self.assertFalse((self.compiled/'inspection').exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

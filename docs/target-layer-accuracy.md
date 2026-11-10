@@ -164,6 +164,27 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 
 OMC batch 保存 AIR manifest 的快照，并以相对路径引用原 AIR batch 的输入和 golden；上板准备前会校验两份 manifest 及夹具的哈希。保留原 AIR batch，迁移时将两个目录一起移动并保持相对位置。
 
+### 读取失败子图的 AIR / IR 描述
+
+`CalledProcessError` 只说明 OMG 退出，实际失败点在各 case 的 `omc/compile.log`。以下入口读取已有文件，汇总源 AIR、编译阶段、日志尾部和失败 IR；不会运行 OMG、导图或修改权重。用导出时保存的 `air-schema.pb` 解读源图，用显式选择的 DDK schema 解读编译器 IR，不能混用两者的 dtype 枚举。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
+  --batch "$OMC_BATCH" --ddk-root "$CPRO_DDK_ROOT" \
+  --cases l00_c00_input_layernorm_o0 l00_c00_linear_attn_in_proj_qkv_o0 \
+          l00_c00_gdn_o0 l00_c00_linear_attn_norm_o0 \
+          l00_c00_convstate_update_o0 l00_c00_conv1d_o0 \
+  --output "$AI_RUN_DIR/target/tests/accuracy-inspection-001"
+```
+
+`report.json` 保留各节点端口、shape、schema 对应 dtype、属性和连线；不包含权重 Tensor payload。空 shape 标记未解析，不补写预期值。每图最多解读 12 份 IR，优先失败推形和分区后的快照；无法解码的 IR 保留路径、哈希和错误，不按另一种 schema 猜测。此入口依赖已迁移的 AIR batch 及其 schema 文件，不要求导出服务器上的 torch_npu 环境。
+
+2026-11-10 用户回传的日志已明确以下边界，仍未证明板端数值根因：
+
+- `QuantBatchMatmulV4444` 已被选中并完成 infershape，但其输出被推为 `[256,1024]`，下游 Reshape 需要 `[1,256,8192]`。两者差一个 INT32 打包 INT4 的倍数 8。需核对 x2 描述和该 DDK 的推形规则；保持 golden 的逻辑宽度 8192，不靠修改 Reshape 绕过冲突。
+- 普通 Norm 的明确失败为 `Add` tiling 的 `inputTensorPtr is NULL`；源路径包含 `weight + 1`。日志不足以把它归因为 RMSNorm 内核缺失，需查看 Add 操作数与分区后描述。
+- GDN 的 OMG 进程 SIGSEGV；日志中的 FP32→FP16 `CastT` prebuild 返回 success。最后打印到 Cast/TBE 附近不等于已定位崩溃函数，需要 IR 或调用栈证据。不能仅据内部 SOC 日志更换 `kirinx90` 目标。
+
 ## 4. 批量上板与回收
 
 编译批次为 `PARTIAL` 时也可以执行：本入口自动选择 `compile.json` 中的 `COMPILED` 项，无须删除失败项或重新编译。各子图使用独立捕获的 310P 输入，不依赖其他子图上板的输出。未编译项保留在 `uncompiled_cases`，即使已测子图全部一致，覆盖状态仍为 `PARTIAL`。

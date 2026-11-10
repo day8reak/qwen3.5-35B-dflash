@@ -35,6 +35,11 @@ def main():
     s.add_argument('--tbe-diagnosis')
     s.add_argument('--timeout', type=int, default=900)
     s.add_argument('--use-origin-format', action='store_const', const=True, default=None)
+    s = sub.add_parser('inspect-compile', help='read retained AIR/IR metadata without compiling or running models')
+    s.add_argument('--batch', required=True, help='existing OMC batch')
+    s.add_argument('--output', required=True)
+    s.add_argument('--cases', nargs='+', required=True)
+    s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
@@ -63,6 +68,14 @@ def main():
     elif a.command == 'compile':
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format)
+    elif a.command == 'inspect-compile':
+        from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
+        report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root)
+        result = dict(status=report['status'], report=str(Path(a.output).resolve()/'report.json'),
+            model_compilation='NOT_RUN', device_execution='NOT_RUN',
+            cases={name: dict(compilation=row['compilation'].get('status'),
+                source_error=row.get('source_error'), ir_dumps=len(row['ir_dumps']))
+                for name, row in report['cases'].items()})
     elif a.command == 'compare':
         result = batch.compare(a.fixture, a.native, atol=a.atol, rtol=a.rtol)
         root = new_output(a.output)
