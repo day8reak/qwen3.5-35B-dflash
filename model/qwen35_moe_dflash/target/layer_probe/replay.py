@@ -1,6 +1,8 @@
 """One CPro region per process; never construct a complete model or decoder layer."""
 from __future__ import annotations
 from contextlib import contextmanager
+import ast
+import hashlib
 import importlib
 import inspect
 import importlib.util
@@ -10,10 +12,31 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import textwrap
 
 import torch
 import torch.nn.functional as F
 from .common import KIND, checked, identity, new_output, read_array, save_json, sha
+
+
+def folded_norm_gamma(target, weight):
+    """Fold only the inspected CPro zero-centered forward, at its original dtype."""
+    expected = '''
+def forward(self, hidden_states):
+    output = torch_npu.npu_rms_norm(hidden_states, self.weight + 1.0, self.variance_epsilon)[0]
+    return output.type_as(hidden_states)
+'''
+    actual = textwrap.dedent(inspect.getsource(target.Qwen3_5MoeRMSNorm.forward))
+    if ast.dump(ast.parse(actual)) != ast.dump(ast.parse(textwrap.dedent(expected))):
+        raise ValueError('CPro ordinary RMSNorm forward changed; inspect its gamma expression before folding')
+    with torch.no_grad():
+        return (weight + 1.0).detach().contiguous()
+
+
+def tensor_metadata(value):
+    raw = value.detach().contiguous().view(torch.uint8).numpy().tobytes()
+    return dict(shape=list(value.shape), dtype=str(value.dtype).removeprefix('torch.'),
+                bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
 
 
 def import_file(path):
@@ -71,6 +94,7 @@ class Region(torch.nn.Module):
         self.kind, self.attrs = record['kind'], record['attrs']
         self.names = tuple(s['name'] for s in record['inputs'])
         self.output_index, self.target, self.npu = output_index, target, npu
+        self.export_adjustments = []
         if self.kind == 'qlinear':
             self.op = (qlinear_class or target.QLinear)(W_q=weights['W_q'], scale=weights['scale'], idx=0)
         elif self.kind == 'linear':
@@ -79,13 +103,22 @@ class Region(torch.nn.Module):
             self.op.weight = torch.nn.Parameter(w, requires_grad=False)
             if 'bias' in weights:
                 self.op.bias = torch.nn.Parameter(weights['bias'], requires_grad=False)
-        elif self.kind in ('norm', 'norm_gated'):
-            cls = target.Qwen3_5MoeRMSNorm if self.kind == 'norm' else target.Qwen3_5MoeRMSNormGated
-            self.op = cls(weights['weight'].numel(), eps=self.attrs['epsilon'])
+        elif self.kind == 'norm':
+            self.register_buffer('gamma', folded_norm_gamma(target, weights['weight']))
+            self.export_adjustments.append(dict(kind='FOLD_ZERO_CENTERED_GAMMA',
+                expression='weight + 1.0', arithmetic='CAPTURED_WEIGHT_DTYPE_BEFORE_TRACING',
+                source_forward='AST_MATCHED_CPRO_NPU_RMS_NORM',
+                weight=tensor_metadata(weights['weight']), gamma=tensor_metadata(self.gamma)))
+        elif self.kind == 'norm_gated':
+            self.op = target.Qwen3_5MoeRMSNormGated(weights['weight'].numel(), eps=self.attrs['epsilon'])
             self.op.weight = torch.nn.Parameter(weights['weight'], requires_grad=False)
         else:
             for name, value in weights.items():
                 self.register_buffer(name, value)
+            if self.kind == 'conv':
+                self.export_adjustments.append(dict(kind='EXPLICIT_CONV2D_SINGLETON_HEIGHT',
+                    input_axis=2, weight_axis=2, output_squeeze_axis=2,
+                    groups=self.attrs['groups'], arithmetic='ORIGINAL_INPUT_AND_WEIGHT_DTYPES'))
         # Explicit forward arguments make tracing inspectable. The export hook
         # records identity before AOT input renaming and Data renumbering.
         names = [f'probe_input_{i:03d}' for i in range(len(self.names))]
@@ -97,15 +130,18 @@ class Region(torch.nn.Module):
     def compute(self, *values):
         x = dict(zip(self.names, values))
         k, a = self.kind, self.attrs
-        if k in ('qlinear', 'linear', 'norm'):
+        if k in ('qlinear', 'linear'):
             out = (self.op(x['x']),)
+        elif k == 'norm':
+            out = (self.npu.npu_rms_norm(x['x'], self.gamma, a['epsilon'])[0].type_as(x['x']),)
         elif k == 'norm_gated':
             out = (self.op(x['x'], x['gate']),)
         elif k == 'convstate':
             out = torch.ops.my_ops.linear_attention_convstate_update(
                 x['mixed_qkv'], x['old_conv_state'], x['linear_update_tensor'])
         elif k == 'conv':
-            out = (F.conv1d(x['padded'], self.weight, getattr(self, 'bias', None), groups=a['groups']),)
+            out = (F.conv2d(x['padded'].unsqueeze(2), self.weight.unsqueeze(2),
+                           getattr(self, 'bias', None), groups=a['groups']).squeeze(2),)
         elif k == 'silu':
             out = (F.silu(x['x']),)
         elif k == 'gates':
@@ -164,6 +200,48 @@ def source_bindings(graph, specs, actual_identities=None):
     return result
 
 
+def check_adjusted_graph(kind, graph):
+    """Verify the intended source graph change before accepting a new AIR."""
+    from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
+    nodes = {n['name']: n for n in graph['op']}
+
+    def producer(edge):
+        name, slot = edge.rsplit(':', 1)
+        if slot != '0':
+            raise ValueError('adjusted graph requires output slot 0: ' + edge)
+        return nodes[name]
+
+    def shape(node, depth=0):
+        if depth > 8:
+            return []
+        descs = node.get('output_desc', [])
+        dims = descs[0].get('shape', {}).get('dim', []) if descs else []
+        if dims:
+            return dims
+        if node['type'] == 'Unsqueeze' and _attributes(node).get('axes', {}).get('list', {}).get('i') == [2]:
+            source = shape(producer(node['input'][0]), depth + 1)
+            if len(source) == 3:
+                return source[:2] + [1] + source[2:]
+        return []
+
+    if kind == 'norm':
+        norms = [n for n in nodes.values() if n['type'] == 'RmsNorm']
+        if (len(norms) != 1 or any(n['type'] == 'Add' for n in nodes.values())
+                or producer(norms[0]['input'][1])['type'] not in ('Const', 'FileConstant')):
+            raise ValueError('ordinary Norm AIR must use one RmsNorm with constant gamma and no Add')
+        return dict(status='PASSED', scope='SOURCE_GRAPH_ONLY', gamma='CONSTANT_NO_ADD')
+    if kind == 'conv':
+        convs = [n for n in nodes.values() if n['type'] == 'Conv2D']
+        if len(convs) != 1:
+            raise ValueError('explicit Conv1d lowering must export one Conv2D')
+        shapes = [shape(producer(e)) for e in convs[0]['input'][:2]]
+        if len(shapes) != 2 or any(len(s) != 4 or s[2] != 1 or min(s) <= 0 for s in shapes):
+            raise ValueError(f'Conv2D input and filter must have explicit singleton height: {shapes}')
+        return dict(status='PASSED', scope='SOURCE_DESCRIPTORS_OR_EXPLICIT_UNSQUEEZE_EDGES',
+                    input_shape=shapes[0], filter_shape=shapes[1])
+    return dict(status='NOT_APPLICABLE')
+
+
 def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
@@ -192,6 +270,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         # it need not be the similarly named class in the CPro model module.
         utilities = importlib.import_module('utils')
         model = Region(record, weights, target, torch_npu, output_index, utilities.QLinear)
+        result['export_adjustments'] = model.export_adjustments
         from qwen35_moe_dflash.draft.incremental.torch_export import _producer_schema, _schema
         from qwen35_moe_dflash.target.original_air_roundtrip import _decode
         descriptor, metadata = _producer_schema(torchair_pb2)
@@ -205,6 +284,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             os.chdir(old)
         (root/'weight/export.air').replace(root/'export.air')
         _, _, graph = _decode(_schema(descriptor, metadata), (root/'export.air').read_bytes())
+        result['export_graph_check'] = check_adjusted_graph(record['kind'], graph)
         fixture = root/'fixture'
         fixture.mkdir()
         specs = []

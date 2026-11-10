@@ -60,6 +60,35 @@ def graph_metadata(path, schema):
         scope='OBSERVED_DESCRIPTORS; EMPTY_SHAPES_UNRESOLVED; NO_TENSOR_PAYLOADS_OR_GRAPH_EDITS')
 
 
+def retained_ir(job):
+    """Prefer the compiler's retained, hash-bound inventory over scratch paths."""
+    folders = [job/'diagnostics', job/'compile-work/generated/dump_graph']
+    inventory = dict(searched_directories=[str(p.relative_to(job)) for p in folders], skipped=[])
+    manifest = folders[0]/'manifest.json'
+    if manifest.is_file():
+        retained = json.loads(bounded_bytes(manifest, 8 << 20))
+        inventory.update(manifest=identity(manifest, job), retention_status=retained.get('status'))
+        records = []
+        for item in retained['files']:
+            if item.get('role') != 'graph-dump':
+                continue
+            name = item['name']
+            if Path(name).name != name or not name.endswith('.irpb'):
+                raise ValueError('invalid retained IR name: ' + name)
+            if item['status'] != 'RETAINED':
+                inventory['skipped'].append({k: item[k] for k in ('name', 'status', 'bytes')})
+                continue
+            records.append((folders[0]/name, dict(path=name, bytes=item['bytes'], sha256=item['sha256'])))
+    else:
+        # Older runs may have only loose diagnostics or the original scratch files.
+        records = [(p, None) for folder in folders for p in sorted(folder.glob('*.irpb'))
+                   if p.is_file() and not p.is_symlink()]
+    records.sort(key=lambda item: (0 if 'fail' in item[0].name else
+                                   1 if item[0].name.startswith('05_') else 2, str(item[0])))
+    inventory['status'] = ('PARTIAL' if inventory['skipped'] else 'FOUND') if records else 'NOT_FOUND'
+    return inventory, records
+
+
 def inspect_compilation(batch, output, cases, *, ddk_root=None):
     root = Path(batch).resolve()
     compiled = json.loads((root/'compile.json').read_text())
@@ -110,25 +139,32 @@ def inspect_compilation(batch, output, cases, *, ddk_root=None):
         if receipt.is_file():
             report = json.loads(bounded_bytes(receipt, 8 << 20))
             row['compiler_report'] = dict(identity(receipt, root),
-                **{k: report.get(k) for k in ('stage', 'returncode', 'error', 'requested_options', 'ddk_id', 'tbe_compatibility')})
+                **{k: report.get(k) for k in ('stage', 'returncode', 'error', 'requested_options', 'ddk_id',
+                                             'tbe_compatibility', 'compiler_diagnostics')})
         log = job/'compile.log'
         if log.is_file():
             with log.open('rb') as stream:
                 stream.seek(max(0, log.stat().st_size - (24 << 10)))
                 tail = stream.read(24 << 10).decode('utf-8', errors='replace')
             row['log'] = dict(identity(log, root), tail=tail, tail_bytes_limit=24 << 10)
-        dumps = sorted((job/'compile-work/generated/dump_graph').glob('*.irpb'))
-        # Keep the failing infershape and post-partition graphs ahead of early snapshots.
-        dumps.sort(key=lambda p: (0 if 'fail' in p.name else 1 if p.name.startswith('05_') else 2, p.name))
-        row['ir_dumps'], row['uninspected_ir_dumps'] = [], [p.name for p in dumps[12:]]
-        for path in dumps[:12]:
-            item = dict(identity(path, root), status='NOT_INSPECTED_NO_DDK_SCHEMA')
+        try:
+            row['ir_inventory'], dumps = retained_ir(job)
+        except Exception as exc:
+            row['ir_inventory'], dumps = dict(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}'), []
+        row['ir_dumps'], row['uninspected_ir_dumps'] = [], [str(p.relative_to(root)) for p, _ in dumps[12:]]
+        if row['ir_inventory']['status'] != 'FOUND' or len(dumps) > 12 or not compiler_schema:
+            result['status'] = 'PARTIAL'
+        for path, binding in dumps[:12]:
+            item = dict(path=str(path.relative_to(root)), status='NOT_INSPECTED_NO_DDK_SCHEMA')
             row['ir_dumps'].append(item)
-            if compiler_schema:
-                try:
+            try:
+                if binding is not None:
+                    path = checked(path.parent, binding)
+                item.update(identity(path, root), retention_binding='SHA256_VERIFIED' if binding else 'UNBOUND_LEGACY_FILE')
+                if compiler_schema:
                     item.update(graph_metadata(path, compiler_schema))
-                except Exception as exc:
-                    item.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
-                    result['status'] = 'PARTIAL'
+            except Exception as exc:
+                item.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
+                result['status'] = 'PARTIAL'
         save_json(output/'report.json', result)
     return result

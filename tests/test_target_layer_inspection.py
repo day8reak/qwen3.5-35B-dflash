@@ -106,6 +106,68 @@ class InspectionTest(unittest.TestCase):
         self.assertEqual(item['status'], 'UNAVAILABLE')
         self.assertNotIn('graphs', item)
 
+    def retain(self):
+        from qwen35_moe_dflash.toolchain.compile import _retain_compiler_diagnostics
+        evidence = _retain_compiler_diagnostics(self.dumps.parent, self.job, failure=True)
+        for path in self.dumps.iterdir():
+            path.unlink()
+        save_json(self.job/'report.json', dict(stage='omg', returncode=1, compiler_diagnostics=evidence))
+        return self.job/'diagnostics/02_after_infershape_1_fail.irpb'
+
+    def test_reads_actual_retention_layout_without_scratch(self):
+        path = self.retain()
+        result = self.inspect()
+        self.assertEqual(result['status'], 'INSPECTED')
+        row = result['cases'][self.name]
+        self.assertEqual(row['ir_inventory']['status'], 'FOUND')
+        self.assertEqual(row['compiler_report']['compiler_diagnostics']['status'], 'RETAINED')
+        self.assertEqual(row['ir_dumps'][0]['path'], str(path.relative_to(self.compiled)))
+        self.assertEqual(row['ir_dumps'][0]['retention_binding'], 'SHA256_VERIFIED')
+        self.assertEqual(row['ir_dumps'][0]['status'], 'INSPECTED')
+
+    def test_changed_retained_ir_is_reported_without_decoding(self):
+        path = self.retain()
+        path.write_bytes(b'CHANGED')
+        result = self.inspect()
+        self.assertEqual(result['status'], 'PARTIAL')
+        item = result['cases'][self.name]['ir_dumps'][0]
+        self.assertEqual(item['status'], 'UNAVAILABLE')
+        self.assertIn('fixture changed', item['error'])
+        self.assertNotIn('graphs', item)
+
+    def test_missing_and_budget_skipped_ir_are_explicitly_partial(self):
+        self.retain().unlink()
+        manifest = self.job/'diagnostics/manifest.json'
+        record = json.loads(manifest.read_text())
+        record['files'][0]['status'] = 'SKIPPED_SIZE_BUDGET'
+        record['status'] = 'PARTIAL'
+        save_json(manifest, record)
+        result = self.inspect()
+        self.assertEqual(result['status'], 'PARTIAL')
+        row = result['cases'][self.name]
+        self.assertEqual(row['ir_inventory']['status'], 'NOT_FOUND')
+        self.assertEqual(row['ir_inventory']['skipped'][0]['status'], 'SKIPPED_SIZE_BUDGET')
+        self.assertEqual(row['ir_dumps'], [])
+
+    def test_absent_ir_reports_searched_paths(self):
+        for path in self.dumps.iterdir():
+            path.unlink()
+        result = self.inspect()
+        self.assertEqual(result['status'], 'PARTIAL')
+        inventory = result['cases'][self.name]['ir_inventory']
+        self.assertEqual(inventory['status'], 'NOT_FOUND')
+        self.assertEqual(inventory['searched_directories'], ['diagnostics','compile-work/generated/dump_graph'])
+
+    def test_retention_inventory_cannot_escape_case(self):
+        self.retain()
+        manifest = self.job/'diagnostics/manifest.json'
+        record = json.loads(manifest.read_text())
+        record['files'][0]['name'] = '../other.irpb'
+        save_json(manifest, record)
+        result = self.inspect()
+        self.assertEqual(result['status'], 'PARTIAL')
+        self.assertEqual(result['cases'][self.name]['ir_inventory']['status'], 'UNAVAILABLE')
+
     def test_changed_source_manifest_is_rejected_before_writes(self):
         with (self.source/'manifest.json').open('a') as stream:
             stream.write('\n')

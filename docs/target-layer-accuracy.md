@@ -177,13 +177,46 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
   --output "$AI_RUN_DIR/target/tests/accuracy-inspection-001"
 ```
 
-`report.json` 保留各节点端口、shape、schema 对应 dtype、属性和连线；不包含权重 Tensor payload。空 shape 标记未解析，不补写预期值。每图最多解读 12 份 IR，优先失败推形和分区后的快照；无法解码的 IR 保留路径、哈希和错误，不按另一种 schema 猜测。此入口依赖已迁移的 AIR batch 及其 schema 文件，不要求导出服务器上的 torch_npu 环境。
+`report.json` 保留各节点端口、shape、schema 对应 dtype、属性和连线；不包含权重 Tensor payload。空 shape 标记未解析，不补写预期值。优先从 `omc/diagnostics/manifest.json` 读取已保存的 IR 并校验 SHA256；旧批次兼容 `omc/diagnostics/*.irpb` 和 `omc/compile-work/generated/dump_graph/*.irpb`。每图最多解读 12 份 IR，优先失败推形和分区后的快照；无法解码的 IR 保留路径、哈希和错误，不按另一种 schema 猜测。缺失、超出保存预算、文件变化和缺少 DDK schema 均使检查状态为 `PARTIAL`，`ir_inventory` 记录查找范围及保存状态。此入口依赖已迁移的 AIR batch 及其 schema 文件，不要求导出服务器上的 torch_npu 环境。
 
-2026-11-10 用户回传的日志已明确以下边界，仍未证明板端数值根因：
+旧检查器仅搜索临时 `dump_graph/`，遗漏了 `diagnostics/`。更新后可以直接检查现有失败批次，无须为收集已保存的 IR 再次编译。若仍为空，结合 `compiler_report.compiler_diagnostics` 和 `ir_inventory` 判断是否实际保存，不能仅凭日志中的 “dump file ... create” 认定文件存在。
 
-- `QuantBatchMatmulV4444` 已被选中并完成 infershape，但其输出被推为 `[256,1024]`，下游 Reshape 需要 `[1,256,8192]`。两者差一个 INT32 打包 INT4 的倍数 8。需核对 x2 描述和该 DDK 的推形规则；保持 golden 的逻辑宽度 8192，不靠修改 Reshape 绕过冲突。
-- 普通 Norm 的明确失败为 `Add` tiling 的 `inputTensorPtr is NULL`；源路径包含 `weight + 1`。日志不足以把它归因为 RMSNorm 内核缺失，需查看 Add 操作数与分区后描述。
-- GDN 的 OMG 进程 SIGSEGV；日志中的 FP32→FP16 `CastT` prebuild 返回 success。最后打印到 Cast/TBE 附近不等于已定位崩溃函数，需要 IR 或调用栈证据。不能仅据内部 SOC 日志更换 `kirinx90` 目标。
+2026-11-10 用户回传的 AIR 和 DDK `100.520.020.010` 日志支持以下判断。修正后的 OMG 结果尚待用户执行；这些编译证据不代表板端数值通过。
+
+| 边界 | 已观察的失败点 | 当前处理 |
+| --- | --- | --- |
+| 普通 Norm | FP16 `weight + 1` 的 Add 常量计算报类型不支持，CPUCL 常量子图报输入类型不一致，最终 Add tiling 报 `inputTensorPtr is NULL` | 导出前按原权重 dtype 计算一次 gamma，保留原 `npu_rms_norm` 调用及 epsilon；新 AIR 必须直接使用常量 gamma 且无 Add |
+| Conv1d | 导出的 Conv2D 输入是 `[1,8192,259]`，filter 已为 `[8192,1,1,4]`，验证报两者 rank 不同 | 用显式 `unsqueeze(2) → conv2d → squeeze(2)` 表达；保留原 FP32 输入、权重、groups 和 bias，新 AIR 检查两端四维且高度为 1 |
+| QLinear | x2 为 INT32 `[2048,1024]`、scale 为 FP32 `[8,8192]`；V4444 推导输出 `[256,1024]`，下游要求 `[1,256,8192]` | 已定位逻辑宽度与打包载体宽度冲突。还需所选 DDK 的 `InferShapeForQuantBatchMatmulV4444`、注册和 tiling 合同；不修改 golden 宽度或猜测解包规则 |
+| ConvState | 内置推形成功，但各 store 均不支持，强制分到 NPU 后找不到 implementation/format config | 需补齐或核对所选 DDK 的实现注册。Python fake 的第二输出为三维，DDK 推为 `[1,8192,1,259]`，也是待对齐的接口差异；单改 shape 不会补出缺失实现 |
+| GDN | OMG SIGSEGV；此前 FP32→FP16 CastT prebuild 成功 | 崩溃函数仍需 IR / 调用栈定位。保持七个输入及原属性，不凭日志末行改 dtype 或更换 `kirinx90` |
+| Gated Norm | OMC 已成功 | 保留原直接 gamma 路径；它的成功不能证明普通 Norm 相同 dtype/rank 组合可用 |
+
+所有 case 的 TBE 适配审计均未证明本次适配实际应用；`NOT_OBSERVED` 不能写成已修复。普通 Norm 的 gamma 折叠仅接受已检查的 CPro forward AST，若原实现改变会停止导出。`export.json.export_adjustments` 保存原 weight 与折叠 gamma 的 dtype、shape、字节数和哈希；`export_graph_check` 保存新 AIR 的结构检查结果。
+
+### 仅重导、重编普通 Norm 和 Conv1d
+
+复用已有捕获目录，在导出服务器执行；不需要重新运行完整模型采集。`--kinds norm conv` 仅选择这两类小图，Gated Norm 不在其中。
+
+```bash
+AIR_RETRY="$AI_RUN_DIR/target-layer-accuracy/air-norm-conv-002"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
+  --capture "$AI_RUN_DIR/target-layer-accuracy/golden" \
+  --source-root "$TARGET_SOURCE" --converter-script "$CPRO_EXPORT_SCRIPT" \
+  --kinds norm conv --output "$AIR_RETRY"
+```
+
+将该目录完整迁移到 DDK 服务器，设置 `AIR_RETRY` 为迁移后的目录，沿用原 DDK 与格式选项，写入新的 OMC 目录：
+
+```bash
+OMC_RETRY="$AI_RUN_DIR/target-layer-accuracy/omc-norm-conv-002"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
+  --batch "$AIR_RETRY" --output "$OMC_RETRY" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$TBE_DIAGNOSIS"
+```
+
+主机回归覆盖全部有限 FP16 权重的 gamma 舍入、不同 Norm 输入 rank、Conv 的 prefill/decode、bias 和 FP16/FP32，且检查 PyTorch 图与源 AIR 结构。主机通过只证明这次导出表达改动；下一步以新 `compile.json` 确认 OMG 是否越过原失败点，再安排板端比较。
 
 ## 4. 批量上板与回收
 

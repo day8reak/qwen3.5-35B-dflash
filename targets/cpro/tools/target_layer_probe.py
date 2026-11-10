@@ -74,7 +74,8 @@ def main():
         result = dict(status=report['status'], report=str(Path(a.output).resolve()/'report.json'),
             model_compilation='NOT_RUN', device_execution='NOT_RUN',
             cases={name: dict(compilation=row['compilation'].get('status'),
-                source_error=row.get('source_error'), ir_dumps=len(row['ir_dumps']))
+                source_error=row.get('source_error'), ir_dumps=len(row['ir_dumps']),
+                ir_inventory=row['ir_inventory']['status'])
                 for name, row in report['cases'].items()})
     elif a.command == 'compare':
         result = batch.compare(a.fixture, a.native, atol=a.atol, rtol=a.rtol)

@@ -12,8 +12,27 @@ import torch.nn.functional as F
 
 from qwen35_moe_dflash.target.layer_probe.common import KIND, identity, metrics, read_array, save_json
 from qwen35_moe_dflash.target.layer_probe.capture import Capture, cpu
-from qwen35_moe_dflash.target.layer_probe.replay import Region, source_bindings, export_input_identity
+from qwen35_moe_dflash.target.layer_probe.replay import Region, source_bindings, export_input_identity, check_adjusted_graph
 from qwen35_moe_dflash.target.layer_probe.batch import bind_compiled, compare
+
+
+torch_npu = SimpleNamespace(npu_rms_norm=lambda x, gamma, eps: (F.rms_norm(x, [gamma.numel()], gamma, eps), None))
+
+
+class CProRMSNorm(torch.nn.Module):
+    def __init__(self, weight):
+        super().__init__()
+        self.weight = torch.nn.Parameter(weight, requires_grad=False)
+        self.variance_epsilon = 1e-6
+
+    def forward(self, hidden_states):
+        output = torch_npu.npu_rms_norm(hidden_states, self.weight + 1.0, self.variance_epsilon)[0]
+        return output.type_as(hidden_states)
+
+
+class ChangedCProRMSNorm(CProRMSNorm):
+    def forward(self, hidden_states):
+        return torch_npu.npu_rms_norm(hidden_states, self.weight.float() + 1.0, self.variance_epsilon)[0]
 
 
 class FixtureTest(unittest.TestCase):
@@ -156,6 +175,78 @@ class FixtureTest(unittest.TestCase):
         # Trace the exact generated forward signature on CPU; no complete model involved.
         exported = torch.export.export(region, (full[..., -6:].contiguous(),))
         torch.testing.assert_close(exported.module()(full[..., -6:].contiguous()), golden)
+
+    def test_folded_norm_preserves_half_rounding_and_export_has_no_weight_add(self):
+        bits = np.arange(65536, dtype=np.uint16).view(np.float16)
+        weight = torch.from_numpy(bits[np.isfinite(bits)].copy())
+        before = weight.clone()
+        row = dict(kind='norm', attrs={'epsilon':1e-6}, inputs=[dict(name='x')])
+        target = SimpleNamespace(Qwen3_5MoeRMSNorm=CProRMSNorm)
+        region = Region(row, {'weight':weight}, target, torch_npu, 0)
+        # Exhaust all finite FP16 weights, including ties, subnormals and -1 cancellation.
+        torch.testing.assert_close(region.gamma, (weight.double()+1).half(), rtol=0, atol=0)
+        torch.testing.assert_close(weight, before, rtol=0, atol=0)
+        self.assertNotEqual(region.gamma.data_ptr(), weight.data_ptr())
+        self.assertEqual(region.export_adjustments[0]['gamma']['dtype'], 'float16')
+        for dtype in (torch.float16, torch.float32):
+            w = torch.tensor([-1., -0.9995, -0.5, 0., 2**-11, 2**-10, 1., 3.], dtype=dtype)
+            region = Region(row, {'weight':w}, target, torch_npu, 0)
+            original = CProRMSNorm(w)
+            for shape in ((1,1,8), (1,256,8), (1,4,2,8)):
+                x = torch.randn(shape, dtype=dtype)
+                torch.testing.assert_close(region(x), original(x), rtol=0, atol=0)
+            exported = torch.export.export(region, (x,))
+            self.assertFalse(any(n.target == torch.ops.aten.add.Tensor for n in exported.graph.nodes))
+            torch.testing.assert_close(exported.module()(x), original(x), rtol=0, atol=0)
+
+    def test_unknown_norm_formula_is_not_silently_folded(self):
+        row = dict(kind='norm', attrs={'epsilon':1e-6}, inputs=[dict(name='x')])
+        with self.assertRaisesRegex(ValueError, 'forward changed'):
+            Region(row, {'weight':torch.ones(8)}, SimpleNamespace(Qwen3_5MoeRMSNorm=ChangedCProRMSNorm), torch_npu, 0)
+
+    def test_explicit_conv2d_preserves_prefill_decode_bias_dtype_and_rank(self):
+        torch.manual_seed(24)
+        row = dict(kind='conv', attrs={'groups':4}, inputs=[dict(name='padded')])
+        for dtype in (torch.float32, torch.float16):
+            for tokens in (1, 256):
+                for with_bias in (False, True):
+                    with self.subTest(dtype=dtype, tokens=tokens, bias=with_bias):
+                        x = torch.randn(1,4,tokens+3, dtype=dtype)
+                        w = torch.randn(4,1,4, dtype=dtype)
+                        b = torch.randn(4, dtype=dtype) if with_bias else None
+                        region = Region(row, dict(weight=w, **({'bias':b} if with_bias else {})), None, None, 0)
+                        golden = F.conv1d(x, w, b, groups=4)
+                        actual = region(x)
+                        self.assertEqual(actual.dtype, dtype)
+                        torch.testing.assert_close(actual, golden, rtol=0, atol=0)
+        exported = torch.export.export(region, (x,))
+        conv, = [n for n in exported.graph.nodes if n.target == torch.ops.aten.conv2d.default]
+        self.assertEqual(list(conv.args[0].meta['val'].shape), [1,4,1,259])
+        self.assertEqual(list(conv.args[1].meta['val'].shape), [4,1,1,4])
+        torch.testing.assert_close(exported.module()(x), golden, rtol=0, atol=0)
+
+    def test_air_check_rejects_old_conv_rank_and_norm_add(self):
+        x = dict(name='x', type='Data', output_desc=[dict(shape={'dim':[1,8192,259]})])
+        w = dict(name='w', type='Const', output_desc=[dict(shape={'dim':[8192,1,4]})])
+        def unsqueeze(name, source):
+            return dict(name=name, type='Unsqueeze', input=[source+':0'], output_desc=[dict(shape={})],
+                        attr=[dict(key='axes', value={'list':{'i':[2]}})])
+        conv = dict(name='conv', type='Conv2D', input=['x:0','wu:0'])
+        graph = dict(op=[x,w,unsqueeze('wu','w'),conv])
+        with self.assertRaisesRegex(ValueError, 'singleton height'):
+            check_adjusted_graph('conv',graph)
+        graph['op'].append(unsqueeze('xu','x'))
+        conv['input'][0] = 'xu:0'
+        result = check_adjusted_graph('conv',graph)
+        self.assertEqual(result['input_shape'], [1,8192,1,259])
+        self.assertEqual(result['filter_shape'], [8192,1,1,4])
+        norm = dict(name='norm', type='RmsNorm', input=['x:0','add:0'])
+        graph = dict(op=[x,w,dict(name='add',type='Add',input=['w:0']),norm])
+        with self.assertRaisesRegex(ValueError, 'constant gamma'):
+            check_adjusted_graph('norm',graph)
+        graph['op'].pop(2)
+        norm['input'][1] = 'w:0'
+        self.assertEqual(check_adjusted_graph('norm',graph)['status'], 'PASSED')
 
     def test_replay_attention_nz_layout_and_gate(self):
         b, h, t, d = 1, 2, 3, 32
