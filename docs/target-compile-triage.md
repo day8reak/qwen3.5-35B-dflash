@@ -2,7 +2,7 @@
 
 更新：2026-11-10。用户确认重导后的 **Norm 20 项、Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新增成功依据用户回传确认，具体 OMC 哈希尚未提供；随后收到 Norm 18 项、Conv1d 4 项的小误差且稳定的数值摘要，另 4 项待回传，详见[状态表](target-accuracy-status.md)。当前按用户安排集中解决 ConvState 编译；原批次报告保持原样。
 
-**成功四层图日志已回传：专用 ConvState graph builder 被调用，`executor_linear_attention_convstate_update` 内核被保存，OMC 转换成功。** 省略 `use_origin_format` 的两项对照仍在原处失败；最新只读检查已确认小图输入描述，但成功整图遇到 schema 解码冲突；读取工具已补充保留的 AIR producer 描述核对，重读命令见[本页末尾](#下一步读取构建策略与图上下文)。Norm／Conv 的重导和编译已经完成，下方相关命令保留供复现，不再重复执行。新 26 项的 [上板、回收与批量比较命令](target-norm-conv-validation.md)已单列，支持单批或 4＋22 分批；编译成功不计作精度通过。
+**成功四层图已确认 ConvState 专用 graph builder、executor 内核及 OMC 保存成功。** 取消 `use_origin_format` 的两项小图对照仍失败。最新参考图读取已完成：原图有 RefData 状态输入、卷积消费者和 hybrid 构建路径；两边 `_executor_type=1`，端口 dtype／layout 相同。结果及下一步见[图上下文对照](#已完成读取构建策略与图上下文)。Norm／Conv 重导编译和本次 22 项数值回传已完成；缺少的 4 项优先补回已有 CSV。编译成功不计作精度通过。
 
 以下保留此前完整 38 项检查摘要的归因及处理结果：
 
@@ -326,70 +326,33 @@ done
 
 </details>
 
-### 下一步：读取构建策略与图上下文
+<a id="下一步读取构建策略与图上下文"></a>
 
-`convstate-route-inspect-001` 已回传。成功目录中的 `dump_graph` 是文件，但参考图按 DDK 的 HIAI 描述解析时，在 `AttrDef.list_list_float` 报 wire type mismatch；因此本次检查为 `PARTIAL`。**这是读取工具未取得参考图，不是重新编译失败，也不证明 dump 损坏。** 仅凭这一条还不能确定真实 schema 来源。
+### 已完成：读取构建策略与图上下文
 
-两张失败小图的源 AIR 和保留 dump 均已读到：
+用户已回传 `convstate-route-inspect-002`，状态为 `INSPECTED`，未重新编译或执行设备。参考为成功工作目录的 `target/dump_graph`；两个失败小图仍为 `convstate-default-format-001` 的 L0 Prefill／Decode o0。
 
-| 项目 | Prefill／Decode 小图的实际描述 |
-|---|---|
-| x1 | FP16、ND；分别为 `[1,256,8192]`／`[1,1,8192]` |
-| x2／x3 | FP16、ND、`[1,8192,4]`；INT32、ND、`[128]` |
-| 图属性 | `_executor_type = 1`；成功图尚未读到，不能猜枚举含义或直接改值 |
-| 图连接 | 三个普通 Data 输入，所选 y1 接 NetOutput；没有原图的卷积消费者和状态写回 |
-| 输出描述 | 两个输出 shape 为空；日志中的后续 Verify／Infer 已成功，不能把这个前期描述当作失败根因 |
+读取工具先前按所选 DDK 的 HIAI schema 解码时失败；本次用保留的 AIR producer GE schema 取得唯一兼容解释。HIAI schema 仍在 AttrDef 字段 15 报 wire 类型冲突。报告明确标注 `STRUCTURAL_COMPATIBILITY_ONLY; REFERENCE_PRODUCER_UNVERIFIED`：这解决了本次读取，不能反推出历史 producer 身份，也不证明此前 dump 损坏。
 
-检查器此前只用 DDK HIAI 描述读取参考图。现在也核对所选小图已保留的 `air-schema.pb`，先要求它能严格解析对应源 AIR；同内容描述去重，最多八份 producer 描述加所选 DDK 描述。每种描述的拒绝原因、文件身份和兼容结果均写入报告。未知字段、wire 类型冲突仍拒绝；多个兼容描述若给出不同解释则不选图，相同解释也不宣称已确定历史 producer。**不导入 TorchAir、不读取外置权重、不改 AIR／DDK。**
+| 项目 | 成功四层整图 | 失败小图 | 当前结论 |
+|---|---|---|---|
+| 图属性 | `_executor_type=1` | `_executor_type=1` | 该值没有提供差异，不直接改枚举 |
+| 保留图的 model 属性 | memory／weight／stream／event 均 0 | 同样均 0 | 这些已展示属性没有提供差异 |
+| ConvState 输入 dtype／layout | FP16／FP16／INT32，ND | 相同 | 仅源描述一致，不等于已核对编译物理存储 |
+| x1 序列长度 | 日志为 T64；源中间 shape 为空 | T256／T1 | 长度仍是需要控制的变量 |
+| x2／x3 shape | `[1,8192,4]`／`[128]` | 相同 | 已展示维度一致 |
+| 输出源描述 | y1／y2 shape 均为空 | 同样为空 | 两边后续 Infer 均成功，不能仅凭空描述归因 |
+| 输入生产者 | `Reshape_8`、`RefData_0`、`arg14_1` | 三个普通 Data | 状态输入语义和上游上下文不同 |
+| 输出消费者 | Conv2D 与 NetOutput；原源码有 `conv_state.copy_` | 所选 y1 直接 NetOutput | 需要核对双输出存活与状态回写；不凭邻接表认定存在 Assign |
+| 构建日志 | `pre_graph_save_hybrid_impl`，专用 ConvState builder／executor | single 实现路径，`strategyType:0`，format config 失败 | 构建路径确有不同；具体选择条件仍未证实 |
 
-在 **35 服务器当前环境**执行以下命令。直接使用用户已确认的成功图路径，无需在权重服务器重新导出或编译。旧检查结果保留，新结果写入 `convstate-route-inspect-002`：
+参考图有三个 ConvState，对应 RefData_0／2／4、Reshape_8／43／78、Conv2D／1／2。详细端口与邻居在 `report.json`；源算子的属性仍是输入／输出名称与索引映射。`DefinePatterns` 只证明融合规则定义，不能据此宣称命中融合。
 
-```bash
-export REPO_DIR="/home/w00949577/qwen3.5-35B-dflash"
-export AI_RUN_DIR="/home/w00949577/qwen3.5-35B-dflash-run"
-export FULL_OMG_WORK="$AI_RUN_DIR/target"
-export CONVSTATE_PROBE="$AI_RUN_DIR/target/tests/convstate-default-format-001"
-export CONVSTATE_INSPECT="$AI_RUN_DIR/target/tests/convstate-route-inspect-002"
-git -C "$REPO_DIR" pull --ff-only origin main
+**下一步最小对照：先恢复原图状态语义，再逐项增加消费者。** 保持同一 DDK、输入数据／dtype、编译参数和所比较图的 T 不变：
 
-python - <<'PY'
-import json, os, re, subprocess, sys
-from pathlib import Path
-work = Path(os.environ['FULL_OMG_WORK'])
-batch = Path(os.environ['CONVSTATE_PROBE'])
-out = Path(os.environ['CONVSTATE_INSPECT'])
-assert not out.exists(), '检查目录已存在，请换 CONVSTATE_INSPECT 编号'
-names = ['l00_c00_convstate_update_o0', 'l00_c01_convstate_update_o0']
-record = json.loads((batch / 'models' / names[0] / 'omc/report.json').read_text())
-cmd = [sys.executable, str(Path(os.environ['REPO_DIR']) / 'targets/cpro/tools/target_layer_probe.py'),
-       'inspect-compile', '--batch', str(batch), '--cases', *names,
-       '--ddk-root', record['ddk_root'], '--output', str(out),
-       '--reference-ir', str(work / 'dump_graph')]
-done = subprocess.run(cmd)
-if (out / 'summary.txt').is_file():
-    print((out / 'summary.txt').read_text())
-# 同时摘录构建策略，避免再取一轮完整日志；不会调用 OMG。
-pattern = re.compile(r'graph_build_optimizer|opt_impl_strategy|pre_graph_save_.*impl|strategyType|hybrid|single.?impl', re.I)
-lines = []
-for log in [work / 'omg.log', *[batch / 'models' / n / 'omc/compile.log' for n in names]]:
-    lines.append(f'[{log}]')
-    if not log.is_file() or log.stat().st_size > 64 << 20:
-        lines.append('UNAVAILABLE: 日志缺失或超过 64 MiB')
-        continue
-    with log.open(errors='replace') as f:
-        for number, line in enumerate(f, 1):
-            if pattern.search(line):
-                lines.append(f'L{number}: {line.rstrip()}')
-text = '\n'.join(lines) + '\n'
-print(text)
-if out.is_dir():
-    (out / 'strategy.txt').write_text(text)
-raise SystemExit(done.returncode)
-PY
-```
+1. 现有普通 Data、单输出图作为已失败基线。
+2. 普通输入，保留 ConvState 的两个输出，检查是否仅输出存活关系改变了构建路径。
+3. 在第 2 项上加入原源码的 `conv_state.copy_(new_state)`，由原导出流程生成状态引用关系，再核对 RefData 和输出绑定；不手工将 Data 字符串改名。
+4. 若仍失败，再加入原图卷积消费者；只在匹配的 T 下比较。必要时单独做 T64 对照，不把 T64 成功推广到 T256／T1。
 
-回传 `summary.txt` 和 `strategy.txt`。预期首先看到参考图 `INSPECTED` 及 `schema_selection`，随后是模型／图属性和 ConvState 上下文；若仍为 `UNAVAILABLE`，报告会同时给出两类描述的具体拒绝原因，不把它当作编译结论。正文展示每张图首个 ConvState，全部选中节点及各 schema 身份留在 `report.json`。参考文件哈希只标识本次读取字节，历史成功运行的文件归属仍待核验。
-
-取得成功图后再比较实际差异：图属性／构建策略、端口描述、状态和消费者连接。当前不修改 `_executor_type`，不把融合规则定义当作融合命中，不重复失败的格式参数试验。
-
-读取工具通过 28 项本地主机检查（18 项既有回归、10 项真实 protobuf 字节夹具检查），覆盖 schema 冲突、未知字段拒绝、解释歧义和只读行为；尚未验证服务器实际参考图。ConvState 12 项仍未修复；数值异常与已完成项继续见[状态表](target-accuracy-status.md)。
+以上是待实现／待执行的编译诊断，不是新的编译成功结果。状态引用或双输出会改变接口，不能直接套当前普通 Data、单输出的上板验证合同。达到专用 builder／executor 并生成 OMC 后，仍须核对两个输出及状态回写的数值。当前 12 项仍编译阻塞；已完成的格式参数试验和参考图读取不再重复。

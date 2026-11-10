@@ -8,6 +8,25 @@
 
 本页整理用户提供的旧 compile.json、原 120 行比较摘要、新增 26 项编译成功的确认及本次 22 行 CSV。新增项的逐 case 编译报告和 OMC 哈希尚未回传，本地主机未连接服务器或板子重验原始文件。累计计数覆盖同一批 158 个边界输出图的最新结果，不修改旧批次记录，也不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
 
+## 算子风险 CSV
+
+[下载／查看整图算子族风险清单](../specs/target-operator-accuracy-risk.csv)：**47 行，35 个边界分组＋12 个尚未覆盖的模型区域**。清单按原 Target 的 Linear Attention、Self Attention、MoE、模型 IO、状态和布局关系整理；当前没有完整编译节点清单，因此它是算子族／区域清单，不是逐 GE 节点或逐内核库存。新增 MoE 和模型 IO 行只描述覆盖缺口，实际是否在四层 AIR 内仍以导出入口和 dump 为准。
+
+CSV 的数量列均指本批**边界输出 case 数**，不能当作整图节点数。累计仍为 158 个 case、146 个编译成功、12 个编译失败、142 个有数值、51 个明显异常。覆盖缺口行的 case 数为 0，表示未纳入本批，不表示整图没有这些算子。所有指标来自独立小图的 Prefill T256／Decode T1；成功四层整图是另一个 T64 用例，尚无整图精度结论。指标极值分别取各列最小／最大值，不一定来自同一个 case；原 120 项保留用户摘要精度，新 22 项取原 CSV。
+
+| CSV risk | 含义 | 处理 |
+|---|---|---|
+| HIGH_NUMERICAL | 已观察到明显数值异常，共 51 个 case | P0：量化投影与 Decode Cache；P1：RoPE、Prefill GDN／Attention |
+| MEDIUM_STATE_DTYPE | Decode GDN raw state 3 项误差较小但 dtype 改变 | P2：核对状态精度合同与连续反馈 |
+| COMPILE_BLOCKED | ConvState 小图 12 项仍未编译，精度未知 | C0：当前编译主线，独立于精度优先级 |
+| LOW_OBSERVED | 已回传部分误差较小或为零 | P3：暂降低定位优先级；保留原始数值状态 |
+| NOT_MEASURED | 本分组已编译，但尚无数值回传 | P2：补齐已有报告 |
+| UNTESTED_HIGH_ATTENTION／UNTESTED | 未覆盖的整图区域；前者包含量化、离散路由、状态及布局等重点 | P2：补覆盖；没有证据将其登记为精度失败 |
+
+筛选 `risk=HIGH_NUMERICAL` 可得到已知高危清单，筛选 `UNTESTED_HIGH_ATTENTION` 可看到需要重点补测的 MoE 等区域。P0→P3 是精度排查顺序，不改变当前优先完成 C0 编译定位的安排。`relative_l2_ratio_*` 是**比值**，乘 100 才是百分比；`dtype_preserved`／`stable` 只描述已有指标的 case。缺项列单列 4 个已编译未回传项。UTF-8 BOM 编码便于 Excel 打开中文。
+
+算子族名称依据本地保留的原 Target 源码与用户成功整图日志整理，融合／别名可能一对多或多对一；不由边界输出直接给内部 DynamicQuant、MatMul 或布局节点定责。原源码参考版本 SHA256 为 `bd716718818b6b152ece5a2e345a5b674f091f53ba82059c86cd37060511f07d`，尚未核对为服务器当前版本。后续应从同一次整图 dump 找到输入匹配而输出首次异常的区域，再缩小到算子。
+
 ## 1. 当前捕获边界批次
 
 范围：原模型第 0～3 层，已捕获的 Prefill T256／首次 Decode T1。旧完整批次记录的 DDK 为 `100.520.020.010`，平台 `kirinx90`，profile 为 `isolated-kirinx90`，保留 `use_origin_format=true`、内嵌权重；其 compile.json 为 `PARTIAL`、`ALL_MANIFEST_CASES`，`diagnostic_only=false`。下表将新 26 项成功确认计入累计覆盖，新批次的实际配置以其报告为准。
@@ -98,7 +117,7 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 | Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 全部已编译；L1–L2 共 4 项数值已回传，L0 两阶段待回传 |
 | **合计** | **原 38 项** | | **38** | **新增 26 成功，剩余 12 项 ConvState 失败** |
 
-[ConvState 成功整图对照](target-compile-triage.md#成功整图提供的对照)已确认专用 graph builder 调用、executor 内核保存和整图 OMC 保存成功；早期候选支持拒绝也存在于成功路径。尚无新的 ConvState 小图修复或编译成功结果；L0 两阶段的格式选项对照均已失败，成功参考图在只读检查中发生 schema 冲突，尚未取得其图属性；检查器已补充 AIR producer 描述核对，下一步[重读参考图及构建策略](target-compile-triage.md#下一步读取构建策略与图上下文)。Norm／Conv 导出与编译步骤已经完成，本次有数值回传的 22 项无需重跑；其余 4 项优先回传已有 CSV，[执行与比较命令](target-norm-conv-validation.md)保留供需要时使用。MoE 专家计算尚未纳入本批小图，四层整图精度和连续状态反馈也未由本表验证。
+[ConvState 成功整图对照](target-compile-triage.md#成功整图提供的对照)已确认专用 graph builder 调用、executor 内核保存和整图 OMC 保存成功；早期候选支持拒绝也存在于成功路径。L0 两阶段取消 `use_origin_format` 的对照仍失败。最新 `convstate-route-inspect-002` 已读出成功参考图：两边 `_executor_type=1`，端口 dtype／layout 相同，成功图具有 RefData 状态输入和卷积消费者，并进入 hybrid 构建路径；小图为普通 Data、单输出，走 single 构建路径。触发条件尚未证实，12 项没有新增编译成功。[最新对照与下一步](target-compile-triage.md#已完成读取构建策略与图上下文)已更新。Norm／Conv 有数值回传的 22 项无需重跑；其余 4 项优先回传已有 CSV，[执行与比较命令](target-norm-conv-validation.md)保留。MoE、四层整图精度和连续状态反馈仍未验证。
 
 ### 旧环境编译记录
 
@@ -144,7 +163,7 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 | 2026-11-09 CacheUpdate T1 | 成功 | 完成 | 整缓存逐位比较失败 | 块尾／块首两例均 10 次有限且稳定；写入区正确不等于整缓存通过 |
 | 2026-10-27 GDN prefill8／decode1，七输入融合探针 | 两张成功 | 后续已回传加载／执行成功 | 后续结果存在明显偏差，未通过 | 不能宣称七输入本身不可编译；与当前 T256、FP32 g 的图不同 |
 | 用户此前 40 层多 shape 整网 OMC | 用户报告曾编译成功 | 本页没有对应绑定结果 | 本页未确认 | 原命令包含动态 T64／T1、80 个 RefData；不能证明 T256 小图必然可编译 |
-| 用户本次提供的 4 层 T64 整图 | 已提供转换命令；未收到本轮成功产物回执 | 本轮待确认 | 本轮待比较 | 有已成功产物就直接复用；没有才执行下方一次转换 |
+| 用户本次提供的 4 层 T64 整图 | 成功日志已回传：OMG 保存 OMC 及外置权重成功 | 本轮待确认 | 本轮待比较 | 成功图已读到 ConvState 专用 builder／executor；OMC 哈希和历史运行文件绑定待核验，复用已有产物 |
 
 11-09 四张 OMC 和详细数值见[历史设备回传](current-status.md#本轮设备结果与下一步)。GDN 相对 L2（core／state）分别为 T64 零初态 0.36166%／0.06612%、T64 非零初态 0.61187%／0.08209%、T1 零初态 0.05123%／0.05066%、T1 非零初态 0.05012%／0.05029%。这组参考是独立诊断参考，并非本次四层 310P golden。
 

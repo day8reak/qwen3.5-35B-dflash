@@ -10,5 +10,6 @@
 - [完整流程执行](run-end-to-end.md)
 - [当前阶段：Target 四层整图精度定位](current-status.md)
 - [OMC 编译／精度状态表与四层 dump 流程](target-accuracy-status.md)
+- [整图算子族与精度风险 CSV](../specs/target-operator-accuracy-risk.csv)
 - [四层 dump 批量比较脚本与所需信息](target-dump-compare.md)
 - [环境修正后：批量重编 OMC、上板、回收与比较命令](target-batch-rerun.md)

@@ -12,11 +12,13 @@
 | 编译成功、数值待回传 | 4 | L0 Prefill input Norm、L3 Prefill Q Norm、L0 Prefill／Decode Conv1d |
 | 编译失败、尚未数值验证 | 12 | ConvState，L0–L2，Prefill／Decode，两个输出 |
 
+已整理[整图算子族风险 CSV](../specs/target-operator-accuracy-risk.csv)，共 47 行：35 个边界分组与 12 个覆盖缺口区域，包含 MoE 路由、专家矩阵乘、共享专家、模型 IO 和状态反馈。字段与优先级说明见[风险表口径](target-accuracy-status.md#算子风险-csv)。
+
 51 项是输出异常排查清单，不是已确认有 bug 的 51 个内核。小图使用各自的 310P 输入，不能把独立结果串成上游误差传播；重复稳定也不等于精度通过。数据来自用户粘贴的比较摘要，原始 native 输出与完整 report.json 未在本地主机重新核验。
 
 用户确认 DDK／OMG 编译在 **35 服务器**，310P golden 仍在此前的**权重服务器**通过已跑通的四层推理入口采集；35 不是 Python 环境名，147 仅为此前参考命令来源。CPro dump 尚无样例。[离线批量比较入口](target-dump-compare.md)已完成主机验证，可从 capture 生成待绑定清单；真实文件格式和节点映射仍需首批 dump 元数据。本轮没有启动整图执行。
 
-此前 Norm 的 Add 常量计算／tiling 和 Conv 的输入 rank 阻塞已通过。现已收到 [ConvState 失败小图与成功整图对照](target-compile-triage.md#成功整图提供的对照)：两者都有候选 store 拒绝／强制 NPU 分区，但成功 T64 整图随后调用专用 graph builder、保存 `executor_linear_attention_convstate_update` 并完成 OMC 保存；小图在 `generated_lib` builder／format config 处退出。实现存在，具体构建路径分歧原因仍未证实。L0 Prefill／Decode 的 `convstate-default-format-001` 参数对照已完成，省略 `use_origin_format` 后仍在相同位置失败，并记录 `strategyType:0`。最新只读检查确认小图输入为 FP16／FP16／INT32、普通 Data，图属性 `_executor_type=1`；成功整图因 HIAI 描述冲突尚未解析。检查器已补充保留的 AIR producer 描述核对，下一步[重读参考图及构建策略](target-compile-triage.md#下一步读取构建策略与图上下文)，不重复该参数试验，不重编已成功的 146 项。[Norm／Conv 的执行与比较命令](target-norm-conv-validation.md)保留，4 个待回传项优先复用已有结果。本地主机只更新证据和命令；四层整图 dump、设备数值及连续状态反馈仍未验证。旧环境 GDN SIGSEGV 保留为历史记录，不代表本轮编译状态。
+此前 Norm 的 Add 常量计算／tiling 和 Conv 的输入 rank 阻塞已通过。成功四层 T64 整图已调用 ConvState 专用 builder、保存 `executor_linear_attention_convstate_update` 并完成 OMC 保存；小图仍在 format config 处退出。取消 `use_origin_format` 的 L0 两阶段对照已失败，不再重复。最新 `convstate-route-inspect-002` 已使用结构兼容的 GE schema 读出参考图：两边 `_executor_type=1`，端口 dtype／layout 一致；原图有 RefData 状态输入、卷积消费者及 hybrid 构建路径，小图为普通 Data、单输出和 single 构建路径。具体触发条件尚未证实，下一步以状态语义和输出消费者做最小对照，详见[ConvState 对照结果](target-compile-triage.md#已完成读取构建策略与图上下文)。不重编已成功的 146 项；[Norm／Conv 执行命令](target-norm-conv-validation.md)保留，缺失的 4 项优先回传已有结果。本地主机只更新证据和工具；整图精度及连续状态反馈尚未验证。旧环境 GDN SIGSEGV 仅为历史记录。
 
 ## 2026-11-09 独立诊断记录
 
