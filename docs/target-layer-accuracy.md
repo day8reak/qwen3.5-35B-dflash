@@ -199,11 +199,11 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
 
 已回传的两个入口脚本确认：外层入口把 `LD_LIBRARY_PATH` 替换为 `master/lib64`、`ddk/tbe/lib64`、`ddk/ascendcpp/lib64`，设置 `CCE_LIB_DIR` 和 `KIRIN_CONF_JSON_PATH`；已导出的 `HIAI_VERSION` 改为 `master`。只有显式传入 `--platform` 才追加平台库与 Python 路径并设置 `SOC_VERSION`。原成功命令没有该参数，因此外层脚本保留继承的 `SOC_VERSION` / `PYTHONPATH`，并不证明它们为空。source 脚本还调用了未回传内容的 `set_tbe_env_ddk.sh`，不能仅凭两个入口文本还原历史成功环境。外层脚本不改写 AIR，也没有 INT4 解包逻辑。
 
-现在可在原成功命令的已 source shell 中，对同一份保留 AIR 运行 `sourced-wrapper-default`。这个显式诊断 profile 复现已检查的 Linux/master/无 platform 参数分支，不执行厂商脚本中的 chmod、mkdir 或 loader 链接写入。两个脚本必须匹配回传 SHA256，且当前 `DDK_PATH` 必须指向所选 DDK；不匹配时在创建编译批次前报错。它保留当前 shell 的注册与 Python 环境，直接执行同一个 master ELF，省略 target/platform 参数，并选择 `limit_partition_size=false`、外置权重；不能同时传 `--tbe-diagnosis`。
+已提供的 `sourced-wrapper-default` 在原成功命令的已 source shell 中，对同一份保留 AIR 做入口对照。这个显式诊断 profile 复现已检查的 Linux/master/无 platform 参数分支，不执行厂商脚本中的 chmod、mkdir 或 loader 链接写入。两个脚本必须匹配回传 SHA256，且当前 `DDK_PATH` 必须指向所选 DDK；不匹配时在创建编译批次前报错。它保留当前 shell 的注册与 Python 环境，直接执行同一个 master ELF，省略 target/platform 参数，并选择 `limit_partition_size=false`、外置权重；不能同时传 `--tbe-diagnosis`。
 
 这是一组入口、环境、参数条件的对照，尚不是单因素实验。输入 shape 保持原静态 256，状态仍是 Data、单输出；不套用整网 89 个输入名或 64/1 动态档位。保留原有运行目录内的 IPC 临时目录和 multiprocessing overlay、禁止 Python 字节码写入，并在报告中列明这些与原命令的差异。对照成功后还需拆分变量确认原因。
 
-无需再次做相同只读检查。从旧失败批次定位 AIR 源目录，然后只编三个 case，输出目录必须是新目录：
+以下命令已由用户执行，保留用于复现，无须重复运行。用户回传 `accuracy-entry-compare-004/compile.json`：QLinear、ConvState 仍退出 1，GDN 仍 SIGSEGV（-11）。摘要不足以确认失败位置和之前完全相同；本轮入口条件组合未使三图编译通过。
 
 ```bash
 AIR_SOURCE=$(python - "$OMC_BATCH" <<'PY'
@@ -225,6 +225,17 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 `compile.json` 保留完整源 manifest 哈希和 `source_batch`，列出 `selected_cases`；未选项标为 `NOT_SELECTED`，顶层编译状态仅针对所选项。每个 case 的 `omc/report.json`、`compile-command.json`、`omg-environment.json` 和 `compile.log` 保留原始证据。平台标为 `UNSPECIFIED_COMPILER_DEFAULT`，不得据此宣称 X90 已编译通过；现有板端 fixture 入口拒绝该诊断批次。默认 `isolated-kirinx90` 路径不变。
 
 优先比较 QLinear 是否仍推为 1024、ConvState 是否仍缺少 format config、GDN 是否仍返回 -11。若一致，再分别核对算子合同、整图消费者/RefData 及 GDN 调用栈；若不同，再逐项拆分入口条件。整个流程复用现有 AIR，不重新导出或编译 40 层模型。
+
+### GDN 已成功编译的历史基线
+
+应先复用历史已定位结论，避免把同名算子不同接口的成功混为一谈：
+
+- **2026-10-27 的七输入融合探针也曾编译成功。** 历史代码含 INT16 `effective_length`，g 为 FP16，状态绑定经安装源码校验改为 FP16，两个输出均保留。成功的用户回传见[历史记录](history/validation.md#融合gdn最新真实编译回传)，两例 TBE 审计均为 `APPLIED`。因此不能认定七输入本身不可编译。
+- 当时的直接编译失败为 `platform_info.te_update_version` 的 `RuntimeError`。12 组用户实测确认：先初始化 `kirinx90` 后 SOC 返回 `Ascend310B1`，底层更新再传 `kirinx90` 返回 `error`，传已初始化 SOC 名返回 `success`。`848bea7` 增加哈希绑定的运行目录内 TE wheel 适配，仅修正底层更新参数；OMG 仍选 `kirinx90`。`0acfeea` 的末态绑定依据安装 C++ 的两个 `GlobalTensor<half>` 缓冲区，不是凭日志猜 dtype。
+- **2026-11-09 的六输入诊断又出现漏传 `--tbe-diagnosis`。** `334cb6e` 补齐 CLI、自动入口和编译器之间的传递，随后用户回传 T64/T1 编译和设备执行完成，worker 审计 `APPLIED`。该诊断 q/k/v/g/beta/初态、双输出均 FP16，不带 `effective_length`，不证明 master 七输入语义等价。
+- 两条成功路径均有 `--use_origin_format=true`；早期融合探针还有 `--weight_data_type=FP16`。最新六输入诊断不强制权重 dtype。保留这些已验证条件，不把其中任意一个参数独立宣称为 SIGSEGV 的修复。
+
+当前失败边界与上述基线有实质差异：TorchAir 七输入、静态 T256、g 为 FP32、末态声明 FP32、只接出 core，原失败命令未带 `use_origin_format`。原失败批次的 TBE 记录是 `PASSTHROUGH`（请求本来就是 `Ascend310B1`），且 CastT prebuild 已成功；不能把 `NOT_OBSERVED` 当成旧名称错误再次发生，也不能凭这一条记录确认所有 GDN worker 均无问题。入口对照失败后，优先核对这些已知图合同和编译配置差异；保持当前 AIR、golden 和七输入语义，不直接删除有效长度或将 FP32 数据改成 FP16 来冒充修复。
 
 2026-11-10 用户回传的 AIR 和 DDK `100.520.020.010` 日志支持以下判断。修正后的 OMG 结果尚待用户执行；这些编译证据不代表板端数值通过。
 
