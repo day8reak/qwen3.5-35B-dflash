@@ -6,7 +6,7 @@ AIR／OMC 单项失败会记录后继续；只要有成功 OMC 就可上板。Co
 
 | 阶段 | 执行位置 | 输入 → 输出 |
 |---|---|---|
-| AIR | 原来可导出 CPro 算子的 TorchAir 环境；golden 在权重服务器 | 已完成 capture＋原 Target 源码／converter → `air/` |
+| AIR | 原来可导出 CPro 算子的 TorchAir 环境；golden 在权重服务器 | capture＋原 Target 源码／converter＋原权重 YAML → `air/` |
 | OMC | 35 服务器的 custom_pypto／所选 DDK | 整个 `air/` → `omc/` |
 | 上板／回收 | 原来已配置 HDC 的主机；若就是 35，无需搬运 | runtime.json＋AIR／OMC → fixture＋native 输出 |
 | 比较 | 回收主机的模型 Python 环境 | fixture＋native → report.json／summary.csv |
@@ -33,25 +33,40 @@ export PYTHONDONTWRITEBYTECODE=1
 
 本次使用固定测试目录；AIR、OMC 和 comparison 输出必须不存在。复测前先完成原请求回收，再处理旧测试产物。编译失败不覆盖公共可运行模型。
 
-## 2. 全部 AIR 导出
+## 2. 全部 AIR 重新导出
 
-`GOLDEN_CAPTURE` 沿用已成功采集的目录：其中 `manifest.json` 为 `CAPTURED`，并有 regions／weights；它不是原始权重、AIR 或 OMC 目录。`TARGET_SOURCE` 是原 Target 源码根目录，包含 models 和下述 converter。两个实际路径尚未在会话提供，下面要求保留／填写已有真实值，不猜路径。
+`GOLDEN_CAPTURE` 沿用已成功采集的目录：其中 `manifest.json` 为 `CAPTURED`，并有 regions／weights。`TARGET_SOURCE` 是原 Target 源码根目录，包含 models 和下述 converter。`TARGET_CONFIG` 是原 Target 导出使用的 YAML，其中 `model_file` 指向 HF 权重目录、`quanted_pth` 指向 W4 权重目录；相对路径按 `TARGET_SOURCE` 解析。这三个变量使用权重服务器上的真实值，不能填写示意目录。
+
+本次复查覆盖导出器全部 16 种 region。**发现并修正普通 Norm 的权重 dtype 差异：NZ 构造 FP16，CPro 构造 FP32，旧小图直接用了 NZ capture 权重。** 新版按原 CPro 参数 dtype 从 HF 重新加载，再折叠 `weight + 1`；不会把已经舍入的 FP16 权重升回 FP32 充当原权重。
+
+| 小图类别 | 本次处理 |
+|---|---|
+| QLinear | 沿原 exporter → replacement globals 找到实际工厂；本版是 NZ QLinear。对一个 Linear 调用原替换工具，重建 packed W4／scale 并与 capture 全值核对；不猜测 FP16 Cast |
+| 普通／门控 Norm、Conv、普通 Linear | 从原 HF 绑定权重；普通 Norm 修正参数 dtype；Conv 保留经对照的四维等价导出 |
+| SiLU、decay/beta、GDN、Attention、layout/gate、两次残差 | 直接提取原 CPro forward 中的对应表达式；GDN chunk 由实际序列长度选择，Attention 使用原 export 参数分支 |
+| repeat Q/K、RoPE | 直接调用原 CPro helper，包含 rotate_half、partial rotary 与 NZ 恢复布局 |
+| ConvState、CacheUpdate、recurrent_writeback | 保留原算子／转换表达式；明确单输出裁剪、cache clone 和仅验证回写值的限制，尚不验证 RefData alias 或连续状态反馈 |
+
+输入仍为同一批 golden 边界输入，保留其 dtype；这不是从整图裁剪后证明完全相同的物理存储／融合。MoE 内部和 LM head 不在现有 capture。旧数值保留为旧导出结果，不能当作此次修正后的结果。
 
 ```bash
 : "${GOLDEN_CAPTURE:?请设置已有 CAPTURED 捕获目录}"
 : "${TARGET_SOURCE:?请设置原 Target 源码根目录}"
+: "${TARGET_CONFIG:?请设置原 Target 的权重 YAML 路径}"
 export CPRO_EXPORT_SCRIPT="${CPRO_EXPORT_SCRIPT:-$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py}"
 
 (
 set -e
 test -f "$GOLDEN_CAPTURE/manifest.json"
 test -f "$CPRO_EXPORT_SCRIPT"
+test -f "$TARGET_CONFIG"
 test ! -e "$BATCH"
 export_rc=0
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --capture "$GOLDEN_CAPTURE" \
   --source-root "$TARGET_SOURCE" \
   --converter-script "$CPRO_EXPORT_SCRIPT" \
+  --target-config "$TARGET_CONFIG" \
   --output "$BATCH" || export_rc=$?
 
 python - "$BATCH/manifest.json" "$GOLDEN_CAPTURE/manifest.json" "$export_rc" <<'PY'
@@ -68,7 +83,7 @@ PY
 )
 ```
 
-只有摘要检查成功才继续。PARTIAL 的退出码 1 在此被显式接收，仍核对完成态及全量 case 数；不会把中断当作完成。每个失败 case 的日志为 `$BATCH/<case>.log`。当前入口已包含 Norm gamma 预计算和 Conv 显式四维导出修正。
+只有摘要检查成功才继续。PARTIAL 的退出码 1 在此被显式接收，仍核对完成态及全量 case 数；不会把中断当作完成。每个失败 case 的日志为 `$BATCH/<case>.log`。每份 `models/<case>/export.json` 新增 `source_contract`、`qlinear_resolution`、`target_weights` 和 `internal_boundaries`，后者记录内部算子两端的 shape/dtype、输入槽位和 Cast 链；这是源 AIR 信息，不能代替 OMC 的实际存储检查。权重与 capture 不一致会明确失败，不会悄悄更换 golden。
 
 ## 3. 全部 OMC 编译（35 服务器）
 

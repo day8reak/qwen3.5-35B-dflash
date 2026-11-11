@@ -23,6 +23,7 @@
 <section class="card" id="accuracy-focus" aria-labelledby="accuracy-focus-title">
 <h2 id="accuracy-focus-title">当前结论：四个自定义算子需要独立验证精度</h2>
 <p>精度定位主线是 <strong>QuantBatchMatmulV4444、CacheUpdate、ChunkGatedDeltaRule、AdnFusedInferAttention</strong>。重点阶段不同：以下依据来自本批 L0–L3 独立边界，表示待隔离验证的范围，尚未定责为内核 bug。</p>
+<p class="hint">导出复查（2026-11-11）：已检查全部 16 类小图，修正普通 Norm 的 NZ FP16／CPro FP32 权重差异，并绑定原权重与 forward。图中仍为旧批指标；新 AIR／OMC／精度待重跑。<a href="https://github.com/day8reak/qwen3.5-35B-dflash/blob/main/docs/target-batch-rerun.md">重新生成命令与复查表</a></p>
 <div class="table-scroll"><table class="focus-table"><thead><tr><th scope="col">算子 / 优先级</th><th scope="col">重点阶段</th><th scope="col">本批依据</th><th scope="col">独立验证重点</th></tr></thead><tbody>
 <tr><td>QuantBatchMatmulV4444<br><span class="pill bad">P0</span></td><td>Prefill + Decode</td><td>量化投影边界 38/38 异常，两阶段各 19/19。</td><td>先隔离 DynamicQuant，比较 INT8 激活和 per-token scale；固定量化输入、packed W4、权重 scale，再验证 MatMul，核对 group256、布局和槽位。DynamicQuant 尚无独立精度结论。</td></tr>
 <tr><td>CacheUpdate<br><span class="pill bad">P0</span></td><td>Decode；Prefill 作对照</td><td>Decode K/V 2/2 FAILED，L2 99.69%–99.81%；Prefill 2/2 PASSED。</td><td>分别检查当前写入区与未写历史区；核对 block/offset、RefData/alias、缓存初始化和输出回读。</td></tr>

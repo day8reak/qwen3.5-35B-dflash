@@ -33,7 +33,7 @@
 | attention 布局恢复与 gate | 原 attention 输出、Q projection 中的 gate、实际 o_proj 输入 |
 | residual add | 原分支输出、残差和实际加法结果 |
 
-CPro GDN 接收调用前缓存的 dtype；310P 传入内核前的 FP32 cast 不会被误当成 CPro 的输入合同。原导出 `utils.QLinear` 指定的替换类用于量化投影，不因 CPro 模型文件中有同名类就自动替换。INT32 打包 INT4、INT64 编码 scale 保留容器与字节，不进行 `.half()` 或重新量化。
+CPro GDN 接收调用前缓存的 dtype；310P 传入内核前的 FP32 cast 不会被误当成 CPro 的输入合同。量化投影沿原 exporter 的 replacement globals 选择实际 QLinear，不因 CPro 文件中有同名类就替换。重新导出通过 `--target-config` 读取原 HF／W4 权重：普通 Norm 按 CPro 参数 dtype 加载，W4 由原工具重建并与 capture 核对，golden 不改。当前完整命令与全部类别复查见[全批重跑](target-batch-rerun.md)。
 
 Convstate 的辅助 `linear_update_tensor` 使用原 CPro 导出声明的零 INT32[128]，并在夹具记录该策略。`effective_length` 来自实际 310P 调用，不使用导出示例里的零长度。若原程序走外部卷积实现，未观察到有效 Conv1D 边界，采集标记 INCOMPLETE；不会编造 golden。
 
@@ -143,6 +143,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" replay-qlinear-failu
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --capture "$AI_RUN_DIR/target-layer-accuracy/golden" \
   --source-root "$TARGET_SOURCE" --converter-script "$CPRO_EXPORT_SCRIPT" \
+  --target-config "$TARGET_CONFIG" \
   --output "$AI_RUN_DIR/target-layer-accuracy/air-batch"
 ```
 

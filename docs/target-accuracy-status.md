@@ -4,6 +4,8 @@
 
 数据来自用户回传的编译清单、成功确认与比较摘要，本地主机未重验原始 OMC／native 输出。计数是独立边界输出图，不能当作完整模型覆盖率或内核数量。没有冻结浮点容差的项目保持 METRICS_RECORDED。
 
+小图源码复查已发现普通 Norm 使用了 NZ 的 FP16 权重，而原 CPro 构造 FP32 权重；已修正为读取原 HF 参数。QLinear 实际替换工厂确为 utils 导入的 NZ 类，没有发现仅因类选择导致错误的证据。全部 16 类的处理与重新生成命令见[全批重跑](target-batch-rerun.md#2-全部-air-重新导出)。下列指标及图表仍属于旧导出，修正后的精度尚未回传；recurrent_writeback 的零误差仅验证转换值，不证明状态别名和连续反馈正确。
+
 ## 算子风险 CSV
 
 [交互结构图 HTML](assets/target-architecture-interactive.html)可按层展开、切换 Prefill／Decode，包含层内两次残差与层间连接；下载后用浏览器打开。[静态 SVG](assets/target-architecture-accuracy.svg)和[逐边界指标 CSV](../specs/target-boundary-metrics-20261110.csv)一并保留。

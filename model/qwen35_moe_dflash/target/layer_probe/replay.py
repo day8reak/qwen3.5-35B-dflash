@@ -106,7 +106,7 @@ class Region(torch.nn.Module):
         elif self.kind == 'norm':
             self.register_buffer('gamma', folded_norm_gamma(target, weights['weight']))
             self.export_adjustments.append(dict(kind='FOLD_ZERO_CENTERED_GAMMA',
-                expression='weight + 1.0', arithmetic='CAPTURED_WEIGHT_DTYPE_BEFORE_TRACING',
+                expression='weight + 1.0', arithmetic='BOUND_WEIGHT_DTYPE_BEFORE_TRACING',
                 source_forward='AST_MATCHED_CPRO_NPU_RMS_NORM',
                 weight=tensor_metadata(weights['weight']), gamma=tensor_metadata(self.gamma)))
         elif self.kind == 'norm_gated':
@@ -130,7 +130,30 @@ class Region(torch.nn.Module):
     def compute(self, *values):
         x = dict(zip(self.names, values))
         k, a = self.kind, self.attrs
-        if k in ('qlinear', 'linear'):
+        if hasattr(self, 'source_forward'):
+            if k == 'gates':
+                args = (x['a'], x['b'])
+            elif k == 'gdn':
+                args = tuple(x[n] for n in ('query', 'key', 'value', 'g', 'beta', 'initial_state', 'effective_length')) + (x['query'].shape[1],)
+            elif k == 'convstate':
+                args = (x['mixed_qkv'], x['old_conv_state'], x['linear_update_tensor'])
+            elif k == 'silu':
+                args = (x['x'],)
+            elif k == 'state_cast':
+                args = (x['state'],)
+            elif k == 'add':
+                args = (x['residual'], x['branch'])
+            elif k == 'attention':
+                args = tuple(x[n] for n in ('query', 'key', 'value', 'atten_mask', 'block_table')) + (
+                    a['actual_seq_lengths_q'], a['actual_seq_lengths_kv'], x['all_seq_lengths_q'], True)
+            elif k == 'attention_post':
+                b, t, _ = x['gate'].shape
+                args = (x['attention_nz'], (b, a['num_heads'], t, a['head_dim']), (b, t), x['gate'])
+            else:
+                raise ValueError('unsupported source fragment: ' + k)
+            value = self.source_forward(self, *args)
+            out = value if k in ('gates', 'gdn', 'convstate') else (value,)
+        elif k in ('qlinear', 'linear'):
             out = (self.op(x['x']),)
         elif k == 'norm':
             out = (self.npu.npu_rms_norm(x['x'], self.gamma, a['epsilon'])[0].type_as(x['x']),)
@@ -176,6 +199,9 @@ class Region(torch.nn.Module):
         else:
             raise ValueError('unsupported CPro region: ' + k)
         return out[self.output_index]
+
+    def transform_nz_2_nd(self, value):
+        return self.target.Qwen3_5MoeAttention.transform_nz_2_nd(self, value)
 
 
 def source_bindings(graph, specs, actual_identities=None):
@@ -242,7 +268,7 @@ def check_adjusted_graph(kind, graph):
     return dict(status='NOT_APPLICABLE')
 
 
-def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None):
+def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
@@ -266,10 +292,22 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         # This defines the original GE converters; __main__ is never executed.
         converters = import_file(Path(converter_script).resolve())
         torch._dynamo.config.suppress_errors = False
-        # The original export's replacement utility chooses the QLinear class;
-        # it need not be the similarly named class in the CPro model module.
-        utilities = importlib.import_module('utils')
-        model = Region(record, weights, target, torch_npu, output_index, utilities.QLinear)
+        from .source_regions import bind_region, qlinear_factory
+        # Follow the function actually called by the exporter, including its
+        # globals. A same-named class in modeling_*_cpro is not enough.
+        factory, factory_evidence = qlinear_factory(converters)
+        source_directory = Path(source_root).resolve()
+        for source_file in (target.__file__, factory_evidence['replacement']['file'], inspect.getfile(factory)):
+            if source_directory not in Path(source_file).resolve().parents:
+                raise ValueError('loaded original module is outside --source-root: ' + str(source_file))
+        result['captured_weights'] = {name: tensor_metadata(value) for name, value in weights.items()}
+        from .target_weights import load_weights
+        weights, result['target_weights'] = load_weights(record, weights, target, converters, target_config, source_root)
+        model = Region(record, weights, target, torch_npu, output_index, factory)
+        result['source_contract'] = bind_region(model, target, record)
+        result['source_contract']['weight_scope'] = result['target_weights']['status']
+        result['qlinear_resolution'] = factory_evidence
+        result['exported_weights'] = {name: tensor_metadata(value) for name, value in weights.items()}
         result['export_adjustments'] = model.export_adjustments
         from qwen35_moe_dflash.draft.incremental.torch_export import _producer_schema, _schema
         from qwen35_moe_dflash.target.original_air_roundtrip import _decode
@@ -283,8 +321,11 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         finally:
             os.chdir(old)
         (root/'weight/export.air').replace(root/'export.air')
-        _, _, graph = _decode(_schema(descriptor, metadata), (root/'export.air').read_bytes())
+        schema = _schema(descriptor, metadata)
+        _, _, graph = _decode(schema, (root/'export.air').read_bytes())
         result['export_graph_check'] = check_adjusted_graph(record['kind'], graph)
+        from .source_regions import internal_boundaries
+        result['internal_boundaries'] = internal_boundaries(graph, schema)
         fixture = root/'fixture'
         fixture.mkdir()
         specs = []
@@ -301,8 +342,9 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             source_inputs=bindings, golden=golden, export_input_identity=input_identity,
             capture_manifest_sha256=sha(capture/'manifest.json'),
             source_files=[dict(path=str(Path(p).resolve()), sha256=sha(p))
-                          for p in (target.__file__, converter_script, utilities.__file__, inspect.getfile(utilities.QLinear))],
-            qlinear_factory=utilities.QLinear.__module__ + '.' + utilities.QLinear.__qualname__,
+                          for p in dict.fromkeys((target.__file__, converter_script,
+                              factory_evidence['replacement']['file'], inspect.getfile(factory)))],
+            qlinear_factory=factory_evidence['factory'],
             weights=record.get('weights'), input_scope='GOLDEN_BOUNDARY_INPUTS',
             graph_types=sorted({n['type'] for n in graph['op']}),
             torch_version=torch.__version__, torchair_version=getattr(torchair, '__version__', 'unknown'))

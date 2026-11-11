@@ -26,8 +26,7 @@ POINT_ORDER = {name: i for i, name in enumerate((
 
 
 def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None,
-                 timeout=900, torchair_pb2=None):
-    root = new_output(output)
+                 timeout=900, torchair_pb2=None, target_config=None):
     capture = Path(capture).resolve()
     source = json.loads((capture/'manifest.json').read_text())
     if source.get('artifact_kind') != KIND or source.get('status') != 'CAPTURED':
@@ -38,6 +37,9 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         raise ValueError('no matching captured regions')
     if points and set(points) - {r['point'] for r in regions}:
         raise ValueError('requested point is missing from capture')
+    if any('weights' in r for r in regions) and not target_config:
+        raise ValueError('weighted regions require --target-config with original model_file and quanted_pth')
+    root = new_output(output)
     report = dict(artifact_kind=KIND, status='EXPORTING', cases=[],
         capture_sha256=sha(capture/'manifest.json'), golden_source=source['reference'],
         layers=source['layers'], reference_sources=source['sources'],
@@ -64,6 +66,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 '--converter-script', str(Path(converter_script).resolve())]
             if torchair_pb2:
                 argv += ['--torchair-pb2', str(Path(torchair_pb2).resolve())]
+            if target_config:
+                argv += ['--target-config', str(Path(target_config).resolve())]
             print('export', name, flush=True)
             log = root/(name+'.log')
             try:
@@ -75,11 +79,15 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 receipt = json.loads((folder/'export.json').read_text())
                 if receipt['status'] != 'EXPORTED' or receipt['capture_manifest_sha256'] != report['capture_sha256']:
                     raise ValueError('export receipt differs from captured golden')
+                if receipt.get('source_contract', {}).get('status') != 'BOUND_TO_SOURCE':
+                    raise ValueError('export worker did not bind this region to original Target source')
                 row.update(status='EXPORTED', export=identity(folder/'export.json', root))
             except Exception as exc:
                 row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
             save_json(root/'manifest.json', report)
     report['status'] = 'EXPORTED' if all(r['status'] == 'EXPORTED' for r in report['cases']) else 'PARTIAL'
+    report['source_contracts'] = dict(scope='EVERY_EXPORTED_CASE; SEE_EXPORT_JSON',
+        untested=['MoE internals', 'LM head', 'CPro state feedback', 'full-graph storage equivalence'])
     save_json(root/'manifest.json', report)
     return report
 

@@ -1,10 +1,10 @@
 # 当前阶段：Target 全部分模块验证
 
-更新：2026-11-11。当前按现有 L0–L3、Prefill T256／Decode T1 capture，重新导出全部边界 AIR、编译 OMC，并批量运行成功项。ConvState 编译失败不阻塞其他模块。
+更新：2026-11-11。已复查小图导出器全部 16 类：修正普通 Norm 的 NZ FP16／CPro FP32 权重差异，量化权重由原替换工具重建核对，其余片段绑定原 CPro forward／helper。代码已做本地源码与 CPU 检查；新 AIR／OMC／上板数值仍需在权重服务器执行。
 
 ## 用户现在执行什么
 
-使用[完整批量命令](target-batch-rerun.md)，依次完成 AIR → OMC → 上板 → 回收 → 精度 CSV。页面定义各主机变量、处理 PARTIAL、检查 32 MiB runner，并保留未编译项。已有对应产物时从下一阶段继续。
+使用[完整批量命令](target-batch-rerun.md)，本轮从 AIR 重新开始；新增 `--target-config "$TARGET_CONFIG"` 绑定原 HF／W4 权重。随后 OMC → 上板 → 回收 → 精度 CSV，ConvState 失败不阻塞成功项。
 
 | 已收到的结果 | 数量 |
 |---|---:|
