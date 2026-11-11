@@ -1,141 +1,160 @@
-# 修正算子环境后：批量生成 OMC、上板与比较
+# Target 分模块全批：AIR → OMC → 上板 → 精度 CSV
 
-更新：2026-11-10。本页保留**现有 Target 边界小图批次的完整复测命令**。旧 `environment-recheck-001` 有 120 项编译成功并回传数值摘要；用户随后确认重导的 Norm／Conv 26 项全部编译成功，累计 **146/158 成功，剩余 ConvState 12 项**。新增项中 22 项数值已回传，另 4 项待回传；累计 142 项有数值摘要，当前结论见[状态表](target-accuracy-status.md)。已执行的批次和输出直接保留，不重复本页整批流程。
+本页按现有完成态 capture 导出**全部边界、全部输出**，不加模块筛选。当前 capture 为 L0–L3、Prefill T256／Decode T1，共 158 个 case；尚不包含 MoE 内部、LM head 或全部 40 层。每个小图独立使用捕获输入，不能据此验证整图误差传播或连续状态反馈。
 
-原 38 项检查及 Norm／Conv 重导编译均已完成。ConvState 的格式选项对照仍失败；`convstate-route-inspect-002` 已成功读取参考图，确认原图的 RefData／卷积消费者和 hybrid 构建路径，与小图不同。两边 `_executor_type`、端口 dtype／layout 相同，具体分流原因仍待最小对照，见[最新结果](target-compile-triage.md#已完成读取构建策略与图上下文)。不再重复参考图重读或整批编译。已有数值回传的 142 项无需重跑；其余 4 项优先回传已有 CSV，需要补测时使用实际新 OMC 批次的执行／回收／比较流程。
+AIR／OMC 单项失败会记录后继续；只要有成功 OMC 就可上板。ConvState 失败可以保留，最终覆盖仍显示不完整。最新结果和高危区域见[精度表](target-accuracy-status.md)。
 
-**新增 26 项的专用执行步骤见 [Norm／Conv 上板与比较](target-norm-conv-validation.md)**，包含变量初始化、单批 26 项／4＋22 分批选择，以及运行、回收和 CSV 比较命令。
+| 阶段 | 执行位置 | 输入 → 输出 |
+|---|---|---|
+| AIR | 原来可导出 CPro 算子的 TorchAir 环境；golden 在权重服务器 | 已完成 capture＋原 Target 源码／converter → `air/` |
+| OMC | 35 服务器的 custom_pypto／所选 DDK | 整个 `air/` → `omc/` |
+| 上板／回收 | 原来已配置 HDC 的主机；若就是 35，无需搬运 | runtime.json＋AIR／OMC → fixture＋native 输出 |
+| 比较 | 回收主机的模型 Python 环境 | fixture＋native → report.json／summary.csv |
 
-机器分工：DDK／OMG 在 **35 服务器**；310P golden 仍来自此前的**权重服务器**。TorchAir 导出使用已修正且能导出 CPro 算子的环境；上板命令在原来已配置好 HDC 的主机执行。比较使用本批自带的独立输入和 golden，不需要等待四层整图 dump 的自动映射。
+## 1. 各主机初始化
 
-这是已有边界批次的复测命令。[四层整图 dump](target-accuracy-status.md#3-主线四层整图一次-dump离线批量定位)仍是后续观察真实误差传播的方法；[compare_target_dump.py](target-dump-compare.md)用于那条整图路线。本页比较工具是 target_layer_probe.py compare，不混用两套输入清单。
-
-## 本轮已编译：从 prepare 失败处继续
-
-**历史恢复步骤：本批后续已有 120 项数值回传，当前无需再执行这一节。** 下方仅保留准备阶段失败时的处理方法；已启动的请求用原 execution 回收，不能重复启动。
-
-此前回传为 `compiled input shape/dtype changed: arg6_1`、`stage=prepare`、`device_execution=NOT_RUN`。旧检查器漏掉 `INT16/DT_INT16` 别名，合法 INT16 描述会被解析为未知 dtype 并误报不一致。`ff23e33` 补齐映射，保留严格的 shape/dtype 校验；发生真实差异时显示具体 case、expected/observed 和 schema 枚举名。42 项主机测试通过，包括误报复现、INT16 夹具原字节保留及真实不匹配拒绝。
-
-沿用当前 OMC_BATCH、RUNTIME_CONFIG、CPRO_DDK_ROOT 和 HDC 设置，更新代码后使用新的 execution 目录：
+进入**当前主机**的仓库，激活此前成功的 Python／vendor 环境后执行。35 上已知仓库为 `/home/w00949577/qwen3.5-35B-dflash`，默认运行根目录即其旁边的 `qwen3.5-35B-dflash-run`。权重服务器使用自己的实际目录。
 
 ```bash
-: "${REPO_DIR:?}" "${RECHECK:?}" "${OMC_BATCH:?}" "${RUNTIME_CONFIG:?}" "${CPRO_DDK_ROOT:?}"
+export REPO_DIR="$(git rev-parse --show-toplevel)"
 git -C "$REPO_DIR" pull --ff-only origin main
-
-export EXECUTION="$RECHECK/execution-002"
-export RECOVERY="$RECHECK/recovery-002"
-export COMPARISON="$RECHECK/comparison-002"
-
-python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --compiled "$OMC_BATCH" \
-  --config "$RUNTIME_CONFIG" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$EXECUTION" \
-  --apply
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/all-boundaries"
+export BATCH="$BATCH_ROOT/air"
+export OMC_BATCH="$BATCH_ROOT/omc"
+export COMPARISON="$BATCH_ROOT/comparison"
+export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+export EXECUTION="$AI_RUN_DIR/fused/target-boundary-execution"
+export RECOVERY="$AI_RUN_DIR/fused/target-boundary-recovery"
+export PYTHONDONTWRITEBYTECODE=1
 ```
 
-使用尚不存在的编号；保留旧 prepare 失败目录。此次不用重导 AIR、重编 OMC 或重建已有 INT16 runner，也不需要 recover 那个未启动的请求。新请求启动后按下方第 4／5 节回收、比较；若再次在 prepare 失败，只回传新的完整 error 字段即可看到真实接口差异。默认仍检查并运行全部 120 个 COMPILED 项，38 个未编译项保留为覆盖缺失。
+跨机器传输：AIR 导出后复制**整个 `BATCH` 目录**到 35 上同一角色路径；包括清单、schema、输入、golden 和权重 sidecar。若上板在另一主机，再把整个 `BATCH_ROOT` 传过去，保持 `air/` 与 `omc/` 相对位置；重新执行本节设置该主机路径。运行阶段不再需要原 checkpoint／capture。
 
-下面第 0～2 节供重新生成批次时使用；本轮无需重复执行。
+本次使用固定测试目录；AIR、OMC 和 comparison 输出必须不存在。复测前先完成原请求回收，再处理旧测试产物。编译失败不覆盖公共可运行模型。
 
-## 0. 更新代码并设置本轮目录
+## 2. 全部 AIR 导出
 
-在各执行主机沿用其真实 REPO_DIR、AI_RUN_DIR 和已经修正的环境。以下变量使用**当前主机**上的路径；跨机器迁移后重新设置，不能沿用另一台机器的绝对路径。已有同名复测目录时换新的编号。
-
-```bash
-: "${REPO_DIR:?}" "${AI_RUN_DIR:?}"
-git -C "$REPO_DIR" pull --ff-only origin main
-
-export RECHECK="$AI_RUN_DIR/target/tests/environment-recheck-001"
-export BATCH="$RECHECK/air"
-export OMC_BATCH="$RECHECK/omc"
-export EXECUTION="$RECHECK/execution"
-export RECOVERY="$RECHECK/recovery-001"
-export COMPARISON="$RECHECK/comparison-001"
-export RUNTIME_CONFIG="$AI_RUN_DIR/runtime/runtime.json"
-```
-
-保留原已跑通的 runtime 配置、native runner 和 HDC 设置。若 runtime.json 不在上述位置，修改 RUNTIME_CONFIG。若更换了 DDK 版本，runtime 配套 assets 中的 DDK 身份也必须与本批实际编译版本一致，不能为了绕过检查随意改版本标签。
-
-## 1. 按需要重新导出 AIR
-
-**错误算子若参与过 AIR 导出，本轮先重导。** 复用原权重服务器上可信的 capture，保持权重、输入、golden 和量化合同；不用为重编 OMC 重新采集已经确认正确的 310P 数据。
-
-在已修正的 TorchAir 导出环境中，设置 GOLDEN_CAPTURE 为已有完成态 capture 目录，TARGET_SOURCE 为原 Target 代码目录，CPRO_EXPORT_SCRIPT 为正确的原 CPro 导出脚本：
+`GOLDEN_CAPTURE` 沿用已成功采集的目录：其中 `manifest.json` 为 `CAPTURED`，并有 regions／weights；它不是原始权重、AIR 或 OMC 目录。`TARGET_SOURCE` 是原 Target 源码根目录，包含 models 和下述 converter。两个实际路径尚未在会话提供，下面要求保留／填写已有真实值，不猜路径。
 
 ```bash
-: "${GOLDEN_CAPTURE:?}" "${TARGET_SOURCE:?}" "${CPRO_EXPORT_SCRIPT:?}"
+: "${GOLDEN_CAPTURE:?请设置已有 CAPTURED 捕获目录}"
+: "${TARGET_SOURCE:?请设置原 Target 源码根目录}"
+export CPRO_EXPORT_SCRIPT="${CPRO_EXPORT_SCRIPT:-$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py}"
+
+(
+set -e
+test -f "$GOLDEN_CAPTURE/manifest.json"
+test -f "$CPRO_EXPORT_SCRIPT"
+test ! -e "$BATCH"
+export_rc=0
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --capture "$GOLDEN_CAPTURE" \
   --source-root "$TARGET_SOURCE" \
   --converter-script "$CPRO_EXPORT_SCRIPT" \
-  --output "$BATCH"
+  --output "$BATCH" || export_rc=$?
+
+python - "$BATCH/manifest.json" "$GOLDEN_CAPTURE/manifest.json" "$export_rc" <<'PY'
+import json, sys
+from collections import Counter
+r, capture = [json.load(open(p)) for p in sys.argv[1:3]]
+counts = Counter(c["status"] for c in r["cases"])
+expected = sum(len(c["outputs"]) for c in capture["regions"])
+print("AIR:", r["status"], dict(counts), "expected:", expected, "exit:", sys.argv[3])
+if (int(sys.argv[3]) not in (0, 1) or r["status"] not in ("EXPORTED", "PARTIAL")
+        or len(r["cases"]) != expected or not counts["EXPORTED"]):
+    raise SystemExit("AIR 未完成全批遍历或无成功项；先检查导出日志。")
+PY
+)
 ```
 
-不加 --points/--kinds，因此覆盖捕获清单中的全部可导出边界。导出入口只导入原脚本的 converter 定义，每个输出独立成图，不调用原四层／40 层整图导出 main。失败项和日志保留在 manifest.json 和 batch 根目录的各 case 日志中；PARTIAL 不代表全部失败。
+只有摘要检查成功才继续。PARTIAL 的退出码 1 在此被显式接收，仍核对完成态及全量 case 数；不会把中断当作完成。每个失败 case 的日志为 `$BATCH/<case>.log`。当前入口已包含 Norm gamma 预计算和 Conv 显式四维导出修正。
 
-将 **整个 BATCH 目录**迁移到 35 服务器，包括 manifest.json、models/ 下的 export.air、schema、fixture 和 weight sidecar；在 35 上把 BATCH 设为迁移后的路径。
+## 3. 全部 OMC 编译（35 服务器）
 
-如果已确认错误仅影响 OMG 实现选择、现有 AIR 是正确算子导出的，则跳过重导，改用已有目录，例如：
-
-```bash
-export BATCH="$AI_RUN_DIR/target/air-batch"
-```
-
-仅在确认该目录就是正确批次时使用此例。旧四层 AIR 与本页含 manifest.json 的小图 batch 不是同一入口。
-
-## 2. 在 35 服务器批量编译 OMC
-
-CPRO_DDK_ROOT、CPRO_DDK_ID 必须指向修正后的实际 DDK。激活已经修正的 DDK／算子环境，再执行下方命令；不把历史 147 服务器的安装路径直接套到 35。
+下面默认值来自本次已使用的 DDK；如已更换 DDK，设置其真实根目录和版本。使用 `isolated-kirinx90`、内嵌权重和原批次的 `use_origin_format=true`。工具会构造编译子进程环境，实际命令保存在各 case 中。
 
 ```bash
-: "${CPRO_DDK_ROOT:?}" "${CPRO_DDK_ID:?}" "${BATCH:?}" "${OMC_BATCH:?}"
-COMPILE_OPTIONS=()
-# 仅当当前 DDK 仍需要且诊断与当前包/库匹配时，取消下一行注释：
-# COMPILE_OPTIONS+=(--tbe-diagnosis "${TBE_DIAGNOSIS:?}")
-# 若本次已确认的编译配置要求保留原格式，取消下一行注释：
-# COMPILE_OPTIONS+=(--use-origin-format)
+export CPRO_DDK_ROOT="${CPRO_DDK_ROOT:-/home/l00886453/ddk_0806/image/hiai_ddk/ddk_internal}"
+export CPRO_DDK_ID="${CPRO_DDK_ID:-100.520.020.010}"
 
+(
+set -e
+test -x "$CPRO_DDK_ROOT/tools/tools_omg/master/omg"
+test -f "$BATCH/manifest.json"
+test ! -e "$OMC_BATCH"
+compile_rc=0
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
   --batch "$BATCH" \
   --output "$OMC_BATCH" \
   --ddk-root "$CPRO_DDK_ROOT" \
   --ddk-id "$CPRO_DDK_ID" \
   --compiler-profile isolated-kirinx90 \
-  "${COMPILE_OPTIONS[@]}"
-```
+  --use-origin-format || compile_rc=$?
 
-该入口构造 isolated-kirinx90 编译环境；实际选定的路径和命令保存在各 case 的 omc/omg-environment.json、compile-command.json、report.json 和 compile.log 中。修正外层 shell 不自动证明子进程选中了正确算子，复测时以这些实际记录为准。不要改用 sourced-wrapper-default：它是目标尚未确认的入口诊断，板端 fixture 准备会拒绝。
-
-小图使用内嵌权重 OMC。默认编译全部 EXPORTED 项；未导出项保留 NOT_EXPORTED，单图失败不会阻止后面的编译。PARTIAL 的 CLI 退出码为 1；逐节执行本页命令，检查下列摘要后再进入上板阶段：
-
-```bash
-python - "$OMC_BATCH/compile.json" <<'PY'
+python - "$OMC_BATCH/compile.json" "$compile_rc" <<'PY'
 import json, sys
 from collections import Counter
-with open(sys.argv[1]) as f:
-    report = json.load(f)
-counts = Counter(row["status"] for row in report["cases"].values())
-print(json.dumps({"status": report["status"], "cases": dict(counts)}, ensure_ascii=False, indent=2))
-if report["status"] not in ("COMPILED", "PARTIAL") or not counts["COMPILED"]:
-    raise SystemExit("本批没有可上板的完成态编译结果；检查各 case 的 compile.log。")
+r = json.load(open(sys.argv[1]))
+counts = Counter(c["status"] for c in r["cases"].values())
+print("OMC:", r["status"], dict(counts), "exit:", sys.argv[2])
+if (int(sys.argv[2]) not in (0, 1) or r["status"] not in ("COMPILED", "PARTIAL")
+        or r["coverage"] != "ALL_MANIFEST_CASES"
+        or set(r["cases"]) != set(r["selected_cases"]) or not counts["COMPILED"]):
+    raise SystemExit("OMC 未完成全批遍历或无成功项；先检查 compile.json。")
+print("下一步自动运行全部 COMPILED 项；FAILED / NOT_EXPORTED 保留。")
+PY
+)
+```
+
+单项日志：`$OMC_BATCH/models/<case>/omc/compile.log`。当前已知 ConvState 的格式开关对照仍失败，本批允许它继续失败；不改写报告，也不改用仅诊断的 `sourced-wrapper-default`。
+
+## 4. 批量上板
+
+在原 HDC 主机加载已有私有配置；没有配置文件时保留原终端中的 HDC／BIP／SN。BIP 是 HDC 服务端 IP:端口，SN 是设备序列号，均沿用此前成功值。若加载配置改变了 REPO_DIR／AI_RUN_DIR，重新执行第 1 节。
+
+```bash
+if test -f "${QWEN35_ENV_CONFIG:-$REPO_DIR/../qwen35-cpro.env}"; then
+  source "$REPO_DIR/targets/cpro/scripts/env.sh"
+fi
+export HDC="${HDC:-hdc}"
+: "${BIP:?沿用原 HDC 服务端 IP:端口}" "${SN:?沿用原设备序列号}"
+: "${CPRO_DDK_ROOT:?上板主机实际 DDK 根目录}"
+test -f "$RUNTIME_CONFIG"
+```
+
+沿用 runtime.json 与其中的 native_directory。**旧 runner 若仍是 16 MiB，先执行下面一次条件更新**；此前已成功更新为 32 MiB 且支持 INT16／输入复位时会直接复用。构建使用此前成功的 OHOS Native SDK／HIAI 环境，只重建运行器，不重编模型：
+
+```bash
+python - "$REPO_DIR" "$RUNTIME_CONFIG" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+repo, config = map(Path, sys.argv[1:])
+config = config.resolve()
+cfg = json.loads(config.read_text())
+native = (config.parent / cfg.get("native_directory", "native")).resolve()
+built = json.loads((native / "result.json").read_text())
+def ready(r):
+    return (r.get("status") == "LINKED"
+            and r.get("tensor_probe_limits", {}).get("max_io_bytes", 0) >= 32 << 20
+            and "int16" in r.get("tensor_probe_dtypes", [])
+            and "copy-each-call" in r.get("tensor_probe_input_reset", []))
+if not ready(built):
+    previous = json.loads((native / "command.json").read_text())
+    cmd = [sys.executable, str(repo / "targets/cpro/scripts/build_hiai.py"),
+           "--output", str(native), "--replace"]
+    api = previous.get("compatible_sdk_version_requested")
+    if api is not None:
+        cmd += ["--compatible-sdk-version", str(api)]
+    subprocess.run(cmd, check=True)
+    built = json.loads((native / "result.json").read_text())
+if not ready(built):
+    raise SystemExit("runner 尚未具备本批所需能力。")
+print("runner:", native, built["tensor_probe_limits"])
 PY
 ```
 
-有 COMPILED 项即可运行这些成功图；未编译项继续显示为覆盖缺失。不要删除失败项或改写 compile.json。
-
-## 3. 批量上板
-
-在已配置 HDC 的主机沿用 SN、BIP、HDC 和 RUNTIME_CONFIG。若需把结果从 35 搬到另一主机，**AIR batch 与 OMC batch 一起迁移并保持相对位置**；OMC 的 compile.json 通过 source_batch 引用 AIR 中的输入和 golden。相同主机不需要再复制。
-
-runner 已是此前支持 INT16 和每次调用恢复输入的版本时，直接复用。仅在工具明确提示旧 runner 缺少能力时，待其余任务结束，用原构建资源更新 runtime.json 中 native_directory 指向的目录。若它就是标准 runtime/native：
-
-```bash
-python "$REPO_DIR/targets/cpro/scripts/build_hiai.py" \
-  --output "$AI_RUN_DIR/runtime/native" --replace
-```
-
-**上面是条件步骤，不需要每次重建 runner。** 随后启动本批所有已编译图：
+上面检查成功后，启动一次：
 
 ```bash
 python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
@@ -146,47 +165,51 @@ python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --apply
 ```
 
-虽然历史文件名带 draft，该入口已支持 Target 边界清单。不加 --cases，会选择本批全部 COMPILED 项。每图 3 次预热、10 次采样，每次调用前恢复原输入，执行前按实际编译接口绑定槽位和 dtype。板端逐图运行，失败会停止后续图；成功执行过的输出仍可回收。
+不加 `--cases`，自动运行全部 COMPILED 项；每图预热 3 次、采样 10 次，每次恢复捕获输入。文件名虽然带 draft，入口已支持 Target。返回 `VECTOR_VALIDATION_STARTED` 表示已启动，随后回收同一个请求；中断或 PENDING 时也不重复 `--apply`。若某张图**板端运行**失败，当前运行器会停止后续图，已完成输出仍可回收；这与允许编译部分失败不同。
 
-同一 EXECUTION 只启动一次。如果终端中断或结果 PENDING，接下来回收这次请求，不再次 --apply。
-
-## 4. 回收这次运行
+## 5. 回收与全批精度比较
 
 ```bash
 python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$EXECUTION" \
-  --output "$RECOVERY"
+  --recover "$EXECUTION" --output "$RECOVERY"
 ```
 
-回收检查同一台设备、同一请求及 fixture 哈希，不重新执行模型。若仍为 VECTOR_VALIDATION_PENDING，保留原 EXECUTION，稍后使用新的 recovery-002 目录再次回收：
+若返回 `VECTOR_VALIDATION_PENDING`，稍后**重复同一回收命令**，不重新启动。这里的 recovery 位于支持安全复用的 `fused/` 固定槽位。回收可能因数值异常返回非零，但只要已经取得 native 输出，仍执行下面的完整 CSV 比较：
 
 ```bash
-export RECOVERY="$RECHECK/recovery-002"
-python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
-  --recover "$EXECUTION" \
-  --output "$RECOVERY"
-```
-
-RECOVERY 指向最后一次实际取得输出的目录。只在取得 native/ 后进入比较；不要将 PENDING 当作数值失败，也不要为了重新启动删除锁或旧请求。
-
-## 5. 批量数值比较，生成 CSV / JSON
-
-```bash
+(
+set -e
+test -d "$RECOVERY/native"
+test ! -e "$COMPARISON"
+compare_rc=0
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
   --fixture "$EXECUTION/fixture" \
   --native "$RECOVERY/native" \
-  --output "$COMPARISON"
+  --output "$COMPARISON" || compare_rc=$?
+
+python - "$COMPARISON/report.json" "$compare_rc" <<'PY'
+import json, sys
+from collections import Counter
+r = json.load(open(sys.argv[1]))
+print("comparison:", r["status"], "exit:", sys.argv[2])
+print("cases:", dict(Counter(c["status"] for c in r["cases"])))
+print("uncompiled:", len(r["uncompiled_cases"]))
+print("coverage_complete:", r["coverage_complete"])
+if int(sys.argv[2]) not in (0, 1):
+    raise SystemExit("比较程序异常退出，请检查报告。")
+PY
+)
 ```
 
-若已有冻结的浮点容差，可在同一命令中显式加 --atol 和 --rtol；本页不代填新阈值。默认浮点 METRICS_RECORDED，记录每次误差、非有限值、实际输出 dtype 和重复稳定性；CacheUpdate 对整缓存逐位比较。编译成功、运行成功和精度通过分别判断。
+默认浮点记录 `METRICS_RECORDED`，不自动判为通过；已有冻结容差时才同时加 `--atol`／`--rtol`。CacheUpdate 对整缓存逐位比较。编译缺项保存在 report.json 的 uncompiled_cases，CSV 包含已准备执行的 case；未执行／输出缺失会报 FAILED。CSV 的 relative_l2 是比值，**0.01 = 1%**；详细 JSON 记录全部 10 次调用，CSV 取首次调用指标及总体重复稳定性。
 
-查看／回传这些文件即可，不需要粘贴所有日志：
+最终只需查看／回传：
 
-| 文件 | 用途 |
+| 文件 | 内容 |
 |---|---|
-| $OMC_BATCH/compile.json | 全批编译结果、DDK 身份及未编译项 |
-| $RECOVERY/result.json | 请求完成状态、执行／回收和初步比较结果 |
-| $COMPARISON/report.json | 详细数值、重复稳定性、缺失项和首个失败边界 |
-| $COMPARISON/summary.csv | 按层、调用和模块浏览数值结果 |
+| `$OMC_BATCH/compile.json` | 全部编译状态 |
+| `$RECOVERY/result.json` | 执行／回收是否完成 |
+| `$COMPARISON/summary.csv` | 按层、阶段、模块的误差表 |
+| `$COMPARISON/report.json` | 全部调用指标、dtype、稳定性与覆盖缺项 |
 
-保留原 AIR batch 和 execution/fixture；后续更改报告展示或补充离线分析无需重新编译、上板。若要再次运行或重新比较，使用 execution-002／comparison-002 等新目录。本页命令已核对实际 CLI 和 Shell 语法；真实环境修正效果以用户新一轮回传为准。
+命令参数及语法已在主机核对；本页更新没有重新执行服务器导出、OMG 或设备任务。

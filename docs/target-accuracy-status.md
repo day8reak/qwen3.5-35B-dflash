@@ -1,35 +1,16 @@
 # Target OMC 与精度状态
 
-用户已回传[修正环境后的批量复测](target-batch-rerun.md)，并确认重导的 **Norm 20 项＋Conv1d 6 项全部编译成功**。累计 **146/158 项已编译，剩余 ConvState 12 项**。新收到其中 **22 项数值摘要（Norm 18、Conv1d 4）**，均为 `METRICS_RECORDED`、`dtype_preserved=True`、`stable=True`。合并原 120 项后，已有 **142 项数值回传：2 PASSED、2 FAILED、138 METRICS_RECORDED**；另 4 个已编译项尚无数值回传。
+更新：2026-11-11。此前累计 **146/158 项编译成功、12 项 ConvState 小图失败**；142 项已有数值（2 PASSED、2 FAILED、138 METRICS_RECORDED），另 4 个已编译项待回传。本次按[完整批量命令](target-batch-rerun.md)重测全部边界，允许编译缺项继续保留；尚无新一轮结果。
 
-更新：2026-11-10。本次 22 项误差较小、重复稳定，按用户安排降低这些边界的排查优先级，当前集中处理剩余 12 个 ConvState OMC 的编译错误。未设新的浮点验收门槛，保留原始 `METRICS_RECORDED`；四层整图 dump 保留为后续方案。此前 16 MiB 准备阶段限制已在工具中改为 32 MiB，随后收到本次 22 项结果，不再把这些项记为尚未运行。
-
-主机侧已提供[批量 dump 比较脚本](target-dump-compare.md)，复用原四层入口的捕获清单。当前支持显式映射和离线比较；CPro dump 尚无样例，自动格式适配与节点映射待首批元数据。
-
-本页整理用户提供的旧 compile.json、原 120 行比较摘要、新增 26 项编译成功的确认及本次 22 行 CSV。新增项的逐 case 编译报告和 OMC 哈希尚未回传，本地主机未连接服务器或板子重验原始文件。累计计数覆盖同一批 158 个边界输出图的最新结果，不修改旧批次记录，也不代表整模型或 MoE 覆盖率。编译、执行、数值验收和重复稳定性分别记录；没有预先确定的浮点容差时，只记录误差。
+数据来自用户回传的编译清单、成功确认与比较摘要，本地主机未重验原始 OMC／native 输出。计数是独立边界输出图，不能当作完整模型覆盖率或内核数量。没有冻结浮点容差的项目保持 METRICS_RECORDED。
 
 ## 算子风险 CSV
 
-已增加[Target 交互结构图 HTML](assets/target-architecture-interactive.html)及[静态 SVG](assets/target-architecture-accuracy.svg)，明确画出两次层内残差和层间直接传递，并可按层展开、按 Prefill／Decode 切换。HTML 下载后使用浏览器打开，点击节点查看[逐边界指标 CSV](../specs/target-boundary-metrics-20261110.csv)中的原始数据。按 relative-L2 >1% 标红：Prefill 28 项、Decode 23 项，共 51 个边界输出。该阈值用于图示筛选，不改写原有验收状态。
+[交互结构图 HTML](assets/target-architecture-interactive.html)可按层展开、切换 Prefill／Decode，包含层内两次残差与层间连接；下载后用浏览器打开。[静态 SVG](assets/target-architecture-accuracy.svg)和[逐边界指标 CSV](../specs/target-boundary-metrics-20261110.csv)一并保留。
 
-[下载／查看整图算子族风险清单](../specs/target-operator-accuracy-risk.csv)：**47 行，35 个边界分组＋12 个尚未覆盖的模型区域**。清单按原 Target 的 Linear Attention、Self Attention、MoE、模型 IO、状态和布局关系整理；当前没有完整编译节点清单，因此它是算子族／区域清单，不是逐 GE 节点或逐内核库存。新增 MoE 和模型 IO 行只描述覆盖缺口，实际是否在四层 AIR 内仍以导出入口和 dump 为准。
+图中以 relative-L2 >1% 标红：Prefill 28 项、Decode 23 项，共 51 个输出；该值只用于排查筛选，不改变验收状态。[算子族风险 CSV](../specs/target-operator-accuracy-risk.csv)共 47 行：35 个边界分组＋12 个覆盖缺口区域，包含 MoE、模型 IO 与状态反馈。它不是逐 GE 节点清单；覆盖缺口的 case 数 0 表示未测。CSV 中 relative_l2 是比值，乘 100 才是百分比。
 
-CSV 的数量列均指本批**边界输出 case 数**，不能当作整图节点数。累计仍为 158 个 case、146 个编译成功、12 个编译失败、142 个有数值、51 个明显异常。覆盖缺口行的 case 数为 0，表示未纳入本批，不表示整图没有这些算子。所有指标来自独立小图的 Prefill T256／Decode T1；成功四层整图是另一个 T64 用例，尚无整图精度结论。指标极值分别取各列最小／最大值，不一定来自同一个 case；原 120 项保留用户摘要精度，新 22 项取原 CSV。
-
-| CSV risk | 含义 | 处理 |
-|---|---|---|
-| HIGH_NUMERICAL | 已观察到明显数值异常，共 51 个 case | P0：量化投影与 Decode Cache；P1：RoPE、Prefill GDN／Attention |
-| MEDIUM_STATE_DTYPE | Decode GDN raw state 3 项误差较小但 dtype 改变 | P2：核对状态精度合同与连续反馈 |
-| COMPILE_BLOCKED | ConvState 小图 12 项仍未编译，精度未知 | C0：当前编译主线，独立于精度优先级 |
-| LOW_OBSERVED | 已回传部分误差较小或为零 | P3：暂降低定位优先级；保留原始数值状态 |
-| NOT_MEASURED | 本分组已编译，但尚无数值回传 | P2：补齐已有报告 |
-| UNTESTED_HIGH_ATTENTION／UNTESTED | 未覆盖的整图区域；前者包含量化、离散路由、状态及布局等重点 | P2：补覆盖；没有证据将其登记为精度失败 |
-
-筛选 `risk=HIGH_NUMERICAL` 可得到已知高危清单，筛选 `UNTESTED_HIGH_ATTENTION` 可看到需要重点补测的 MoE 等区域。P0→P3 是精度排查顺序，不改变当前优先完成 C0 编译定位的安排。`relative_l2_ratio_*` 是**比值**，乘 100 才是百分比；`dtype_preserved`／`stable` 只描述已有指标的 case。缺项列单列 4 个已编译未回传项。UTF-8 BOM 编码便于 Excel 打开中文。
-
-算子族名称依据本地保留的原 Target 源码与用户成功整图日志整理，融合／别名可能一对多或多对一；不由边界输出直接给内部 DynamicQuant、MatMul 或布局节点定责。原源码参考版本 SHA256 为 `bd716718818b6b152ece5a2e345a5b674f091f53ba82059c86cd37060511f07d`，尚未核对为服务器当前版本。后续应从同一次整图 dump 找到输入匹配而输出首次异常的区域，再缩小到算子。
-
-## 1. 当前捕获边界批次
+## 当前捕获边界批次
 
 范围：原模型第 0～3 层，已捕获的 Prefill T256／首次 Decode T1。旧完整批次记录的 DDK 为 `100.520.020.010`，平台 `kirinx90`，profile 为 `isolated-kirinx90`，保留 `use_origin_format=true`、内嵌权重；其 compile.json 为 `PARTIAL`、`ALL_MANIFEST_CASES`，`diagnostic_only=false`。下表将新 26 项成功确认计入累计覆盖，新批次的实际配置以其报告为准。
 
@@ -48,12 +29,6 @@ CSV 的数量列均指本批**边界输出 case 数**，不能当作整图节点
 | ConvState 两个输出 | 12 | 0 | 12 | NOT_RUN |
 | Conv1d | 6 | 6 | 0 | 4 项 METRICS_RECORDED，dtype 保持且稳定；另 2 项待回传 |
 | **合计** | **158** | **146** | **12** | **142 项有数值回传，另 4 个已编译项待回传，不能记整批精度通过** |
-
-旧完整批次 manifest SHA256 为 `9f433d0092c93f5c156a5c6ab59d6d603dcef338b8132dc28b1e0f77fcf1b1e2`，source_batch 为 `../../../air-batch`。其 38 项检查摘要确认：Norm 仍含 Add 并在 Add 计算／tiling 失败，Conv 在输入／filter rank 检查失败，ConvState 在 format config 获取失败。用户随后确认重导 Norm／Conv 的 26 项已编译成功；上述旧 manifest 哈希不用于标识新 AIR。下一步只定位 ConvState，并保留所有成功模型。
-
-代表产物：`l00_c00_gdn_o0` 70306 字节，SHA256 `9b4a621df37bdb583c85e212efc07e5e4fc28b898468b83170d2923a3a1d2352`；`l00_c00_linear_attn_in_proj_qkv_o0` 8698908 字节，SHA256 `45d90205590770405d2f08e756f256ddddf2b34cd106157c824ab9ba3ebb96d8`。哈希来自此前编译回传；本次比较摘要按相同层／调用／point／输出对应登记，尚未重新核验原始文件链。
-
-此前 prepare 的 `arg6_1` 报错已在 `ff23e33` 修复检查器遗漏的 `INT16/DT_INT16` 映射。后续回传已覆盖 120 个编译成功项的数值结果，该准备阶段阻塞不再是当前进度。
 
 ### 高危算子重点定位表
 
@@ -114,149 +89,12 @@ GDN 的原始 relative-L2 如下，均稳定；core 的 dtype 保持，raw state
 | Conv1d，Prefill | 2 | 0.007720947～0.008674622 | 0.026080%～0.027210% |
 | Conv1d，Decode | 2 | 0.003479003～0.004500389 | 0.021476%～0.026757% |
 
-这批结果没有新增明显异常边界，当前优先处理 ConvState 编译。仍缺数值回传的 4 项是 `l00_c00_input_layernorm_o0`、`l03_c00_self_attn_q_norm_o0`、`l00_c00_conv1d_o0`、`l00_c01_conv1d_o0`；它们已编译成功，不将缺少 CSV 解释为运行失败。缺项范围与此前 4 项代表批次一致，但没有其数值数据时不代填结论。
+这批结果没有新增明显异常边界。仍缺数值回传的 4 项是 `l00_c00_input_layernorm_o0`、`l03_c00_self_attn_q_norm_o0`、`l00_c00_conv1d_o0`、`l00_c01_conv1d_o0`；它们已编译成功，不将缺少 CSV 解释为运行失败。缺项范围与此前 4 项代表批次一致，但没有其数值数据时不代填结论。
 
-| 类别 | 具体边界 | 范围 | case 数 | 目前可下的结论 |
-|---|---|---|---:|---|
-| 普通 Norm | input_layernorm | L0–L3，c00／c01 | 8 | 全部已编译；7 项数值已回传，L0 Prefill 待回传 |
-| 普通 Norm | post_attention_layernorm | L0–L3，c00／c01 | 8 | 全部已编译、数值已回传 |
-| 普通 Norm | self_attn_q_norm／self_attn_k_norm | L3，c00／c01 | 4 | 全部已编译；3 项数值已回传，Prefill Q Norm 待回传 |
-| ConvState | convstate_update，o0／o1 | L0–L2，c00／c01 | 12 | 小图在 builder／format config 失败；成功整图已调用专用 builder 并保存 executor，构建路径差异待定位 |
-| Conv1d | conv1d，o0 | L0–L2，c00／c01 | 6 | 全部已编译；L1–L2 共 4 项数值已回传，L0 两阶段待回传 |
-| **合计** | **原 38 项** | | **38** | **新增 26 成功，剩余 12 项 ConvState 失败** |
+## 后续定位
 
-[ConvState 成功整图对照](target-compile-triage.md#成功整图提供的对照)已确认专用 graph builder 调用、executor 内核保存和整图 OMC 保存成功；早期候选支持拒绝也存在于成功路径。L0 两阶段取消 `use_origin_format` 的对照仍失败。最新 `convstate-route-inspect-002` 已读出成功参考图：两边 `_executor_type=1`，端口 dtype／layout 相同，成功图具有 RefData 状态输入和卷积消费者，并进入 hybrid 构建路径；小图为普通 Data、单输出，走 single 构建路径。触发条件尚未证实，12 项没有新增编译成功。[最新对照与下一步](target-compile-triage.md#已完成读取构建策略与图上下文)已更新。Norm／Conv 有数值回传的 22 项无需重跑；其余 4 项优先回传已有 CSV，[执行与比较命令](target-norm-conv-validation.md)保留。MoE、四层整图精度和连续状态反馈仍未验证。
+先独立检查表中的四类自定义算子及 RoPE；ConvState 编译对照见[剩余编译问题](target-compile-triage.md)。量化链路中的 DynamicQuant、权重／scale、布局与输入绑定尚未拆开验证，不能仅凭边界输出定责 QuantBatchMatmulV4444 内核。
 
-### 旧环境编译记录
+若要观察真实误差传播，使用同一输入、状态和长度的四层整图 dump，按[离线比较入口](target-dump-compare.md)绑定节点。已有成功整图为 T64，不能直接用本批 T256 golden 截断替代；MoE、LM head 和连续状态反馈仍待覆盖。
 
-下面保留 `accuracy-find`、入口对照 `accuracy-entry-compare-004` 和 `accuracy-gdn-origin-005` 的历史结果；其中 QLinear／GDN、Norm／Conv1d 的旧编译失败均已有后续成功结果，当前状态以上方累计表为准。
-
-| 模块／case | OMC 编译 | 设备执行 | 精度结论 | 当前证据与处理 |
-|---|---|---|---|---|
-| 普通 Norm：input/post-attention、Q/K Norm | 旧导出失败；修正后待回传 | 失败项未运行 | 未验证 | gamma 的 FP16 Add 常量计算／tiling 失败；已实现 gamma 预计算，尚无新 DDK 成功证据 |
-| QLinear：`l00_c00_linear_attn_in_proj_qkv_o0` | 失败；入口对照仍失败 | 未运行 | 未验证 | 原日志输出推为 `[256,1024]`，Reshape 要求 `[1,256,8192]`；逻辑宽度与 packed INT32 载体宽度需核对 |
-| 其他量化投影、out_proj | 本页未取得完整逐 case 状态 | 未确认 | 未确认 | 004 对照中 z/b/a 为 `NOT_SELECTED`，不等于失败，也不等于其他批次未编译 |
-| ConvState：`l00_c00_convstate_update_o0` | 失败；入口对照仍失败 | 未运行 | 未验证 | 原日志在 format/implementation 配置阶段失败；第二输出须单独核对 |
-| Conv1d | 旧导出失败；修正后待回传 | 失败项未运行 | 未验证 | Conv2D 输入三维、filter 四维；已实现显式补高度维的等价导出 |
-| GDN：`l00_c00_gdn_o0` | 失败，SIGSEGV；加 origin-format 仍失败 | 未运行 | 未验证 | 最新 005 记录见下文；与历史成功探针不是同一合同 |
-| Gated Norm：`linear_attn_norm` | 已回传成功 | 数值回传摘要待逐 case 绑定 | 尚不能登记数值通过 | 使用直接 gamma 路径；不能由此宣布普通 Norm 通过 |
-| SiLU、decay/beta、attention 布局恢复及 gate 等 | 未取得完整逐 case 状态 | 未确认完整覆盖 | 未确认完整覆盖 | 保留原批次；优先从四层 dump 补齐实际覆盖 |
-| MoE 专家计算 | 未纳入本轮小图导出 | 未运行本轮小图 | 未验证 | 四层整图内实际存在的 MoE 节点纳入 dump 检查；尚不宣称已覆盖 |
-
-以下是此前会话回传摘要中的数值线索。当前仓库没有对应完整逐 case 报告及 OMC 哈希绑定，单列为“摘要待绑定”，不计入已核验 PASS 数量，也不套用到上表的 004／005：
-
-| 模块 | 摘要中的编译／执行情况 | 摘要中的数值情况 | 登记状态 |
-|---|---|---|---|
-| repeat Q/K | 已有可执行 OMC 的结果 | 与捕获参考完全一致 | 摘要报告一致；待绑定层、阶段、case 和原报告 |
-| recurrent state 回写转换 | 已有可执行 OMC 的结果 | 与捕获参考完全一致 | 同上；不代表 GDN 计算或连续状态反馈通过 |
-| residual add | 已有可执行 OMC 的结果 | 与捕获参考完全一致 | 同上；不代表整层通过 |
-| 激活／门控 Norm | 已有数值结果摘要 | 小误差 | 只有误差线索，没有已确认验收结论 |
-| Self Attention RoPE | 已有数值结果摘要 | relative-L2 约 0.18～0.20 | 明显偏差线索；具体 Q/K、层及阶段待原报告绑定 |
-| FusedAttention | 已有数值结果摘要 | 大误差／不稳定 | 待原报告复核；不能记通过 |
-| Decode CacheUpdate | 已有数值结果摘要 | 缓存逐位不一致 | 失败线索；与下表独立 CacheUpdate 诊断分开保留 |
-
-**旧环境 GDN 005 的确定结论：**相同 6361 字节 AIR（SHA256 `4cbc27e1ac15809e25ceb48bb865cc12844d5a06d0b60fc2c98075c6b10abd12`），DDK `100.520.020.010`，`isolated-kirinx90` 加 `--use_origin_format=true` 后仍返回 `-11`。CastT prebuild 成功，最后完整主进程日志进入 `ChunkGatedDeltaRule OpPreBuild`；这不能确定崩溃函数。TBE 审计事件为 `PASSTHROUGH`，请求／原生 SOC 都是 Ascend310B1，不能套用此前平台名称错误的修复结论。空的 `*_bt.log` 没有调用栈证据。本轮停止无新证据的同参数重试。
-
-小图以各自独立捕获的 310P 输入运行，不能把它们的误差自动解释为上游误差传播。整图 dump 才能观察同一次执行中的真实传播关系。
-
-## 2. 已成功编译的历史 OMC
-
-这些产物可复用，但其成功范围不转移给新的 AIR、dtype、shape 或状态接口。
-
-| OMC／来源 | 编译 | 设备执行 | 数值验收 | 重复稳定性／范围 |
-|---|---|---|---|---|
-| 2026-11-09 GDN T64，六输入、FP16 双输出 | 成功 | 完成 | `METRICS_RECORDED`；未校准容差 | 零／非零初态各 10 次有限且逐字节稳定 |
-| 2026-11-09 GDN T1，同上 | 成功 | 完成 | `METRICS_RECORDED`；未校准容差 | 零／非零初态各 10 次有限且逐字节稳定 |
-| 2026-11-09 CacheUpdate T64 | 成功 | 完成 | 整缓存逐位比较失败 | 连续／置换块两例均 10 次有限且稳定；返回 cache 合同待与 RefData 对齐 |
-| 2026-11-09 CacheUpdate T1 | 成功 | 完成 | 整缓存逐位比较失败 | 块尾／块首两例均 10 次有限且稳定；写入区正确不等于整缓存通过 |
-| 2026-10-27 GDN prefill8／decode1，七输入融合探针 | 两张成功 | 后续已回传加载／执行成功 | 后续结果存在明显偏差，未通过 | 不能宣称七输入本身不可编译；与当前 T256、FP32 g 的图不同 |
-| 用户此前 40 层多 shape 整网 OMC | 用户报告曾编译成功 | 本页没有对应绑定结果 | 本页未确认 | 原命令包含动态 T64／T1、80 个 RefData；不能证明 T256 小图必然可编译 |
-| 用户本次提供的 4 层 T64 整图 | 成功日志已回传：OMG 保存 OMC 及外置权重成功 | 本轮待确认 | 本轮待比较 | 成功图已读到 ConvState 专用 builder／executor；OMC 哈希和历史运行文件绑定待核验，复用已有产物 |
-
-11-09 四张 OMC 和详细数值见[历史设备回传](current-status.md#本轮设备结果与下一步)。GDN 相对 L2（core／state）分别为 T64 零初态 0.36166%／0.06612%、T64 非零初态 0.61187%／0.08209%、T1 零初态 0.05123%／0.05066%、T1 非零初态 0.05012%／0.05029%。这组参考是独立诊断参考，并非本次四层 310P golden。
-
-已回传的 GDN T64 OMC SHA256：`c74fde9447192d08c9c72d0220c975f9280e322bfe64ff814497093b984c5fa4`；T1：`b96815646df5937aeaee3d6cb7cd4ec09130dfacb2b9b2e2215c9ecfb19b69d8`。早期七输入成功和后续数值失败分别见[编译记录](history/validation.md#融合gdn最新真实编译回传)与[板端记录](history/validation.md#自定义算子调用覆盖与gdn板端回传)。
-
-## 3. 主线：四层整图一次 dump，离线批量定位
-
-整图保留实际上下游连接、融合和 RefData 状态关系，直接检验真实执行路径。独立单输出小图会改变这些条件：小图不编译，不足以判断整图的对应模块也无法执行；整图编译成功也不证明精度通过。
-
-执行顺序：
-
-1. **锁定同一个四层 T64 用例。** 310P 与 X90 使用相同 checkpoint、W4 权重、token、有效长度、position、mask、页表、初始 conv/recurrent/KV state。沿用已工作的 `run_model_prefill.sh` 输入顺序、dtype、加载方式和外置权重目录。现有 T256 golden 不能直接截断后充当 T64 golden；若已有对应 T64 golden 则复用，没有才采集该四层用例。
-2. **复用或编译一次四层 OMC。** 成功后保留 OMC 及全部引用 sidecar；无需先修好所有独立小图。本轮不导出／编译 40 层。
-3. **运行同一个 Prefill，用 `--enable_item=2` dump 算子输入输出。** 沿用工作脚本的真实调用，在副本中增加开关，并把输出指向本次独立目录。处理、拉回本轮 dump 后，后续分析直接读取这份数据。
-4. **先查第 0～3 层输出，再沿首个异常层的数据依赖定位。** 同一次 dump 可反复离线比较 Norm、投影、ConvState、Conv、GDN、Attention、残差与 MoE 的可观测边界。使用图拓扑／依赖关系，不能按日志时间顺序判断首个错误。
-5. **只重放已经缩小的异常区域。** 若输入已匹配而输出偏离，在保留必要 RefData、双输出、消费者和 dtype 的最小连续子图中定位；有 SIGSEGV 再抓该次真实调用栈。未缩小范围时不继续轮流尝试编译参数。
-
-| dump 比较结果 | 下一步 |
-|---|---|
-| 输入匹配，输出在冻结容差内匹配 | 该次调用、该边界通过；不推广到其他长度或状态 |
-| 所有相关输入匹配，输出超差 | 首个局部候选；检查权重／属性、实现选择、布局转换及内核 |
-| 输入已经超差，输出也超差 | 回溯输入生产者；先保留误差，不直接认定当前算子有错 |
-| 普通输入匹配，但状态／控制输入未核对 | 仍不能认定局部计算错误；核对 RefData、有效长度及页表 |
-| 融合内部张量未导出 | 先比较融合区域的输入输出；必要时只增加该区域的观测 |
-| 编译或运行未完成／dump 缺失 | 记录对应阶段失败／覆盖缺失，不记数值通过 |
-
-整数索引、token、控制字段按精确值／字节核对。浮点张量记录 max-abs、RMSE、relative-L2、cosine 和非有限值数，并按已冻结的各类容差判断；“输入足够接近”需保留实际误差，不能冒充相同输入。没有容差的项目保持 `METRICS_RECORDED`。
-
-映射表至少保留：层号、Python 边界、编译节点／融合区域、输入／输出端口、真实 dtype、物理布局、逻辑 shape、有效范围、dump 文件及哈希。Q/K/V 不按相同 shape 猜槽位；NZ／padding 按已验证规则解包；packed INT4 或编码 scale 不按容器 dtype 做数值强转。融合和量化中间值没有一一对应参考时，先验证区域边界，不强行逐文件对齐。
-
-第一轮仅定位一次 Prefill。它不能证明 Decode、部分有效长度或连续状态反馈正确；Prefill 定位完成后复用方法检查一次 Decode 和状态回灌。dump 模式的耗时不作为性能结果。
-
-## 4. 用户服务器执行入口
-
-DDK／OMG 编译在用户指定的 **35 服务器**执行；310P 推理和 golden 仍在此前的**权重服务器**。`10.136.166.147` 是历史参考命令来源，不是本轮 DDK 执行机。35 的完整地址不在此猜测。
-
-下方 `TARGET_PREFILL_DIR`、`CPRO_DDK_ROOT`、`FOUR_LAYER_AIR` 分别填写 **35 服务器**上的实际工作目录、DDK 根目录和四层 AIR 路径；相对 AIR 路径以工作目录解析，保留引用权重。历史示例的 `/home/l00886453/DDK` 与此前失败的 `/home/l00886453/ddk_0806` 不能未经核对就当作 35 上的安装路径。保留实际路径／哈希。原命令省略 target/platform，保留其已知工作条件做整图对照，最终目标和实现归属以实际编译／运行证据核对。
-
-**已有可运行四层 OMC 时跳过转换。** 需要编译时，使用原 AIR 所在工作目录和全新输出目录：
-
-```bash
-(
-set -e
-cd "${TARGET_PREFILL_DIR:?}"
-: "${CPRO_DDK_ROOT:?}" "${FOUR_LAYER_AIR:?}"
-FOUR_RUN="${AI_RUN_DIR:?}/target/tests/four-layer-dump-001"
-test ! -e "$FOUR_RUN"
-mkdir -p "$FOUR_RUN"
-df -h "$FOUR_RUN"
-
-source "$CPRO_DDK_ROOT/tools/tools_ascendc/set_ascendc_env.sh"
-readlink -f "$CPRO_DDK_ROOT" > "$FOUR_RUN/ddk-path.txt"
-sha256sum \
-  "$CPRO_DDK_ROOT/tools/tools_omg/omg" \
-  "$CPRO_DDK_ROOT/tools/tools_omg/master/omg" \
-  "$FOUR_LAYER_AIR" > "$FOUR_RUN/compile-input.sha256"
-
-"$CPRO_DDK_ROOT/tools/tools_omg/omg" \
-  --model "$FOUR_LAYER_AIR" \
-  --output "$FOUR_RUN/qwen3_5_35B" \
-  --framework 1 --limit_partition_size=false \
-  --save_weights_as_external_data=true > "$FOUR_RUN/omg.log" 2>&1
-)
-```
-
-这段仅执行转换并保留日志；还需核对新生成的 OMC、sidecar 和编译成功记录，不能只看 wrapper 退出码。此前提供的 wrapper 末尾是 `exit $result`，未明确接收 OMG 的退出码。输入 AIR 的外部权重引用继续按原目录解析，不能只拷贝 AIR 到空目录。
-
-板端使用新目录，例如 `/data/local/tmp/qwen3_5_moe/prefill/four-layer-dump-001/`，完整发送模型包及外置权重；保留旧的可运行模型。以原 `run_model_prefill.sh` 的实际底层命令为准，下面展示需要的参数形态，尖括号必须替换为原脚本中的真实值，不能直接运行：
-
-```text
-/data/local/tmp/tools_sysdbg/model_run_tool_internal \
-  --model=<本次四层OMC绝对路径> \
-  --input=<原脚本已验证的有序输入文件列表> \
-  --output_dir=<本次输出目录> --enable_item=2 \
-  <保留原脚本中的其余必要参数>
-```
-
-原脚本如设置迭代次数或状态初始化，首轮固定为一次 Prefill，避免多次调用混入同一 dump。当前已知用法来自用户提供的工作命令；工具的具体输出命名／目录仍按所选版本实际结果处理。`--enable_item=1` 的性能采集不能替代这里的 IO dump。
-
-随后按用户给出的处理入口，在设备上执行：
-
-```bash
-/data/local/tmp/tools_sysdbg/data_proc_tool_internal --result_path=/data/local/tmp/
-```
-
-保留运行前后的文件清单和日志，确认本轮实际生成的 dump 目录，再用 `hdc file recv` 拉回该目录。不能假定 `output_dir` 就是所有原始 dump 的位置，也不要把 `/data/local/tmp/` 中历史 dump 混为本轮数据。
-
-一次回传所需的是：四层编译结果／已有 OMC 身份、原运行脚本中的真实命令和有序输入说明、dump 文件清单及张量描述、对应 T64 的 310P golden 清单。模型权重和大体积张量留在服务器；GitHub 只保存状态表、比较摘要和证据索引。目前尚未取得本工具版本的 dump 样例，因此还没有声称自动解析和数值对齐已完成。已有逐位通过的独立结果继续保留，新的整图结果按本次 OMC、输入和状态单独登记。
+旧环境失败与历史单算子记录见 [Git 历史](https://github.com/day8reak/qwen3.5-35B-dflash/blob/459060e/docs/target-accuracy-status.md)。

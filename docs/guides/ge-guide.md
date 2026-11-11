@@ -7,7 +7,7 @@
 
 本路径使用 Python/NumPy 描述图，生成 C++ 并调用 GE 保存 AIR，不经过 PyTorch/TorchAir。先按[环境配置](environment-setup.md)激活 `custom_pypto` 并加载项目配置；以下使用当前环境的 `python3`。
 
-当前优先复用用户已导出的完整AIR及64/1动态档位，使用 [当前整模编译命令](../current-status.md#用户现在执行什么) 中的 `compile_full_target.py`。该入口保留量化图及外置权重选项，复用已完成TBE诊断；不重建权重、不运行探针，不假定原AIR满足本仓库runner ABI。默认从当前DDK的实际 `master/omg` 编译并尝试提取真实图接口。
+原量化 Target 使用[完整模型流程](../run-end-to-end.md)中的 `compile_full_target.py`；已有 AIR 可从对应编译步骤继续，Prefill／Decode 分别编译。当前分模块精度测试使用[批量验证入口](../target-batch-rerun.md)，不与本页自建 GE 图混用。
 
 下方自建GE入口覆盖完整构图和FP16转换诊断，尚未实现32GB板端所需的完整W4A8映射。近期里程碑是target普通prefill/decode，再接DFlash；下面的FP16命令是接口参考，不是已可上板的量化整模流程。`prepare_full_target.py` 为备用流式逻辑INT4/INT8缓存准备器，支持 `--resume` 校验复用，但尚未完成I4ZN/QPARAM硬件打包；有原AIR时不需先执行它。
 
@@ -62,7 +62,7 @@ python3 "$GE_MODEL_TOOL" export-stateful \
 
 ## 状态图：编译和输入打包
 
-编译只接受真实 `EXPORTED` AIR；保留 AIR、外部权重和导出目录原路径。以下打包 S=3/T=0 的 prefill，完成后按[板端单步模式](board-guide.md#6-新状态图的单步执行)执行。
+编译只接受真实 `EXPORTED` AIR；保留 AIR、外部权重和导出目录原路径。以下打包 S=3/T=0 的 prefill，完成后按[板端单步模式](board-guide.md#2-新状态图的单步执行)执行。
 
 ```bash
 python3 "$GE_MODEL_TOOL" compile-stateful \
