@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Qwen3.5 Target · 层间连接 / Prefill / Decode</title>
+<style>
+:root{color-scheme:light;--bg:#f4f7fb;--ink:#182c46;--muted:#61738b;--blue:#235d9a;--red:#b42339;--purple:#7541a6;--teal:#176f64;--border:#dbe4ee}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",system-ui,sans-serif}main{max-width:1660px;margin:auto;padding:32px 28px 80px}h1{font-size:32px;margin:8px 0 10px}h2{font-size:23px;margin:0 0 12px}h3{font-size:19px}p{line-height:1.7;margin:8px 0}.muted,.hint{color:var(--muted)}.hint{font-size:14px}.toolbar{position:sticky;top:0;z-index:10;background:#f4f7fbf5;backdrop-filter:blur(12px);padding:15px 0;display:flex;gap:12px;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--border)}button,select{font:inherit;border:1px solid #bccbdc;background:white;color:var(--ink);border-radius:9px;padding:8px 13px;cursor:pointer}button:hover{background:#eaf1fb}button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #4282bf;outline-offset:3px}.tabs{display:flex;border:1px solid #bccbdc;border-radius:10px;overflow:hidden}.tabs button{border:0;border-radius:0}.tabs button[aria-pressed=true]{background:var(--blue);color:white}.card{background:white;border:1px solid var(--border);border-radius:16px;padding:22px;margin:20px 0}.legend{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}.pill{font-size:13px;padding:5px 10px;border-radius:20px;display:inline-block;background:#eff3f8;color:#52677e}.bad{background:#fff0f2;color:var(--red)}.low{background:#edf8f5;color:var(--teal)}.blocked{background:#fff4dc;color:#916017}.purple{background:#f4edfb;color:var(--purple)}.blue{background:#eaf2fc;color:var(--blue)}
+.formula{background:#f5f0fc;border-left:4px solid var(--purple);padding:12px 18px;line-height:1.9;border-radius:7px;font-family:ui-monospace,monospace;font-size:16px}.svg-scroll{overflow-x:auto}.diagram{display:block;width:100%;height:auto}.diagram [data-points]{cursor:pointer}.diagram [data-points]:hover rect{stroke-width:3}.phase-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.phase-grid.single{grid-template-columns:1fr;max-width:900px;margin:auto}.phase-pane{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#fcfdff}.phase-title{padding:12px 16px;background:#eaf2fc;color:var(--blue);font-size:18px;margin:0}.phase-pane.decode .phase-title{background:#f3edfb;color:#7541a6}.navigator{display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:8px}.nav-layer{text-align:left;padding:9px;font-size:14px}.nav-layer small{display:block;font-size:11px;color:var(--muted);margin-top:4px}.nav-layer[aria-expanded=true]{border-color:#235d9a;background:#eaf2fc}.layer-card{border:1px solid var(--border);border-radius:13px;background:white;margin:0}.layer-card>summary{padding:17px 20px;font-size:19px;cursor:pointer;display:flex;gap:13px;align-items:center;flex-wrap:wrap;list-style:none}.layer-card>summary:before{content:"＋";color:var(--blue);font-weight:700}.layer-card[open]>summary:before{content:"−"}.layer-card[open]>summary{border-bottom:1px solid var(--border)}.layer-body{padding:20px}.interlayer{text-align:center;color:var(--blue);padding:9px;font-size:13px}.connection{background:#edf4fc;padding:10px 14px;border-radius:8px;color:var(--blue);font-size:14px}.region{border:1px solid var(--border);border-radius:9px;margin-top:16px}.region>summary{padding:13px;cursor:pointer;font-weight:600}.region-body{padding:12px}.table-scroll{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--border);white-space:nowrap}th{background:#f2f5fa}tr.over td.metric{color:var(--red);font-weight:bold}a{color:var(--blue)}dialog{border:1px solid var(--border);border-radius:14px;max-width:min(1100px,94vw);max-height:85vh;padding:24px;overflow:auto;box-shadow:0 20px 90px #182c4640}dialog::backdrop{background:#172b4680}.dialog-header{display:flex;gap:20px;align-items:center;justify-content:space-between}.notice{border-left:4px solid #c8943e;background:#fff8eb;padding:12px 18px;border-radius:5px}footer{color:var(--muted);font-size:14px;margin-top:25px;line-height:1.8}.tools-right{margin-left:auto}#toast{min-height:20px;color:var(--teal);font-size:13px}
+@media(max-width:900px){main{padding:18px 12px 50px}h1{font-size:25px}.navigator{grid-template-columns:repeat(5,minmax(0,1fr))}.phase-grid{grid-template-columns:1fr}.toolbar{position:static}.card{padding:14px}.layer-body{padding:10px}.shell-svg{min-width:1050px}.overview-svg{min-width:1000px}.tools-right{margin-left:0}}
+@media print{.toolbar,.navigator,button{display:none}body{background:white}.card{break-inside:avoid}.layer-card:not([open]){display:none}.interlayer{display:none}}
+</style>
+</head>
+<body><main>
+<header><p class="hint">QWEN3.5-35B-A3B · TARGET · X90 / kirinx90</p><h1>层间连接、层内残差与 Prefill / Decode</h1><p class="muted">40 层文本主干；每四层为 3 × GDN + 1 × 全注意力，每层都有 MoE。点击层号展开，切换阶段查看独立的状态流和误差。</p></header>
+<div class="toolbar" aria-label="图表控制">
+<div class="tabs" aria-label="阶段"><button data-mode="compare" aria-pressed="true">Prefill / Decode 对比</button><button data-mode="prefill" aria-pressed="false">仅 Prefill</button><button data-mode="decode" aria-pressed="false">仅 Decode</button></div>
+<button id="expand-tested">展开已测 4 层</button><button id="collapse-all">收起全部层</button><button id="export-svg" class="tools-right">导出当前展开图 SVG</button>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div class="legend"><span class="pill bad">红：relative-L2 &gt; 1%</span><span class="pill low">青：已回传 ≤1%，非验收结论</span><span class="pill blocked">橙：小图编译阻塞</span><span class="pill">灰：未测 / 结构节点</span><span class="pill purple">紫色实线：层内 identity 残差</span><span class="pill blue">蓝色虚线：状态读写 / 跨步反馈</span></div>
+<section class="card"><h2>1. 层间如何连接：上一层的第二次 Add 输出，直接进入下一层</h2>
+<div class="formula">u[i] = h[i] + Mixer[i](InputNorm[i](h[i]), state[i])<br>h[i+1] = u[i] + MoE[i](PostNorm[i](u[i]))</div>
+<p>每层有 <strong>两次残差相加</strong>：R1 绕过 InputNorm 和注意力，R2 绕过 PostNorm 和 MoE。<strong>层与层之间没有额外的第三次 Add</strong>；h[i+1] 同时是下一层的主路输入和下一层 R1 的起点。每层状态只反馈给下一时间步的同一层，不传给下一层。</p>
+<div id="overview" class="svg-scroll"></div></section>
+<section class="card"><h2>2. Prefill 与 Decode：相同的 40 层结构，不同的输入长度和状态使用</h2>
+<div id="timeline" class="svg-scroll"></div>
+<p class="hint">这里画普通自回归执行。首次 Prefill 使用初始化状态；续接 Prefill 使用已有状态，按调用配置确定。Decode 每步 1 token，读取此前状态。绿色/红色数据来自独立捕获输入的小图，不证明此跨调用闭环已验证。成功整图的 T64 与本批 Prefill T256 指标是不同用例。</p>
+<div id="phase-counts" class="legend"></div></section>
+<section class="card"><h2>3. 40 层导航</h2><p class="hint">点击任意层展开其两条残差和注意力 / MoE 子图。L0–L3 有本批证据；L4–L39 不套用前四层的数值。</p><div class="navigator" id="navigator"></div></section>
+<div id="layers"></div>
+<footer><p><strong>指标口径：</strong>图示阈值为 relative_l2 &gt; 0.01，显示为百分比；保留原始 METRICS_RECORDED / PASSED / FAILED。数据截至 2026-11-10，共 142 行用户回传指标；Prefill 超过 1% 为 28 项，Decode 为 23 项。4 个已编译缺指标项、12 个 ConvState 编译失败项单列。重复稳定不等于计算正确。</p>
+<p>源码依据：原 Target 的 DecoderLayer 两次 residual + 运算，及 export wrapper 的 hidden_states = layer_outputs[0] 层间传递。此图为模型语义结构，实际编译融合以 AIR / OMC 为准；不含 Draft、视觉编码器和 MTP。</p>
+<p>单文件 HTML，无外部脚本、图片、字体或网络请求；下载后直接用浏览器打开。<a href="https://github.com/day8reak/qwen3.5-35B-dflash/blob/main/specs/target-boundary-metrics-20261110.csv">逐边界指标 CSV</a> · <a href="https://github.com/day8reak/qwen3.5-35B-dflash/blob/main/docs/target-accuracy-status.md">状态说明</a></p></footer>
+<dialog id="metrics-dialog"><div class="dialog-header"><h2 id="dialog-title">边界指标</h2><button id="dialog-close">关闭</button></div><div id="dialog-content"></div></dialog>
+<script type="application/json" id="metrics-data">[{"layer":0,"call":0,"phase":"prefill","point":"conv_silu","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.038419724,"relative_l2":0.001874983,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"decay_beta","output":"golden_beta","status":"METRICS_RECORDED","max_abs":0.000976563,"relative_l2":0.000450328,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"decay_beta","output":"golden_g","status":"METRICS_RECORDED","max_abs":0.056137085,"relative_l2":0.00047018,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"gdn","output":"golden_core","status":"METRICS_RECORDED","max_abs":0.296875,"relative_l2":0.057719723,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"gdn","output":"golden_state_raw","status":"METRICS_RECORDED","max_abs":15.59950066,"relative_l2":0.445964183,"dtype_preserved":false,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"linear_attn_in_proj_a","output":"golden_y","status":"METRICS_RECORDED","max_abs":21975.80078,"relative_l2":1320.857384,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"linear_attn_in_proj_b","output":"golden_y","status":"METRICS_RECORDED","max_abs":21971.79492,"relative_l2":2354.412466,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"linear_attn_in_proj_qkv","output":"golden_y","status":"METRICS_RECORDED","max_abs":21980.21094,"relative_l2":1644.119457,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"linear_attn_in_proj_z","output":"golden_y","status":"METRICS_RECORDED","max_abs":21973.875,"relative_l2":1933.539373,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"linear_attn_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.008789063,"relative_l2":0.001749063,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"linear_attn_out_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":1034.011597,"relative_l2":5828.146054,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"post_attention_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.0234375,"relative_l2":0.0012119831378484148,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"recurrent_writeback","output":"golden_written_state","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"repeat_qk","output":"golden_k_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"repeat_qk","output":"golden_q_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"residual_attention","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":0,"phase":"prefill","point":"residual_mlp","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"conv1d","output":"golden_conv","status":"METRICS_RECORDED","max_abs":0.007720947265625,"relative_l2":0.0002608046788337648,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"conv_silu","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.03255558,"relative_l2":0.001525298,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"decay_beta","output":"golden_beta","status":"METRICS_RECORDED","max_abs":0.000976563,"relative_l2":0.000474927,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"decay_beta","output":"golden_g","status":"METRICS_RECORDED","max_abs":0.013563991,"relative_l2":0.000742506,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"gdn","output":"golden_core","status":"METRICS_RECORDED","max_abs":0.091400146,"relative_l2":0.071231514,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"gdn","output":"golden_state_raw","status":"METRICS_RECORDED","max_abs":3.919120312,"relative_l2":0.26744998,"dtype_preserved":false,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"input_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.09375,"relative_l2":0.0011926325340686403,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"linear_attn_in_proj_a","output":"golden_y","status":"METRICS_RECORDED","max_abs":15139.85938,"relative_l2":3199.831305,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"linear_attn_in_proj_b","output":"golden_y","status":"METRICS_RECORDED","max_abs":15137.58496,"relative_l2":2850.957023,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"linear_attn_in_proj_qkv","output":"golden_y","status":"METRICS_RECORDED","max_abs":15149.65625,"relative_l2":4140.912323,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"linear_attn_in_proj_z","output":"golden_y","status":"METRICS_RECORDED","max_abs":15140.97656,"relative_l2":3675.981732,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"linear_attn_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.001708984,"relative_l2":0.002005317,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"linear_attn_out_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":313.5351563,"relative_l2":4337.310034,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"post_attention_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.03125,"relative_l2":0.0010838926013155272,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"recurrent_writeback","output":"golden_written_state","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"repeat_qk","output":"golden_k_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"repeat_qk","output":"golden_q_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"residual_attention","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":0,"phase":"prefill","point":"residual_mlp","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"conv1d","output":"golden_conv","status":"METRICS_RECORDED","max_abs":0.00867462158203125,"relative_l2":0.00027210281482233485,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"conv_silu","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.017335892,"relative_l2":0.001271469,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"decay_beta","output":"golden_beta","status":"METRICS_RECORDED","max_abs":0.000976563,"relative_l2":0.000479824,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"decay_beta","output":"golden_g","status":"METRICS_RECORDED","max_abs":0.024348259,"relative_l2":0.002666842,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"gdn","output":"golden_core","status":"METRICS_RECORDED","max_abs":0.013549805,"relative_l2":0.015583993,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"gdn","output":"golden_state_raw","status":"METRICS_RECORDED","max_abs":1.46952486,"relative_l2":0.120997546,"dtype_preserved":false,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"input_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.078125,"relative_l2":0.0012215732313048515,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"linear_attn_in_proj_a","output":"golden_y","status":"METRICS_RECORDED","max_abs":15935.22314,"relative_l2":4656.920746,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"linear_attn_in_proj_b","output":"golden_y","status":"METRICS_RECORDED","max_abs":15938.31445,"relative_l2":2649.463694,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"linear_attn_in_proj_qkv","output":"golden_y","status":"METRICS_RECORDED","max_abs":15946.52344,"relative_l2":4942.65982,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"linear_attn_in_proj_z","output":"golden_y","status":"METRICS_RECORDED","max_abs":15944.65625,"relative_l2":4075.008306,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"linear_attn_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.005859375,"relative_l2":0.001808568,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"linear_attn_out_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":754.0888672,"relative_l2":8629.894244,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"post_attention_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.01953125,"relative_l2":0.0013135927434518183,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"recurrent_writeback","output":"golden_written_state","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"repeat_qk","output":"golden_k_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"repeat_qk","output":"golden_q_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"residual_attention","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":0,"phase":"prefill","point":"residual_mlp","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"attention_layout_gate","output":"golden_before_o_proj","status":"METRICS_RECORDED","max_abs":0.25,"relative_l2":0.000532602,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"cache_k","output":"golden_updated_cache","status":"PASSED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"cache_v","output":"golden_updated_cache","status":"PASSED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"fused_attention","output":"golden_attention_nz","status":"METRICS_RECORDED","max_abs":1766.914063,"relative_l2":0.996669611,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"input_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.125,"relative_l2":0.0014577149112819502,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"post_attention_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.0234375,"relative_l2":0.0012658022900038173,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"residual_attention","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"residual_mlp","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"rope","output":"golden_k_rotated","status":"METRICS_RECORDED","max_abs":3.891601563,"relative_l2":0.17945551,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"rope","output":"golden_q_rotated","status":"METRICS_RECORDED","max_abs":7.126342773,"relative_l2":0.192828187,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"self_attn_k_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.0234375,"relative_l2":0.0012881184399507614,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"self_attn_k_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":20865.69727,"relative_l2":9133.397928,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"self_attn_o_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":65515.23438,"relative_l2":5126.869466,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"self_attn_q_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":20870.27734,"relative_l2":2680.037058,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":0,"phase":"prefill","point":"self_attn_v_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":20864.64209,"relative_l2":11278.19572,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"conv_silu","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.03310585,"relative_l2":0.001814057,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"decay_beta","output":"golden_beta","status":"METRICS_RECORDED","max_abs":0.000488281,"relative_l2":0.000434844,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"decay_beta","output":"golden_g","status":"METRICS_RECORDED","max_abs":0.056129456,"relative_l2":0.000458295,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"gdn","output":"golden_core","status":"METRICS_RECORDED","max_abs":0.001953125,"relative_l2":0.001345661,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"gdn","output":"golden_state_raw","status":"METRICS_RECORDED","max_abs":0.014045477,"relative_l2":0.000682967,"dtype_preserved":false,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"input_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.005859375,"relative_l2":0.0013581094018023183,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"linear_attn_in_proj_a","output":"golden_y","status":"METRICS_RECORDED","max_abs":1828.097656,"relative_l2":483.0384683,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"linear_attn_in_proj_b","output":"golden_y","status":"METRICS_RECORDED","max_abs":1830.441406,"relative_l2":633.0794965,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"linear_attn_in_proj_qkv","output":"golden_y","status":"METRICS_RECORDED","max_abs":1839.0625,"relative_l2":615.500652,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"linear_attn_in_proj_z","output":"golden_y","status":"METRICS_RECORDED","max_abs":1832.257813,"relative_l2":653.0167628,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"linear_attn_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.004882813,"relative_l2":0.002550195,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"linear_attn_out_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":828.5117493,"relative_l2":7144.815541,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"post_attention_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.005859375,"relative_l2":0.0008655867840674853,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"recurrent_writeback","output":"golden_written_state","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"repeat_qk","output":"golden_k_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"repeat_qk","output":"golden_q_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"residual_attention","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":0,"call":1,"phase":"decode","point":"residual_mlp","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"conv1d","output":"golden_conv","status":"METRICS_RECORDED","max_abs":0.004500389099121094,"relative_l2":0.00021475874711859714,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"conv_silu","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.033619881,"relative_l2":0.001671889,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"decay_beta","output":"golden_beta","status":"METRICS_RECORDED","max_abs":0.000488281,"relative_l2":0.000427348,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"decay_beta","output":"golden_g","status":"METRICS_RECORDED","max_abs":0.00311476,"relative_l2":0.000404177,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"gdn","output":"golden_core","status":"METRICS_RECORDED","max_abs":0.000732422,"relative_l2":0.001747658,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"gdn","output":"golden_state_raw","status":"METRICS_RECORDED","max_abs":0.127786428,"relative_l2":0.0042922,"dtype_preserved":false,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"input_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.0234375,"relative_l2":0.0018940359233245907,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"linear_attn_in_proj_a","output":"golden_y","status":"METRICS_RECORDED","max_abs":6492.58252,"relative_l2":3172.739843,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"linear_attn_in_proj_b","output":"golden_y","status":"METRICS_RECORDED","max_abs":6494.886719,"relative_l2":1550.49869,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"linear_attn_in_proj_qkv","output":"golden_y","status":"METRICS_RECORDED","max_abs":6506.171875,"relative_l2":2506.849745,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"linear_attn_in_proj_z","output":"golden_y","status":"METRICS_RECORDED","max_abs":6497.703125,"relative_l2":2090.82449,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"linear_attn_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.000213623,"relative_l2":0.001850866,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"linear_attn_out_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":56.36901855,"relative_l2":2854.13449,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"post_attention_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.0078125,"relative_l2":0.0014364496294888402,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"recurrent_writeback","output":"golden_written_state","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"repeat_qk","output":"golden_k_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"repeat_qk","output":"golden_q_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"residual_attention","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":1,"call":1,"phase":"decode","point":"residual_mlp","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"conv1d","output":"golden_conv","status":"METRICS_RECORDED","max_abs":0.00347900390625,"relative_l2":0.0002675745077822325,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"conv_silu","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.010378361,"relative_l2":0.00123491,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"decay_beta","output":"golden_beta","status":"METRICS_RECORDED","max_abs":0.000488281,"relative_l2":0.000400288,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"decay_beta","output":"golden_g","status":"METRICS_RECORDED","max_abs":0.017166376,"relative_l2":0.002610243,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"gdn","output":"golden_core","status":"METRICS_RECORDED","max_abs":0.000183105,"relative_l2":0.001152179,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"gdn","output":"golden_state_raw","status":"METRICS_RECORDED","max_abs":0.001833916,"relative_l2":0.000648462,"dtype_preserved":false,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"input_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.015625,"relative_l2":0.0012056150980605865,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"linear_attn_in_proj_a","output":"golden_y","status":"METRICS_RECORDED","max_abs":7472.390625,"relative_l2":1960.594586,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"linear_attn_in_proj_b","output":"golden_y","status":"METRICS_RECORDED","max_abs":7472.5,"relative_l2":1947.40211,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"linear_attn_in_proj_qkv","output":"golden_y","status":"METRICS_RECORDED","max_abs":7480.265625,"relative_l2":3086.339658,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"linear_attn_in_proj_z","output":"golden_y","status":"METRICS_RECORDED","max_abs":7476.296875,"relative_l2":2433.624325,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"linear_attn_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.001953125,"relative_l2":0.001642419,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"linear_attn_out_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":563.4863205,"relative_l2":8141.366379,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"post_attention_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.00390625,"relative_l2":0.00039794574776564294,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"recurrent_writeback","output":"golden_written_state","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"repeat_qk","output":"golden_k_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"repeat_qk","output":"golden_q_repeated","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"residual_attention","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":2,"call":1,"phase":"decode","point":"residual_mlp","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"attention_layout_gate","output":"golden_before_o_proj","status":"METRICS_RECORDED","max_abs":0.00012207,"relative_l2":0.000338035,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"cache_k","output":"golden_updated_cache","status":"FAILED","max_abs":8.6875,"relative_l2":0.998086223,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"cache_v","output":"golden_updated_cache","status":"FAILED","max_abs":3.494140625,"relative_l2":0.996896764,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"fused_attention","output":"golden_attention_nz","status":"METRICS_RECORDED","max_abs":0.008544922,"relative_l2":0.002509511,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"input_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.03125,"relative_l2":0.00155765705412208,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"post_attention_layernorm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.0078125,"relative_l2":0.0009282285956668527,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"residual_attention","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"residual_mlp","output":"golden_hidden","status":"METRICS_RECORDED","max_abs":0,"relative_l2":0,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"rope","output":"golden_k_rotated","status":"METRICS_RECORDED","max_abs":2.371337891,"relative_l2":0.17562989,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"rope","output":"golden_q_rotated","status":"METRICS_RECORDED","max_abs":4.193359375,"relative_l2":0.196207131,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"self_attn_k_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.0078125,"relative_l2":0.0009853780404133216,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"self_attn_k_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":12954.17773,"relative_l2":6406.810097,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"self_attn_o_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":249.5211945,"relative_l2":5833.748677,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"self_attn_q_norm","output":"golden_y","status":"METRICS_RECORDED","max_abs":0.01171875,"relative_l2":0.0008048910517234019,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"self_attn_q_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":12960.625,"relative_l2":1835.482,"dtype_preserved":true,"stable":true,"error":""},{"layer":3,"call":1,"phase":"decode","point":"self_attn_v_proj","output":"golden_y","status":"METRICS_RECORDED","max_abs":12953.41113,"relative_l2":8616.699984,"dtype_preserved":true,"stable":true,"error":""}]</script>
+<script>
+"use strict";
+const METRICS=JSON.parse(document.getElementById("metrics-data").textContent);
+const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
+const E=s=>String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
+let mode="compare", serial=0;
+const openLayers=new Set([0,3]);
+const palette={red:["#fff0f2","#d86779","#b42339"],teal:["#edf8f5","#80bbaf","#176f64"],orange:["#fff5df","#d0a65e","#916017"],gray:["#f2f5f9","#bbcbdc","#5a6e86"],purple:["#f5eefb","#af87ce","#7541a6"],blue:["#edf4fd","#87a9cf","#235d9a"]};
+const P=p=>p==="prefill"?"Prefill":"Decode";
+const phases=()=>mode==="compare"?["prefill","decode"]:[mode];
+const fmt=n=>(n*100).toLocaleString("en-US",{maximumFractionDigits:n>1?0:3})+"%";
+function rowsFor(i,p,points,output){return METRICS.filter(r=>r.layer===i&&r.phase===p&&points.includes(r.point)&&(!output||r.output===output))}
+function overCount(i,p){return METRICS.filter(r=>(i===null||r.layer===i)&&r.phase===p&&r.relative_l2>0.01).length}
+function metric(i,p,points,output,expected=1){
+ const rs=rowsFor(i,p,points,output);
+ if(!rs.length)return {kind:"gray",label:i<4?"已编译 / 指标未回传":"本层未测",rows:rs};
+ const vals=rs.map(r=>r.relative_l2),lo=Math.min(...vals),hi=Math.max(...vals);
+ return {kind:hi>0.01?"red":"teal",label:(lo===hi?fmt(lo):fmt(lo)+"–"+fmt(hi))+(rs.length<expected?" · 部分缺指标":""),rows:rs};
+}
+function svg(w,h,draw,label,cls=""){
+ const uid="s"+(++serial),font='"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif';
+ let b='<svg xmlns="http://www.w3.org/2000/svg" class="diagram '+cls+'" viewBox="0 0 '+w+" "+h+'" width="'+w+'" height="'+h+'" role="img" aria-label="'+E(label)+'" data-export="true"><title>'+E(label)+'</title><defs>';
+ for(const [name,color] of [["main","#71859d"],["res","#7541a6"],["state","#235d9a"]])b+='<marker id="'+uid+name+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="'+color+'"/></marker>';
+ b+='</defs><rect width="'+w+'" height="'+h+'" fill="white"/><g font-family="'+E(font)+'">';
+ const text=(x,y,s,size=20,color="#182c46",anchor="start",weight=400)=>{
+  const wide=Array.from(s).reduce((a,c)=>a+(c.charCodeAt(0)>255?1:.58),0);
+  b+='<text x="'+x+'" y="'+y+'" font-size="'+size+'" fill="'+color+'" text-anchor="'+anchor+'" font-weight="'+weight+'">'+E(s)+'</text>';
+ };
+ const edge=(pts,type="main",label,tx,ty)=>{
+  b+='<path d="M'+pts.map(pt=>pt.join(",")).join(" L")+'" fill="none" stroke="'+(type==="res"?"#7541a6":type==="state"?"#235d9a":"#71859d")+'" stroke-width="'+(type==="res"?3.5:2.3)+'" '+(type==="state"?'stroke-dasharray="7 5" ':"")+'stroke-linejoin="round" marker-end="url(#'+uid+type+')"/>';
+  if(label)text(tx,ty,label,17,type==="res"?"#7541a6":"#235d9a");
+ };
+ const node=(x,y,nw,nh,title,lines=[],kind="gray",info=null)=>{
+  const c=palette[kind],attrs=info?' data-points="'+E(info.points.join(";"))+'" data-layer="'+info.i+'" data-phase="'+info.p+'" data-output="'+E(info.output||"")+'" role="button" tabindex="0" aria-label="'+E("查看 "+title+" "+P(info.p)+" 指标")+'"':"";
+  b+='<g'+attrs+' data-kind="'+kind+'"><title>'+E([title,...lines].join(" | "))+'</title><rect x="'+x+'" y="'+y+'" width="'+nw+'" height="'+nh+'" rx="12" fill="'+c[0]+'" stroke="'+c[1]+'" stroke-width="1.8"/>';
+  const fit=(s,n)=>Math.min(n,(nw-22)/Math.max(1,Array.from(s).reduce((a,k)=>a+(k.charCodeAt(0)>255?1:.57),0)));
+  text(x+nw/2,y+29,title,fit(title,22),c[2],"middle",600);
+  lines.forEach((s,k)=>text(x+nw/2,y+56+k*23,s,fit(s,18),c[2],"middle"));
+  b+="</g>";
+ };
+ draw({text,edge,node});return b+"</g></svg>";
+}
+function shellParts(d,i,y=0){
+ const {text,node,edge}=d,mix=i%4===3?"Full Attention":"GDN";
+ text(20,y+28,"L"+i+"：两条残差都在本层闭合",22,"#182c46","start",600);
+ const y0=y+100;
+ node(20,y0,100,65,"h["+i+"]",[],"blue");
+ node(170,y0,205,70,"Input RMSNorm");
+ node(425,y0,230,70,mix);
+ node(705,y0,75,65,"Add 1",[],"purple");
+ node(830,y0,230,70,"Post-attn RMSNorm");
+ node(1110,y0,210,70,"MoE");
+ node(1370,y0,75,65,"Add 2",[],"purple");
+ node(1495,y0,90,65,"h["+(i+1)+"]",[],"blue");
+ [[120,170],[375,425],[655,705],[780,830],[1060,1110],[1320,1370],[1445,1495]].forEach(a=>edge([[a[0],y0+33],[a[1],y0+33]]));
+ edge([[70,y0],[70,y+66],[742,y+66],[742,y0]],"res","R1：identity h["+i+"]",280,y+56);
+ edge([[805,y0+33],[805,y+208],[1407,y+208],[1407,y0+65]],"res","R2：identity u["+i+"]",1030,y+236);
+ text(783,y0-10,"u["+i+"]",17,"#7541a6");
+}
+function overview(){
+ return svg(1605,735,d=>{
+  const {node,edge,text}=d;
+  const labels=[["Embedding","h[0]"],["L0","GDN"],["L1","GDN"],["L2","GDN"],["L3","Full Attention"],["L4 … L38","同样层内结构"],["L39","Full Attention"],["FinalNorm / Head","logits"]];
+  labels.forEach((t,k)=>node(12+k*200,16,178,77,t[0],[t[1]],"gray"));
+  for(let k=0;k<7;k++)edge([[190+k*200,55],[212+k*200,55]],"main");
+  text(20,132,"层间主路：h[i+1] = L[i] 的 Add 2 输出，直接作为 L[i+1] 输入；层间没有额外 Add。",21,"#235d9a");
+  shellParts(d,0,155);
+  shellParts(d,1,455);
+  edge([[1585,288],[1598,288],[1598,430],[70,430],[70,555]],"main","h[1] 原样进入 L1，同时分给 L1 主路与 R1",530,419);
+ },"相邻两层的层间主路与四条层内残差","overview-svg");
+}
+function timeline(){
+ return svg(1600,375,d=>{
+  const {node,edge,text}=d;
+  text(30,32,"Prefill：整段输入，多 token",24,"#235d9a","start",600);
+  text(850,32,"Decode：一个新 token，重复执行",24,"#7541a6","start",600);
+  node(30,75,180,82,"prompt [B,S]",["本批 S=256"],"blue");
+  node(260,75,230,82,"同一套 L0 → L39",["hidden [B,S,2048]"],"blue");
+  node(540,75,210,82,"FinalNorm / Head",["最后有效位置选 token"]);
+  edge([[210,116],[260,116]]);edge([[490,116],[540,116]]);
+  node(30,220,260,90,"每层的初始状态",["首次初始化 / 续接已有状态"],"gray");
+  node(390,220,360,90,"Prefill 后的每层状态",["30 conv + 30 recurrent + 20 K/V"],"blue");
+  edge([[160,220],[160,190],[325,190],[325,157]],"state");
+  edge([[420,157],[420,220]],"state");
+  node(850,75,170,82,"新 token [B,1]",["当前 step t"],"purple");
+  node(1070,75,230,82,"同一套 L0 → L39",["hidden [B,1,2048]"],"purple");
+  node(1350,75,220,82,"Head → 下一 token",["step t+1"]);
+  edge([[750,116],[850,116]],"main");
+  edge([[1020,116],[1070,116]]);edge([[1300,116],[1350,116]]);
+  node(850,220,300,90,"读取同一层历史状态",["conv / recurrent / K/V"],"blue");
+  node(1260,220,310,90,"更新后状态",["反馈到下一步的同一层"],"blue");
+  edge([[750,265],[850,265]],"state");
+  edge([[1000,220],[1000,190],[1140,190],[1140,157]],"state");
+  edge([[1230,157],[1230,190],[1415,190],[1415,220]],"state");
+  edge([[1415,310],[1415,350],[1000,350],[1000,310]],"state","state[t] → step t+1",1090,342);
+  edge([[1460,75],[1460,53],[935,53],[935,75]],"main");
+ },"Prefill 与 Decode 的输入长度和时间状态流","overview-svg");
+}
+function op(d,i,p,x,y,w,h,title,points,output=null,extras=[],expected=1){
+ const m=metric(i,p,points,output,expected);
+ d.node(x,y,w,h,title,[m.label,...extras],m.kind,{i,p,points,output});
+}
+function linearGraph(i,p){
+ return svg(760,1000,d=>{
+  const {text,node,edge}=d;
+  text(24,29,"L"+i+" · "+P(p)+" · "+(p==="prefill"?"S=256 / chunk=64":"S=1 / chunk=1"),23,"#182c46","start",600);
+  op(d,i,p,24,55,712,90,"QKV / z / a / b 量化投影",["qkv","z","b","a"].map(k=>"linear_attn_in_proj_"+k),null,["DynamicQuant → QuantBatchMatmulV4444"],4);
+  text(190,174,"QKV",17,"#61738b","middle");text(570,174,"a / b",17,"#61738b","middle");text(710,174,"z →",17,"#61738b","middle");
+  node(24,195,332,105,"ConvState Update",["conv["+i+"] 读 / 写，产生 padded",i<3?"本阶段 2 输出编译失败；精度未知":"本层未测"],i<3?"orange":"gray",{i,p,points:["convstate_update"]});
+  op(d,i,p,404,195,332,105,"decay g / beta",["decay_beta"],null,["a → g；beta = sigmoid(b)"],2);
+  edge([[190,145],[190,195]]);edge([[570,145],[570,195]]);
+  op(d,i,p,24,340,332,90,"Depthwise Conv1d → SiLU",["conv1d","conv_silu"],null,["kernel=4；两边界分别统计"],2);edge([[190,300],[190,340]]);
+  op(d,i,p,24,470,332,80,"拆 Q/K/V；Q/K repeat ×2",["repeat_qk"],null,[],2);edge([[190,430],[190,470]]);
+  node(404,430,332,80,"历史 recurrent["+i+"]",[p==="prefill"?"初始 / 续接状态":"读取 step t−1 状态"],"blue");
+  op(d,i,p,24,605,332,100,"GDN：core 输出",["gdn"],"golden_core",["ChunkGatedDeltaRule"]);
+  edge([[190,550],[190,605]]);
+  edge([[570,300],[570,324],[380,324],[380,631],[356,631]],"main","g / beta",386,318);
+  edge([[570,510],[570,574],[290,574],[290,605]],"state");
+  op(d,i,p,404,605,332,100,"GDN：raw state 输出",["gdn"],"golden_state_raw",[i<3?"dtype_preserved = FALSE":"dtype 未测"]);
+  edge([[356,657],[404,657]]);
+  op(d,i,p,24,765,332,90,"RMSNorm × SiLU(z)",["linear_attn_norm"]);edge([[190,705],[190,765]]);
+  edge([[393,805],[356,805]],"main","z",372,790);
+  op(d,i,p,404,765,332,90,"FP16 → recurrent 回写",["recurrent_writeback"],null,["仅独立边界；连续反馈未闭环"]);
+  edge([[570,705],[570,765]]);edge([[736,810],[748,810],[748,470],[736,470]],"state");
+  op(d,i,p,24,905,712,80,"量化 out_proj → 本层 Add 1",["linear_attn_out_proj"]);edge([[190,855],[190,883],[380,883],[380,905]]);
+  text(416,893,"虚线状态返回下一次调用，不流入下一层",16,"#235d9a");
+ },"L"+i+" "+P(p)+" GDN 计算和状态");
+}
+function attentionGraph(i,p){
+ return svg(760,1000,d=>{
+  const {text,node,edge}=d;
+  text(24,29,"L"+i+" · "+P(p)+" · "+(p==="prefill"?"S 个 query，因果注意力":"1 个 query，读取历史 KV"),23,"#182c46","start",600);
+  op(d,i,p,24,55,712,90,"Q / K / V 量化投影（Q 含 gate）",["q","k","v"].map(k=>"self_attn_"+k+"_proj"),null,["DynamicQuant → QuantBatchMatmulV4444"],3);
+  op(d,i,p,24,195,332,90,"Q / K RMSNorm",["self_attn_q_norm","self_attn_k_norm"],null,[],2);
+  node(510,195,226,90,"gate 分支",["来自 Q 投影","同名端口接下方 sigmoid"]);
+  edge([[190,145],[190,195]]);edge([[623,145],[623,195]]);
+  op(d,i,p,24,340,332,105,"partial RoPE（Q / K）",["rope"],null,["旋转 64 / head_dim 256"],2);
+  op(d,i,p,404,340,332,105,"CacheUpdate K / V",["cache_k","cache_v"],null,[p==="prefill"?"构建 / 续接 KV；写入 S 个位置":"保留历史 KV；追加当前 token"],2);
+  edge([[190,285],[190,340]]);edge([[460,145],[460,317],[570,317],[570,340]],"main","V",472,242);
+  edge([[356,392],[404,392]],"main","K",372,381);
+  op(d,i,p,24,525,712,110,"Fused Attention / GQA",["fused_attention"],null,[p==="prefill"?"S query × 有效 KV；因果 mask":"1 query × 历史 + 当前 KV","mask / valid length / block table"]);
+  edge([[190,445],[190,525]],"main","Q",203,490);edge([[570,445],[570,525]],"state","K/V state["+i+"]",583,490);
+  op(d,i,p,24,720,712,100,"NZ → ND / Reshape → × sigmoid(gate)",["attention_layout_gate"],null,["gate 来自 Q 投影"]);
+  edge([[380,635],[380,720]]);edge([[710,679],[710,720]],"main","gate",661,693);
+  op(d,i,p,24,905,712,80,"量化 o_proj → 本层 Add 1",["self_attn_o_proj"]);edge([[380,820],[380,905]]);
+  text(24,868,"K/V 状态按层独立，反馈给下一时间步的同一层。",18,"#235d9a");
+ },"L"+i+" "+P(p)+" 全注意力与 KV 读写");
+}
+function moeGraph(i){
+ return svg(1500,380,d=>{
+  const {text,node,edge}=d;
+  text(22,30,"L"+i+" MoE：Prefill / Decode 算法相同，token 行数不同；本批未覆盖数值",23,"#182c46","start",600);
+  node(20,170,180,80,"PostNorm 输出",["hidden"]);
+  node(250,70,195,90,"Router Linear",["logits"]);
+  node(495,70,220,90,"Top-8 / Softmax",["专家 ID + 权重"]);
+  node(765,70,315,110,"Dispatch → W4A8 专家",["A8量化 → gate/up GMM","SiLU×up → A8量化 → down"]);
+  node(1130,70,220,110,"加权回聚合",["使用 Top-8 权重","恢复 token 顺序"]);
+  node(250,270,390,90,"共享专家：gate / up / down",["gate/up → SiLU×up → down"]);
+  node(690,270,390,90,"× sigmoid(shared_gate(hidden))",["门控共享专家输出"]);
+  node(1390,170,90,80,"＋",["MoE 输出"]);
+  edge([[200,210],[220,210],[220,115],[250,115]]);edge([[445,115],[495,115]]);edge([[715,115],[765,115]]);
+  edge([[1080,115],[1130,115]]);edge([[1350,115],[1435,115],[1435,170]]);
+  edge([[220,210],[220,315],[250,315]]);edge([[640,315],[690,315]]);edge([[1080,315],[1435,315],[1435,250]]);
+  edge([[220,210],[922,210],[922,180]],"main","hidden → dispatch",420,201);
+  edge([[885,210],[885,270]],"main","hidden",900,250);
+ },"每层 MoE 的路由专家和共享专家结构");
+}
+function metricsTable(rs){
+ if(!rs.length)return '<p class="notice">此范围尚无数值回传，不以未测代替通过。</p>';
+ return '<div class="table-scroll"><table><thead><tr><th>阶段</th><th>边界</th><th>输出</th><th>relative-L2</th><th>原始比值</th><th>max_abs</th><th>dtype保持</th><th>状态</th></tr></thead><tbody>'+rs.map(r=>'<tr class="'+(r.relative_l2>.01?"over":"")+'"><td>'+P(r.phase)+'</td><td>'+E(r.point)+'</td><td>'+E(r.output)+'</td><td class="metric">'+fmt(r.relative_l2)+'</td><td>'+E(r.relative_l2)+'</td><td>'+E(r.max_abs)+'</td><td>'+r.dtype_preserved+'</td><td>'+E(r.status)+'</td></tr>').join("")+"</tbody></table></div>";
+}
+function layerBody(i){
+ const ps=phases(),mix=i%4===3?"Full Attention":"GDN";
+ let s='<div class="connection">'+(i===0?"Embedding 输出 h[0]":"L"+(i-1)+" 的 Add 2 输出 h["+i+"]")+' → 本层 → h['+(i+1)+'] → '+(i===39?"Final RMSNorm / LM head":"L"+(i+1)+" 的 InputNorm 与 R1")+"</div>";
+ s+='<div class="svg-scroll">'+svg(1605,265,d=>shellParts(d,i),"L"+i+" 两次层内残差","shell-svg")+"</div>";
+ s+='<p class="hint">主输入 h['+i+'] 与中间 u['+i+'] 分别保留给 R1 / R2；两次 Add 后才形成下一层输入。MoE 相同结构在每层重复。</p>';
+ s+='<details class="region" open><summary>'+mix+' 算子与状态展开 · 点击节点查看指标</summary><div class="region-body"><div class="phase-grid '+(ps.length===1?"single":"")+'">';
+ for(const p of ps)s+='<section class="phase-pane '+p+'"><h3 class="phase-title">'+P(p)+' · '+(p==="prefill"?"整段输入 / 多 query":"单 token / 历史状态")+'</h3>'+(mix==="GDN"?linearGraph(i,p):attentionGraph(i,p))+'</section>';
+ s+='</div></div></details>';
+ s+='<details class="region moe-region"><summary>展开本层 MoE：路由 Top-8 / 专家计算 / 共享专家</summary><div class="region-body svg-scroll">'+moeGraph(i)+'</div></details>';
+ s+='<details class="region metrics-region"><summary>查看本层当前阶段的逐边界指标（含 Norm / residual）</summary><div class="region-body">'+metricsTable(METRICS.filter(r=>r.layer===i&&ps.includes(r.phase)))+'</div></details>';
+ return s;
+}
+function renderBody(i){const el=$('#layer-'+i);el.querySelector(".layer-body").innerHTML=layerBody(i);el.dataset.mode=mode}
+function updateNavigation(){
+ $$(".nav-layer").forEach(b=>b.setAttribute("aria-expanded",openLayers.has(+b.dataset.layer)?"true":"false"));
+}
+function buildLayers(){
+ let n="",s="";
+ for(let i=0;i<40;i++){
+  const type=i%4===3?"Full Attention":"GDN";
+  n+='<button class="nav-layer" data-layer="'+i+'" aria-expanded="'+openLayers.has(i)+'">L'+i+' · '+(i%4===3?"Attention":"GDN")+'<small>'+(i<4?"P "+overCount(i,"prefill")+" / D "+overCount(i,"decode")+" 项 >1%":"未测")+"</small></button>";
+  s+='<details class="layer-card" id="layer-'+i+'" data-layer="'+i+'" '+(openLayers.has(i)?"open":"")+'><summary><strong>L'+i+" · "+type+'</strong><span class="pill purple">R1 + R2</span>'+(i<4?'<span class="pill bad">Prefill '+overCount(i,"prefill")+' 项 >1%</span><span class="pill bad">Decode '+overCount(i,"decode")+' 项 >1%</span>':'<span class="pill">本层未覆盖数值</span>')+'</summary><div class="layer-body"></div></details>';
+  if(i<39)s+='<div class="interlayer">↓ h['+(i+1)+']：L'+i+' 的 Add 2 输出 → L'+(i+1)+' 输入（直接传递）</div>';
+ }
+ $("#navigator").innerHTML=n;$("#layers").innerHTML=s;
+ for(const i of openLayers)renderBody(i);
+ $$(".layer-card").forEach(el=>el.addEventListener("toggle",()=>{
+  const i=+el.dataset.layer;
+  if(el.open){openLayers.add(i);if(el.dataset.mode!==mode)renderBody(i)}else openLayers.delete(i);
+  updateNavigation();
+ }));
+}
+function setMode(m){
+ mode=m;$$(".tabs [data-mode]").forEach(b=>b.setAttribute("aria-pressed",b.dataset.mode===m?"true":"false"));
+ for(const i of openLayers)renderBody(i);
+ $("#phase-counts").innerHTML=phases().map(p=>'<span class="pill bad">'+P(p)+'：'+overCount(null,p)+' 个边界输出 >1%</span>').join("")+'<span class="pill blue">当前视图：'+(m==="compare"?"逐层双列对比":P(m))+"</span>";
+}
+function openMetric(el){
+ const i=+el.dataset.layer,p=el.dataset.phase,points=el.dataset.points.split(";"),output=el.dataset.output||null;
+ $("#dialog-title").textContent="L"+i+" · "+P(p)+" · "+points.join(" / ");
+ const rs=rowsFor(i,p,points,output);
+ $("#dialog-content").innerHTML=(points.includes("convstate_update")&&i<3?'<p class="notice">此层此阶段 ConvState 两个输出小图仍编译失败，未执行数值验证。成功 T64 整图已有专用实现，不能据此把该小图记为通过。</p>':metricsTable(rs))+'<p class="hint">阈值仅用于图示；source：用户回传独立边界指标。原始状态不因颜色而改变。</p>';
+ $("#metrics-dialog").showModal();
+}
+document.addEventListener("click",e=>{
+ const modeBtn=e.target.closest(".tabs [data-mode]");if(modeBtn){setMode(modeBtn.dataset.mode);return}
+ const nav=e.target.closest(".nav-layer");if(nav){const el=$("#layer-"+nav.dataset.layer);el.open=true;openLayers.add(+nav.dataset.layer);if(el.dataset.mode!==mode)renderBody(+nav.dataset.layer);updateNavigation();el.scrollIntoView({behavior:"smooth",block:"start"});return}
+ const op=e.target.closest("[data-points]");if(op)openMetric(op);
+});
+document.addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches("[data-points]")){e.preventDefault();openMetric(e.target)}});
+$("#dialog-close").onclick=()=>$("#metrics-dialog").close();
+$("#expand-tested").onclick=()=>{for(let i=0;i<4;i++){$("#layer-"+i).open=true;openLayers.add(i);if($("#layer-"+i).dataset.mode!==mode)renderBody(i)}updateNavigation()};
+$("#collapse-all").onclick=()=>{$$(".layer-card").forEach(el=>el.open=false);openLayers.clear();updateNavigation()};
+function exportSVG(){
+ const svgs=$$("svg[data-export]").filter(el=>!el.closest("details:not([open])"));
+ let y=165,content='<rect width="1605" height="165" fill="#f4f7fb"/><text x="24" y="40" font-size="28" font-family="sans-serif" fill="#182c46">Target: '+E(mode)+' / 层间直连 + 每层两次残差</text><text x="24" y="76" font-size="18" font-family="sans-serif" fill="#61738b">红色 relative-L2 &gt;1%；仅 L0–L3 有本批指标；数据截至 2026-11-10</text><text x="24" y="110" font-size="18" font-family="sans-serif" fill="#61738b">青色：≤1%（非验收通过）；橙色：小图编译阻塞；灰色：未测 / 结构节点</text><text x="24" y="144" font-size="18" font-family="sans-serif" fill="#61738b">紫色实线：层内 identity 残差；蓝色虚线：状态读写 / 跨步反馈；每层 MoE 结构相同</text>';
+ const used=new Set();
+ for(const el of svgs){
+  if(used.has(el))continue;
+  const pane=el.closest(".phase-pane"),grid=pane&&pane.parentElement;
+  if(grid&&grid.querySelectorAll(".phase-pane").length===2){
+   const pair=Array.from(grid.querySelectorAll(".phase-pane>svg"));
+   pair.forEach((g,k)=>{used.add(g);const cl=g.cloneNode(true);cl.setAttribute("x",String(k*802.5));cl.setAttribute("y",String(y));cl.setAttribute("width","790");cl.setAttribute("height",String(1000*790/760));content+=cl.outerHTML});
+   y+=1000*790/760+30;
+  }else{
+   used.add(el);const vb=el.viewBox.baseVal,scale=1605/vb.width,hh=vb.height*scale,cl=el.cloneNode(true);
+   cl.setAttribute("x","0");cl.setAttribute("y",String(y));cl.setAttribute("width","1605");cl.setAttribute("height",String(hh));content+=cl.outerHTML;y+=hh+24;
+  }
+ }
+ return '<svg xmlns="http://www.w3.org/2000/svg" width="1605" height="'+Math.ceil(y)+'" viewBox="0 0 1605 '+Math.ceil(y)+'"><title>Target '+E(mode)+' 层间连接与阶段精度图</title><rect width="100%" height="100%" fill="white"/>'+content+"</svg>";
+}
+$("#export-svg").onclick=()=>{
+ const blob=new Blob([exportSVG()],{type:"image/svg+xml;charset=utf-8"}),url=URL.createObjectURL(blob),a=document.createElement("a");
+ a.href=url;a.download="target-"+mode+"-expanded.svg";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ $("#toast").textContent="已导出当前阶段及已展开区域；折叠的 MoE 不会加入导出。";
+};
+$("#overview").innerHTML=overview();$("#timeline").innerHTML=timeline();buildLayers();setMode("compare");
+window.targetDiagram={setMode,exportSVG,metrics:METRICS,overCount};
+</script></main></body></html>
+

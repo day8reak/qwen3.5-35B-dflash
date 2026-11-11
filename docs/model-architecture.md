@@ -4,11 +4,24 @@
 
 ## Target
 
-[打开／下载 Target 整图结构 SVG](assets/target-architecture-accuracy.svg)。图中展开 40 层重复结构、两类注意力、每层 MoE 和状态反馈；红色按本批 **relative-L2 > 1%（原始比值 > 0.01）** 标注。数值证据仅覆盖 L0–L3 独立小图的 Prefill T256／Decode T1，其余层、MoE 和模型 IO 不继承这四层的数值结论。橙色表示 ConvState 小图编译阻塞，灰色表示结构或未覆盖区域；青色表示已回传误差 ≤1%，并非新增验收通过。
+[交互式 Target 结构图 HTML](assets/target-architecture-interactive.html)：在 GitHub 文件页下载原始文件，使用浏览器打开即可，无需联网。可以选择 Prefill／Decode／双列对比，点击 L0–L39 逐层展开两次残差、注意力、MoE 和状态流；点击算子查看该层、该阶段的原始指标，并导出当前展开区域为 SVG。GitHub 文件预览本身不执行 HTML。
 
-![Target 模型结构及 relative-L2 大于 1% 的定位区域](assets/target-architecture-accuracy.svg)
+每层的连接是：
 
-绘图日期：2026-11-11；指标截至 2026-11-10，来自[风险 CSV](../specs/target-operator-accuracy-risk.csv)。红色共 51 个边界输出：量化投影 38、RoPE 4、Prefill GDN core/state 6、Prefill FusedAttention 1、Decode Cache K/V 2。原始状态仍保持不变；图展示原 Target 的模型语义结构，实际编译融合及节点名以 AIR／OMC dump 为准。图中不含 Draft、视觉编码器和 MTP。
+```text
+u[i]   = h[i] + Mixer[i](InputNorm[i](h[i]), state[i])
+h[i+1] = u[i] + MoE[i](PostNorm[i](u[i]))
+```
+
+R1 保留层输入 h[i]，绕过 InputNorm 和注意力；R2 保留第一次 Add 的输出 u[i]，绕过 PostNorm 和 MoE。**本层第二次 Add 的结果直接作为下一层输入，层间没有第三次 Add。** 原导出循环逐层执行 `hidden_states = layer_outputs[0]`，并为每层传入自己的 `past_key_values[idx]`；状态反馈连接下一时间步的同一层，与主干的层间传递分开。
+
+Prefill 与 Decode 共用这套 40 层结构。Prefill 处理整段 token，首次调用使用初始化状态，续接时使用已有状态；Decode 每步处理一个 token，读取并更新各层 ConvState、recurrent state 或 K/V。图中分别显示 Prefill 的 **28** 个和 Decode 的 **23** 个 relative-L2 >1% 边界，避免将 Prefill GDN／Attention 的异常套用到 Decode，或把 Decode Cache 异常套用到 Prefill。
+
+[静态 SVG：40 层概览、相邻层残差、Prefill／Decode 状态流及 L0–L3 对照展开](assets/target-architecture-accuracy.svg)。SVG 与 HTML 使用同一套连线和数据。红色表示 **relative-L2 > 1%（原始比值 > 0.01）**；橙色表示 ConvState 小图编译阻塞，灰色表示结构或未覆盖区域，青色表示已回传误差 ≤1%，并非新增验收通过。
+
+绘图日期：2026-11-11；指标截至 2026-11-10。[逐边界 CSV](../specs/target-boundary-metrics-20261110.csv) 合并原 120 行用户摘要与新增 22 行 Norm／Conv1d 指标，保留各自回传精度；[算子族风险 CSV](../specs/target-operator-accuracy-risk.csv) 提供汇总。红色共 51 个边界输出：量化投影 38、RoPE 4、Prefill GDN core/state 6、Prefill FusedAttention 1、Decode Cache K/V 2。
+
+数值证据仅覆盖 L0–L3 独立小图的 Prefill T256／Decode T1，其余层、MoE 和模型 IO 不继承这些数值结论。成功整图 T64 是另一用例，跨调用状态反馈尚未由本批小图验证。原始验收状态保持不变；图为原 Target 的模型语义结构，实际编译融合及节点名以 AIR／OMC dump 为准。不含 Draft、视觉编码器和 MTP。
 
 | 项目 | 配置 |
 |---|---|

@@ -10,7 +10,7 @@
 
 ## 算子风险 CSV
 
-已增加[Target 整图结构与精度标注 SVG](assets/target-architecture-accuracy.svg)，按用户指定的 relative-L2 >1% 标红，当前对应 51 个边界输出。该阈值用于图示筛选，不改写原有验收状态。
+已增加[Target 交互结构图 HTML](assets/target-architecture-interactive.html)及[静态 SVG](assets/target-architecture-accuracy.svg)，明确画出两次层内残差和层间直接传递，并可按层展开、按 Prefill／Decode 切换。HTML 下载后使用浏览器打开，点击节点查看[逐边界指标 CSV](../specs/target-boundary-metrics-20261110.csv)中的原始数据。按 relative-L2 >1% 标红：Prefill 28 项、Decode 23 项，共 51 个边界输出。该阈值用于图示筛选，不改写原有验收状态。
 
 [下载／查看整图算子族风险清单](../specs/target-operator-accuracy-risk.csv)：**47 行，35 个边界分组＋12 个尚未覆盖的模型区域**。清单按原 Target 的 Linear Attention、Self Attention、MoE、模型 IO、状态和布局关系整理；当前没有完整编译节点清单，因此它是算子族／区域清单，不是逐 GE 节点或逐内核库存。新增 MoE 和模型 IO 行只描述覆盖缺口，实际是否在四层 AIR 内仍以导出入口和 dump 为准。
 
