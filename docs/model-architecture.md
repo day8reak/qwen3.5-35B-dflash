@@ -4,6 +4,12 @@
 
 ## Target
 
+[打开／下载 Target 整图结构 SVG](assets/target-architecture-accuracy.svg)。图中展开 40 层重复结构、两类注意力、每层 MoE 和状态反馈；红色按本批 **relative-L2 > 1%（原始比值 > 0.01）** 标注。数值证据仅覆盖 L0–L3 独立小图的 Prefill T256／Decode T1，其余层、MoE 和模型 IO 不继承这四层的数值结论。橙色表示 ConvState 小图编译阻塞，灰色表示结构或未覆盖区域；青色表示已回传误差 ≤1%，并非新增验收通过。
+
+![Target 模型结构及 relative-L2 大于 1% 的定位区域](assets/target-architecture-accuracy.svg)
+
+绘图日期：2026-11-11；指标截至 2026-11-10，来自[风险 CSV](../specs/target-operator-accuracy-risk.csv)。红色共 51 个边界输出：量化投影 38、RoPE 4、Prefill GDN core/state 6、Prefill FusedAttention 1、Decode Cache K/V 2。原始状态仍保持不变；图展示原 Target 的模型语义结构，实际编译融合及节点名以 AIR／OMC dump 为准。图中不含 Draft、视觉编码器和 MTP。
+
 | 项目 | 配置 |
 |---|---|
 | 层数 | 40：30层Gated DeltaNet＋10层全注意力 |

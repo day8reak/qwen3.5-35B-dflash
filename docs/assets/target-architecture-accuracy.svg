@@ -1,0 +1,477 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1920" height="2790" viewBox="0 0 1920 2790" role="img" aria-labelledby="title desc">
+<title id="title">Qwen3.5-35B Target 模型结构与 relative-L2 大于 1% 的边界</title>
+<desc id="desc">40层文本Target，每4层为3层GDN加1层全注意力，每层含MoE。红色仅对应L0至L3独立小图已观察的51个relative-L2大于1%的边界输出；Prefill T256及Decode T1。ConvState十二小图编译失败用橙色，未测用灰色。整图精度尚未验证。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#71859D"/></marker></defs>
+<style>text {font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",sans-serif;} .edge{fill:none;stroke:#71859D;stroke-width:2.3;stroke-linejoin:round;stroke-linecap:round;marker-end:url(#arrow);} .feedback{stroke-dasharray:6 5;}</style>
+<rect width="1920" height="2790" fill="#F3F6FB"/>
+<text x="60" y="72" font-size="43" fill="#172B46" font-weight="700" text-anchor="start">Qwen3.5-35B Target</text>
+<text x="600" y="72" font-size="37" fill="#172B46" font-weight="500" text-anchor="start">模型结构与精度定位</text>
+<text x="60" y="112" font-size="20" fill="#5C6F85" font-weight="400" text-anchor="start">40 层文本主干  ·  X90 / kirinx90  ·  指标截至 2026-11-10  ·  绘制 2026-11-11</text>
+<rect x="60" y="143" width="430" height="48" rx="12" fill="#FFF0F1" stroke="#DB6678" stroke-width="1.5"/>
+<text x="78" y="175" font-size="20" fill="#B42339" font-weight="500" text-anchor="start">红色：已测 relative-L2 &gt; 1%</text>
+<rect x="510" y="143" width="450" height="48" rx="12" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="1.5"/>
+<text x="528" y="175" font-size="20" fill="#176F64" font-weight="500" text-anchor="start">青色：已回传 ≤ 1%（非验收结论）</text>
+<rect x="980" y="143" width="420" height="48" rx="12" fill="#FFF6E3" stroke="#D5AD63" stroke-width="1.5"/>
+<text x="998" y="175" font-size="20" fill="#936018" font-weight="500" text-anchor="start">橙色：编译阻塞，精度未知</text>
+<rect x="1420" y="143" width="440" height="48" rx="12" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="1.5"/>
+<text x="1438" y="175" font-size="20" fill="#5C6F85" font-weight="500" text-anchor="start">灰色：结构 / 未覆盖的区域</text>
+<rect x="60" y="213" width="1800" height="415" rx="22" fill="white" stroke="#D9E3EF" stroke-width="1.5"/>
+<text x="88" y="255" font-size="27" fill="#172B46" font-weight="700" text-anchor="start">01 / 完整 Target：40 层按顺序串联</text>
+<text x="88" y="289" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="start">h = 2048；每组 3 × GDN + 1 × Full Attention，共 10 组。下方 L0–L3 为现有数值证据范围，其余层未据此着色。</text>
+<g id="embedding" data-risk="gray">
+<title>Token → Embedding | hidden = 2048</title>
+<rect x="90" y="315" width="245" height="75" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="212.5" y="345" font-size="21" fill="#5C6F85" font-weight="700" text-anchor="middle">Token → Embedding</text>
+<text x="212.5" y="373" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">hidden = 2048</text>
+</g>
+<g id="decoder-stack" data-risk="gray">
+<title>Decoder L0 → L39 | 30 × GDN block + 10 × Full Attention block；每层都有 MoE</title>
+<rect x="385" y="315" width="900" height="75" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="835.0" y="345" font-size="24" fill="#5C6F85" font-weight="700" text-anchor="middle">Decoder L0 → L39</text>
+<text x="835.0" y="373" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">30 × GDN block + 10 × Full Attention block；每层都有 MoE</text>
+</g>
+<g id="final-norm" data-risk="gray">
+<title>Final RMSNorm | 未覆盖本批</title>
+<rect x="1335" y="315" width="200" height="75" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1435.0" y="345" font-size="20" fill="#5C6F85" font-weight="700" text-anchor="middle">Final RMSNorm</text>
+<text x="1435.0" y="373" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">未覆盖本批</text>
+</g>
+<g id="lm-head" data-risk="gray">
+<title>LM head → logits | vocab = 248320</title>
+<rect x="1585" y="315" width="245" height="75" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1707.5" y="345" font-size="21" fill="#5C6F85" font-weight="700" text-anchor="middle">LM head → logits</text>
+<text x="1707.5" y="373" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">vocab = 248320</text>
+</g>
+<path class="edge" d="M335,352 L385,352"/>
+<path class="edge" d="M1285,352 L1335,352"/>
+<path class="edge" d="M1535,352 L1585,352"/>
+<rect x="90" y="433" width="340" height="77" rx="12" fill="#EDF4FD" stroke="#6795CC" stroke-width="2"/>
+<text x="102" y="456" font-size="16" fill="#235C9A" font-weight="600" text-anchor="start">组 0  边界已测</text>
+<rect x="102" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="138" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L0 G</text>
+<rect x="182" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="218" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L1 G</text>
+<rect x="262" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="298" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L2 G</text>
+<rect x="342" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="378" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L3 A</text>
+<rect x="440" y="433" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="452" y="456" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 1  未覆盖数值</text>
+<rect x="452" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="488" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L4 G</text>
+<rect x="532" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="568" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L5 G</text>
+<rect x="612" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="648" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L6 G</text>
+<rect x="692" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="728" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L7 A</text>
+<rect x="790" y="433" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="802" y="456" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 2  未覆盖数值</text>
+<rect x="802" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="838" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L8 G</text>
+<rect x="882" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="918" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L9 G</text>
+<rect x="962" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="998" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L10 G</text>
+<rect x="1042" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1078" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L11 A</text>
+<rect x="1140" y="433" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1152" y="456" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 3  未覆盖数值</text>
+<rect x="1152" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1188" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L12 G</text>
+<rect x="1232" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1268" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L13 G</text>
+<rect x="1312" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1348" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L14 G</text>
+<rect x="1392" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1428" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L15 A</text>
+<rect x="1490" y="433" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1502" y="456" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 4  未覆盖数值</text>
+<rect x="1502" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1538" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L16 G</text>
+<rect x="1582" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1618" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L17 G</text>
+<rect x="1662" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1698" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L18 G</text>
+<rect x="1742" y="467" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1778" y="488" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L19 A</text>
+<rect x="90" y="523" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="102" y="546" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 5  未覆盖数值</text>
+<rect x="102" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="138" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L20 G</text>
+<rect x="182" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="218" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L21 G</text>
+<rect x="262" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="298" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L22 G</text>
+<rect x="342" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="378" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L23 A</text>
+<rect x="440" y="523" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="452" y="546" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 6  未覆盖数值</text>
+<rect x="452" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="488" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L24 G</text>
+<rect x="532" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="568" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L25 G</text>
+<rect x="612" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="648" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L26 G</text>
+<rect x="692" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="728" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L27 A</text>
+<rect x="790" y="523" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="802" y="546" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 7  未覆盖数值</text>
+<rect x="802" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="838" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L28 G</text>
+<rect x="882" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="918" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L29 G</text>
+<rect x="962" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="998" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L30 G</text>
+<rect x="1042" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1078" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L31 A</text>
+<rect x="1140" y="523" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1152" y="546" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 8  未覆盖数值</text>
+<rect x="1152" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1188" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L32 G</text>
+<rect x="1232" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1268" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L33 G</text>
+<rect x="1312" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1348" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L34 G</text>
+<rect x="1392" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1428" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L35 A</text>
+<rect x="1490" y="523" width="340" height="77" rx="12" fill="#F2F5F9" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1502" y="546" font-size="16" fill="#5C6F85" font-weight="600" text-anchor="start">组 9  未覆盖数值</text>
+<rect x="1502" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1538" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L36 G</text>
+<rect x="1582" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1618" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L37 G</text>
+<rect x="1662" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1698" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L38 G</text>
+<rect x="1742" y="557" width="72" height="31" rx="6" fill="white" stroke="#D9E3EF" stroke-width="1"/>
+<text x="1778" y="578" font-size="15" fill="#172B46" font-weight="500" text-anchor="middle">L39 A</text>
+<text x="90" y="615" font-size="17" fill="#5C6F85" font-weight="400" text-anchor="start">G = GDN block   /   A = 全注意力 block；层号从 0 起。Embedding / LM head 位于具体 AIR 内或主机侧，以实际导出入口为准。</text>
+<rect x="60" y="655" width="1800" height="205" rx="22" fill="white" stroke="#D9E3EF" stroke-width="1.5"/>
+<text x="88" y="697" font-size="27" fill="#172B46" font-weight="700" text-anchor="start">02 / 每层外壳：注意力分支二选一，随后经过 MoE</text>
+<text x="88" y="731" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="start">节点下方指标仅描述 L0–L3 已测边界；同名 gate / z 端口表示跨区连接。状态虚线表示下一次调用的反馈。</text>
+<g id="hidden-in" data-risk="gray">
+<title>h[i] | </title>
+<rect x="90" y="757" width="125" height="60" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="152.5" y="787" font-size="25" fill="#5C6F85" font-weight="700" text-anchor="middle">h[i]</text>
+</g>
+<g id="input-norm" data-risk="teal">
+<title>Input RMSNorm | 已测 ≤1%；缺 L0 P</title>
+<rect x="265" y="757" width="240" height="75" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="385.0" y="787" font-size="22" fill="#176F64" font-weight="700" text-anchor="middle">Input RMSNorm</text>
+<text x="385.0" y="815" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">已测 ≤1%；缺 L0 P</text>
+</g>
+<g id="mixer" data-risk="gray">
+<title>GDN / Full Attention | 详见下方 A / B</title>
+<rect x="555" y="757" width="250" height="75" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="680.0" y="787" font-size="19" fill="#5C6F85" font-weight="700" text-anchor="middle">GDN / Full Attention</text>
+<text x="680.0" y="815" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">详见下方 A / B</text>
+</g>
+<g id="residual-1" data-risk="teal">
+<title>＋ | </title>
+<rect x="855" y="757" width="80" height="60" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="895.0" y="787" font-size="28" fill="#176F64" font-weight="700" text-anchor="middle">＋</text>
+</g>
+<g id="post-norm" data-risk="teal">
+<title>Post-attn RMSNorm | 已测 ≤1%</title>
+<rect x="985" y="757" width="260" height="75" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="1115.0" y="787" font-size="21" fill="#176F64" font-weight="700" text-anchor="middle">Post-attn RMSNorm</text>
+<text x="1115.0" y="815" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">已测 ≤1%</text>
+</g>
+<g id="moe-shell" data-risk="gray">
+<title>MoE | 详见下方 C；未覆盖</title>
+<rect x="1295" y="757" width="260" height="75" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1425.0" y="787" font-size="22" fill="#5C6F85" font-weight="700" text-anchor="middle">MoE</text>
+<text x="1425.0" y="815" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">详见下方 C；未覆盖</text>
+</g>
+<g id="residual-2" data-risk="teal">
+<title>＋ | </title>
+<rect x="1605" y="757" width="80" height="60" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="1645.0" y="787" font-size="28" fill="#176F64" font-weight="700" text-anchor="middle">＋</text>
+</g>
+<g id="hidden-out" data-risk="gray">
+<title>h[i+1] | </title>
+<rect x="1735" y="757" width="95" height="60" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1782.5" y="787" font-size="23" fill="#5C6F85" font-weight="700" text-anchor="middle">h[i+1]</text>
+</g>
+<path class="edge" d="M215,787 L265,787"/>
+<path class="edge" d="M505,787 L555,787"/>
+<path class="edge" d="M805,787 L855,787"/>
+<path class="edge" d="M935,787 L985,787"/>
+<path class="edge" d="M1245,787 L1295,787"/>
+<path class="edge" d="M1555,787 L1605,787"/>
+<path class="edge" d="M1685,787 L1735,787"/>
+<path class="edge" d="M152,757 L152,742 L895,742 L895,757"/>
+<path class="edge" d="M960,787 L960,842 L1645,842 L1645,817"/>
+<text x="1450" y="853" font-size="15" fill="#5C6F85" font-weight="400" text-anchor="start">residual</text>
+<rect x="60" y="895" width="880" height="1160" rx="22" fill="white" stroke="#D9E3EF" stroke-width="1.5"/>
+<text x="88" y="937" font-size="27" fill="#172B46" font-weight="700" text-anchor="start">A / Gated DeltaNet（30 层）</text>
+<text x="88" y="971" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="start">着色证据：L0–L2。P = Prefill T256；D = Decode T1。</text>
+<rect x="980" y="895" width="880" height="1160" rx="22" fill="white" stroke="#D9E3EF" stroke-width="1.5"/>
+<text x="1008" y="937" font-size="27" fill="#172B46" font-weight="700" text-anchor="start">B / Full Attention（10 层）</text>
+<text x="1008" y="971" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="start">着色证据：L3。Q / KV heads = 16 / 2；head_dim = 256。</text>
+<g id="gdn-normalized-input" data-risk="gray">
+<title>输入：Input RMSNorm 输出 | </title>
+<rect x="290" y="995" width="420" height="58" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="500.0" y="1025" font-size="21" fill="#5C6F85" font-weight="700" text-anchor="middle">输入：Input RMSNorm 输出</text>
+</g>
+<g id="linear-in-projections" data-risk="red" data-evidence-groups="linear_in_proj">
+<title>QKV / z / a / b 量化投影 | P+D：48,304%–494,266%  ·  24 项 | DynamicQuant → QuantBatchMatmulV4444；中间节点尚未单独定责</title>
+<rect x="92" y="1085" width="816" height="105" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="92" y="1099" width="5" height="77" rx="2" fill="#B42339"/>
+<text x="500.0" y="1115" font-size="24" fill="#B42339" font-weight="700" text-anchor="middle">QKV / z / a / b 量化投影</text>
+<text x="500.0" y="1143" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P+D：48,304%–494,266%  ·  24 项</text>
+<text x="500.0" y="1167" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">DynamicQuant → QuantBatchMatmulV4444；中间节点尚未单独定责</text>
+</g>
+<path class="edge" d="M500,1053 L500,1085"/>
+<text x="272" y="1215" font-size="17" fill="#5C6F85" font-weight="400" text-anchor="middle">QKV</text>
+<text x="710" y="1215" font-size="17" fill="#5C6F85" font-weight="400" text-anchor="middle">a / b</text>
+<text x="870" y="1215" font-size="17" fill="#5C6F85" font-weight="400" text-anchor="middle">z ↘</text>
+<g id="convstate" data-risk="orange">
+<title>ConvState Update | 历史 conv state → 新 state / padded | 12 小图编译阻塞；精度未知 | 成功 T64 整图已含专用实现</title>
+<rect x="92" y="1240" width="360" height="120" rx="13" fill="#FFF6E3" stroke="#D5AD63" stroke-width="2"/>
+<text x="272.0" y="1270" font-size="22" fill="#936018" font-weight="700" text-anchor="middle">ConvState Update</text>
+<text x="272.0" y="1298" font-size="18" fill="#936018" font-weight="400" text-anchor="middle">历史 conv state → 新 state / padded</text>
+<text x="272.0" y="1322" font-size="18" fill="#936018" font-weight="400" text-anchor="middle">12 小图编译阻塞；精度未知</text>
+<text x="272.0" y="1346" font-size="18" fill="#936018" font-weight="400" text-anchor="middle">成功 T64 整图已含专用实现</text>
+</g>
+<g id="decay-beta" data-risk="teal">
+<title>decay g / beta | a → −exp(A_log) × softplus(a+dt) | b → sigmoid(b) | P+D：0.040%–0.267%</title>
+<rect x="495" y="1240" width="413" height="120" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="701.5" y="1270" font-size="23" fill="#176F64" font-weight="700" text-anchor="middle">decay g / beta</text>
+<text x="701.5" y="1298" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">a → −exp(A_log) × softplus(a+dt)</text>
+<text x="701.5" y="1322" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">b → sigmoid(b)</text>
+<text x="701.5" y="1346" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">P+D：0.040%–0.267%</text>
+</g>
+<path class="edge" d="M272,1190 L272,1240"/>
+<path class="edge" d="M710,1190 L710,1240"/>
+<g id="conv1d-silu" data-risk="teal">
+<title>Depthwise Conv1d → SiLU | Conv 已测 4 项：0.021%–0.027% | L0 P/D 缺指标；SiLU 已测 &lt;1%</title>
+<rect x="92" y="1400" width="360" height="100" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="272.0" y="1430" font-size="21" fill="#176F64" font-weight="700" text-anchor="middle">Depthwise Conv1d → SiLU</text>
+<text x="272.0" y="1458" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">Conv 已测 4 项：0.021%–0.027%</text>
+<text x="272.0" y="1482" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">L0 P/D 缺指标；SiLU 已测 &lt;1%</text>
+</g>
+<path class="edge" d="M272,1360 L272,1400"/>
+<g id="split-repeat" data-risk="teal">
+<title>拆 Q/K/V；Q/K repeat ×2 | 16 → 32 heads；repeat 误差 0%</title>
+<rect x="92" y="1535" width="360" height="80" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="272.0" y="1565" font-size="20" fill="#176F64" font-weight="700" text-anchor="middle">拆 Q/K/V；Q/K repeat ×2</text>
+<text x="272.0" y="1593" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">16 → 32 heads；repeat 误差 0%</text>
+</g>
+<path class="edge" d="M272,1500 L272,1535"/>
+<g id="recurrent-old" data-risk="gray">
+<title>历史 recurrent state | 每层独立状态；连续回灌尚未验证</title>
+<rect x="495" y="1455" width="413" height="80" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="701.5" y="1485" font-size="22" fill="#5C6F85" font-weight="700" text-anchor="middle">历史 recurrent state</text>
+<text x="701.5" y="1513" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">每层独立状态；连续回灌尚未验证</text>
+</g>
+<g id="gdn-core" data-risk="red" data-evidence-groups="gdn_core_prefill">
+<title>ChunkGatedDeltaRule / core | P：1.56%–7.12%  ·  3 项 | D：0.115%–0.175%</title>
+<rect x="92" y="1650" width="360" height="115" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="92" y="1664" width="5" height="87" rx="2" fill="#B42339"/>
+<text x="272.0" y="1680" font-size="20" fill="#B42339" font-weight="700" text-anchor="middle">ChunkGatedDeltaRule / core</text>
+<text x="272.0" y="1708" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P：1.56%–7.12%  ·  3 项</text>
+<text x="272.0" y="1732" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">D：0.115%–0.175%</text>
+</g>
+<path class="edge" d="M272,1615 L272,1650"/>
+<path class="edge" d="M710,1360 L710,1390 L470,1390 L470,1680 L452,1680"/>
+<text x="480" y="1382" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">g / beta</text>
+<path class="edge" d="M495,1495 L482,1495 L482,1733 L452,1733"/>
+<g id="gdn-state" data-risk="red" data-evidence-groups="gdn_state_raw_prefill">
+<title>GDN raw state | P：12.10%–44.60%  ·  3 项 | D：0.065%–0.429% | P / D：dtype_preserved = FALSE</title>
+<rect x="515" y="1650" width="393" height="140" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="515" y="1664" width="5" height="112" rx="2" fill="#B42339"/>
+<text x="711.5" y="1680" font-size="23" fill="#B42339" font-weight="700" text-anchor="middle">GDN raw state</text>
+<text x="711.5" y="1708" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P：12.10%–44.60%  ·  3 项</text>
+<text x="711.5" y="1732" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">D：0.065%–0.429%</text>
+<text x="711.5" y="1756" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P / D：dtype_preserved = FALSE</text>
+</g>
+<path class="edge" d="M452,1706 L515,1706"/>
+<text x="484" y="1642" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">state</text>
+<g id="gated-norm" data-risk="teal">
+<title>RMSNorm × SiLU(z) | P+D：0.164%–0.255%</title>
+<rect x="92" y="1810" width="360" height="85" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="272.0" y="1840" font-size="22" fill="#176F64" font-weight="700" text-anchor="middle">RMSNorm × SiLU(z)</text>
+<text x="272.0" y="1868" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">P+D：0.164%–0.255%</text>
+</g>
+<path class="edge" d="M272,1765 L272,1810"/>
+<path class="edge" d="M490,1850 L452,1850"/>
+<text x="469" y="1835" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">z</text>
+<g id="recurrent-write" data-risk="teal">
+<title>转 FP16 → recurrent 回写 | 独立回写 0%；状态精度仍待闭环</title>
+<rect x="515" y="1830" width="393" height="85" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="711.5" y="1860" font-size="21" fill="#176F64" font-weight="700" text-anchor="middle">转 FP16 → recurrent 回写</text>
+<text x="711.5" y="1888" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">独立回写 0%；状态精度仍待闭环</text>
+</g>
+<path class="edge" d="M710,1790 L710,1830"/>
+<path class="edge feedback" d="M908,1872 L923,1872 L923,1495 L908,1495"/>
+<text x="916" y="1614" font-size="14" fill="#5C6F85" font-weight="400" text-anchor="end">下一次</text>
+<g id="linear-out-proj" data-risk="red" data-evidence-groups="linear_out_proj">
+<title>量化 out_proj | P+D：285,413%–862,989%  ·  6 项</title>
+<rect x="92" y="1935" width="360" height="90" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="92" y="1949" width="5" height="62" rx="2" fill="#B42339"/>
+<text x="272.0" y="1965" font-size="23" fill="#B42339" font-weight="700" text-anchor="middle">量化 out_proj</text>
+<text x="272.0" y="1993" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P+D：285,413%–862,989%  ·  6 项</text>
+</g>
+<path class="edge" d="M272,1895 L272,1935"/>
+<text x="520" y="1970" font-size="19" fill="#5C6F85" font-weight="400" text-anchor="start">GDN：K/V head_dim = 128</text>
+<text x="520" y="2000" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="start">Conv kernel = 4；每层两份状态</text>
+<g id="attn-normalized-input" data-risk="gray">
+<title>输入：Input RMSNorm 输出 | </title>
+<rect x="1210" y="995" width="420" height="58" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1420.0" y="1025" font-size="21" fill="#5C6F85" font-weight="700" text-anchor="middle">输入：Input RMSNorm 输出</text>
+</g>
+<g id="self-qkv-proj" data-risk="red" data-evidence-groups="self_qkv_proj">
+<title>Q / K / V 量化投影（Q 投影含 gate） | P+D：183,548%–1,127,820%  ·  6 项 | DynamicQuant → QuantBatchMatmulV4444</title>
+<rect x="1012" y="1085" width="816" height="105" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="1012" y="1099" width="5" height="77" rx="2" fill="#B42339"/>
+<text x="1420.0" y="1115" font-size="24" fill="#B42339" font-weight="700" text-anchor="middle">Q / K / V 量化投影（Q 投影含 gate）</text>
+<text x="1420.0" y="1143" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P+D：183,548%–1,127,820%  ·  6 项</text>
+<text x="1420.0" y="1167" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">DynamicQuant → QuantBatchMatmulV4444</text>
+</g>
+<path class="edge" d="M1420,1053 L1420,1085"/>
+<g id="qk-norm" data-risk="teal">
+<title>Q / K RMSNorm | 已测 0.080%–0.129%；P 的 Q Norm 缺项</title>
+<rect x="1012" y="1240" width="380" height="85" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="1202.0" y="1270" font-size="23" fill="#176F64" font-weight="700" text-anchor="middle">Q / K RMSNorm</text>
+<text x="1202.0" y="1298" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">已测 0.080%–0.129%；P 的 Q Norm 缺项</text>
+</g>
+<path class="edge" d="M1202,1190 L1202,1240"/>
+<g id="q-gate" data-risk="gray">
+<title>sigmoid(gate) | gate → 下方门控</title>
+<rect x="1620" y="1240" width="208" height="85" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1724.0" y="1270" font-size="21" fill="#5C6F85" font-weight="700" text-anchor="middle">sigmoid(gate)</text>
+<text x="1724.0" y="1298" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">gate → 下方门控</text>
+</g>
+<path class="edge" d="M1724,1190 L1724,1240"/>
+<g id="rope" data-risk="red" data-evidence-groups="rope_prefill;rope_decode">
+<title>partial RoPE（Q / K） | P：17.95%–19.28% | D：17.56%–19.62%  ·  共 4 项 | 旋转维度 64 / head_dim 256</title>
+<rect x="1012" y="1365" width="380" height="125" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="1012" y="1379" width="5" height="97" rx="2" fill="#B42339"/>
+<text x="1202.0" y="1395" font-size="23" fill="#B42339" font-weight="700" text-anchor="middle">partial RoPE（Q / K）</text>
+<text x="1202.0" y="1423" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P：17.95%–19.28%</text>
+<text x="1202.0" y="1447" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">D：17.56%–19.62%  ·  共 4 项</text>
+<text x="1202.0" y="1471" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">旋转维度 64 / head_dim 256</text>
+</g>
+<path class="edge" d="M1202,1325 L1202,1365"/>
+<g id="cache" data-risk="red" data-evidence-groups="cache_decode">
+<title>CacheUpdate K / V | 历史 KV + 新 K/V + 写入位置 | D：99.69%–99.81%  ·  2 项 | P：0%（PASSED）；D：FAILED</title>
+<rect x="1460" y="1365" width="368" height="140" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="1460" y="1379" width="5" height="112" rx="2" fill="#B42339"/>
+<text x="1644.0" y="1395" font-size="23" fill="#B42339" font-weight="700" text-anchor="middle">CacheUpdate K / V</text>
+<text x="1644.0" y="1423" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">历史 KV + 新 K/V + 写入位置</text>
+<text x="1644.0" y="1447" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">D：99.69%–99.81%  ·  2 项</text>
+<text x="1644.0" y="1471" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P：0%（PASSED）；D：FAILED</text>
+</g>
+<path class="edge" d="M1510,1190 L1510,1340 L1644,1340 L1644,1365"/>
+<text x="1522" y="1275" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">V</text>
+<path class="edge" d="M1392,1425 L1460,1425"/>
+<text x="1422" y="1413" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">K</text>
+<g id="fused-attention" data-risk="red" data-evidence-groups="fused_attention_prefill">
+<title>Fused Attention / GQA | P：99.67%  ·  1 项  |  D：0.251% | AdnFusedInferAttention；分页 K/V；ND / NZ 布局 | 控制输入：mask、有效长度、block table / offset</title>
+<rect x="1012" y="1555" width="816" height="140" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="1012" y="1569" width="5" height="112" rx="2" fill="#B42339"/>
+<text x="1420.0" y="1585" font-size="24" fill="#B42339" font-weight="700" text-anchor="middle">Fused Attention / GQA</text>
+<text x="1420.0" y="1613" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P：99.67%  ·  1 项  |  D：0.251%</text>
+<text x="1420.0" y="1637" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">AdnFusedInferAttention；分页 K/V；ND / NZ 布局</text>
+<text x="1420.0" y="1661" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">控制输入：mask、有效长度、block table / offset</text>
+</g>
+<path class="edge" d="M1202,1490 L1202,1555"/>
+<text x="1214" y="1526" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">Q</text>
+<path class="edge" d="M1644,1505 L1644,1555"/>
+<text x="1658" y="1532" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">K / V</text>
+<g id="attn-layout-gate" data-risk="teal">
+<title>NZ → ND / Reshape → × sigmoid(gate) | P+D：0.034%–0.053% | attention_layout_gate：已测 2 项</title>
+<rect x="1012" y="1750" width="816" height="100" rx="13" fill="#EDF8F5" stroke="#7BB9AD" stroke-width="2"/>
+<text x="1420.0" y="1780" font-size="24" fill="#176F64" font-weight="700" text-anchor="middle">NZ → ND / Reshape → × sigmoid(gate)</text>
+<text x="1420.0" y="1808" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">P+D：0.034%–0.053%</text>
+<text x="1420.0" y="1832" font-size="18" fill="#176F64" font-weight="400" text-anchor="middle">attention_layout_gate：已测 2 项</text>
+</g>
+<path class="edge" d="M1420,1695 L1420,1750"/>
+<path class="edge" d="M1820,1715 L1820,1750"/>
+<text x="1810" y="1733" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">gate</text>
+<g id="self-out-proj" data-risk="red" data-evidence-groups="self_o_proj">
+<title>量化 o_proj | P+D：512,687%–583,375%  ·  2 项</title>
+<rect x="1012" y="1935" width="816" height="90" rx="13" fill="#FFF0F1" stroke="#DB6678" stroke-width="2"/>
+<rect x="1012" y="1949" width="5" height="62" rx="2" fill="#B42339"/>
+<text x="1420.0" y="1965" font-size="24" fill="#B42339" font-weight="700" text-anchor="middle">量化 o_proj</text>
+<text x="1420.0" y="1993" font-size="18" fill="#B42339" font-weight="400" text-anchor="middle">P+D：512,687%–583,375%  ·  2 项</text>
+</g>
+<path class="edge" d="M1420,1850 L1420,1935"/>
+<text x="1040" y="1892" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="start">Attention gate 来自 Q 投影；K/V 缓存作为后续调用的状态。</text>
+<rect x="60" y="2090" width="1800" height="395" rx="22" fill="white" stroke="#D9E3EF" stroke-width="1.5"/>
+<text x="88" y="2132" font-size="27" fill="#172B46" font-weight="700" text-anchor="start">C / 每层 MoE：路由专家 + 门控共享专家（当前本批未覆盖）</text>
+<text x="88" y="2166" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="start">每层 256 个路由专家，Top-8；专家中间维度 512。灰色表示未覆盖，不由 residual_mlp 的 0% 误差代替验证。</text>
+<g id="moe-input" data-risk="gray">
+<title>Post-attn Norm | hidden states</title>
+<rect x="90" y="2290" width="210" height="80" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="195.0" y="2320" font-size="21" fill="#5C6F85" font-weight="700" text-anchor="middle">Post-attn Norm</text>
+<text x="195.0" y="2348" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">hidden states</text>
+</g>
+<g id="router" data-risk="gray">
+<title>Router Linear | router logits</title>
+<rect x="350" y="2195" width="230" height="90" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="465.0" y="2225" font-size="22" fill="#5C6F85" font-weight="700" text-anchor="middle">Router Linear</text>
+<text x="465.0" y="2253" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">router logits</text>
+</g>
+<g id="topk" data-risk="gray">
+<title>Top-8 / Softmax | 选专家 + 权重归一化</title>
+<rect x="630" y="2195" width="270" height="90" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="765.0" y="2225" font-size="22" fill="#5C6F85" font-weight="700" text-anchor="middle">Top-8 / Softmax</text>
+<text x="765.0" y="2253" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">选专家 + 权重归一化</text>
+</g>
+<g id="expert-chain" data-risk="gray">
+<title>Dispatch → 专家 W4A8 | A8 量化 → gate/up GMM | SiLU×up → A8量化 → down GMM</title>
+<rect x="950" y="2195" width="335" height="115" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1117.5" y="2225" font-size="23" fill="#5C6F85" font-weight="700" text-anchor="middle">Dispatch → 专家 W4A8</text>
+<text x="1117.5" y="2253" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">A8 量化 → gate/up GMM</text>
+<text x="1117.5" y="2277" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">SiLU×up → A8量化 → down GMM</text>
+</g>
+<g id="finalize" data-risk="gray">
+<title>加权回聚合 | MoeFinalizeRouting | 恢复 token 顺序</title>
+<rect x="1335" y="2195" width="265" height="115" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1467.5" y="2225" font-size="23" fill="#5C6F85" font-weight="700" text-anchor="middle">加权回聚合</text>
+<text x="1467.5" y="2253" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">MoeFinalizeRouting</text>
+<text x="1467.5" y="2277" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">恢复 token 顺序</text>
+</g>
+<g id="shared-expert" data-risk="gray">
+<title>共享专家：gate / up / down | gate/up → SiLU × up → down</title>
+<rect x="350" y="2370" width="480" height="90" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="590.0" y="2400" font-size="23" fill="#5C6F85" font-weight="700" text-anchor="middle">共享专家：gate / up / down</text>
+<text x="590.0" y="2428" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">gate/up → SiLU × up → down</text>
+</g>
+<g id="shared-gate" data-risk="gray">
+<title>× sigmoid(shared_gate(hidden)) | 门控共享专家输出</title>
+<rect x="880" y="2370" width="400" height="90" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1080.0" y="2400" font-size="20" fill="#5C6F85" font-weight="700" text-anchor="middle">× sigmoid(shared_gate(hidden))</text>
+<text x="1080.0" y="2428" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">门控共享专家输出</text>
+</g>
+<g id="expert-merge" data-risk="gray">
+<title>＋ | MoE 输出</title>
+<rect x="1700" y="2290" width="130" height="80" rx="13" fill="#F2F5F9" stroke="#BAC8D8" stroke-width="2"/>
+<text x="1765.0" y="2320" font-size="27" fill="#5C6F85" font-weight="700" text-anchor="middle">＋</text>
+<text x="1765.0" y="2348" font-size="18" fill="#5C6F85" font-weight="400" text-anchor="middle">MoE 输出</text>
+</g>
+<path class="edge" d="M300,2330 L325,2330 L325,2240 L350,2240"/>
+<path class="edge" d="M580,2240 L630,2240"/>
+<path class="edge" d="M900,2240 L950,2240"/>
+<path class="edge" d="M1285,2240 L1335,2240"/>
+<path class="edge" d="M1600,2240 L1765,2240 L1765,2290"/>
+<path class="edge" d="M325,2330 L325,2415 L350,2415"/>
+<path class="edge" d="M830,2415 L880,2415"/>
+<path class="edge" d="M1280,2415 L1765,2415 L1765,2370"/>
+<path class="edge" d="M325,2330 L1118,2330 L1118,2310"/>
+<text x="600" y="2321" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">hidden → token dispatch</text>
+<path class="edge" d="M1080,2330 L1080,2370"/>
+<text x="1130" y="2360" font-size="16" fill="#5C6F85" font-weight="400" text-anchor="start">hidden</text>
+<rect x="60" y="2520" width="1800" height="215" rx="18" fill="#E9EFF7" stroke="#D9E3EF" stroke-width="1.5"/>
+<text x="86" y="2561" font-size="23" fill="#B42339" font-weight="700" text-anchor="start">51 个已测边界输出 &gt;1%：投影 38 + RoPE 4 + Prefill GDN 6 + Prefill Attention 1 + Decode Cache 2</text>
+<text x="86" y="2602" font-size="19" fill="#172B46" font-weight="400" text-anchor="start">图中误差均为 relative-L2 × 100%；1% = 0.01。着色是本次定位标记，不改写原始 METRICS_RECORDED / PASSED / FAILED。</text>
+<text x="86" y="2636" font-size="19" fill="#172B46" font-weight="400" text-anchor="start">小图使用各自独立的 310P 输入；青色下游不证明红色上游正确。L4–L39、MoE、连续状态反馈和整图精度仍未验证。</text>
+<text x="86" y="2670" font-size="19" fill="#172B46" font-weight="400" text-anchor="start">ConvState 橙色仅表示 12 个小图编译失败；原四层 T64 整图已编译。此图展示模型语义结构，不是编译后逐节点 / 融合拓扑。</text>
+<a xlink:href="https://github.com/day8reak/qwen3.5-35B-dflash/blob/main/specs/target-operator-accuracy-risk.csv">
+<text x="86" y="2707" font-size="18" fill="#235C9A" font-weight="400" text-anchor="start">数据：target-operator-accuracy-risk.csv  ·  配置：target-config.json  ·  原 Target 代码及成功整图日志</text>
+</a>
+<text x="60" y="2765" font-size="17" fill="#5C6F85" font-weight="400" text-anchor="start">Qwen3.5-35B-A3B · Target only（不含 Draft、视觉编码器及 MTP）</text>
+<text x="1860" y="2765" font-size="17" fill="#5C6F85" font-weight="400" text-anchor="end">数据基线 2380bc2  /  2026-11-11</text>
+</svg>

@@ -2,7 +2,7 @@
 
 原40层量化Target与完整六层Draft，已在端侧完成文字输入、Prefill、常驻草稿／验证循环和文字输出。当前归档约60ms的完整packed Draft基线，暂停其性能实验，转向Target精度；完整模型精度与配对端到端加速尚未通过。
 
-- [模型结构](model-architecture.md)
+- [模型结构](model-architecture.md) · [Target 精度标注 SVG](assets/target-architecture-accuracy.svg)
 - [优化策略与各项时延收益](optimization-strategy.md)
 - [端到端执行流程](end-to-end-flow.md)
 - [当前结果：时延与接受率](results.md)
