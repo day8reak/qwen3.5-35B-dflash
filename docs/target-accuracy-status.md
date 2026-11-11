@@ -55,18 +55,24 @@ CSV 的数量列均指本批**边界输出 case 数**，不能当作整图节点
 
 此前 prepare 的 `arg6_1` 报错已在 `ff23e33` 修复检查器遗漏的 `INT16/DT_INT16` 映射。后续回传已覆盖 120 个编译成功项的数值结果，该准备阶段阻塞不再是当前进度。
 
-### 本轮输出明显异常的边界
+### 高危算子重点定位表
 
-以下共 **51 个 case**，是根据误差量级及已有 Cache 精确门槛整理的排查清单，**不是已证明有 bug 的 51 个内核**。原始 `METRICS_RECORDED` 状态不改写为自动验收失败。除量化投影明确标注比值外，表中百分数为原始 relative-L2 乘 100。
+清单整理于 2026-11-11，数值仍来自截至 2026-11-10 的[逐边界指标](../specs/target-boundary-metrics-20261110.csv)。P0／P1 合计 **51 个 relative-L2 >1% 的边界输出**；另外单列 3 个 Decode 状态 dtype 问题和 12 个编译阻塞。数值行的数量是当前范围内的“问题输出数／已测输出数”；C0 的数量是“编译失败数／选中 case 数”，都不是整图内核数量。下表 relative-L2 **统一为百分比**，量化投影的原始比值范围是 483.04～11278.20。
 
-| 边界 | 层／阶段／输出 | case 数 | relative-L2 | 当前结论 |
-|---|---|---:|---|---|
-| QLinear 量化投影 | L0–L2 qkv/z/b/a/out、L3 q/k/v/o；Prefill＋Decode | 38 | **483.04～11278.20（比值）** | 全部显著异常；不能当作正常量化舍入误差 |
-| RoPE | L3，Q/K；Prefill＋Decode | 4 | **17.56%～19.62%** | 两阶段、两个输出均明显偏差 |
-| GDN core | L0–L2，Prefill | 3 | **1.56%～7.12%** | 明显高于本批 Decode core；优先单列 Prefill |
-| GDN raw state | L0–L2，Prefill | 3 | **12.10%～44.60%** | 大偏差，且 `dtype_preserved=FALSE` |
-| FusedAttention | L3，Prefill | 1 | **99.67%** | 输出明显异常，max-abs=1766.914063 |
-| CacheUpdate K/V | L3，Decode | 2 | **99.69%～99.81%** | 原报告 **FAILED**；整缓存逐位门槛未通过 |
+| 优先级 | 算子／定位区域 | 异常范围与数量 | relative-L2 | 首先检查什么 | 对照与边界 |
+|---|---|---|---|---|---|
+| **P0** | **QuantBatchMatmulV4444 所在 QLinear 链路，含 DynamicQuant** | L0–L2 qkv/z/b/a/out，L3 q/k/v/o；Prefill **19/19**、Decode **19/19** | **48,304%～1,127,820%** | 先比 DynamicQuant 的 INT8 输出与 per-token scale；再用相同量化输入、packed W4、权重 scale 隔离 MatMul；核对 group256、转置、布局与槽位 | 38/38 边界异常；DynamicQuant 尚无独立数值，不单独认定其内核错误 |
+| **P0** | **CacheUpdate** | L3 Decode，K/V **2/2** | **99.69%～99.81%** | 分别比较当前写入区和未写历史区；核对 block/offset、RefData/alias、缓存初始化与输出回读 | Prefill **2/2 PASSED**；问题集中在本批 Decode，不能推广为全部调用失败 |
+| **P1** | **RoPE 组合子图** | L3 Q/K；Prefill **2/2**、Decode **2/2** | **17.56%～19.62%** | 核对 position、cos/sin、partial rotary 维度、rotate_half、head/序列布局和实际输入绑定 | 两阶段全部已测输出异常；Slice/Concat/Mul/Add 的具体责任待拆分 |
+| **P1** | **ChunkGatedDeltaRule：core** | L0–L2 Prefill，**3/3** | **1.56%～7.12%** | 核对 Q/K 归一化、g/beta、初态、chunk/effective_length，逐 chunk 比较首个偏差 | Decode core **0.115%～0.175%**；当前严重偏差集中在 Prefill |
+| **P1** | **ChunkGatedDeltaRule：raw state** | L0–L2 Prefill，**3/3**，dtype 全不保持 | **12.10%～44.60%** | 比较写回前 raw state；核对实际输出 dtype、state 布局和累加精度，分开检查后续 FP16 转换 | 不用最终 writeback 零误差替代 raw state 验证，也不把全部误差归因于 dtype |
+| **P1** | **AdnFusedInferAttention** | L3 Prefill，**1/1** | **99.67%** | 核对 QKV/NZ 布局、mask/scale、有效长度、padding、block table，按 query 检查 | Decode **0.251%**；Prefill 目前只有一个已测输出，需控制变量复现 |
+| **P2** | **ChunkGatedDeltaRule：raw state dtype** | L0–L2 Decode，dtype **3/3** 不保持 | **0.065%～0.429%** | 核对参考与 OMC 实际输出 dtype、Cast 位置，以及多步状态反馈的误差变化 | 数值未超过 1%；与 Prefill 合计 6/6 raw state dtype 不保持，不计入上述 51 项 |
+| **C0** | **LinearAttentionConvstateUpdate** | L0–L2、两阶段、两个输出：**12/12 小图编译失败** | **未执行** | 对照成功整图的 RefData、双输出/卷积消费者及 hybrid 路径，与小图 Data、单输出及 single 路径的差异 | 原 T64 整图编译成功；当前是小图构建阻塞，没有精度结论 |
+
+所有数值项使用各自捕获的 golden 输入，不能统一归因于上游 QKV 误差传播。表内是**重点定位边界，不是已经定责的内核 bug**；原始 `METRICS_RECORDED`／`FAILED` 状态保持不变。MoE 专家 `GroupedMatmulV555`、Router、共享专家和 LM head 尚无本批精度证据，继续列为待覆盖，不纳入已观察异常数量。
+
+精度工作先处理 P0，再处理 P1；C0 保留为编译定位主线。可先选以下代表 case，修正后再扩到同类全部 case：量化 `l00_c01_linear_attn_in_proj_b_o0`；Cache `l03_c01_cache_k_o0`／`cache_v_o0`；RoPE `l03_c00_rope_o0` 与 `l03_c01_rope_o0`；GDN `l00_c00_gdn_o0`／`gdn_o1`；Attention `l03_c00_fused_attention_o0`。阶段相反的已有小图作为对照，保持输入、权重和比较口径不变。
 
 QLinear 的共同现象是同层 qkv/z/b/a 或 q/k/v 的 max-abs 接近，例如 L0 Prefill 约 21972～21980。它提示优先核对共享的量化／权重／scale／数据解释链路，但摘要不足以确定具体哪一步错误。这里没有据此改权重、scale、算子或比较方式。
 
