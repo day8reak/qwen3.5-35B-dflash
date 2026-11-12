@@ -15,11 +15,13 @@ h[i+1] = u[i] + MoE[i](PostNorm[i](u[i]))
 
 R1 保留层输入 h[i]，绕过 InputNorm 和注意力；R2 保留第一次 Add 的输出 u[i]，绕过 PostNorm 和 MoE。**本层第二次 Add 的结果直接作为下一层输入，层间没有第三次 Add。** 原导出循环逐层执行 `hidden_states = layer_outputs[0]`，并为每层传入自己的 `past_key_values[idx]`；状态反馈连接下一时间步的同一层，与主干的层间传递分开。
 
-Prefill 与 Decode 共用这套 40 层结构。Prefill 处理整段 token，首次调用使用初始化状态，续接时使用已有状态；Decode 每步处理一个 token，读取并更新各层 ConvState、recurrent state 或 K/V。图中分别显示 Prefill 的 **28** 个和 Decode 的 **23** 个 relative-L2 >1% 边界，避免将 Prefill GDN／Attention 的异常套用到 Decode，或把 Decode Cache 异常套用到 Prefill。
+Prefill 与 Decode 共用这套 40 层结构。Prefill 处理整段 token，首次调用使用初始化状态，续接时使用已有状态；Decode 每步处理一个 token，读取并更新各层 ConvState、recurrent state 或 K/V。
 
-[静态 SVG：40 层概览、相邻层残差、Prefill／Decode 状态流及 L0–L3 对照展开](assets/target-architecture-accuracy.svg)。SVG 与 HTML 使用同一套连线和数据。红色表示 **relative-L2 > 1%（原始比值 > 0.01）**；橙色表示 ConvState 小图编译阻塞，灰色表示结构或未覆盖区域，青色表示已回传误差 ≤1%，并非新增验收通过。
+交互图提供两个独立批次：默认 **FP16 scale 候选 42 项**（Prefill／Decode 各 21 项，relative-L2 >1% 为 1／3 项）；可切换 **修改前 146 项基线**（各 73 项，>1% 为 28／23 项）。候选中只测 QLinear 和 Cache 浮点索引，其他节点为灰色；四个 Cache 整数图编译失败，无数值。38 个 QLinear 有 36 个低于 1%，剩余 L0 out_proj 为 1.3766%／1.7625%；Decode Cache 仍失败。
 
-绘图日期：2026-11-11；指标截至 2026-11-10。[逐边界 CSV](../specs/target-boundary-metrics-20261110.csv) 合并原 120 行用户摘要与新增 22 行 Norm／Conv1d 指标，保留各自回传精度；[算子族风险 CSV](../specs/target-operator-accuracy-risk.csv) 提供汇总。红色共 51 个边界输出：量化投影 38、RoPE 4、Prefill GDN core/state 6、Prefill FusedAttention 1、Decode Cache K/V 2。
+红色表示 **relative-L2 >1%（原始比值 >0.01）**，青色表示已回传误差 ≤1%，并非新增验收通过。橙色 ConvState 是此前小图编译阻塞记录，本轮未测。[静态 SVG](assets/target-architecture-accuracy.svg)保留旧快照，新的数据请从 HTML 导出，导出标题带当前批次。
+
+数据日期：2026-11-12。[候选 CSV](../specs/target-qlinear-cache-candidate-metrics-20261112.csv)、[修改前 CSV](../specs/target-boundary-metrics-20261112.csv)各自保留原状态；[算子族风险 CSV](../specs/target-operator-accuracy-risk.csv)逐行标明证据范围，不合并成一次整图运行。
 
 数值证据仅覆盖 L0–L3 独立小图的 Prefill T256／Decode T1，其余层、MoE 和模型 IO 不继承这些数值结论。成功整图 T64 是另一用例，跨调用状态反馈尚未由本批小图验证。原始验收状态保持不变；图为原 Target 的模型语义结构，实际编译融合及节点名以 AIR／OMC dump 为准。不含 Draft、视觉编码器和 MTP。
 

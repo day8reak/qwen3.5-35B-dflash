@@ -2,17 +2,19 @@
 
 本轮只测试用户提出的 **QLinear FP16 scale 适配、CacheUpdate 整数索引**。覆盖已有 L0–L3 capture 的全部对应模块及 Prefill／Decode：38 个 QLinear＋4 个 Cache 边界各导出浮点／整数版本，共 **46 个候选／对照小图**。保持原模型、已安装 converter 文件、共享 DDK 和 golden 不变。
 
-2026-11-12 最新 AIR 回传：**42 EXPORTED／4 FAILED**。38 个 QLinear 和 4 个 Decode Cache 已导出。Prefill Cache 的 4 项在工具索引检查处失败；已补 `[1]` 索引保留逻辑，实际输入元数据仍待确认。新日志确认 Decode 整数 K 图的 `GatherV2D` 因 **Input[0] INT64** 校验失败，尚未进入 CacheUpdate 内核。已把 position 的 INT32 转换移到取第 0 行之前；需要重新导出 AIR，再按本页整批编译。新版 OMG／精度待回传。
+2026-11-12 最新 OMC 回传：**42 COMPILED／4 FAILED**。38 个 QLinear 和 Prefill／Decode 的 4 个 Cache 浮点控制图均已编译并回传数值；4 个 Cache 整数图编译失败。QLinear 有 **36/38 relative-L2 <1%**，仅 L0 out_proj 的 Prefill／Decode 为 1.3766%／1.7625%；Cache 浮点控制组 Prefill K/V 零误差，Decode 仍为 99.81%／99.69%。[原始候选 CSV](../specs/target-qlinear-cache-candidate-metrics-20261112.csv)保留 METRICS_RECORDED／PASSED／FAILED。
 
-QLinear 实际转换 scale 常量为 FP16，保留 `[K/256,N]` 方向。**前端 per-token 保持原 FP32 `[M,1]`，在 GE converter 边界才执行 Reshape＋FP16 Cast。** 适配器仅在当前导出进程生效，继续调用已安装 converter，结束后恢复注册；不绕过 FakeTensor 检查。导出后核对 V4444 四个输入端口和实际 Cast 连线，保存 scale 转换及 packed W4 信息。FP16 舍入计入候选误差，golden 不重算。38 项 AIR 成功表明该导出适配已接通，不能据此判断 OMC 物理存储或精度通过。
+最新 Decode V 整数图日志中 Cast、Gather、FloorDiv 均通过 shape 推导，当前失败点是 **FloorMod 不接受 INT32 Input[0]**。候选现已改为 `offset = position[0] - block * block_size`，避免生成 FloorMod；保留取行前 INT32 Cast。已校验的非负 INT32 位置范围内，该表达式与 `%` 完全相等。需重新导出 AIR 后按本页整批编译；此项改写的实际 OMG／数值结果待回传，不能据此宣称 Decode 精度已修复。
+
+QLinear 实际转换 scale 常量为 FP16，保留 `[K/256,N]` 方向。**前端 per-token 保持原 FP32 `[M,1]`，在 GE converter 边界才执行 Reshape＋FP16 Cast。** 适配器仅在当前导出进程生效，继续调用已安装 converter，结束后恢复注册；不绕过 FakeTensor 检查。导出后核对 V4444 四个输入端口和实际 Cast 连线，保存 scale 转换及 packed W4 信息。FP16 舍入计入候选误差，golden 不重算。新结果支持这项接口适配；两路 scale 同时变化，不能仅凭汇总确定哪一路单独造成旧误差，也未完成整模型精度验收。
 
 AIR／OMC 单项失败记录后继续；上板自动选择全部 COMPILED 项。已有 146 项指标仍是修改前结果，见[精度表](target-accuracy-status.md)。
 
-**旧 Cache 小图直接输入 INT32 块号／偏移，没有 `update()` 的浮点计算。** 本轮扩展为“position／block table → 索引计算 → CacheUpdate”。旧 capture 未保存高层 position：仅在同一次 Attention 页表能唯一反推位置时重用，并标记为重建输入；缺失／歧义直接报错。浮点控制组先核对原 CPro 表达式，整数组使用 `//`、`%` 和 INT32 页表。两者共用原 cache、updates、golden，CSV 分别标记 `_index_float`／`_index_integer`。
+**旧 Cache 小图直接输入 INT32 块号／偏移，没有 `update()` 的浮点计算。** 本轮扩展为“position／block table → 索引计算 → CacheUpdate”。旧 capture 未保存高层 position：仅在同一次 Attention 页表能唯一反推位置时重用，并标记为重建输入；缺失／歧义直接报错。浮点控制组先核对原 CPro 表达式，整数组使用 INT32 `//`、乘减求余和 INT32 页表。两者共用原 cache、updates、golden，CSV 分别标记 `_index_float`／`_index_integer`。
 
 Cache 重建保留捕获的索引数量：`[T]` 仍为 `[T]`，多行 updates 配 `[1]` 时仍只传 `[1]`，不自动广播或生成逐行位置。`candidate.index_contract` 记录更新行数、原始／回放索引 shape；整数公式须逐值恢复捕获索引。该回放不解释单索引在内核中的写入跨度，也不恢复未捕获的高层完整 position。
 
-整数候选保持外部 position 为 INT64，在已检查的 `0..INT32_MAX` 范围内先 Cast 到 INT32，再执行 `position[0]`、`//`、`%` 和页表 Gather。仅在除法后 `.to(int32)` 无法修复更早的 Gather 数据类型。AIR 检查记录每个索引 Gather 的数据输入类型，发现 INT64 会拒绝；不限制其轴常量／索引参数必须同为 INT32。浮点控制组保持原表达式。该改动解决的是导出表达中的类型问题，实际 DDK 编译和缓存精度仍需验证。
+整数候选保持外部 position 为 INT64，在已检查的 `0..INT32_MAX` 范围内先 Cast 到 INT32，再执行 `position[0]`、`//`、乘减求余和页表 Gather。仅在除法后 `.to(int32)` 无法修复更早的 Gather 数据类型。AIR 检查记录每个索引 Gather 的数据输入类型，发现 INT64 或路径中的 FloorMod 会拒绝；不限制轴常量／索引参数必须同为 INT32。浮点控制组保持原表达式。实际 DDK 编译和缓存精度仍需验证。
 
 短上下文的主机计算中两套公式相同，因此不能仅凭整数改写认定旧 Decode 故障已解决。仍需检查整缓存，尤其未写历史区；本轮不验证 RefData alias 或连续状态反馈。
 

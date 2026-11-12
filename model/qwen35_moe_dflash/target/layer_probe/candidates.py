@@ -26,7 +26,10 @@ def cache_indices(position, table, block_size, mode):
         # row zero: its Gather data input cannot be INT64 in the selected DDK.
         position = position.to(torch.int32)
         block = (position[0] // block_size).to(torch.int32)
-        offset = (position[0] % block_size).to(torch.int32)
+        # Selected DDK rejects INT32 FloorMod. For nonnegative p and positive
+        # block_size, p - floor(p/block_size)*block_size is the exact remainder;
+        # the product is <= p, so the validated INT32 range cannot overflow.
+        offset = position[0] - block * block_size
         target = table[:, block].reshape(-1)
     elif mode == 'float':
         position = position.to(torch.float32)
@@ -105,6 +108,8 @@ def prepare_cache_inputs(capture, manifest, record, root, mode):
             position_range=[int(position.min()), int(position.max())],
             integer_cast=('BEFORE_ROW_SELECTION; VALIDATED_NONNEGATIVE_INT32_RANGE'
                           if mode == 'integer' else 'NOT_APPLICABLE_FLOAT_CONTROL'),
+            offset_formula=('POSITION_MINUS_BLOCK_TIMES_BLOCK_SIZE; NO_FLOORMOD'
+                            if mode == 'integer' else 'ORIGINAL_FLOAT_CONTROL'),
             policy='PRESERVE_CAPTURED_INDEX_CARDINALITY; NO_BROADCAST_OR_PER_ROW_EXPANSION'),
         block_table_region=matches[0]['id'], block_table=table_spec,
         original_indices={k: by_name[k] for k in ('target_block', 'offset_in_block')},
@@ -320,6 +325,8 @@ def check_graph(graph, schema, qlinear_fp16=False, cache_mode='kernel'):
             seen.add(edge)
             name, slot = edge.rsplit(':', 1)
             producer = nodes[name]
+            if cache_mode == 'integer' and producer['type'] == 'FloorMod':
+                raise ValueError('integer cache index path must not use FloorMod; selected DDK rejects INT32 input')
             descriptors = producer.get('output_desc', [])
             dtype = _dtype(descriptor(descriptors[int(slot)] if int(slot) < len(descriptors) else {}, enums))
             if cache_mode == 'integer' and dtype is None:
