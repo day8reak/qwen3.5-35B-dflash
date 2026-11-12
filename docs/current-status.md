@@ -6,6 +6,6 @@
 
 按用户明确的新验收口径，量化 **out_proj 的 relative-L2 <2% 即通过**：已有 8 项全部满足，含 L0 Prefill／Decode 的 1.3766%／1.7625%。原始 CSV 的 METRICS_RECORDED 保留，验收结论单列；其他模块不套用 2%，Cache 仍要求整缓存逐位一致。后续仅复测 4 个失败的 Decode Cache 图（K/V × 浮点/整数）；已通过的 Prefill Cache 和 QLinear 不再导出、编译或上板。
 
-[交互 HTML](assets/target-architecture-interactive.html)默认显示最新 Cache 8 项；历史 42 项候选与修改前 146 项可独立切换。下一步先[读取已有比较报告](target-batch-rerun.md#先读已有报告无需重编或上板)，无需重复导出全部模型。用户回传清单尚未在本地核验执行文件绑定；完整状态反馈仍未验证。
+[交互 HTML](assets/target-architecture-interactive.html)统一显示各模块最新结果：QLinear 38 项、Cache 8 项、其他边界 104 项，共 150 项；新结果直接替换对应旧值，未复测模块保留最近一次实测值。下一步先[读取已有比较报告](target-batch-rerun.md#先读已有报告无需重编或上板)，无需重复导出全部模型。用户回传清单尚未在本地核验执行文件绑定；完整状态反馈仍未验证。
 
 ConvState 12 项小图编译失败仍待处理。GDN、RoPE、FusedAttention 等旧指标仅作历史记录，MoE、LM head 与完整模型待覆盖。Draft 保留约 60 ms 的既有测量基线，性能实验暂停；计时口径见[结果](results.md)。

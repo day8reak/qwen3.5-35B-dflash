@@ -4,7 +4,7 @@
 
 按用户最新验收口径，量化 **out_proj 的 relative-L2 <2% 即通过**。已有 8 项全部满足，包括 L0 Prefill／Decode 的 1.3765734%／1.7624918%。原始 CSV 的 METRICS_RECORDED 保留，当前验收结论另列；其他算子不套用 2%，Cache 仍要求整缓存逐位一致。后续仅复测 4 个失败的 Decode Cache 图（K/V × 浮点/整数）；已通过的 Prefill Cache 和 QLinear 不再导出、编译或上板。
 
-[交互 HTML](assets/target-architecture-interactive.html)默认显示[最新 Cache 8 项 CSV](../specs/target-cache-candidate-metrics-20261112.csv)，可切换[历史候选 42 项](../specs/target-qlinear-cache-candidate-metrics-20261112.csv)和[修改前基线 146 项](../specs/target-boundary-metrics-20261112.csv)。三批独立显示，未测节点灰色；SVG 导出包含批次。relative_l2 是比值，乘 100 才是百分比。
+[交互 HTML](assets/target-architecture-interactive.html)统一展示[各模块最新指标 CSV](../specs/target-latest-boundary-metrics.csv)中的 150 项：38 项 QLinear 使用 scale 修复后结果、8 项 Cache 使用最新浮点／整数对照，其余 104 项保留最近一次实测值。新结果按层、调用、阶段、边界与输出替换旧值，不再切换结果批次。Prefill／Decode 各 75 项；这是模块进度汇总，不代表一次完整图执行。relative_l2 是比值，乘 100 才是百分比。
 
 数据来自用户回传表及报告片段，未在本地核验实际执行文件绑定。新表的原始精度按原样保存；V 明细的更多小数仅在下文记录，不填充到未附 case ID 的两行中。dtype_preserved／stable 全 TRUE 表示类型保持和重复稳定，不代表计算正确。
 
