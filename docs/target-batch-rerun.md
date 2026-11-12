@@ -4,7 +4,7 @@
 
 AIR／OMC 单项失败会记录后继续；只要有成功 OMC 就可上板。ConvState 失败可以保留，最终覆盖仍显示不完整。最新结果和高危区域见[精度表](target-accuracy-status.md)。
 
-2026-11-12 已回传本轮 **90 COMPILED／68 FAILED**。GDN 日志已确认 TE worker 在 `te_update_version` 更新平台参数时退出；此前本页编译命令遗漏了已有的 `--tbe-diagnosis` 适配，现已补回。已完成这批的用户按[编译排障](target-compile-triage.md)复用 AIR 全批重新编译；90 个成功项仍可从第 4 节上板，不复用旧批精度作为新批结果。
+2026-11-12 最新回传 146 项数值，见[精度状态](target-accuracy-status.md)。此前 90 COMPILED／68 FAILED 的批次中，一例 GDN 因 TE worker 平台更新失败退出；全批编译命令已补回原有 `--tbe-diagnosis`。已有本轮产物时先使用它们进行输入契约检查，不重复编译。
 
 | 阶段 | 执行位置 | 输入 → 输出 |
 |---|---|---|

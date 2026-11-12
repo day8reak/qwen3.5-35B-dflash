@@ -49,6 +49,11 @@ def main():
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     s.add_argument('--compiler-entry', action='store_true', help='also read OMG/env entry scripts and compare current shell with probe environment preparation; executes neither script nor compiler')
     s.add_argument('--reference-ir', nargs='+', help='up to 8 existing IR files; strictly compare selected DDK and retained AIR producer schemas, without compiling')
+    s = sub.add_parser('inspect-qlinear', help='read every QLinear AIR/OMC boundary, constant bytes and kernel build arguments; no compilation')
+    s.add_argument('--batch', required=True, help='existing OMC batch; automatically includes every QLinear case')
+    s.add_argument('--output', required=True, help='fresh inspection directory, separate from AIR/OMC')
+    s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'), required=not bool(os.environ.get('CPRO_DDK_ROOT')))
+    s.add_argument('--fixture', help='optional prepared execution fixture directory containing manifest.json and per-case inputs')
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
@@ -78,6 +83,9 @@ def main():
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format,
                                      cases=a.cases, compiler_profile=a.compiler_profile)
+    elif a.command == 'inspect-qlinear':
+        from qwen35_moe_dflash.target.layer_probe.contracts import inspect_qlinear
+        result = inspect_qlinear(a.batch, a.output, a.ddk_root, a.fixture)
     elif a.command == 'inspect-compile':
         from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
         report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root,
