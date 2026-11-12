@@ -28,6 +28,8 @@ def main():
         if command == 'export':
             s.add_argument('--points', nargs='+')
             s.add_argument('--kinds', nargs='+')
+            s.add_argument('--phases', nargs='+', choices=('prefill', 'decode'),
+                           help='export only these captured phases; omitted keeps all phases')
             s.add_argument('--timeout', type=int, default=900)
         else:
             s.add_argument('--region', required=True)
@@ -85,7 +87,7 @@ def main():
         result = replay_failure(a.capture, a.output, a.device, a.group_size)
     elif a.command == 'export':
         result = batch.export_batch(a.capture, a.output, a.source_root, a.converter_script,
-            points=a.points, kinds=a.kinds, timeout=a.timeout, torchair_pb2=a.torchair_pb2, target_config=a.target_config,
+            points=a.points, kinds=a.kinds, phases=a.phases, timeout=a.timeout, torchair_pb2=a.torchair_pb2, target_config=a.target_config,
             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing)
     elif a.command == 'export-one':
         from qwen35_moe_dflash.target.layer_probe.replay import export_one

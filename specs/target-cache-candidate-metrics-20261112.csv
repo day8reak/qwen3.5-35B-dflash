@@ -1,0 +1,9 @@
+layer,call,phase,point,output,status,max_abs,relative_l2,dtype_preserved,stable,error
+3,0,prefill,cache_k_index_float,golden_updated_cache,PASSED,0,0,TRUE,TRUE,
+3,0,prefill,cache_k_index_integer,golden_updated_cache,PASSED,0,0,TRUE,TRUE,
+3,0,prefill,cache_v_index_float,golden_updated_cache,PASSED,0,0,TRUE,TRUE,
+3,0,prefill,cache_v_index_integer,golden_updated_cache,PASSED,0,0,TRUE,TRUE,
+3,1,decode,cache_k_index_float,golden_updated_cache,FAILED,8.6875,0.998086,TRUE,TRUE,
+3,1,decode,cache_k_index_integer,golden_updated_cache,FAILED,8.6875,0.998086,TRUE,TRUE,
+3,1,decode,cache_v_index_float,golden_updated_cache,FAILED,3.494141,0.996897,TRUE,TRUE,
+3,1,decode,cache_v_index_integer,golden_updated_cache,FAILED,3.494141,0.996897,TRUE,TRUE,

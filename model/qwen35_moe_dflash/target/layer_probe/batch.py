@@ -34,20 +34,25 @@ def export_variants(region, cache_indexing):
             yield mode, suffix, index, tensor
 
 
-def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None,
+def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None, phases=None,
                  timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel'):
     if qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both'):
         raise ValueError('unknown module candidate')
+    if phases is not None and (not phases or set(phases) - {'prefill', 'decode'}):
+        raise ValueError('select prefill and/or decode phases')
     capture = Path(capture).resolve()
     source = json.loads((capture/'manifest.json').read_text())
     if source.get('artifact_kind') != KIND or source.get('status') != 'CAPTURED':
         raise ValueError('requires completed 310P capture')
     regions = [r for r in source['regions'] if (not points or r['point'] in points)
-               and (not kinds or r['kind'] in kinds)]
+               and (not kinds or r['kind'] in kinds)
+               and (phases is None or r['phase'] in phases)]
     if not regions:
         raise ValueError('no matching captured regions')
     if points and set(points) - {r['point'] for r in regions}:
         raise ValueError('requested point is missing from capture')
+    if phases is not None and set(phases) - {r['phase'] for r in regions}:
+        raise ValueError('requested phase is missing from selected captured regions')
     if any('weights' in r for r in regions) and not target_config:
         raise ValueError('weighted regions require --target-config with original model_file and quanted_pth')
     root = new_output(output)
@@ -61,6 +66,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         reference_model_layers=source.get('placement', {}).get('executed_num_hidden_layers'))
     report['candidate_options'] = dict(qlinear_scales=qlinear_scales, cache_indexing=cache_indexing,
         reference='ORIGINAL_CAPTURE_UNCHANGED')
+    report['selected_phases'] = sorted({r['phase'] for r in regions})
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
     for region in regions:
