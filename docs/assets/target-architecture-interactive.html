@@ -21,14 +21,16 @@
 <div id="toast" role="status" aria-live="polite"></div>
 <div class="legend"><span class="pill bad">红：FAILED 或超限</span><span class="pill low">青：未超限；验收看详情</span><span class="pill blocked">橙：小图编译阻塞</span><span class="pill">灰：未测 / 结构节点</span><span class="pill purple">紫色实线：层内 identity 残差</span><span class="pill blue">蓝色虚线：状态读写 / 跨步反馈</span></div>
 <section class="card" id="accuracy-focus" aria-labelledby="accuracy-focus-title">
-<h2 id="accuracy-focus-title">当前定位：Decode Cache 历史保留失败</h2>
+<h2 id="accuracy-focus-title">当前复测：RoPE 的 FP32 旋转候选</h2>
+<p>本轮只跑 Prefill／Decode × Q／K 共 4 张 RoPE 图。私有源码快照已用 FP32 计算 sin/cos；本轮显式提升的是旋转乘加，保留原系数、golden 和输出类型。尚无新设备结果，RoPE 原 L2 <strong>17.56%～19.62%</strong> 保留。<a href="../target-batch-rerun.md">复测命令</a></p>
 <p>最新 <strong>8 个 Cache 图均有数值</strong>：Prefill K/V × 浮点/整数 4/4 PASSED，Decode 4/4 FAILED。Decode K relative-L2 <strong>99.8086%</strong>、V <strong>99.6897%</strong>；两种索引在回传精度下相同，尚缺配对输出哈希。</p>
 <p>补充的 Decode V 明细：<strong>130,966 个不一致元素全部在 golden 相对输入未变化区，变化区不一致数为 0</strong>。最大误差位置 [0,0,0,6] 为实际 0、golden 3.494140625。该片段证实历史保留失败；未提供 case ID，不能直接归到两个索引版本的全部输出。</p>
 <div class="table-scroll"><table class="focus-table"><thead><tr><th scope="col">算子 / 优先级</th><th scope="col">最新结果</th><th scope="col">下一步</th></tr></thead><tbody>
-<tr><td>CacheUpdate <span class="pill bad">P0</span></td><td>Prefill 4/4 逐位通过；Decode 4/4 失败。整数索引已越过此前构建阻塞，未改善 Decode。</td><td>核对独立输出是否继承完整输入缓存；检查 functional converter、原位/独立输出契约和实际输出绑定。先读取已有报告，无需重编。</td></tr>
+<tr><td>RoPE <span class="pill bad">当前</span></td><td>现有四项 L2 17.56%～19.62%；候选仅完成主机验证。</td><td>上板检查 FP32 旋转候选；分别报告旋转前缀和未旋转尾部误差。</td></tr>
+<tr><td>CacheUpdate <span class="pill bad">待处理</span></td><td>Prefill 4/4 逐位通过；Decode 4/4 失败。整数索引已越过此前构建阻塞，未改善 Decode。</td><td>核对独立输出是否继承完整输入缓存；检查 functional converter、原位/独立输出契约和实际输出绑定。先读取已有报告，无需重编。</td></tr>
 </tbody></table></div>
 <p><strong>量化 out_proj：按用户 relative-L2 &lt;2% 的口径，已有 8 项全部通过</strong>，包括 L0 的 1.3766%／1.7625%。原始 METRICS_RECORDED 保留，验收结论另列；Cache 继续要求整缓存逐位一致，其他模块不套用 2%。</p>
-<div class="focus-notes"><p>后续仅导出、编译和上板 4 个失败的 Decode Cache 图；已通过的 Prefill Cache 和 38 个 QLinear 不复跑；其他模块旧指标不因阈值颜色改判。ConvState 12 项小图编译失败仍待处理。</p></div>
+<div class="focus-notes"><p>当前只复测 4 个 RoPE 图。Cache 恢复时仅处理 4 个失败的 Decode 图；已通过的 Prefill Cache 和 38 个 QLinear 不复跑；其他模块旧指标不因阈值颜色改判。ConvState 12 项小图编译失败仍待处理。</p></div>
 <p class="hint">2026-11-12：统一展示各模块最新实测结果。QLinear 使用 scale 修复后的 38 项，Cache 使用最新浮点／整数对照 8 项，其余 104 项保留最近一次实测值；没有新结果时不置灰，也不重复显示旧值。这是模块进度汇总，不代表一次整图执行。Cache 历史保留修复尚无新数值，继续保留失败状态。<a href="../target-accuracy-status.md#decode-cache-原因分析">原因分析</a> · <a href="../target-batch-rerun.md#先读已有报告无需重编或上板">读取已有报告</a></p>
 </section>
 <section class="card"><h2>1. 层间如何连接：上一层的第二次 Add 输出，直接进入下一层</h2>

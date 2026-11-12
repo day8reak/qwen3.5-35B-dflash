@@ -35,8 +35,10 @@ def export_variants(region, cache_indexing):
 
 
 def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None, phases=None,
-                 timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel'):
-    if qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both'):
+                 timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel',
+                 rope_precision='source'):
+    if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both')
+            or rope_precision not in ('source', 'fp32')):
         raise ValueError('unknown module candidate')
     if phases is not None and (not phases or set(phases) - {'prefill', 'decode'}):
         raise ValueError('select prefill and/or decode phases')
@@ -65,7 +67,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         reference_baseline_equivalence=source.get('quant_matmul', {}).get('baseline_equivalence', 'ORIGINAL_CALL_UNCHANGED'),
         reference_model_layers=source.get('placement', {}).get('executed_num_hidden_layers'))
     report['candidate_options'] = dict(qlinear_scales=qlinear_scales, cache_indexing=cache_indexing,
-        reference='ORIGINAL_CAPTURE_UNCHANGED')
+        rope_precision=rope_precision, reference='ORIGINAL_CAPTURE_UNCHANGED')
     report['selected_phases'] = sorted({r['phase'] for r in regions})
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
@@ -87,6 +89,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 argv += ['--qlinear-scales', qlinear_scales]
             if mode != 'kernel':
                 argv += ['--cache-indexing', mode]
+            if region['kind'] == 'rope' and rope_precision != 'source':
+                argv += ['--rope-precision', rope_precision]
             if torchair_pb2:
                 argv += ['--torchair-pb2', str(Path(torchair_pb2).resolve())]
             if target_config:
@@ -105,7 +109,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                     raise ValueError('export receipt differs from captured golden')
                 if receipt.get('source_contract', {}).get('status') != 'BOUND_TO_SOURCE':
                     raise ValueError('export worker did not bind this region to original Target source')
-                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or mode != 'kernel'):
+                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or mode != 'kernel'
+                        or (region['kind'] == 'rope' and rope_precision == 'fp32')):
                     if not receipt.get('candidate') or receipt.get('candidate_graph_check', {}).get('status') != 'PASSED':
                         raise ValueError('candidate export is missing its source AIR checks')
                 row.update(status='EXPORTED', export=identity(folder/'export.json', root))
@@ -302,6 +307,10 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         cases.append(dict(case=name, **io, layer=case['layer'], call=case['call'], point=case['point'],
             kind=case['kind'], phase=case['phase'], ordinal=case['ordinal'], output_name=case['output_name'],
             model=_file_record(model, name+'/model.omc'), graphop_counts=observed['graphop_counts']))
+        if case['kind'] == 'rope' and 'rope_contract' in exported:
+            contract = exported['rope_contract']
+            cases[-1]['rope_contract'] = {k: contract[k] for k in (
+                'precision', 'rotary_dim', 'output_dtype', 'coefficient_scope')}
     meta = dict(artifact_kind=KIND, cases=cases, warmup=3, repetitions=10, output_initialization='zero', input_reset='copy-each-call',
         planned_cases=[r['id'] for r in manifest['cases']], uncompiled_cases=[r['id'] for r in manifest['cases'] if r['id'] not in available],
         ddk_id=ddk_id, schema=schema.evidence, scope=manifest['scope'],
@@ -345,6 +354,9 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     raise ValueError('runtime output byte extent differs from compiled ABI')
                 actual = np.fromfile(path, dtype=DTYPES[spec['dtype']]).reshape(spec['shape'])
                 metric = metrics(actual, golden, atol=atol, rtol=rtol)
+                if case['kind'] == 'rope' and 'rope_contract' in case:
+                    from .rope import partition_metrics
+                    metric['rope_partitions'] = partition_metrics(actual, golden, case['rope_contract']['rotary_dim'])
                 if case['kind'] == 'cache':
                     identical = actual.dtype == golden.dtype and actual.tobytes() == golden.tobytes()
                     metric.update(gate='EXACT_WHOLE_CACHE_BITS', passed=identical)

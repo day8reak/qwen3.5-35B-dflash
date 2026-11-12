@@ -180,7 +180,11 @@ class Region(torch.nn.Module):
         elif k == 'state_cast':
             out = (x['state'].to(getattr(torch, a['dtype'])),)
         elif k == 'rope':
-            out = self.target.apply_rotary_pos_emb(x['q'], x['k'], x['cos'], x['sin'])
+            if getattr(self, 'rope_precision', 'source') == 'fp32':
+                from .rope import apply_fp32
+                out = apply_fp32(self.target, x['q'], x['k'], x['cos'], x['sin'], self.rope_output_dtypes)
+            else:
+                out = self.target.apply_rotary_pos_emb(x['q'], x['k'], x['cos'], x['sin'])
         elif k == 'cache':
             cache = x['cache'].clone()
             if a.get('cache_indexing', 'kernel') == 'kernel':
@@ -274,12 +278,13 @@ def check_adjusted_graph(kind, graph):
 
 
 def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None,
-               *, qlinear_scales='source', cache_indexing='kernel'):
+               *, qlinear_scales='source', cache_indexing='kernel', rope_precision='source'):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
     try:
-        if qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer'):
+        if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer')
+                or rope_precision not in ('source', 'fp32')):
             raise ValueError('unknown module candidate')
         capture = Path(capture).resolve()
         manifest = json.loads((capture/'manifest.json').read_text())
@@ -329,6 +334,15 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if qlinear_fp16:
             result['candidate'] = adapt_qlinear(model, root)
             result['exported_weights']['scale'] = tensor_metadata(model.op.scale)
+        rope_fp32 = record['kind'] == 'rope' and rope_precision == 'fp32'
+        if record['kind'] == 'rope':
+            from .rope import prepare
+            result['rope_contract'] = prepare(model, record, inputs, capture, rope_precision)
+            if rope_fp32:
+                result['candidate'] = dict(kind='ROPE_ROTATION_FP32',
+                    arithmetic='CAST_INPUTS_TO_FP32; SOURCE_HELPER; RESTORE_CAPTURED_OUTPUT_DTYPE',
+                    reference='ORIGINAL_CAPTURE_UNCHANGED',
+                    coefficient_generation='OUTSIDE_CAPTURE; NO_SINCOS_RECOMPUTATION')
         if 'candidate' in result:
             result['source_contract']['candidate'] = result['candidate']
             result['source_contract']['equivalence'] = 'EXPLICIT_EXPERIMENT; ORIGINAL_GOLDEN_UNCHANGED'
@@ -359,7 +373,11 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         _, _, graph = _decode(schema, (root/'export.air').read_bytes())
         result['export_graph_check'] = check_adjusted_graph(record['kind'], graph)
         if 'candidate' in result:
-            result['candidate_graph_check'] = check_graph(graph, schema, qlinear_fp16, cache_mode)
+            if rope_fp32:
+                from .rope import check_graph as check_rope_graph
+                result['candidate_graph_check'] = check_rope_graph(graph, schema, golden['dtype'])
+            else:
+                result['candidate_graph_check'] = check_graph(graph, schema, qlinear_fp16, cache_mode)
         from .source_regions import internal_boundaries
         result['internal_boundaries'] = internal_boundaries(graph, schema)
         fixture = root/'fixture'
