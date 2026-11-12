@@ -4,6 +4,8 @@
 
 AIR／OMC 单项失败会记录后继续；只要有成功 OMC 就可上板。ConvState 失败可以保留，最终覆盖仍显示不完整。最新结果和高危区域见[精度表](target-accuracy-status.md)。
 
+2026-11-12 已回传本轮 **90 COMPILED／68 FAILED**。GDN 日志已确认 TE worker 在 `te_update_version` 更新平台参数时退出；此前本页编译命令遗漏了已有的 `--tbe-diagnosis` 适配，现已补回。已完成这批的用户按[编译排障](target-compile-triage.md)复用 AIR 做代表项重试；90 个成功项仍可从第 4 节上板，不复用旧批精度作为新批结果。
+
 | 阶段 | 执行位置 | 输入 → 输出 |
 |---|---|---|
 | AIR | 原来可导出 CPro 算子的 TorchAir 环境；golden 在权重服务器 | capture＋原 Target 源码／converter＋原权重 YAML → `air/` |
@@ -87,15 +89,17 @@ PY
 
 ## 3. 全部 OMC 编译（35 服务器）
 
-下面默认值来自本次已使用的 DDK；如已更换 DDK，设置其真实根目录和版本。使用 `isolated-kirinx90`、内嵌权重和原批次的 `use_origin_format=true`。工具会构造编译子进程环境，实际命令保存在各 case 中。
+下面默认值来自本次已使用的 DDK；如已更换 DDK，设置其真实根目录和版本。使用 `isolated-kirinx90`、内嵌权重和原批次的 `use_origin_format=true`。本套 DDK 需传入此前已完成的 `TBE_DIAGNOSIS`：整理后的默认位置为 `common/tbe-diagnosis`，实际仍在原目录时保留该变量的真实值。工具只在本次编译目录准备适配，不改共享 DDK／Python 安装，OMG 目标仍为 `kirinx90`。仅 export 该变量不够，命令必须传 `--tbe-diagnosis`。
 
 ```bash
 export CPRO_DDK_ROOT="${CPRO_DDK_ROOT:-/home/l00886453/ddk_0806/image/hiai_ddk/ddk_internal}"
 export CPRO_DDK_ID="${CPRO_DDK_ID:-100.520.020.010}"
+export TBE_DIAGNOSIS="${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
 
 (
 set -e
 test -x "$CPRO_DDK_ROOT/tools/tools_omg/master/omg"
+test -f "$TBE_DIAGNOSIS/report.json"
 test -f "$BATCH/manifest.json"
 test ! -e "$OMC_BATCH"
 compile_rc=0
@@ -105,6 +109,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
   --ddk-root "$CPRO_DDK_ROOT" \
   --ddk-id "$CPRO_DDK_ID" \
   --compiler-profile isolated-kirinx90 \
+  --tbe-diagnosis "$TBE_DIAGNOSIS" \
   --use-origin-format || compile_rc=$?
 
 python - "$OMC_BATCH/compile.json" "$compile_rc" <<'PY'
@@ -117,12 +122,12 @@ if (int(sys.argv[2]) not in (0, 1) or r["status"] not in ("COMPILED", "PARTIAL")
         or r["coverage"] != "ALL_MANIFEST_CASES"
         or set(r["cases"]) != set(r["selected_cases"]) or not counts["COMPILED"]):
     raise SystemExit("OMC 未完成全批遍历或无成功项；先检查 compile.json。")
-print("下一步自动运行全部 COMPILED 项；FAILED / NOT_EXPORTED 保留。")
+print("可继续执行第 4 节上板命令，自动选择全部 COMPILED 项；FAILED / NOT_EXPORTED 保留。")
 PY
 )
 ```
 
-单项日志：`$OMC_BATCH/models/<case>/omc/compile.log`。当前已知 ConvState 的格式开关对照仍失败，本批允许它继续失败；不改写报告，也不改用仅诊断的 `sourced-wrapper-default`。
+单项日志：`$OMC_BATCH/models/<case>/omc/compile.log`；worker 适配结果在同目录 `report.json` 的 `tbe_compatibility.audit`。批次新增 `tbe_compatibility_requested` 仅表示请求了适配，不表示 worker 已执行适配或编译通过。本轮其余失败需各自日志确认，不能全部套用 GDN 原因。编译部分失败不阻塞成功项上板；末行只是提示，执行下节命令才会启动设备。
 
 ## 4. 批量上板
 

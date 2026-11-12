@@ -33,7 +33,7 @@ def main():
     s.add_argument('--output', required=True, help='fresh OMC batch below AI_RUN_DIR, outside the AIR batch and DDK')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'), required=not bool(os.environ.get('CPRO_DDK_ROOT')))
     s.add_argument('--ddk-id', default=os.environ.get('CPRO_DDK_ID'), required=not bool(os.environ.get('CPRO_DDK_ID')))
-    s.add_argument('--tbe-diagnosis')
+    s.add_argument('--tbe-diagnosis', help='reuse the completed selected-DDK TBE diagnosis for run-local worker compatibility; no new diagnosis or target change')
     s.add_argument('--cases', nargs='+', help='compile only these retained AIR cases; other cases remain NOT_SELECTED')
     from qwen35_moe_dflash.toolchain.compiler_entry import COMPILER_PROFILES, DEFAULT_PROFILE
     s.add_argument('--compiler-profile', choices=COMPILER_PROFILES, default=DEFAULT_PROFILE,

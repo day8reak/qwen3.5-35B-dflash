@@ -275,7 +275,9 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
                 source_air=identity(air, folder), source_schema=identity(schema_path, folder),
                 source_graph=graph_metadata(air, schema))
             row['export_evidence'] = {k: exported.get(k) for k in
-                ('export_adjustments', 'export_graph_check', 'source_files', 'torch_version', 'torchair_version')}
+                ('export_adjustments', 'export_graph_check', 'source_files', 'torch_version', 'torchair_version',
+                 'source_contract', 'qlinear_factory', 'qlinear_resolution', 'target_weights',
+                 'captured_weights', 'exported_weights', 'internal_boundaries')}
             row['source_schema_binding'] = 'CURRENT_RETAINED_DESCRIPTOR; OLDER_EXPORT_HAS_NO_SCHEMA_HASH'
             if references:
                 key = hashlib.sha256(schema_bytes).hexdigest()
@@ -380,6 +382,11 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
         kinds = [a.get('kind') for a in adjustments] if isinstance(adjustments, list) else 'NOT_RECORDED'
         lines.append('export_adjustments=' + json.dumps(kinds) +
                      '; export_graph_check=' + json.dumps(evidence.get('export_graph_check')))
+        lines.append('export_provenance=' + json.dumps(dict(
+            source_contract=(evidence.get('source_contract') or {}).get('status', 'NOT_RECORDED'),
+            target_weights=(evidence.get('target_weights') or {}).get('status', 'NOT_RECORDED'),
+            qlinear_factory=evidence.get('qlinear_factory'),
+            torch_version=evidence.get('torch_version'), torchair_version=evidence.get('torchair_version'))))
         graphs = row.get('source_graph', {}).get('graphs', [])
         lines.append('source_type_counts=' + json.dumps([g['type_counts'] for g in graphs]))
         for context_label, metadata in [('source', row.get('source_graph', {})),
