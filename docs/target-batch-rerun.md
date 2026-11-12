@@ -2,13 +2,15 @@
 
 本轮只测试用户提出的 **QLinear FP16 scale 适配、CacheUpdate 整数索引**。覆盖已有 L0–L3 capture 的全部对应模块及 Prefill／Decode：38 个 QLinear＋4 个 Cache 边界各导出浮点／整数版本，共 **46 个候选／对照小图**。保持原模型、已安装 converter 文件、共享 DDK 和 golden 不变。
 
-2026-11-12 回传：**AIR 42 FAILED／4 EXPORTED；OMC 42 NOT_EXPORTED／2 COMPILED／2 FAILED**。38 个 QLinear 和 4 个 Prefill Cache 在 AIR 阶段失败；Decode Cache 浮点版 K/V 编译通过，整数版 K/V 在 OMG 失败。仅一个 QLinear 已提供具体 traceback，其前端拒绝 FP16 per-token scale；其余失败原因须按各自日志确认。当前修正版已通过主机回归，尚未回传修正版 AIR／OMC／数值。
+2026-11-12 最新回传：**AIR 42 EXPORTED／4 FAILED**。38 个 QLinear 已全部导出，Decode Cache 的 4 个浮点／整数版本也已导出。4 个 Prefill Cache 被工具的 `block_size=32 and INT32 [T]` 检查拦截，尚未进入 TorchAir。当前已补充保留捕获的 `[1]` 索引形式，并拆分错误以显示实际 shape/dtype；是否对应本次输入仍需捕获元数据确认。本轮新 OMC／精度未回传；此前 Decode 整数版 OMG 失败仍需编译日志。
 
-QLinear 实际转换 scale 常量为 FP16，保留 `[K/256,N]` 方向。**前端 per-token 保持原 FP32 `[M,1]`，在 GE converter 边界才执行 Reshape＋FP16 Cast。** 适配器仅在当前导出进程生效，继续调用已安装 converter，结束后恢复注册；不绕过 FakeTensor 检查。导出后核对 V4444 四个输入端口和实际 Cast 连线，保存 scale 转换及 packed W4 信息。FP16 舍入计入候选误差，golden 不重算。主机回归使用 CPU FakeTensor 与模拟 GE 接口，不代表真实 TorchAir／OMG 已通过。
+QLinear 实际转换 scale 常量为 FP16，保留 `[K/256,N]` 方向。**前端 per-token 保持原 FP32 `[M,1]`，在 GE converter 边界才执行 Reshape＋FP16 Cast。** 适配器仅在当前导出进程生效，继续调用已安装 converter，结束后恢复注册；不绕过 FakeTensor 检查。导出后核对 V4444 四个输入端口和实际 Cast 连线，保存 scale 转换及 packed W4 信息。FP16 舍入计入候选误差，golden 不重算。38 项 AIR 成功表明该导出适配已接通，不能据此判断 OMC 物理存储或精度通过。
 
 AIR／OMC 单项失败记录后继续；上板自动选择全部 COMPILED 项。已有 146 项指标仍是修改前结果，见[精度表](target-accuracy-status.md)。
 
 **旧 Cache 小图直接输入 INT32 块号／偏移，没有 `update()` 的浮点计算。** 本轮扩展为“position／block table → 索引计算 → CacheUpdate”。旧 capture 未保存高层 position：仅在同一次 Attention 页表能唯一反推位置时重用，并标记为重建输入；缺失／歧义直接报错。浮点控制组先核对原 CPro 表达式，整数组使用 `//`、`%` 和 INT32 页表。两者共用原 cache、updates、golden，CSV 分别标记 `_index_float`／`_index_integer`。
+
+Cache 重建保留捕获的索引数量：`[T]` 仍为 `[T]`，多行 updates 配 `[1]` 时仍只传 `[1]`，不自动广播或生成逐行位置。`candidate.index_contract` 记录更新行数、原始／回放索引 shape；整数公式须逐值恢复捕获索引。该回放不解释单索引在内核中的写入跨度，也不恢复未捕获的高层完整 position。
 
 短上下文的主机计算中两套公式相同，因此不能仅凭整数改写认定旧 Decode 故障已解决。仍需检查整缓存，尤其未写历史区；本轮不验证 RefData alias 或连续状态反馈。
 
@@ -41,17 +43,16 @@ export PYTHONDONTWRITEBYTECODE=1
 
 本次使用固定测试目录；AIR、OMC 和 comparison 输出必须不存在。复测前先完成原请求回收、提取下述失败原因，再处理该测试的旧临时产物并复用原目录。编译失败不覆盖公共可运行模型。
 
-本轮 Cache 尚缺具体错误。在 AIR 主机读取 Prefill 失败 receipt，在 35 主机读取 Decode 整数版 OMG 日志；不要只重复打印 manifest 的 worker 退出码：
+当前 42 个 AIR 可以按第 3 节整批编译，无需因另 4 项失败重导出 QLinear。确认 Prefill 阻塞时，在 AIR 主机读取 capture 中的实际输入 shape/dtype；在 35 主机读取此前 Decode 整数版 OMG 日志：
 
 ```bash
-python - "$BATCH" <<'PY'
-import json, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-for mode in ("float", "integer"):
-    case = "l03_c00_cache_k_index_" + mode + "_o0"
-    path = root / "models" / case / "export.json"
-    print(case, json.loads(path.read_text()).get("error") if path.exists()
-          else "receipt 缺失，查看 " + str(root / (case + ".log")))
+python - "${GOLDEN_CAPTURE:?原 CAPTURED 目录}/manifest.json" <<'PY'
+import json, sys
+capture = json.load(open(sys.argv[1]))
+for region in capture["regions"]:
+    if region["id"] == "l03_c00_cache_k":
+        print(json.dumps([{k: t[k] for k in ("name", "shape", "dtype")}
+                          for t in region["inputs"]], indent=2))
 PY
 tail -n 120 "$OMC_BATCH/models/l03_c01_cache_k_index_integer_o0/omc/compile.log"
 ```

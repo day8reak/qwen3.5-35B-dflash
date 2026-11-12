@@ -38,9 +38,9 @@
 
 ## QLinear 输入与权重检查
 
-2026-11-12：[46 图候选批次](target-batch-rerun.md)回传 **AIR 42 FAILED／4 EXPORTED，OMC 42 NOT_EXPORTED／2 COMPILED／2 FAILED**。38 个 QLinear 与 4 个 Prefill Cache 未导出；Decode Cache 浮点版 K/V 编译通过、整数版 K/V 在 OMG 失败。已提供的 QLinear traceback 显示前端要求 FP32 per-token；修正版保持前端 FP32 `[M,1]`，只在 GE 转换时 reshape 并 Cast 到 FP16 `[M]`，weight scale 常量仍数值转换为 FP16。修正版只有主机回归结果，真实 AIR／OMC／精度待验证，以上指标仍为修改前结果。
+2026-11-12：[46 图候选批次](target-batch-rerun.md)最新回传 **AIR 42 EXPORTED／4 FAILED**。38 个 QLinear 已全部导出：修正版保持前端 FP32 `[M,1]` per-token，只在 GE 转换时 reshape 并 Cast 到 FP16 `[M]`，weight scale 常量数值转换为 FP16。Decode Cache 的 4 个浮点／整数版本也已导出。新 OMC／精度结果未回传，以上 146 项指标仍为修改前结果。
 
-Cache 尚需具体导出／编译日志才能定因。旧 Cache 小图未包含位置计算，不能把其 Decode 误差直接归因于浮点索引。Const 没有 Cast 节点也不能单独证明编译后物理字节仍是 FP32。
+Prefill Cache 的 4 项失败已定位到本工具的索引前置检查，尚需 capture 的实际 shape/dtype 确认违反哪一条件。工具已支持保留捕获的单索引 `[1]`，不再强制与 updates 行数相同，也不展开为逐 token 索引；新逻辑待实测。此前 Decode 整数版 OMG 失败仍需编译日志。旧 Cache 小图未包含位置计算，不能把其 Decode 误差直接归因于浮点索引。Const 没有 Cast 节点也不能单独证明编译后物理字节仍是 FP32。
 
 修改前的 38 个量化投影可用以下命令只读检查已有 AIR、OMC、编译日志。静态代码推导自洽不等于实际加载的内核与输入契约已经验证；优先排查 INT8 激活、packed W4、weight scale 和 per-token scale。
 

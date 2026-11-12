@@ -23,7 +23,7 @@
 <section class="card" id="accuracy-focus" aria-labelledby="accuracy-focus-title">
 <h2 id="accuracy-focus-title">当前结论：四个自定义算子需要独立验证精度</h2>
 <p>精度定位主线是 <strong>QuantBatchMatmulV4444、CacheUpdate、ChunkGatedDeltaRule、AdnFusedInferAttention</strong>。重点阶段不同：以下依据来自本批 L0–L3 独立边界，表示待隔离验证的范围，尚未定责为内核 bug。</p>
-<p>当前实验：<a href="../target-batch-rerun.md">46 图候选批次</a>回传 AIR 42 失败／4 导出，OMC 42 未进入编译／2 成功／2 失败。QLinear 修正版将 per-token FP16 转换移到 GE 边界，前端保留 FP32；主机回归通过，真实导出待验证。Prefill Cache 导出失败、Decode 整数版编译失败仍待具体日志。图中数值均为修改前结果。</p>
+<p>当前实验：<a href="../target-batch-rerun.md">46 图候选批次</a>最新 AIR 42 导出／4 失败：38 个 QLinear 全部导出，Decode Cache 4 图已导出。Prefill Cache 4 图被工具的索引检查拦截，已补单索引保留逻辑，实际 shape/dtype 待确认。新 OMC／精度尚未回传；此前 Decode 整数版 OMG 失败仍待日志。图中数值均为修改前结果。</p>
 <p class="hint">更新（2026-11-12）：最新回传共 <strong>146 项指标，51 项 L2 &gt;1%，高危结论不变</strong>。补齐 L0 Prefill InputNorm、L3 Prefill Q Norm 和 L0 两阶段 Conv1d，四项均低于 1%；与旧表重叠的指标在回传显示精度下未见变化。ConvState 12 项仍无数值。回传表未附本轮 OMC／执行清单，尚未核验其产物绑定。<a href="https://github.com/day8reak/qwen3.5-35B-dflash/blob/main/docs/target-accuracy-status.md#qlinear-输入与权重检查">全部 QLinear 输入／权重检查</a></p>
 <div class="table-scroll"><table class="focus-table"><thead><tr><th scope="col">算子 / 优先级</th><th scope="col">重点阶段</th><th scope="col">本批依据</th><th scope="col">独立验证重点</th></tr></thead><tbody>
 <tr><td>QuantBatchMatmulV4444<br><span class="pill bad">P0</span></td><td>Prefill + Decode</td><td>量化投影边界 38/38 异常，两阶段各 19/19。</td><td>先隔离 DynamicQuant，比较 INT8 激活和 per-token scale；固定量化输入、packed W4、权重 scale，再验证 MatMul，核对 group256、布局和槽位。DynamicQuant 尚无独立精度结论。</td></tr>

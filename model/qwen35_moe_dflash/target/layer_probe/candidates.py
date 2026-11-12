@@ -36,16 +36,27 @@ def cache_indices(position, table, block_size, mode):
 
 
 def reconstruct_cache_position(cache, updates, blocks, offsets, table):
-    """Invert the actual captured page table only when each mapping is unique."""
+    """Invert captured index arguments without changing their cardinality.
+
+    A multirow update may have one captured index. Keep that one index; this
+    probe does not infer a broadcast or expand it to per-row destinations.
+    """
     if (cache.ndim != 4 or cache.shape[-1] != 16 or updates.ndim != 3
             or cache.dtype != np.dtype('float16') or updates.dtype != np.dtype('float16')
             or updates.shape[1:] != (cache.shape[1], 16)
             or table.ndim != 2 or table.shape[0] != 1 or table.dtype != np.dtype('int32')):
         raise ValueError('requires captured B=1 NZ cache, updates and INT32 [1,blocks] table')
     count, size = updates.shape[0], cache.shape[2]
-    if (size != 32 or blocks.shape != (count,) or offsets.shape != (count,)
-            or blocks.dtype != np.dtype('int32') or offsets.dtype != np.dtype('int32')):
-        raise ValueError('requires original block_size=32 and INT32 [T] cache indices')
+    observed = (f'cache={list(cache.shape)}, updates={list(updates.shape)}, '
+                f'target_block={list(blocks.shape)}/{blocks.dtype}, '
+                f'offset_in_block={list(offsets.shape)}/{offsets.dtype}')
+    if size != 32:
+        raise ValueError('requires original block_size=32; observed ' + observed)
+    if blocks.dtype != np.dtype('int32') or offsets.dtype != np.dtype('int32'):
+        raise ValueError('requires captured INT32 cache indices; observed ' + observed)
+    if (count < 1 or blocks.ndim != 1 or offsets.shape != blocks.shape
+            or blocks.size not in (1, count)):
+        raise ValueError('requires matching captured [1] or [T] cache indices; observed ' + observed)
     if np.any((blocks < 0) | (blocks >= cache.shape[0]) | (offsets < 0) | (offsets >= size)):
         raise ValueError('captured cache write is out of bounds')
     positions = []
@@ -82,6 +93,11 @@ def prepare_cache_inputs(capture, manifest, record, root, mode):
     float_target, float_offset = cache_indices(torch.from_numpy(position), torch.from_numpy(table.copy()), size, 'float')
     evidence = dict(mode=mode, scope='INDEX_COMPUTATION_PLUS_KERNEL; CLONED_CACHE_NO_ALIAS_FEEDBACK',
         position_origin='UNIQUE_INVERSE_OF_CAPTURED_KERNEL_INDICES_AND_SAME_CALL_PAGE_TABLE; NOT_DIRECT_HIGH_LEVEL_CAPTURE',
+        index_contract=dict(update_rows=int(arrays['updates'].shape[0]),
+            index_count=int(arrays['target_block'].size),
+            captured_shape=list(arrays['target_block'].shape),
+            replay_shape=list(position.shape[1:]),
+            policy='PRESERVE_CAPTURED_INDEX_CARDINALITY; NO_BROADCAST_OR_PER_ROW_EXPANSION'),
         block_table_region=matches[0]['id'], block_table=table_spec,
         original_indices={k: by_name[k] for k in ('target_block', 'offset_in_block')},
         integer_indices_equal_capture=True,
