@@ -29,7 +29,7 @@
 <tr><td>QuantBatchMatmulV4444<br><span class="pill bad">P0</span></td><td>Prefill + Decode</td><td>量化投影边界 38/38 异常，两阶段各 19/19。</td><td>先隔离 DynamicQuant，比较 INT8 激活和 per-token scale；固定量化输入、packed W4、权重 scale，再验证 MatMul，核对 group256、布局和槽位。DynamicQuant 尚无独立精度结论。</td></tr>
 <tr><td>CacheUpdate<br><span class="pill bad">P0</span></td><td>Decode；Prefill 作对照</td><td>Decode K/V 2/2 FAILED，L2 99.69%–99.81%；Prefill 2/2 PASSED。</td><td>分别检查当前写入区与未写历史区；核对 block/offset、RefData/alias、缓存初始化和输出回读。</td></tr>
 <tr><td>ChunkGatedDeltaRule<br><span class="pill bad">P1</span></td><td>Prefill core / state；两阶段 state dtype</td><td>Prefill core/state 6/6 超过 1%；Decode 数值均低于 1%。两阶段 raw state 共 6/6 dtype 不保持。</td><td>固定 Q/K/V、g/beta、初态、chunk/effective_length，分别比较 core 和写回前 raw state；核对累加精度、输出 dtype、Cast 及连续状态反馈。</td></tr>
-<tr><td>AdnFusedInferAttention<br><span class="pill bad">P1</span></td><td>Prefill；Decode 作对照</td><td>Prefill L2 99.67%；Decode 约 0.251%，各一个已测输出。</td><td>固定真实 QKV，核对 NZ/物理布局、mask/scale、有效长度、padding 和 block table，再按 query 定位首次偏差。</td></tr>
+<tr><td>AdnFusedInferAttention<br><span class="pill bad">P1</span></td><td>Prefill；Decode 作对照</td><td>Prefill L2 99.67%；Decode 约 0.251%，各一个已测输出。27/64 只是未确认来源的例子，指标保留。</td><td>先<a href="../target-layer-accuracy.md#attention-输出范围检查">只读检查实际 shape、字节数和长度参数</a>；再核对 NZ、有效 query／padding、mask/scale 和 block table。相同 numel 不证明排列一致。</td></tr>
 </tbody></table></div>
 <div class="focus-notes"><p><strong>RoPE：</strong>另按组合子图排查。Prefill / Decode 的 Q/K 共 4/4 异常，L2 17.56%–19.62%；检查 position、cos/sin、partial rotary、rotate_half 与布局，暂不指认某个基础内核。</p>
 <p><strong>LinearAttentionConvstateUpdate：</strong>继续解决 12/12 小图编译失败，编译后再测精度。原 T64 整图已编译成功，当前没有该小图的精度结论。</p></div>

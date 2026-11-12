@@ -329,4 +329,22 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
 
 首批正确后再扩大层号或对失败附近做相邻小子图组合。前四层独立重放不能证明后 36 层、完整图融合或 CPro 连续缓存反馈正确。
 
+### Attention 输出范围检查
+
+怀疑 `AdnFusedInferAttention` 的有效长度、padding 或 NZ 解读有误时，先检查**产生该条指标的 OMC 批次、fixture 和回收目录**。下面沿用第 4 节路径；若当时使用其他目录，替换为那次实际产物。QLinear／Cache 候选批次不含 Attention，不能用于此检查。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-attention \
+  --batch "$OMC_BATCH" \
+  --fixture "$AI_RUN_DIR/target-layer-accuracy/execution/fixture" \
+  --native "$AI_RUN_DIR/target-layer-accuracy/recovery-001/native" \
+  --output "$AI_RUN_DIR/target-layer-accuracy/attention-inspect-001"
+
+cat "$AI_RUN_DIR/target-layer-accuracy/attention-inspect-001/summary.txt"
+```
+
+只读取已有文件，不依赖设备或 DDK Python 环境，不重新编译。`summary.txt` 列出 Prefill／Decode 的 golden shape、dtype、numel、字节数、fixture 记录的编译输出描述、每次 dump 大小，以及捕获的属性和小型整数输入。`report.json` 保留源 AIR 边界描述、文件哈希及错误。若提供 `--capture "$CAPTURE"`，还会按 capture 哈希绑定原始输入名和捕获时的 sequence_length。不同批次绑定不符会报错；缺失或尺寸不符的 case 记为 PARTIAL，继续检查其余 case。
+
+这一步不假定“27／64”，不截断、补零或按 numel 猜 NZ 布局，不改变原精度结论。`INSPECTED` 只表示所选文件检查完成；fixture 描述不是此次重新解码 OMC 的结果，长度属性也不自动等于有效 query 掩码。确认实际布局和有效区间后，才能分别还原两侧张量、沿 query 轴比较有效区域，并单列 padding 区。
+
 输入身份观察点沿用 [TorchAir 官方 export_utils 实现](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_utils/export_utils.py) 的权重转换入口：只记录映射，不改变权重保存决策。已安装版本接口或 Tensor 身份无法确认时导出失败，不按参数编号、shape 或数值猜测 K/V。

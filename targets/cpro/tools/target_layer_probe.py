@@ -58,6 +58,12 @@ def main():
     s.add_argument('--output', required=True, help='fresh inspection directory, separate from AIR/OMC')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'), required=not bool(os.environ.get('CPRO_DDK_ROOT')))
     s.add_argument('--fixture', help='optional prepared execution fixture directory containing manifest.json and per-case inputs')
+    s = sub.add_parser('inspect-attention', help='read attention golden/dump extents and length controls without changing comparison')
+    s.add_argument('--batch', required=True, help='OMC batch that produced the attention results')
+    s.add_argument('--fixture', required=True, help='matching execution/fixture directory')
+    s.add_argument('--native', required=True, help='matching recovered native directory')
+    s.add_argument('--capture', help='optional original capture for hash-bound argument names and sequence metadata')
+    s.add_argument('--output', required=True, help='fresh inspection directory separate from retained inputs')
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
@@ -92,6 +98,9 @@ def main():
     elif a.command == 'inspect-qlinear':
         from qwen35_moe_dflash.target.layer_probe.contracts import inspect_qlinear
         result = inspect_qlinear(a.batch, a.output, a.ddk_root, a.fixture)
+    elif a.command == 'inspect-attention':
+        from qwen35_moe_dflash.target.layer_probe.attention_inspect import inspect_attention
+        result = inspect_attention(a.batch, a.fixture, a.native, a.output, a.capture)
     elif a.command == 'inspect-compile':
         from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
         report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root,

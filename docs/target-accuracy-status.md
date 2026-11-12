@@ -36,6 +36,8 @@
 
 所有数值项使用各自捕获的 golden 输入，不能统一归因于上游 QKV 误差传播。表内是**重点定位边界，不是已经定责的内核 bug**；原始 `METRICS_RECORDED`／`FAILED` 状态保持不变。MoE 专家 `GroupedMatmulV555`、Router、共享专家和 LM head 尚无本批精度证据，继续列为待覆盖，不纳入已观察异常数量。
 
+AdnFusedInferAttention 的“27 个有效 token／64 个物理 token”目前只是来源未确认的例子，不能据此撤销 Prefill 99.67% 的记录。当前单模块工具要求编译输出与 golden 的 shape 一致，并检查回读字节数；不会按较短长度自动对齐。相同 numel 仍不能证明 NZ 排列一致，padding 是否影响全量误差也待验证。先用[只读 Attention 检查](target-layer-accuracy.md#attention-输出范围检查)核对产生指标的真实产物，再确定有效 query 区域；原全量指标保留。
+
 ## QLinear 输入与权重检查
 
 2026-11-12：[46 图候选批次](target-batch-rerun.md)最新回传 **AIR 42 EXPORTED／4 FAILED**。38 个 QLinear 已全部导出：修正版保持前端 FP32 `[M,1]` per-token，只在 GE 转换时 reshape 并 Cast 到 FP16 `[M]`，weight scale 常量数值转换为 FP16。Decode Cache 的 4 个浮点／整数版本也已导出。新 OMC／精度结果未回传，以上 146 项指标仍为修改前结果。
