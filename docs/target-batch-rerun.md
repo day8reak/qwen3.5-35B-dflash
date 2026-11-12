@@ -1,12 +1,12 @@
-# Target RoPE：当前独立模块复测
+# Target RoPE：已测结果与复现命令
 
-本轮只测试 **4 张 RoPE 小图：Prefill／Decode × Q／K**。已通过的 Prefill Cache、QLinear 不复跑；4 个失败的 Decode Cache 暂后处理，已有结果继续保留。各模块最新实测值见[精度状态](target-accuracy-status.md)和[交互 HTML](assets/target-architecture-interactive.html)。
+用户已回传 **4 张 RoPE 小图：Prefill／Decode × Q／K，全部零误差**，旋转前缀与未旋转尾部均数值一致，FP16 输出且重复稳定。当前不再复跑 RoPE、已通过的 Prefill Cache 或 QLinear；下一步处理 AdnFusedInferAttention Prefill，Decode Cache 暂后。QuantBatchMatmul／RoPE 有效改动及 Prefill 剩余问题见[精度状态](target-accuracy-status.md)，最新指标见[交互 HTML](assets/target-architecture-interactive.html)。
 
 私有源码 `models/modeling_qwen3_5_moe_hiai_cpro.py` 中，`rotate_half` 在第 60 行、`apply_rotary_pos_emb` 在第 66 行、`Qwen3_5MoeRotaryEmbedding` 在第 140 行，`_init_rope_cache()` 在第 184 行。行号对应本地旧快照，服务器当前源码以本次实际导出的文件为准。
 
 该快照已经在 FP32 下计算 sin/cos，查表后才转类型。当前捕获点只含 Q、K、cos、sin，不能反推角度。本轮 `--rope-precision fp32` 是**旋转乘加候选**：四个输入先转 FP32，调用实际 CPro partial RoPE helper，最后恢复各自 golden 输出 dtype。输入文件、系数和 golden 不变，不把输出强制降为 Q/K 的输入类型，也不将它称为 sin/cos 生成修复。
 
-本地主机检查覆盖源码系数生成顺序、两种长度／系数 dtype、partial rotary 尾部、PyTorch 导出、AIR 描述检查和四图筛选。真实 TorchAir、OMG 和设备验证由原执行主机运行；候选尚无新的设备数值，原 17.56%～19.62% 指标继续保留。
+本地主机检查覆盖源码系数生成顺序、两种长度／系数 dtype、partial rotary 尾部、PyTorch 导出、AIR 描述检查和四图筛选。用户随后在原环境完成执行并回传零误差；未在本地重新核验服务器完整产物。原始状态 METRICS_RECORDED 表示未配置自动浮点门槛，本次数值已经对齐。**以下命令仅供今后修改后需要回归时复用，当前不用重编或上板。**
 
 ## 1. 每台主机初始化
 
