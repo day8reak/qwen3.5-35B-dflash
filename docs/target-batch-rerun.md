@@ -1,10 +1,14 @@
-# Target 分模块全批：AIR → OMC → 上板 → 精度 CSV
+# Target 单模块候选修复：AIR → OMC → 上板 → 精度 CSV
 
-本页按现有完成态 capture 导出**全部边界、全部输出**，不加模块筛选。当前 capture 为 L0–L3、Prefill T256／Decode T1，共 158 个 case；尚不包含 MoE 内部、LM head 或全部 40 层。每个小图独立使用捕获输入，不能据此验证整图误差传播或连续状态反馈。
+本轮只测试用户提出的 **QLinear FP16 scale 适配、CacheUpdate 整数索引**。覆盖已有 L0–L3 capture 的全部对应模块及 Prefill／Decode：38 个 QLinear＋4 个 Cache 边界各导出浮点／整数版本，共 **46 个候选／对照小图**。不改原模型、converter、共享 DDK 或 golden。
 
-AIR／OMC 单项失败会记录后继续；只要有成功 OMC 就可上板。ConvState 失败可以保留，最终覆盖仍显示不完整。最新结果和高危区域见[精度表](target-accuracy-status.md)。
+AIR／OMC 单项失败记录后继续；上板自动选择全部 COMPILED 项。已有 146 项指标仍是修改前结果，见[精度表](target-accuracy-status.md)。本轮尚无实际 TorchAir／OMG／上板结果，不能提前标为精度修复。
 
-2026-11-12 最新回传 146 项数值，见[精度状态](target-accuracy-status.md)。此前 90 COMPILED／68 FAILED 的批次中，一例 GDN 因 TE worker 平台更新失败退出；全批编译命令已补回原有 `--tbe-diagnosis`。已有本轮产物时先使用它们进行输入契约检查，不重复编译。
+QLinear 实际转换 scale 常量为 FP16，保留 `[K/256,N]` 方向；DynamicQuant 的 per-token scale 转为 FP16 `[M]`。导出后核对 V4444 四个输入端口类型，保存转换前后字节哈希与原 packed W4 哈希。FP16 舍入计入候选误差，原 golden 不重算；导出／编译不支持时明确失败，不自动换内核。
+
+**旧 Cache 小图直接输入 INT32 块号／偏移，没有 `update()` 的浮点计算。** 本轮扩展为“position／block table → 索引计算 → CacheUpdate”。旧 capture 未保存高层 position：仅在同一次 Attention 页表能唯一反推位置时重用，并标记为重建输入；缺失／歧义直接报错。浮点控制组先核对原 CPro 表达式，整数组使用 `//`、`%` 和 INT32 页表。两者共用原 cache、updates、golden，CSV 分别标记 `_index_float`／`_index_integer`。
+
+短上下文的主机计算中两套公式相同，因此不能仅凭整数改写认定旧 Decode 故障已解决。仍需检查整缓存，尤其未写历史区；本轮不验证 RefData alias 或连续状态反馈。
 
 | 阶段 | 执行位置 | 输入 → 输出 |
 |---|---|---|
@@ -21,13 +25,13 @@ AIR／OMC 单项失败会记录后继续；只要有成功 OMC 就可上板。Co
 export REPO_DIR="$(git rev-parse --show-toplevel)"
 git -C "$REPO_DIR" pull --ff-only origin main
 export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
-export BATCH_ROOT="$AI_RUN_DIR/target/tests/all-boundaries"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/qlinear-cache-candidates"
 export BATCH="$BATCH_ROOT/air"
-export OMC_BATCH="${OMC_BATCH:-$BATCH_ROOT/omc}"
+export OMC_BATCH="$BATCH_ROOT/omc"
 export COMPARISON="$BATCH_ROOT/comparison"
 export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
-export EXECUTION="$AI_RUN_DIR/fused/target-boundary-execution"
-export RECOVERY="$AI_RUN_DIR/fused/target-boundary-recovery"
+export EXECUTION="$AI_RUN_DIR/fused/target-qlinear-cache-execution"
+export RECOVERY="$AI_RUN_DIR/fused/target-qlinear-cache-recovery"
 export PYTHONDONTWRITEBYTECODE=1
 ```
 
@@ -35,21 +39,11 @@ export PYTHONDONTWRITEBYTECODE=1
 
 本次使用固定测试目录；AIR、OMC 和 comparison 输出必须不存在。复测前先完成原请求回收，再处理旧测试产物。编译失败不覆盖公共可运行模型。
 
-## 2. 全部 AIR 重新导出
+## 2. 两类模块全部重新导出
 
 `GOLDEN_CAPTURE` 沿用已成功采集的目录：其中 `manifest.json` 为 `CAPTURED`，并有 regions／weights。`TARGET_SOURCE` 是原 Target 源码根目录，包含 models 和下述 converter。`TARGET_CONFIG` 是原 Target 导出使用的 YAML，其中 `model_file` 指向 HF 权重目录、`quanted_pth` 指向 W4 权重目录；相对路径按 `TARGET_SOURCE` 解析。这三个变量使用权重服务器上的真实值，不能填写示意目录。
 
-本次复查覆盖导出器全部 16 种 region。**发现并修正普通 Norm 的权重 dtype 差异：NZ 构造 FP16，CPro 构造 FP32，旧小图直接用了 NZ capture 权重。** 新版按原 CPro 参数 dtype 从 HF 重新加载，再折叠 `weight + 1`；不会把已经舍入的 FP16 权重升回 FP32 充当原权重。
-
-| 小图类别 | 本次处理 |
-|---|---|
-| QLinear | 沿原 exporter → replacement globals 找到实际工厂；本版是 NZ QLinear。对一个 Linear 调用原替换工具，重建 packed W4／scale 并与 capture 全值核对；不猜测 FP16 Cast |
-| 普通／门控 Norm、Conv、普通 Linear | 从原 HF 绑定权重；普通 Norm 修正参数 dtype；Conv 保留经对照的四维等价导出 |
-| SiLU、decay/beta、GDN、Attention、layout/gate、两次残差 | 直接提取原 CPro forward 中的对应表达式；GDN chunk 由实际序列长度选择，Attention 使用原 export 参数分支 |
-| repeat Q/K、RoPE | 直接调用原 CPro helper，包含 rotate_half、partial rotary 与 NZ 恢复布局 |
-| ConvState、CacheUpdate、recurrent_writeback | 保留原算子／转换表达式；明确单输出裁剪、cache clone 和仅验证回写值的限制，尚不验证 RefData alias 或连续状态反馈 |
-
-输入仍为同一批 golden 边界输入，保留其 dtype；这不是从整图裁剪后证明完全相同的物理存储／融合。MoE 内部和 LM head 不在现有 capture。旧数值保留为旧导出结果，不能当作此次修正后的结果。
+默认导出行为仍沿原 CPro 源码。本轮显式开启下面两个候选开关；其他模块不参与此次导出。已有权重会按原替换工具重建并与 capture 核对，然后才做候选 scale 转换。
 
 ```bash
 : "${GOLDEN_CAPTURE:?请设置已有 CAPTURED 捕获目录}"
@@ -69,6 +63,8 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --source-root "$TARGET_SOURCE" \
   --converter-script "$CPRO_EXPORT_SCRIPT" \
   --target-config "$TARGET_CONFIG" \
+  --kinds qlinear cache \
+  --qlinear-scales fp16 --cache-indexing both \
   --output "$BATCH" || export_rc=$?
 
 python - "$BATCH/manifest.json" "$GOLDEN_CAPTURE/manifest.json" "$export_rc" <<'PY'
@@ -76,7 +72,8 @@ import json, sys
 from collections import Counter
 r, capture = [json.load(open(p)) for p in sys.argv[1:3]]
 counts = Counter(c["status"] for c in r["cases"])
-expected = sum(len(c["outputs"]) for c in capture["regions"])
+expected = sum(len(c["outputs"]) * (2 if c["kind"] == "cache" else 1)
+               for c in capture["regions"] if c["kind"] in ("qlinear", "cache"))
 print("AIR:", r["status"], dict(counts), "expected:", expected, "exit:", sys.argv[3])
 if (int(sys.argv[3]) not in (0, 1) or r["status"] not in ("EXPORTED", "PARTIAL")
         or len(r["cases"]) != expected or not counts["EXPORTED"]):
@@ -85,9 +82,9 @@ PY
 )
 ```
 
-只有摘要检查成功才继续。PARTIAL 的退出码 1 在此被显式接收，仍核对完成态及全量 case 数；不会把中断当作完成。每个失败 case 的日志为 `$BATCH/<case>.log`。每份 `models/<case>/export.json` 新增 `source_contract`、`qlinear_resolution`、`target_weights` 和 `internal_boundaries`，后者记录内部算子两端的 shape/dtype、输入槽位和 Cast 链；这是源 AIR 信息，不能代替 OMC 的实际存储检查。权重与 capture 不一致会明确失败，不会悄悄更换 golden。
+只有摘要检查成功才继续。PARTIAL 的退出码 1 在此被显式接收，仍核对完成态及全量 case 数；不会把中断当作完成。每个失败 case 的日志为 `$BATCH/<case>.log`。每份 `models/<case>/export.json` 的 `candidate` 记录改动及输入来源，`candidate_graph_check` 检查源 AIR 端口；`internal_boundaries` 记录内部连线。这些不代替 OMC 实际存储检查。原权重与 capture 不一致会明确失败，golden 保持原样。
 
-## 3. 全部 OMC 编译（35 服务器）
+## 3. 本轮全部 OMC 编译（35 服务器）
 
 下面默认值来自本次已使用的 DDK；如已更换 DDK，设置其真实根目录和版本。使用 `isolated-kirinx90`、内嵌权重和原批次的 `use_origin_format=true`。本套 DDK 需传入此前已完成的 `TBE_DIAGNOSIS`：整理后的默认位置为 `common/tbe-diagnosis`，实际仍在原目录时保留该变量的真实值。工具只在本次编译目录准备适配，不改共享 DDK／Python 安装，OMG 目标仍为 `kirinx90`。仅 export 该变量不够，命令必须传 `--tbe-diagnosis`。
 
@@ -127,7 +124,7 @@ PY
 )
 ```
 
-单项日志：`$OMC_BATCH/models/<case>/omc/compile.log`；worker 适配结果在同目录 `report.json` 的 `tbe_compatibility.audit`。批次新增 `tbe_compatibility_requested` 仅表示请求了适配，不表示 worker 已执行适配或编译通过。本轮其余失败需各自日志确认，不能全部套用 GDN 原因。编译部分失败不阻塞成功项上板；末行只是提示，执行下节命令才会启动设备。
+单项日志：`$OMC_BATCH/models/<case>/omc/compile.log`；worker 适配结果在同目录 `report.json` 的 `tbe_compatibility.audit`。批次新增 `tbe_compatibility_requested` 仅表示请求了适配，不表示 worker 已执行适配或编译通过。失败需各自日志确认，不能仅凭退出码归因。编译部分失败不阻塞成功项上板；末行只是提示，执行下节命令才会启动设备。
 
 ## 4. 批量上板
 
@@ -232,4 +229,6 @@ PY
 | `$COMPARISON/summary.csv` | 按层、阶段、模块的误差表 |
 | `$COMPARISON/report.json` | 全部调用指标、dtype、稳定性与覆盖缺项 |
 
-命令参数及语法已在主机核对；本页更新没有重新执行服务器导出、OMG 或设备任务。
+判读：QLinear 比较 38 项相同 golden 的 relative-L2；Cache 比较同边界浮点／整数两行，并以整缓存逐位相同为通过条件。只有整数版改善、浮点版仍异常，才能支持索引路径相关；若两版都异常，继续定位写入／保留区与实际绑定。
+
+主机测试覆盖候选 dtype、权重字节不变、索引公式、原源码匹配和批次遍历；未执行真实 TorchAir／OMG／设备任务。

@@ -7,5 +7,5 @@
 - [当前结果](results.md)
 - [环境配置](environment-setup.md)
 - [完整模型执行](run-end-to-end.md)
-- [当前阶段：Target 全部分模块 AIR／OMC、批量上板与比较](target-batch-rerun.md)
+- [当前阶段：QLinear／Cache 单模块候选修复与批量测试](target-batch-rerun.md)
 - [Target 精度与高危算子表](target-accuracy-status.md)

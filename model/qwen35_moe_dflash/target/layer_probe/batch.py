@@ -25,8 +25,19 @@ POINT_ORDER = {name: i for i, name in enumerate((
     'residual_attention', 'post_attention_layernorm', 'residual_mlp'))}
 
 
+def export_variants(region, cache_indexing):
+    modes = ('float', 'integer') if region['kind'] == 'cache' and cache_indexing == 'both' else (
+        cache_indexing if region['kind'] == 'cache' else 'kernel',)
+    for mode in modes:
+        suffix = '' if mode == 'kernel' else '_index_' + mode
+        for index, tensor in enumerate(region['outputs']):
+            yield mode, suffix, index, tensor
+
+
 def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None,
-                 timeout=900, torchair_pb2=None, target_config=None):
+                 timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel'):
+    if qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both'):
+        raise ValueError('unknown module candidate')
     capture = Path(capture).resolve()
     source = json.loads((capture/'manifest.json').read_text())
     if source.get('artifact_kind') != KIND or source.get('status') != 'CAPTURED':
@@ -48,15 +59,17 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         reference_quant_matmul_policy=source.get('quant_matmul', {}).get('policy', 'ORIGINAL_CALL'),
         reference_baseline_equivalence=source.get('quant_matmul', {}).get('baseline_equivalence', 'ORIGINAL_CALL_UNCHANGED'),
         reference_model_layers=source.get('placement', {}).get('executed_num_hidden_layers'))
+    report['candidate_options'] = dict(qlinear_scales=qlinear_scales, cache_indexing=cache_indexing,
+        reference='ORIGINAL_CAPTURE_UNCHANGED')
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
     for region in regions:
-        for index, tensor in enumerate(region['outputs']):
-            name = region['id'] + f'_o{index}'
+        for mode, suffix, index, tensor in export_variants(region, cache_indexing):
+            name = region['id'] + suffix + f'_o{index}'
             folder = root/'models'/name
             folder.parent.mkdir(exist_ok=True)
             row = dict(id=name, region=region['id'], layer=region['layer'], call=region['call'],
-                point=region['point'], phase=region['phase'], kind=region['kind'],
+                point=region['point'] + suffix, phase=region['phase'], kind=region['kind'],
                 ordinal=region['ordinal'], output_index=index, output_name=tensor['name'], status='EXPORTING')
             report['cases'].append(row)
             save_json(root/'manifest.json', report)
@@ -64,6 +77,10 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 '--region', region['id'], '--output-index', str(index), '--output', str(folder),
                 '--source-root', str(Path(source_root).resolve()),
                 '--converter-script', str(Path(converter_script).resolve())]
+            if qlinear_scales != 'source':
+                argv += ['--qlinear-scales', qlinear_scales]
+            if mode != 'kernel':
+                argv += ['--cache-indexing', mode]
             if torchair_pb2:
                 argv += ['--torchair-pb2', str(Path(torchair_pb2).resolve())]
             if target_config:
@@ -81,6 +98,9 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                     raise ValueError('export receipt differs from captured golden')
                 if receipt.get('source_contract', {}).get('status') != 'BOUND_TO_SOURCE':
                     raise ValueError('export worker did not bind this region to original Target source')
+                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or mode != 'kernel'):
+                    if not receipt.get('candidate') or receipt.get('candidate_graph_check', {}).get('status') != 'PASSED':
+                        raise ValueError('candidate export is missing its source AIR checks')
                 row.update(status='EXPORTED', export=identity(folder/'export.json', root))
             except Exception as exc:
                 row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')

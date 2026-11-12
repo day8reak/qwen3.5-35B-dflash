@@ -183,7 +183,12 @@ class Region(torch.nn.Module):
             out = self.target.apply_rotary_pos_emb(x['q'], x['k'], x['cos'], x['sin'])
         elif k == 'cache':
             cache = x['cache'].clone()
-            self.npu.npu_cache_update_(cache, x['updates'], x['target_block'], x['offset_in_block'])
+            if a.get('cache_indexing', 'kernel') == 'kernel':
+                blocks, offsets = x['target_block'], x['offset_in_block']
+            else:
+                from .candidates import cache_indices
+                blocks, offsets = cache_indices(x['cache_position'], x['block_table'], a['block_size'], a['cache_indexing'])
+            self.npu.npu_cache_update_(cache, x['updates'], blocks, offsets)
             out = (cache,)
         elif k == 'attention':
             out = (self.npu.adn_fused_infer_attention(query=x['query'], key=[x['key']], value=[x['value']],
@@ -268,11 +273,14 @@ def check_adjusted_graph(kind, graph):
     return dict(status='NOT_APPLICABLE')
 
 
-def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None):
+def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None,
+               *, qlinear_scales='source', cache_indexing='kernel'):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
     try:
+        if qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer'):
+            raise ValueError('unknown module candidate')
         capture = Path(capture).resolve()
         manifest = json.loads((capture/'manifest.json').read_text())
         if manifest.get('artifact_kind') != KIND or manifest.get('status') != 'CAPTURED':
@@ -285,6 +293,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         checked(capture, golden)
         weights = torch.load(checked(capture, record['weights']), map_location='cpu', weights_only=True) if 'weights' in record else {}
         inputs = [torch.from_numpy(read_array(capture, spec).copy()) for spec in record['inputs']]
+        input_paths = [checked(capture, spec) for spec in record['inputs']]
         sys.path.insert(0, str(Path(source_root).resolve()))
         import torch_npu
         import torchair
@@ -303,11 +312,29 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         result['captured_weights'] = {name: tensor_metadata(value) for name, value in weights.items()}
         from .target_weights import load_weights
         weights, result['target_weights'] = load_weights(record, weights, target, converters, target_config, source_root)
+        from .candidates import adapt_qlinear, prepare_cache_inputs, validate_cache_source, check_graph
+        cache_mode = cache_indexing if record['kind'] == 'cache' else 'kernel'
+        if cache_mode != 'kernel':
+            source = validate_cache_source(target)
+            record, inputs, input_paths, candidate = prepare_cache_inputs(capture, manifest, record, root, cache_mode)
+            candidate['source'] = source
+            result['candidate'] = candidate
         model = Region(record, weights, target, torch_npu, output_index, factory)
         result['source_contract'] = bind_region(model, target, record)
         result['source_contract']['weight_scope'] = result['target_weights']['status']
         result['qlinear_resolution'] = factory_evidence
         result['exported_weights'] = {name: tensor_metadata(value) for name, value in weights.items()}
+        qlinear_fp16 = record['kind'] == 'qlinear' and qlinear_scales == 'fp16'
+        if qlinear_fp16:
+            result['candidate'] = adapt_qlinear(model, root)
+            result['exported_weights']['scale'] = tensor_metadata(model.op.scale)
+        if 'candidate' in result:
+            result['source_contract']['candidate'] = result['candidate']
+            result['source_contract']['equivalence'] = 'EXPLICIT_EXPERIMENT; ORIGINAL_GOLDEN_UNCHANGED'
+            if cache_mode != 'kernel':
+                result['source_contract']['input_scope'] = 'CAPTURED_CACHE_UPDATES_TABLE; UNIQUELY_RECONSTRUCTED_POSITION'
+                result['source_contract']['source'].update(mode='INDEX_COMPUTATION_PLUS_KERNEL',
+                    excluded='RefData alias, original high-level position capture and inter-call feedback')
         result['export_adjustments'] = model.export_adjustments
         from qwen35_moe_dflash.draft.incremental.torch_export import _producer_schema, _schema
         from qwen35_moe_dflash.target.original_air_roundtrip import _decode
@@ -324,6 +351,8 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         schema = _schema(descriptor, metadata)
         _, _, graph = _decode(schema, (root/'export.air').read_bytes())
         result['export_graph_check'] = check_adjusted_graph(record['kind'], graph)
+        if 'candidate' in result:
+            result['candidate_graph_check'] = check_graph(graph, schema, qlinear_fp16, cache_mode)
         from .source_regions import internal_boundaries
         result['internal_boundaries'] = internal_boundaries(graph, schema)
         fixture = root/'fixture'
@@ -331,7 +360,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         specs = []
         for i, spec in enumerate(record['inputs']):
             path = fixture/f'input_{i}.bin'
-            shutil.copyfile(checked(capture, spec), path)
+            shutil.copyfile(input_paths[i], path)
             specs.append(dict(spec, **identity(path, root)))
         path = fixture/'golden.bin'
         shutil.copyfile(checked(capture, golden), path)
@@ -345,7 +374,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
                           for p in dict.fromkeys((target.__file__, converter_script,
                               factory_evidence['replacement']['file'], inspect.getfile(factory)))],
             qlinear_factory=factory_evidence['factory'],
-            weights=record.get('weights'), input_scope='GOLDEN_BOUNDARY_INPUTS',
+            weights=record.get('weights'), input_scope=result['source_contract']['input_scope'],
             graph_types=sorted({n['type'] for n in graph['op']}),
             torch_version=torch.__version__, torchair_version=getattr(torchair, '__version__', 'unknown'))
     except Exception as exc:

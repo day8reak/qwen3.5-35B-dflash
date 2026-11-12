@@ -21,6 +21,10 @@ def main():
         s.add_argument('--converter-script', required=True)
         s.add_argument('--target-config', help='original Target YAML (model_file/quanted_pth); required for weighted regions')
         s.add_argument('--torchair-pb2')
+        s.add_argument('--qlinear-scales', choices=('source', 'fp16'), default='source',
+                       help='opt-in candidate: numeric FP16 weight scale and per-token scale, original golden')
+        s.add_argument('--cache-indexing', choices=('kernel', 'float', 'integer', 'both') if command == 'export' else ('kernel', 'float', 'integer'),
+                       default='kernel', help='expand cache boundary to position/table indexing; both exports float control and integer candidate')
         if command == 'export':
             s.add_argument('--points', nargs='+')
             s.add_argument('--kinds', nargs='+')
@@ -75,10 +79,12 @@ def main():
         result = replay_failure(a.capture, a.output, a.device, a.group_size)
     elif a.command == 'export':
         result = batch.export_batch(a.capture, a.output, a.source_root, a.converter_script,
-            points=a.points, kinds=a.kinds, timeout=a.timeout, torchair_pb2=a.torchair_pb2, target_config=a.target_config)
+            points=a.points, kinds=a.kinds, timeout=a.timeout, torchair_pb2=a.torchair_pb2, target_config=a.target_config,
+            qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing)
     elif a.command == 'export-one':
         from qwen35_moe_dflash.target.layer_probe.replay import export_one
-        result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2, a.target_config)
+        result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2, a.target_config,
+                            qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing)
     elif a.command == 'compile':
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format,
