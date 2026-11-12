@@ -22,6 +22,9 @@ from .source_regions import assignment, call, definition
 
 def cache_indices(position, table, block_size, mode):
     if mode == 'integer':
+        # Replay construction validates [0, INT32_MAX]. Cast BEFORE selecting
+        # row zero: its Gather data input cannot be INT64 in the selected DDK.
+        position = position.to(torch.int32)
         block = (position[0] // block_size).to(torch.int32)
         offset = (position[0] % block_size).to(torch.int32)
         target = table[:, block].reshape(-1)
@@ -97,6 +100,11 @@ def prepare_cache_inputs(capture, manifest, record, root, mode):
             index_count=int(arrays['target_block'].size),
             captured_shape=list(arrays['target_block'].shape),
             replay_shape=list(position.shape[1:]),
+            position_input_dtype='int64',
+            position_compute_dtype='int32' if mode == 'integer' else 'float32',
+            position_range=[int(position.min()), int(position.max())],
+            integer_cast=('BEFORE_ROW_SELECTION; VALIDATED_NONNEGATIVE_INT32_RANGE'
+                          if mode == 'integer' else 'NOT_APPLICABLE_FLOAT_CONTROL'),
             policy='PRESERVE_CAPTURED_INDEX_CARDINALITY; NO_BROADCAST_OR_PER_ROW_EXPANSION'),
         block_table_region=matches[0]['id'], block_table=table_spec,
         original_indices={k: by_name[k] for k in ('target_block', 'offset_in_block')},
@@ -296,7 +304,7 @@ def check_graph(graph, schema, qlinear_fp16=False, cache_mode='kernel'):
             raise ValueError('candidate must retain exactly one CacheUpdate')
         node = selected[0]
         names = port_names(_attributes(node), 'input')
-        pending, seen, floating = [], set(), []
+        pending, seen, floating, gathers = [], set(), [], []
         for port in ('targetBlock', 'offsetInBlock'):
             slots = [i for i, name in names.items() if name == port]
             if len(slots) != 1:
@@ -318,11 +326,23 @@ def check_graph(graph, schema, qlinear_fp16=False, cache_mode='kernel'):
                 raise ValueError('integer index edge dtype is unresolved: ' + edge)
             if dtype in ('float16', 'float32', 'bfloat16'):
                 floating.append(dict(edge=edge, dtype=dtype))
+            if cache_mode == 'integer' and producer['type'] in ('Gather', 'GatherV2', 'GatherV2D'):
+                data_edge = _data_edges(producer)[0]
+                source_name, source_slot = data_edge.rsplit(':', 1)
+                source_desc = nodes[source_name].get('output_desc', [])
+                data_dtype = _dtype(descriptor(source_desc[int(source_slot)] if int(source_slot) < len(source_desc) else {}, enums))
+                consumer_desc = producer.get('input_desc', [])
+                consumer_dtype = _dtype(descriptor(consumer_desc[0], enums)) if consumer_desc else None
+                if data_dtype != 'int32' or (consumer_dtype is not None and consumer_dtype != 'int32'):
+                    raise ValueError(f'integer cache Gather data must be INT32 before selection: '
+                                     f'{producer["name"]} input0={data_edge}, producer={data_dtype}, consumer={consumer_dtype}')
+                gathers.append(dict(node=producer['name'], input0=data_edge, dtype=data_dtype))
             pending.extend(_data_edges(producer))
         if cache_mode == 'integer' and floating:
             raise ValueError('integer index path was lowered through floating tensors: ' + str(floating))
         source_names = {edge.rsplit(':', 1)[0] for edge in seen if nodes[edge.rsplit(':', 1)[0]]['type'] == 'Data'}
         if len(source_names) != 2:
             raise ValueError('cache index path must depend on position and block table runtime inputs')
-        result['cache_indexing'] = dict(mode=cache_mode, data_inputs=sorted(source_names), floating_edges=floating)
+        result['cache_indexing'] = dict(mode=cache_mode, data_inputs=sorted(source_names),
+                                       floating_edges=floating, integer_gather_data=gathers)
     return result
