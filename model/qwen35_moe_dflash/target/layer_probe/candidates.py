@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import ast
 import copy
+from contextlib import contextmanager
+import functools
+import importlib
+import inspect
 import types
 
 import numpy as np
@@ -147,10 +151,8 @@ def adapt_qlinear(region, root):
     # Convert the real buffer before export; never relabel existing FP32 bytes.
     region.op.scale = scale
     op.args[2] = ast.parse('self.scale.to(torch.float16).to(x.device)', mode='eval').body
-    token[0].value = ast.Call(func=ast.Attribute(value=ast.Call(
-        func=ast.Attribute(value=token[0].value, attr='reshape', ctx=ast.Load()),
-        args=[ast.Constant(-1)], keywords=[]), attr='to', ctx=ast.Load()),
-        args=[ast.Attribute(value=ast.Name(id='torch', ctx=ast.Load()), attr='float16', ctx=ast.Load())], keywords=[])
+    # The stock A8W4 FakeTensor contract requires FP32 per-token scale.
+    # Keep that frontend expression; adapt it only inside the GE converter.
     tree.decorator_list = []
     module = ast.fix_missing_locations(ast.Module(body=[tree], type_ignores=[]))
     code = ast.unparse(module) + '\n'
@@ -163,9 +165,82 @@ def adapt_qlinear(region, root):
         effective_forward=identity(path, root), source_scale=before,
         exported_scale=tensor_metadata(scale), packed_weight=tensor_metadata(region.op.W_q),
         scale_nonzero_rounded_to_zero=underflow,
-        pertoken='EXPLICIT_RESHAPE_M_AND_NUMERIC_FP16_CAST_AFTER_DYNAMIC_QUANT',
+        pertoken='FRONTEND_FP32_UNCHANGED; GE_RESHAPE_M_THEN_FP16_CAST',
         reference='ORIGINAL_CAPTURE_UNCHANGED; FP16_ROUNDING_IS_PART_OF_THIS_CANDIDATE')
     return record
+
+
+@contextmanager
+def qlinear_ge_scales(enabled):
+    """Adapt the selected converter's inputs after stock FakeTensor validation.
+
+    Use the installed converter unchanged after the cast; do not replace its
+    V4444 attributes, optional inputs, packed weight handling or output logic.
+    The temporary registration is restored even if export raises.
+    """
+    if not enabled:
+        yield None
+        return
+    module = importlib.import_module('torchair._ge_concrete_graph.fx2ge_converter')
+    ge = importlib.import_module('torchair._ge_concrete_graph.ge_apis')
+    from torchair.ge import DataType
+    op = torch.ops.npu.npu_quant_matmul.default
+    getter = getattr(module, '_get_converter', None)
+    registry = getattr(module, '_CONVERTERS', None)
+    if not callable(getter) or not isinstance(registry, dict):
+        raise ValueError('installed TorchAir converter registry differs; inspect fx2ge_converter.py')
+    original = getter(op)
+    if not callable(original):
+        raise ValueError('selected TorchAir has no npu_quant_matmul converter')
+    signature = inspect.signature(original)
+    if not {'x1', 'x2', 'scale', 'pertoken_scale'} <= set(signature.parameters):
+        raise ValueError('selected quant_matmul converter signature differs: ' + str(signature))
+    _, source = definition(inspect.unwrap(original))
+    evidence = dict(calls=0, restored=False, original_converter=source,
+        policy='STOCK_META_UNCHANGED; GE_PERTOKEN_RESHAPE_CAST; ORIGINAL_CONVERTER_DELEGATED')
+
+    @functools.wraps(original)
+    def adapted(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        values = bound.arguments
+        expected = dict(x1=DataType.DT_INT8, x2=DataType.DT_INT32,
+                        scale=DataType.DT_FLOAT16, pertoken_scale=DataType.DT_FLOAT)
+        if any(getattr(values.get(k), 'dtype', None) != dtype for k, dtype in expected.items()):
+            raise ValueError('GE candidate requires INT8 x, INT32 packed W4, FP16 scale and frontend FP32 pertoken')
+        token = values['pertoken_scale']
+        meta = getattr(token, 'meta', None)
+        if not isinstance(meta, torch.Tensor) or meta.dtype != torch.float32:
+            raise ValueError('GE pertoken input has no FP32 tensor metadata')
+        flat = ge.Reshape(token, [-1])
+        flat.set_meta(meta.reshape(-1))
+        half = ge.Cast(flat, dst_type=DataType.DT_FLOAT16)
+        half.set_meta(meta.reshape(-1).to(torch.float16))
+        values['pertoken_scale'] = half
+        evidence['calls'] += 1
+        evidence['pertoken'] = dict(frontend=token.tensor, reshape=flat.tensor, cast=half.tensor,
+                                   frontend_dtype='float32', consumer_dtype='float16')
+        return original(*bound.args, **bound.kwargs)
+
+    existed, previous = op in registry, registry.get(op)
+    had_attr, previous_attr = hasattr(op, '_ge_converter'), getattr(op, '_ge_converter', None)
+    try:
+        registry[op] = adapted
+        op._ge_converter = adapted
+        if getter(op) is not adapted:
+            raise ValueError('selected TorchAir did not select the process-local converter adapter')
+        yield evidence
+        if evidence['calls'] != 1:
+            raise ValueError('candidate requires exactly one adapted quant_matmul conversion')
+    finally:
+        if existed:
+            registry[op] = previous
+        else:
+            registry.pop(op, None)
+        if had_attr:
+            op._ge_converter = previous_attr
+        else:
+            delattr(op, '_ge_converter')
+        evidence['restored'] = getter(op) is original
 
 
 def check_graph(graph, schema, qlinear_fp16=False, cache_mode='kernel'):
@@ -191,6 +266,14 @@ def check_graph(graph, schema, qlinear_fp16=False, cache_mode='kernel'):
                 raise ValueError(f'candidate AIR {port} dtype {actual} != {dtype}')
             observed[port] = dict(slot=slot, dtype=actual, edge=_data_edges(node)[slot])
         result['quant_matmul_inputs'] = observed
+        # A dtype label alone is insufficient: this candidate must retain the
+        # executable FP32 -> FP16 conversion at the per-token boundary.
+        edge = observed['pertoken_scale']['edge']
+        producer = nodes[edge.rsplit(':', 1)[0]]
+        if (not edge.endswith(':0') or producer['type'] != 'Cast'
+                or _dtype(descriptor(producer['input_desc'][0], enums)) != 'float32'
+                or _dtype(descriptor(producer['output_desc'][0], enums)) != 'float16'):
+            raise ValueError('candidate AIR pertoken must be fed by an explicit FP32-to-FP16 Cast')
     if cache_mode != 'kernel':
         selected = [n for n in nodes.values() if n['type'] == 'CacheUpdate']
         if len(selected) != 1:

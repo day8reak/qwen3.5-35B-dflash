@@ -87,6 +87,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 argv += ['--target-config', str(Path(target_config).resolve())]
             print('export', name, flush=True)
             log = root/(name+'.log')
+            row['log'] = log.name
             try:
                 with log.open('w') as stream:
                     done = subprocess.run(argv, cwd=root, stdout=stream, stderr=subprocess.STDOUT,
@@ -104,6 +105,15 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 row.update(status='EXPORTED', export=identity(folder/'export.json', root))
             except Exception as exc:
                 row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
+                # The worker retains the real tracing/conversion error. Carry
+                # it into the batch instead of showing only its exit status.
+                try:
+                    failure = json.loads((folder/'export.json').read_text())
+                except (OSError, ValueError):
+                    failure = {}
+                if failure.get('status') == 'FAILED' and failure.get('error'):
+                    row['worker_error'] = row['error']
+                    row['error'] = failure['error']
             save_json(root/'manifest.json', report)
     report['status'] = 'EXPORTED' if all(r['status'] == 'EXPORTED' for r in report['cases']) else 'PARTIAL'
     report['source_contracts'] = dict(scope='EVERY_EXPORTED_CASE; SEE_EXPORT_JSON',
@@ -154,6 +164,8 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
             row['status'] = 'NOT_SELECTED'
             continue
         if case['status'] != 'EXPORTED':
+            row.update(source_status=case['status'], source_error=case.get('error'),
+                       source_log=os.path.relpath(root/(case['id']+'.log'), output))
             continue
         try:
             exported = json.loads(checked(root, case['export']).read_text())

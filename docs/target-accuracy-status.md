@@ -38,9 +38,11 @@
 
 ## QLinear 输入与权重检查
 
-2026-11-12：已提供[两类单模块候选测试命令](target-batch-rerun.md)：38 个 QLinear 显式 FP16 scale／per-token 适配，Cache K/V 两阶段各有浮点索引控制组和整数索引候选组，共 46 图。只完成主机逻辑检查，实机精度待回传；以上指标仍为修改前结果。旧 Cache 小图未包含位置计算，不能把其 Decode 误差直接归因于浮点索引。Const 没有 Cast 节点也不能单独证明编译后物理字节仍是 FP32。
+2026-11-12：[46 图候选批次](target-batch-rerun.md)回传 **AIR 42 FAILED／4 EXPORTED，OMC 42 NOT_EXPORTED／2 COMPILED／2 FAILED**。38 个 QLinear 与 4 个 Prefill Cache 未导出；Decode Cache 浮点版 K/V 编译通过、整数版 K/V 在 OMG 失败。已提供的 QLinear traceback 显示前端要求 FP32 per-token；修正版保持前端 FP32 `[M,1]`，只在 GE 转换时 reshape 并 Cast 到 FP16 `[M]`，weight scale 常量仍数值转换为 FP16。修正版只有主机回归结果，真实 AIR／OMC／精度待验证，以上指标仍为修改前结果。
 
-先检查全部 38 个量化投影已有的 AIR、OMC、编译日志，不重新导出或编译。静态代码推导自洽不等于实际加载的内核与输入契约已经验证；本次优先排查 INT8 激活、packed W4、weight scale 和 per-token scale。
+Cache 尚需具体导出／编译日志才能定因。旧 Cache 小图未包含位置计算，不能把其 Decode 误差直接归因于浮点索引。Const 没有 Cast 节点也不能单独证明编译后物理字节仍是 FP32。
+
+修改前的 38 个量化投影可用以下命令只读检查已有 AIR、OMC、编译日志。静态代码推导自洽不等于实际加载的内核与输入契约已经验证；优先排查 INT8 激活、packed W4、weight scale 和 per-token scale。
 
 在 35 服务器现有 Python 环境执行，`OMC_BATCH` 指向**产生本次数值的实际 OMC 批次**；以下默认值沿用全批重编命令。检查目录须为空或不存在，保留既有输入和编译产物。
 

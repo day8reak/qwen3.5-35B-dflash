@@ -1,10 +1,12 @@
 # Target 单模块候选修复：AIR → OMC → 上板 → 精度 CSV
 
-本轮只测试用户提出的 **QLinear FP16 scale 适配、CacheUpdate 整数索引**。覆盖已有 L0–L3 capture 的全部对应模块及 Prefill／Decode：38 个 QLinear＋4 个 Cache 边界各导出浮点／整数版本，共 **46 个候选／对照小图**。不改原模型、converter、共享 DDK 或 golden。
+本轮只测试用户提出的 **QLinear FP16 scale 适配、CacheUpdate 整数索引**。覆盖已有 L0–L3 capture 的全部对应模块及 Prefill／Decode：38 个 QLinear＋4 个 Cache 边界各导出浮点／整数版本，共 **46 个候选／对照小图**。保持原模型、已安装 converter 文件、共享 DDK 和 golden 不变。
 
-AIR／OMC 单项失败记录后继续；上板自动选择全部 COMPILED 项。已有 146 项指标仍是修改前结果，见[精度表](target-accuracy-status.md)。本轮尚无实际 TorchAir／OMG／上板结果，不能提前标为精度修复。
+2026-11-12 回传：**AIR 42 FAILED／4 EXPORTED；OMC 42 NOT_EXPORTED／2 COMPILED／2 FAILED**。38 个 QLinear 和 4 个 Prefill Cache 在 AIR 阶段失败；Decode Cache 浮点版 K/V 编译通过，整数版 K/V 在 OMG 失败。仅一个 QLinear 已提供具体 traceback，其前端拒绝 FP16 per-token scale；其余失败原因须按各自日志确认。当前修正版已通过主机回归，尚未回传修正版 AIR／OMC／数值。
 
-QLinear 实际转换 scale 常量为 FP16，保留 `[K/256,N]` 方向；DynamicQuant 的 per-token scale 转为 FP16 `[M]`。导出后核对 V4444 四个输入端口类型，保存转换前后字节哈希与原 packed W4 哈希。FP16 舍入计入候选误差，原 golden 不重算；导出／编译不支持时明确失败，不自动换内核。
+QLinear 实际转换 scale 常量为 FP16，保留 `[K/256,N]` 方向。**前端 per-token 保持原 FP32 `[M,1]`，在 GE converter 边界才执行 Reshape＋FP16 Cast。** 适配器仅在当前导出进程生效，继续调用已安装 converter，结束后恢复注册；不绕过 FakeTensor 检查。导出后核对 V4444 四个输入端口和实际 Cast 连线，保存 scale 转换及 packed W4 信息。FP16 舍入计入候选误差，golden 不重算。主机回归使用 CPU FakeTensor 与模拟 GE 接口，不代表真实 TorchAir／OMG 已通过。
+
+AIR／OMC 单项失败记录后继续；上板自动选择全部 COMPILED 项。已有 146 项指标仍是修改前结果，见[精度表](target-accuracy-status.md)。
 
 **旧 Cache 小图直接输入 INT32 块号／偏移，没有 `update()` 的浮点计算。** 本轮扩展为“position／block table → 索引计算 → CacheUpdate”。旧 capture 未保存高层 position：仅在同一次 Attention 页表能唯一反推位置时重用，并标记为重建输入；缺失／歧义直接报错。浮点控制组先核对原 CPro 表达式，整数组使用 `//`、`%` 和 INT32 页表。两者共用原 cache、updates、golden，CSV 分别标记 `_index_float`／`_index_integer`。
 
@@ -37,7 +39,22 @@ export PYTHONDONTWRITEBYTECODE=1
 
 跨机器传输：AIR 导出后复制**整个 `BATCH` 目录**到 35 上同一角色路径；包括清单、schema、输入、golden 和权重 sidecar。若上板在另一主机，再把整个 `BATCH_ROOT` 传过去，保持 `air/` 与 `omc/` 相对位置；重新执行本节设置该主机路径。运行阶段不再需要原 checkpoint／capture。
 
-本次使用固定测试目录；AIR、OMC 和 comparison 输出必须不存在。复测前先完成原请求回收，再处理旧测试产物。编译失败不覆盖公共可运行模型。
+本次使用固定测试目录；AIR、OMC 和 comparison 输出必须不存在。复测前先完成原请求回收、提取下述失败原因，再处理该测试的旧临时产物并复用原目录。编译失败不覆盖公共可运行模型。
+
+本轮 Cache 尚缺具体错误。在 AIR 主机读取 Prefill 失败 receipt，在 35 主机读取 Decode 整数版 OMG 日志；不要只重复打印 manifest 的 worker 退出码：
+
+```bash
+python - "$BATCH" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for mode in ("float", "integer"):
+    case = "l03_c00_cache_k_index_" + mode + "_o0"
+    path = root / "models" / case / "export.json"
+    print(case, json.loads(path.read_text()).get("error") if path.exists()
+          else "receipt 缺失，查看 " + str(root / (case + ".log")))
+PY
+tail -n 120 "$OMC_BATCH/models/l03_c01_cache_k_index_integer_o0/omc/compile.log"
+```
 
 ## 2. 两类模块全部重新导出
 
@@ -82,7 +99,7 @@ PY
 )
 ```
 
-只有摘要检查成功才继续。PARTIAL 的退出码 1 在此被显式接收，仍核对完成态及全量 case 数；不会把中断当作完成。每个失败 case 的日志为 `$BATCH/<case>.log`。每份 `models/<case>/export.json` 的 `candidate` 记录改动及输入来源，`candidate_graph_check` 检查源 AIR 端口；`internal_boundaries` 记录内部连线。这些不代替 OMC 实际存储检查。原权重与 capture 不一致会明确失败，golden 保持原样。
+只有摘要检查成功才继续。PARTIAL 的退出码 1 在此被显式接收，仍核对完成态及全量 case 数；不会把中断当作完成。每个失败 case 的日志为 `$BATCH/<case>.log`；新版 manifest 优先保留 `export.json` 的实际异常，并单列 worker 错误。每份 `models/<case>/export.json` 的 `candidate` 记录改动及输入来源，QLinear 的 `ge_adapter` 记录所选 converter、适配次数与恢复状态；`candidate_graph_check` 检查源 AIR 端口。这些不代替 OMC 实际存储检查。原权重与 capture 不一致会明确失败，golden 保持原样。
 
 ## 3. 本轮全部 OMC 编译（35 服务器）
 
