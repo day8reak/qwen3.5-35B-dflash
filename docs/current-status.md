@@ -4,7 +4,7 @@
 
 ## 用户现在执行什么
 
-已有本轮 AIR，无需重新导出。GDN 日志已确认 TE worker 在 `te_update_version()` 更新平台参数时退出；此前全批命令漏传已有的 `--tbe-diagnosis`，现已补回。按[编译排障](target-compile-triage.md)先重试五个代表项，目标保持 kirinx90；90 个成功项可独立继续[批量上板与比较](target-batch-rerun.md#4-批量上板)。编译脚本末尾的提示不会自动启动设备。
+已有本轮 AIR，无需重新导出。GDN 日志已确认 TE worker 在 `te_update_version()` 更新平台参数时退出；此前全批命令漏传已有的 `--tbe-diagnosis`，现已补回。按[编译排障](target-compile-triage.md)直接全批重新编译，目标保持 kirinx90；90 个成功项可独立继续[批量上板与比较](target-batch-rerun.md#4-批量上板)。编译脚本末尾的提示不会自动启动设备。
 
 | 批次 | 编译成功／失败 | 已回传数值 |
 |---|---:|---:|

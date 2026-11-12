@@ -18,67 +18,63 @@
 
 **全批操作页遗漏了原来已使用的 `--tbe-diagnosis`，现已补回。** 它复用已有诊断，在运行目录复制并适配 DDK TE wheel 的底层 update 参数，保留真实 worker 审计，OMG 仍编译 kirinx90。仅设置环境变量不会自动启用此参数；也不能从 OMG 命令行没有这个字符串推断未启用，因为它是 Python 编译入口参数。
 
-QLinear／CacheUpdate／Attention 是否同因尚未有对应日志；先用相同 AIR 做代表项重试。源码复查提交 `889f497` 没有改变 OMG 编译入口或 CacheUpdate 计算表达式。旧数值和源码／CPU 检查均不代表新 OMC 精度通过。
+QLinear／CacheUpdate／Attention 是否同因尚未有对应日志；按用户要求复用相同 AIR，直接全批重新编译。源码复查提交 `889f497` 没有改变 OMG 编译入口或 CacheUpdate 计算表达式。旧数值和源码／CPU 检查均不代表新 OMC 精度通过。
 
-## 当前执行：复用 AIR 重试五项
+## 当前执行：复用 AIR 全部重新编译
 
-在 35 服务器原 custom_pypto／DDK 终端执行。`TBE_DIAGNOSIS` 使用此前成功的完整诊断目录，整理后的默认位置为 `common/tbe-diagnosis`；若尚未搬迁，先设置为原真实目录。无需重采集、重导 AIR、重跑诊断矩阵或修改安装目录。此次输出是独立的五项编译对照，原 90 个成功 OMC 保留。
+在 35 服务器原 custom_pypto／DDK 终端执行。`TBE_DIAGNOSIS` 使用此前成功的完整诊断目录，整理后的默认位置为 `common/tbe-diagnosis`；若尚未搬迁，先设置为原真实目录。无需重采集、重导 AIR、重跑诊断矩阵或修改安装目录。直接遍历全部 158 项，不设置 cases 筛选。新全批写入固定的 `omc-rebuild`，原 `omc` 保留；后续上板使用新的 `OMC_BATCH`。输出目录须不存在，已有本轮重编结果时先读取其状态，避免覆盖运行中的任务。
 
 ```bash
 export REPO_DIR="/home/w00949577/qwen3.5-35B-dflash"
 export AI_RUN_DIR="/home/w00949577/qwen3.5-35B-dflash-run"
 export BATCH_ROOT="$AI_RUN_DIR/target/tests/all-boundaries"
-export OMC_BATCH="$BATCH_ROOT/omc"
+export OMC_BATCH="$BATCH_ROOT/omc-rebuild"
 export CPRO_DDK_ROOT="${CPRO_DDK_ROOT:-/home/l00886453/ddk_0806/image/hiai_ddk/ddk_internal}"
 export CPRO_DDK_ID="${CPRO_DDK_ID:-100.520.020.010}"
 export TBE_DIAGNOSIS="${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
-export TBE_PROBE="$BATCH_ROOT/omc-tbe-check"
 git -C "$REPO_DIR" pull --ff-only origin main
 
 (
 set -e
 test -f "$TBE_DIAGNOSIS/report.json"
-test ! -e "$TBE_PROBE"
+test ! -e "$OMC_BATCH"
 compile_rc=0
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
-  --batch "$BATCH_ROOT/air" --output "$TBE_PROBE" \
+  --batch "$BATCH_ROOT/air" --output "$OMC_BATCH" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --compiler-profile isolated-kirinx90 --use-origin-format \
-  --tbe-diagnosis "$TBE_DIAGNOSIS" \
-  --cases l03_c01_self_attn_k_proj_o0 \
-          l00_c00_gdn_o0 l00_c01_gdn_o0 \
-          l03_c01_cache_k_o0 l03_c00_fused_attention_o0 || compile_rc=$?
+  --tbe-diagnosis "$TBE_DIAGNOSIS" || compile_rc=$?
 
-python - "$TBE_PROBE" "$compile_rc" <<'PY'
+python - "$OMC_BATCH" "$compile_rc" <<'PY'
 import json, sys
+from collections import Counter
 from pathlib import Path
 root = Path(sys.argv[1])
 r = json.loads((root / 'compile.json').read_text())
-print('batch:', r['status'], 'exit:', sys.argv[2])
-for name in r['selected_cases']:
-    case = r['cases'][name]
-    path = root / 'models' / name / 'omc/report.json'
-    d = json.loads(path.read_text()) if path.is_file() else {}
-    audit = (d.get('tbe_compatibility') or {}).get('audit', {}).get('status', 'NOT_RECORDED')
-    print(name, case['status'], 'stage:', d.get('stage'), 'TBE audit:', audit)
-    if case['status'] != 'COMPILED':
-        print(case.get('error', 'see compile.log'))
+counts = Counter(c['status'] for c in r['cases'].values())
+print('OMC:', r['status'], dict(counts), 'exit:', sys.argv[2])
+print('coverage:', r['coverage'], 'TBE requested:', r.get('tbe_compatibility_requested'))
+if (int(sys.argv[2]) not in (0, 1) or r['status'] not in ('COMPILED', 'PARTIAL')
+        or r['coverage'] != 'ALL_MANIFEST_CASES'
+        or set(r['cases']) != set(r['selected_cases']) or not counts['COMPILED']):
+    raise SystemExit('全批未完成或无成功项，请检查 compile.json。')
+print('可继续上板全部 COMPILED 项；失败项保留。')
 PY
 )
 ```
 
-回传最后五行状态与 TBE audit。`APPLIED` 表示记录到适配；还需 `COMPILED` 才是编译通过。`NOT_OBSERVED` 不证明适配已生效，需检查 worker 事件。其余 153 项在这个对照报告中是 NOT_SELECTED，并非新失败，也不会被当作已覆盖。五项通过后再恢复其余失败项；本页不预报 56 项全部恢复或 ConvState 已修复。
+单项失败仍会继续，ConvState 也包含在全批中。回传最后的计数摘要；后续[批量上板／回收／比较](target-batch-rerun.md#4-批量上板)沿用 `OMC_BATCH="$BATCH_ROOT/omc-rebuild"`。实际 worker 适配记录在各项 `report.json` 的 `tbe_compatibility.audit`，请求适配不等于编译通过。
 
 若重试仍失败，使用下列只读命令提取新日志，不再次编译。输出目录须不存在：
 
 ```bash
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
-  --batch "$TBE_PROBE" --failed --ddk-root "$CPRO_DDK_ROOT" --compiler-entry \
+  --batch "$OMC_BATCH" --failed --ddk-root "$CPRO_DDK_ROOT" --compiler-entry \
   --output "$BATCH_ROOT/compile-inspect"
 cat "$BATCH_ROOT/compile-inspect/summary.txt"
 ```
 
-完整日志为 `$TBE_PROBE/models/<case>/omc/compile.log`。检查报告同时保留源码／权重绑定、内部描述与 Cast 链、实际编译环境；当前 shell 环境另记，不冒充历史进程环境。源 AIR 描述不是编译后存储证明。
+完整日志为 `$OMC_BATCH/models/<case>/omc/compile.log`。检查报告同时保留源码／权重绑定、内部描述与 Cast 链、实际编译环境；当前 shell 环境另记，不冒充历史进程环境。源 AIR 描述不是编译后存储证明。
 
 ## 旧批 ConvState：成功整图提供的对照
 
