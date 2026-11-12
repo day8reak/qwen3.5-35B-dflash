@@ -29,6 +29,7 @@ def cache_indices(position, table, block_size, mode):
         # Selected DDK rejects INT32 FloorMod. For nonnegative p and positive
         # block_size, p - floor(p/block_size)*block_size is the exact remainder;
         # the product is <= p, so the validated INT32 range cannot overflow.
+        # export_one also scopes its GE Mul metadata adapter to this candidate.
         offset = position[0] - block * block_size
         target = table[:, block].reshape(-1)
     elif mode == 'float':
@@ -309,7 +310,7 @@ def check_graph(graph, schema, qlinear_fp16=False, cache_mode='kernel'):
             raise ValueError('candidate must retain exactly one CacheUpdate')
         node = selected[0]
         names = port_names(_attributes(node), 'input')
-        pending, seen, floating, gathers = [], set(), [], []
+        pending, seen, floating, gathers, multiplies = [], set(), [], [], []
         for port in ('targetBlock', 'offsetInBlock'):
             slots = [i for i, name in names.items() if name == port]
             if len(slots) != 1:
@@ -333,6 +334,20 @@ def check_graph(graph, schema, qlinear_fp16=False, cache_mode='kernel'):
                 raise ValueError('integer index edge dtype is unresolved: ' + edge)
             if dtype in ('float16', 'float32', 'bfloat16'):
                 floating.append(dict(edge=edge, dtype=dtype))
+            if cache_mode == 'integer' and producer['type'] == 'Mul':
+                inputs = _data_edges(producer)
+                input_desc = producer.get('input_desc', [])
+                if len(inputs) != 2 or len(input_desc) != 2:
+                    raise ValueError('integer cache Mul requires two resolved input descriptors: ' + name)
+                for input_edge, raw_desc in zip(inputs, input_desc):
+                    input_name, input_slot = input_edge.rsplit(':', 1)
+                    source_desc = nodes[input_name].get('output_desc', [])
+                    source_dtype = _dtype(descriptor(source_desc[int(input_slot)] if int(input_slot) < len(source_desc) else {}, enums))
+                    consumer_dtype = _dtype(descriptor(raw_desc, enums))
+                    if source_dtype != 'int32' or consumer_dtype != 'int32':
+                        raise ValueError(f'integer cache Mul input must be INT32: {name} input={input_edge}, '
+                                         f'producer={source_dtype}, consumer={consumer_dtype}')
+                multiplies.append(dict(node=name, inputs=inputs, output_dtype=dtype))
             if cache_mode == 'integer' and producer['type'] in ('Gather', 'GatherV2', 'GatherV2D'):
                 data_edge = _data_edges(producer)[0]
                 source_name, source_slot = data_edge.rsplit(':', 1)
@@ -351,5 +366,6 @@ def check_graph(graph, schema, qlinear_fp16=False, cache_mode='kernel'):
         if len(source_names) != 2:
             raise ValueError('cache index path must depend on position and block table runtime inputs')
         result['cache_indexing'] = dict(mode=cache_mode, data_inputs=sorted(source_names),
-                                       floating_edges=floating, integer_gather_data=gathers)
+                                       floating_edges=floating, integer_gather_data=gathers,
+                                       integer_multiply=multiplies)
     return result

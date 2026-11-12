@@ -22,19 +22,16 @@
 <div id="toast" role="status" aria-live="polite"></div>
 <div class="legend"><span class="pill bad">红：relative-L2 &gt; 1%</span><span class="pill low">青：已回传 ≤1%，非验收结论</span><span class="pill blocked">橙：小图编译阻塞</span><span class="pill">灰：未测 / 结构节点</span><span class="pill purple">紫色实线：层内 identity 残差</span><span class="pill blue">蓝色虚线：状态读写 / 跨步反馈</span></div>
 <section class="card" id="accuracy-focus" aria-labelledby="accuracy-focus-title">
-<h2 id="accuracy-focus-title">当前结论：四个自定义算子需要独立验证精度</h2>
-<p>精度定位主线是 <strong>QuantBatchMatmulV4444、CacheUpdate、ChunkGatedDeltaRule、AdnFusedInferAttention</strong>。重点阶段不同：以下依据来自本批 L0–L3 独立边界，表示待隔离验证的范围，尚未定责为内核 bug。</p>
-<p>最新<a href="../target-batch-rerun.md">46 图候选批次</a>：OMC <strong>42 COMPILED／4 FAILED</strong>，已回传 42 项数值。38 个 QLinear 有 36 项低于 1%；仅 L0 out_proj 的 Prefill 1.3766%、Decode 1.7625% 超过图示阈值。Cache 浮点控制组 Prefill K/V 零误差、Decode 仍异常；整数版四图编译失败，无数值。</p>
-<p class="hint">2026-11-12：默认显示候选批次，未覆盖节点为灰色；可切换修改前 146 项基线（51 项 &gt;1%）。不将两批相加或视为一次整图执行。候选表仍保留 METRICS_RECORDED，未新增浮点验收通过结论；原始执行产物绑定尚未在本地核验。最新 Decode V 整数日志已越过 Gather，失败于 INT32 FloorMod；候选已改乘减求余，待新 OMC／数值。</p>
+<h2 id="accuracy-focus-title">当前复跑：Cache 与明确 FAILED 项</h2>
+<p>按用户确认，只继续保留 <strong>全部 Cache 和明确 FAILED 项</strong>；本次候选复跑共 8 个 Cache 图。L0 out_proj 两项仍为 METRICS_RECORDED，暂不继续复跑。下方结构图可查历史指标，历史误差不自动加入当前测试。</p>
+<p>历史 46 图候选批次：上一轮 OMC <strong>42 COMPILED／4 FAILED</strong>，已回传 42 项数值。38 个 QLinear 有 36 项低于 1%；仅 L0 out_proj 的 Prefill 1.3766%、Decode 1.7625% 超过图示阈值。Cache 浮点控制组 Prefill K/V 零误差、Decode 仍异常；整数版四图最新在 AIR 检查失败，无数值。</p>
+<p class="hint">2026-11-12：默认显示候选批次，未覆盖节点为灰色；可切换修改前 146 项基线（51 项 &gt;1%）。不将两批相加或视为一次整图执行。候选表仍保留 METRICS_RECORDED，未新增浮点验收通过结论；原始执行产物绑定尚未在本地核验。最新 AIR 42 导出／4 失败；整数图 Mul 输入 INT32、输出描述 FP32，随后 Cast 回 INT32。已补局部 GE 元数据适配，保留类型检查；新 AIR／OMC／数值待验证。当前仅保留 Cache 与明确 FAILED 项继续定位，下一轮运行<a href="../target-batch-rerun.md">8 个 Cache 图</a>。</p>
 <div class="table-scroll"><table class="focus-table"><thead><tr><th scope="col">算子 / 优先级</th><th scope="col">重点阶段</th><th scope="col">本批依据</th><th scope="col">独立验证重点</th></tr></thead><tbody>
-<tr><td>QuantBatchMatmulV4444 链路<br><span class="pill bad">P1：L0 out_proj</span></td><td>L0 Prefill + Decode</td><td>scale 适配后 36/38 &lt;1%；剩余两项为 1.3766%／1.7625%。原来的 38/38 巨大误差已消除。</td><td>先比较 L0 out_proj 的 golden／误差范数、逐通道误差；隔离 DynamicQuant、scale 舍入与累加。支持接口适配方向，不单独证明内核无误或是哪一路 scale 所致。</td></tr>
-<tr><td>CacheUpdate<br><span class="pill bad">P0</span></td><td>Decode；Prefill 作对照</td><td>浮点控制组 Decode K/V 2/2 FAILED，L2 99.69%–99.81%；Prefill 2/2 PASSED。整数版 4 图编译失败。</td><td>分别检查写入区与未写历史区、缓存初始化和输出绑定；整数图改掉 FloorMod 并编译后再比较两套索引，不能宣称整数方案已修复。</td></tr>
-<tr><td>ChunkGatedDeltaRule<br><span class="pill bad">P1</span></td><td>Prefill core / state；两阶段 state dtype</td><td>Prefill core/state 6/6 超过 1%；Decode 数值均低于 1%。两阶段 raw state 共 6/6 dtype 不保持。</td><td>固定 Q/K/V、g/beta、初态、chunk/effective_length，分别比较 core 和写回前 raw state；核对累加精度、输出 dtype、Cast 及连续状态反馈。</td></tr>
-<tr><td>AdnFusedInferAttention<br><span class="pill bad">P1</span></td><td>Prefill；Decode 作对照</td><td>Prefill L2 99.67%；Decode 约 0.251%，各一个已测输出。27/64 只是未确认来源的例子，指标保留。</td><td>先<a href="../target-layer-accuracy.md#attention-输出范围检查">只读检查实际 shape、字节数和长度参数</a>；再核对 NZ、有效 query／padding、mask/scale 和 block table。相同 numel 不证明排列一致。</td></tr>
+<tr><td>CacheUpdate<br><span class="pill bad">P0</span></td><td>Decode；Prefill 作对照</td><td>浮点控制组 Decode K/V 2/2 FAILED，L2 99.69%–99.81%；Prefill 2/2 PASSED。整数版 4 图 AIR 检查失败。</td><td>分别检查写入区与未写历史区、缓存初始化和输出绑定；整数图修正 Mul 元数据后重新导出和编译，再比较两套索引；尚不能宣称整数方案修复了精度。</td></tr>
 </tbody></table></div>
-<div class="focus-notes"><p><strong>RoPE：</strong>另按组合子图排查。Prefill / Decode 的 Q/K 共 4/4 异常，L2 17.56%–19.62%；检查 position、cos/sin、partial rotary、rotate_half 与布局，暂不指认某个基础内核。</p>
+<div class="focus-notes"><p><strong>RoPE：</strong>历史 Prefill / Decode Q/K 的 L2 为 17.56%–19.62%，状态为 METRICS_RECORDED；本轮不复跑，结果不改判 PASSED 或 FAILED。</p>
 <p><strong>LinearAttentionConvstateUpdate：</strong>继续解决 12/12 小图编译失败，编译后再测精度。原 T64 整图已编译成功，当前没有该小图的精度结论。</p></div>
-<p class="hint">本表为跨批次定位清单：QLinear／Cache 使用本次候选，其余沿用修改前基线。L2 均为百分比。各小图使用独立 golden 输入，不能统一归因于上游量化投影误差传播。<a href="https://github.com/day8reak/qwen3.5-35B-dflash/blob/main/docs/target-accuracy-status.md#高危算子重点定位表">完整重点定位表</a></p>
+<p class="hint">上方历史数值与当前复跑范围分别展示；结构图中的 QLinear／Cache 使用候选指标，其余沿用修改前基线。L2 均为百分比。各小图使用独立 golden 输入，不能统一归因于上游量化投影误差传播。<a href="https://github.com/day8reak/qwen3.5-35B-dflash/blob/main/docs/target-accuracy-status.md#高危算子重点定位表">完整重点定位表</a></p>
 </section>
 <section class="card"><h2>1. 层间如何连接：上一层的第二次 Add 输出，直接进入下一层</h2>
 <div class="formula">u[i] = h[i] + Mixer[i](InputNorm[i](h[i]), state[i])<br>h[i+1] = u[i] + MoE[i](PostNorm[i](u[i]))</div>

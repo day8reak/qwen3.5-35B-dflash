@@ -313,6 +313,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         from .target_weights import load_weights
         weights, result['target_weights'] = load_weights(record, weights, target, converters, target_config, source_root)
         from .candidates import adapt_qlinear, prepare_cache_inputs, validate_cache_source, check_graph, qlinear_ge_scales
+        from .cache_index_export import cache_ge_integer_mul
         cache_mode = cache_indexing if record['kind'] == 'cache' else 'kernel'
         if cache_mode != 'kernel':
             source = validate_cache_source(target)
@@ -343,9 +344,13 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         old = Path.cwd()
         try:
             os.chdir(root)
-            with torch.no_grad(), export_input_identity(inputs) as input_identity, qlinear_ge_scales(qlinear_fp16) as ge_adapter:
+            with (torch.no_grad(), export_input_identity(inputs) as input_identity,
+                  qlinear_ge_scales(qlinear_fp16) as ge_adapter,
+                  cache_ge_integer_mul(cache_mode == 'integer', record['attrs'].get('block_size')) as cache_adapter):
                 if ge_adapter is not None:
                     result['candidate']['ge_adapter'] = ge_adapter
+                if cache_adapter is not None:
+                    result['candidate']['ge_adapter'] = cache_adapter
                 torchair.dynamo_export(*inputs, model=model, export_path='weight', export_name='export', dynamic=False)
         finally:
             os.chdir(old)

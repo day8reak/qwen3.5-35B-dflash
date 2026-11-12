@@ -1,6 +1,6 @@
 # Target 精度状态
 
-更新：2026-11-12。FP16 scale／Cache 索引候选批次共 46 图，最新 OMC 为 **42 COMPILED／4 FAILED**，42 个成功项已回传数值。38 个 QLinear 有 **36 项 relative-L2 <1%**，仅 L0 out_proj 的 Prefill／Decode 仍为 **1.3766%／1.7625%**。Cache 浮点控制组 Prefill K/V 零误差，Decode K/V 仍约 99.8%／99.7%；整数四图没有数值。
+更新：2026-11-12。FP16 scale／Cache 索引候选批次共 46 图，上一轮 OMC 为 **42 COMPILED／4 FAILED**，42 个成功项已回传数值。38 个 QLinear 有 **36 项 relative-L2 <1%**，仅 L0 out_proj 的 Prefill／Decode 仍为 **1.3766%／1.7625%**。Cache 浮点控制组 Prefill K/V 零误差，Decode K/V 仍约 99.8%／99.7%；整数四图没有数值。
 
 [交互结构图](assets/target-architecture-interactive.html)默认显示[候选 42 项 CSV](../specs/target-qlinear-cache-candidate-metrics-20261112.csv)，可切换[修改前 146 项基线](../specs/target-boundary-metrics-20261112.csv)。两批独立显示，未测节点保持灰色；导出的 SVG 标明批次。[算子族风险 CSV](../specs/target-operator-accuracy-risk.csv)逐行注明证据范围。relative_l2 是比值，乘 100 才是百分比；[旧静态 SVG](assets/target-architecture-accuracy.svg)为历史快照。
 
@@ -20,7 +20,7 @@
 
 ### 高危算子重点定位表
 
-下表汇总定位优先级：**QLinear／Cache 浮点项来自新候选，其余数值来自修改前基线**，不代表一次联合运行。数值行数量为“问题输出数／已测输出数”，C0 为“编译失败数／选中 case 数”，都不是整图内核数量。relative-L2 **统一为百分比**。
+下表汇总定位优先级：**QLinear／Cache 浮点项来自新候选，其余数值来自修改前基线**，不代表一次联合运行。数值行数量为“问题输出数／已测输出数”，C0 为“构建阻塞数／选中 case 数”，都不是整图内核数量。relative-L2 **统一为百分比**。
 
 | 优先级 | 算子／定位区域 | 异常范围与数量 | relative-L2 | 首先检查什么 | 对照与边界 |
 |---|---|---|---|---|---|
@@ -31,18 +31,22 @@
 | **P1** | **ChunkGatedDeltaRule：raw state** | L0–L2 Prefill，**3/3**，dtype 全不保持 | **12.10%～44.60%** | 比较写回前 raw state；核对实际输出 dtype、state 布局和累加精度，分开检查后续 FP16 转换 | 不用最终 writeback 零误差替代 raw state 验证，也不把全部误差归因于 dtype |
 | **P1** | **AdnFusedInferAttention** | L3 Prefill，**1/1** | **99.67%** | 核对 QKV/NZ 布局、mask/scale、有效长度、padding、block table，按 query 检查 | Decode **0.251%**；Prefill 目前只有一个已测输出，需控制变量复现 |
 | **P2** | **ChunkGatedDeltaRule：raw state dtype** | L0–L2 Decode，dtype **3/3** 不保持 | **0.065%～0.429%** | 核对参考与 OMC 实际输出 dtype、Cast 位置，以及多步状态反馈的误差变化 | 数值未超过 1%；与 Prefill 合计 6/6 raw state dtype 不保持，本轮候选未重测 |
-| **C0** | **Cache 整数索引子图** | Prefill／Decode K/V，**4/4** 编译失败 | **未执行** | 最新 Decode V 日志定位 INT32 FloorMod；已改整数乘减求余，需重导出 AIR 后整批编译 | 该日志的 Gather／FloorDiv 已通过；不把编译修复当成 Decode 精度修复 |
+| **C0** | **Cache 整数索引子图** | Prefill／Decode K/V，**4/4** AIR 检查失败 | **未执行** | 最新图为 INT32 Mul 输入、FP32 输出描述、Cast 回 INT32；已加入该乘法的局部 GE 元数据适配 | 保留 Gather／FloorMod／浮点路径检查；新 AIR、OMC 与精度均待验证 |
 | **C0** | **LinearAttentionConvstateUpdate** | L0–L2、两阶段、两个输出：**12 项无数值；此前小图编译失败** | **未执行** | 对照成功整图的 RefData、双输出/卷积消费者及 hybrid 路径，与小图 Data、单输出及 single 路径的差异 | 原 T64 整图编译成功；当前是小图构建阻塞，没有精度结论 |
 
 所有数值项使用各自捕获的 golden 输入，不能统一归因于上游 QKV 误差传播。表内是**重点定位边界，不是已经定责的内核 bug**；原始 `METRICS_RECORDED`／`FAILED` 状态保持不变。MoE 专家 `GroupedMatmulV555`、Router、共享专家和 LM head 尚无本批精度证据，继续列为待覆盖，不纳入已观察异常数量。
 
 AdnFusedInferAttention 的“27 个有效 token／64 个物理 token”目前只是来源未确认的例子，不能据此撤销 Prefill 99.67% 的记录。当前单模块工具要求编译输出与 golden 的 shape 一致，并检查回读字节数；不会按较短长度自动对齐。相同 numel 仍不能证明 NZ 排列一致，padding 是否影响全量误差也待验证。先用[只读 Attention 检查](target-layer-accuracy.md#attention-输出范围检查)核对产生指标的真实产物，再确定有效 query 区域；原全量指标保留。
 
+后续测试按用户确认仅保留全部 Cache 和明确 FAILED 项；当前候选批次因此缩为 [8 个 Cache 图](target-batch-rerun.md)。L0 out_proj 两项仍为 METRICS_RECORDED，不因图示 1% 阈值改判 FAILED，也不继续复跑。其他模块的旧指标仅作历史记录。
+
 ## QLinear 输入与权重检查
 
-[46 图候选批次](target-batch-rerun.md)的 38 个 QLinear 已全部编译并回传数值。候选实际转换 weight scale 常量为 FP16，前端保留 FP32 `[M,1]` per-token，只在 GE converter 边界 Reshape＋Cast 到 FP16 `[M]`。packed W4 排布保持原样。结果支持这项接口适配，仍不能只凭两个 scale 同改后的汇总定位单一根因。
+上一轮 46 图候选的 38 个 QLinear 已全部编译并回传数值。候选实际转换 weight scale 常量为 FP16，前端保留 FP32 `[M,1]` per-token，只在 GE converter 边界 Reshape＋Cast 到 FP16 `[M]`。packed W4 排布保持原样。结果支持这项接口适配，仍不能只凭两个 scale 同改后的汇总定位单一根因。
 
-Cache 浮点控制组的 Prefill／Decode 四图也已编译，原来的 Prefill 导出检查阻塞已越过。最新 Decode V 整数图依次通过 Cast、Gather、FloorDiv，失败在 **FloorMod Input[0] INT32**。测试候选已保留取行前 INT32 Cast，并用 `p - (p // 32) * 32` 求偏移；AIR 检查器会拒绝整数索引路径残留的 FloorMod。改写的主机等价性与实际 OMC 支持分别验证。
+Cache 浮点控制组的 Prefill／Decode 四图也已编译。整数版先遇到 INT64 Gather，再遇到 INT32 FloorMod；此前 Decode V 日志已通过取行前 Cast、Gather、FloorDiv。乘减求余后，最新 AIR 为 **42 EXPORTED／4 FAILED**，失败集中在整数四图的浮点路径检查。用户回传的 Mul 两输入均为 INT32，输出缺少 `_meta` 且描述为 FP32，后接 INT32 Cast；这证明导出描述不一致，不证明设备的实际计算类型。
+
+[官方 mul.Tensor 转换器](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/ge_converter/aten/mul.py)会在新建 Mul 后执行输出 dtype promotion，而[图规范化逻辑](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_ge_concrete_graph/fx2ge_converter.py)会把未定描述写成 FP32。这条路径与回传图一致；所选服务器安装版本仍以导出记录的源码哈希为准。`cache_index_export.py` 现在只对本候选的 INT32 向量乘标量 32 生成 typed Const／Mul，并在消费者建立之前设置来自 FX 操作数的元数据；其他签名拒绝，退出恢复注册。既不事后改 AIR 字段，也不放宽浮点路径检查。
 
 ### Target CPro 源码落点
 
@@ -52,7 +56,7 @@ Cache 浮点控制组的 Prefill／Decode 四图也已编译，原来的 Prefill
 |---|---|---|
 | `utils.py:replace_linear_to_QLinear` 的实际 QLinear 工厂 | 在 CPro W4 导出分支，把 `[K/256,N]` scale 数值转换为 FP16 contiguous buffer；forward 不再把它转回 FP32。保留 INT32 packed W4 | 38 项小图已测；L0 out_proj 尚有 1% 以上误差 |
 | 导出器选择的 `npu_quant_matmul` GE converter | 保留 PyTorch 前端 FP32 per-token；在 GE 转换边界 Reshape `[M]`＋Cast FP16，再交给原 converter | 直接在 forward 把 per-token 转 FP16 会触发已见的 FakeTensor 错误 |
-| `Qwen3_5MoeAttention.update` 的整数候选 | `position.to(INT32)` 放在取第 0 行之前；用整数商与乘减求余；页表也保持 INT32 | 非负位置且在 INT32／页表容量范围内；当前仅改小图候选，待 OMG 与整缓存数值验证 |
+| `Qwen3_5MoeAttention.update` 的整数候选与 GE 转换 | `position.to(INT32)` 放在取第 0 行之前；整数商与乘减求余；页表保持 INT32；Mul 必须在转换时获得 INT32 元数据 | 非负位置且在 INT32／页表容量范围内；当前仅改小图候选，待 AIR、OMG 与整缓存数值验证 |
 | `Qwen3_5MoeAttention.update` 的缓存对象 | 检查 `past_key_value.to(new_k.device)` 是否产生新对象；若发生拷贝，必须返回实际被写的缓存，并由调用者继续持有 | 原代码返回旧对象有条件性风险；本轮小图使用 clone 并返回同一 cache，不能把这行当成已确认的 Decode 根因 |
 
 **不能只改 CPro 文件中同名的 QLinear。** 保留的 `utils.py` 在文件头导入 NZ 模块的 `QLinear`，`quant_model_inplace → replace_linear_to_QLinear → QLinear` 才是实际实例化链；NZ forward 还显式执行 `self.scale.to(torch.float32)`。小图工具通过实际函数 globals 追踪工厂并仅修改被测实例。生产合入应限定 CPro 导出，避免同时改变 310P golden 路径；不能批量修改共用 NZ 类或把 MoE／LM head 当成本批已验证。
@@ -66,7 +70,7 @@ offset_in_block = position[0] - block_idx * self.block_size
 target_blocks = self.block_table.to(torch.int32)[:, block_idx].reshape(-1)
 ```
 
-对于已验证非负 INT32 位置，`block_idx * block_size <= position`，乘法不溢出且余数与 `%` 相等。该改写解决已见的 FloorMod 编译障碍；整数版尚无数值，不能据此承诺修复 Decode Cache。
+对于已验证非负 INT32 位置，`block_idx * block_size <= position`，乘法不溢出且余数与 `%` 相等。该表达式规避 FloorMod，但仅主机／FX 为 INT32 不足以证明导出正确，还必须配合上述 GE 适配与 AIR 检查。整数版尚无数值，不能据此承诺修复 Decode Cache。
 
 Decode Cache 下一步比较 **更新行** 与 **未写历史区**，同时核对输出绑定、输入复制和 CacheUpdate functional converter 是否完整保留历史。Prefill 通过而 Decode 整体 L2 接近 1，使历史区丢失值得优先检验，但汇总值尚不能证明它。源 `update()` 的 `.to()` 风险与小图 clone／functional 路径也须分开。
 
