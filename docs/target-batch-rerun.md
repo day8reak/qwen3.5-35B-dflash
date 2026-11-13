@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前停在整层 GDN 上板前的 FP32 状态接口检查：L0 Prefill 的 OMC 第 3 个输出实际声明为 FP16，设备未执行。按[第 7.4 节](#74-编译后-state-仍为-fp16只读定位)读取已有 AIR／IR／OMC 的状态链，暂不重导出或重编译。** ConvState→Conv2D 重复升维已修复；最新回传尚不足以确认六图全部编译成功。Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
+**整层 GDN 已确认 6/6 编译成功，但六图 state 输出 ABI 全部为 FP16，设备未执行。源 AIR／保留 dump 声明 FP32，最终 OMC 由 NPUCL 子图直接输出 FP16。当前执行[第 7.4 节末尾的安装实现核对](#74-编译后-state-仍为-fp16只读定位)，已有状态链不用重复检查，暂不重导出或重编译。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -562,9 +562,17 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 
 ### 7.4 编译后 state 仍为 FP16：只读定位
 
-最新错误为 `l00_c00_gdn_layer_all: compiled output 2 must remain float32, observed float16`。output 2 是第三个输出 recurrent_state_fp32，实际编译描述却是 FP16。失败阶段为 prepare，设备执行和数值验证均为 NOT_RUN。这说明至少 L0 Prefill 已生成可读取的 OMC，尚未取得六图完整编译状态。
+最初错误为 `l00_c00_gdn_layer_all: compiled output 2 must remain float32, observed float16`。随后六图状态链已全部回传：**L0–L2 Prefill／Decode 均 COMPILED，但第三个输出 recurrent_state_fp32 均实际声明为 FP16**。失败阶段为 prepare，设备执行和数值验证均为 NOT_RUN。
 
-源图适配声明 FP32 initial_state 和末态；该声明仍可能被目标形状／类型推导或后续转换改变。现在不能断言具体哪一层改变了类型，也不能仅据此断言算子完全不支持 FP32。保留现有类型门槛和模型，先查看状态生产者、Cast 以及编译中间图。
+| 阶段 | initial_state／输入 | last_recurrent_state／输出 |
+| --- | --- | --- |
+| 源 AIR 的 GDN 算子 | slot 5：FP32 | slot 1：FP32 |
+| 保留 dump 的 GDN 算子 | slot 5：FP32 | slot 1：FP32 |
+| 最终 NPUCL SubGraph_0 | arg1_1：FP16 | slot 0：FP16，直接接 NetOutput slot 2 |
+
+六图现象相同，chunk_size 分别为 Prefill 64／Decode 1。源图末态直接来自 ChunkGatedDeltaRule:1；最终 OMC 主图没有末端 Cast。可以确认 FP32 输出请求未保留到编译 ABI，但 dump 阶段未标明、NPUCL 内部不可见，尚不能定位具体类型推导／优化 pass 或证明内部累加 dtype。图输入从捕获的 FP16 状态进入，再由 WholeGDN 在图内转 FP32；所以 arg1_1 是 FP16 本身并不证明编译器把输入接口降成了 FP16。
+
+下面的状态链命令已经完成，保留用于查阅；当前直接运行本节末尾的安装实现核对。
 
 在存放当前 air／omc 的主机执行，沿用编译时的 DDK。此命令只读已有产物，输出固定 state-inspection 目录；不需要 HDC、runtime 配置或重新编译。
 
@@ -594,3 +602,62 @@ cat "$STATE_INSPECTION/state-summary.txt"
 目录已存在时先直接读取 state-summary.txt，不覆盖现有 AIR／OMC 或 execution。回传此摘要；详细描述与原始编译日志摘录保存在同目录 report.json。
 
 摘要列出六项实际编译状态，以及各阶段 NetOutput 槽位、ChunkGatedDeltaRule 输入输出和第三输出的反向连接。Cast 两端 dtype 分别记录；遇到 GraphOp 则保留其可见输入输出并停止推断内部算术。IR 子图的槽位不能直接等同于整层输出。缺少 IR 时报告可能为 PARTIAL，OMC 的可见类型证据仍有效；这不是新的编译或精度判定。末端补 FP16→FP32 Cast 无法恢复已损失的状态信息。
+
+**当前执行：核对安装实现的状态 ABI**
+
+2026-10-27 同 DDK 版本曾回传 GDN C++ 源码 SHA256 为 `01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a`，initial_state／last_recurrent_state 均直接绑定 half 缓冲区。该历史证据与本次 OMC 一致，但当前源码是否相同、是否被编译选中仍需分别确认。下面复用已有只读扫描器，输出当前 GDN 注册、状态指针片段和已保存的 OMG help 相关项；不导入 DDK Python 模块，也不执行工具链。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export OMC_BATCH="$BATCH_ROOT/omc"
+export PYTHONDONTWRITEBYTECODE=1
+: "${CPRO_DDK_ROOT:?请设置编译本批 OMC 的 DDK 根目录}"
+python - <<'PY'
+import json, os, re, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(os.environ["REPO_DIR"]) / "model"))
+from qwen35_moe_dflash.target.operator_inventory import ddk_inventory
+from qwen35_moe_dflash.graph.fused.bindings import _installed_fp16_state_evidence
+
+ddk = Path(os.environ["CPRO_DDK_ROOT"]).resolve()
+batch = Path(os.environ["OMC_BATCH"])
+compiled = json.loads((batch / "compile.json").read_text())
+scan = ddk_inventory(ddk)
+historical = "01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a"
+result = dict(ddk_root=str(ddk), compiled_ddk_id=compiled.get("ddk_id"),
+    scan={k: scan[k] for k in ("status", "limited", "partial_reasons", "missing_roots", "errors")},
+    gdn_declarations=[entry for kind in ("registrations", "python_registrations")
+                      for entry in scan[kind] if entry["family"] == "gdn"],
+    state_source_candidates=[], model_compilation="NOT_RUN", device_execution="NOT_RUN",
+    scope="INSTALLED_TEXT_CANDIDATES; COMPILED_KERNEL_SELECTION_AND_INTERNAL_PRECISION_UNVERIFIED")
+for match in scan["matches"]:
+    if "gdn" not in match["families"]:
+        continue
+    path = ddk / match["path"]
+    if path.name != "chunk_gated_delta_rule.cpp":
+        continue
+    item = dict(path=str(path), sha256=match["sha256"],
+                matches_historical_source=match["sha256"] == historical)
+    try:
+        item.update(status="DIRECT_HALF_STATE_BUFFERS", evidence=_installed_fp16_state_evidence(path))
+    except (OSError, ValueError) as exc:
+        item.update(status="REQUIRES_SOURCE_REVIEW", error=str(exc))
+    result["state_source_candidates"].append(item)
+help_path = batch / "models/l00_c00_gdn_layer_all/omc/help.log"
+if help_path.is_file():
+    lines = help_path.read_text(errors="replace").splitlines()
+    indices = {j for i, line in enumerate(lines)
+               if re.search(r"precision|dtype|data_type|output_type|keep.*type", line, re.I)
+               for j in range(max(0, i - 1), min(len(lines), i + 3))}
+    result["retained_help"] = dict(path=str(help_path),
+        lines=[dict(line=i + 1, text=lines[i]) for i in sorted(indices)])
+else:
+    result["retained_help"] = dict(path=str(help_path), status="ABSENT")
+print(json.dumps(result, indent=2, ensure_ascii=False))
+PY
+```
+
+回传上述输出即可。扫描未找到源码或词法检查未匹配，不等于算子没有 FP32 支持；若仍匹配历史 half 实现，下一步需要核对／更新目标 GDN 的状态类型注册、类型推导、实际读写及缓冲区大小，不能只改 Python 的 .float() 或 AIR 标签。保持同一输入、权重与 golden，待编译后的状态接口真正保留 FP32，再继续原六图精度流程。可见接口通过仍不替代内部累加和设备数值验证。
