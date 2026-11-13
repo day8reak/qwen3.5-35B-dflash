@@ -23,7 +23,7 @@
 <section class="card" id="accuracy-focus" aria-labelledby="accuracy-focus-title">
 <h2 id="accuracy-focus-title">Attention 独立参考验证通过；当前测试整层 GDN</h2>
 <p><strong>CPro Attention Prefill／Decode 对独立数学参考五项全部通过</strong>：relative-L2 分别为 <strong>0.11175% / 0.11438%</strong>，各自 10 次输出一致。原 Prefill captured golden 错误已确认：V cache 绝对值最大3.494140625，golden却出现1769，且588,094个元素超出V通道范围；CPro越界数为0。保留原捕获和诊断记录，Attention小图退出复跑。<a href="../target-accuracy-status.md#attention-独立参考验证">完整指标与证据</a></p>
-<p>GDN 及相邻独立边界 48 项五指标为 <strong>43 PASSED / 5 FAILED</strong>。失败均在 Prefill：L0/L1 core、L0–L2 raw state。当前执行整个 GatedDeltaNet 层 FP32 state <strong>六图、18 输出</strong>，复用已有捕获。<a href="../target-batch-rerun.md#7-后续整层-gdn-测试">当前执行命令</a></p>
+<p>GDN 及相邻独立边界 48 项五指标为 <strong>43 PASSED / 5 FAILED</strong>。失败均在 Prefill：L0/L1 core、L0–L2 raw state。用户已确认整个 GatedDeltaNet 层 FP32 state <strong>AIR 导出成功</strong>；下一步编译、上板和比较六图、18 输出。<a href="../target-batch-rerun.md#71-air-导出后编译与精度测试">AIR 导出后的执行命令</a></p>
 <p>RoPE Prefill／Decode × Q／K 共 4 张小图现已<strong>数值完全对齐，max_abs／relative-L2 均为 0</strong>；旋转的前 64 维与未旋转的后 192 维均一致，FP16 输出且重复稳定。有效改动是显式 FP32 旋转乘加、最后恢复输出类型；sin/cos 沿用捕获系数。原始 METRICS_RECORDED 保留，单列数值对齐结论。<a href="../target-accuracy-status.md">两项有效改动与最新结果</a></p>
 <p>最新 <strong>8 个 Cache 图均有数值</strong>：Prefill K/V × 浮点/整数 4/4 PASSED，Decode 4/4 FAILED。Decode K relative-L2 <strong>99.8086%</strong>、V <strong>99.6897%</strong>；两种索引在回传精度下相同，尚缺配对输出哈希。</p>
 <p>补充的 Decode V 明细：<strong>130,966 个不一致元素全部在 golden 相对输入未变化区，变化区不一致数为 0</strong>。最大误差位置 [0,0,0,6] 为实际 0、golden 3.494140625。该片段证实历史保留失败；未提供 case ID，不能直接归到两个索引版本的全部输出。</p>

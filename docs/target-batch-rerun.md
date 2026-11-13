@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**Attention 两图已对独立数学参考通过五项指标：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致。原 Prefill captured golden 错误已确认。当前从第 7 节执行六张整层 GDN FP32 state 图**，复用现有 capture；Attention、RoPE、Prefill Cache 不重复编译。完整结论与参考范围见[精度状态](target-accuracy-status.md#attention-独立参考验证)。本页保留 Attention 的准备与离线复核步骤，原 golden 文件不被覆盖。
+**整层 GDN AIR 已导出，当前从[第 7.1 节](#71-air-导出后编译与精度测试)开始编译、上板和比较六张图。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)，本页保留已有流程供复核。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -293,7 +293,7 @@ expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks
 
 ## 7. 后续整层 GDN 测试
 
-复用第 1.1 节的同一 golden-capture，另设 GDN 测试目录。在已跑通的 CPro AIR 导出环境执行下列命令，然后沿用第 3–5 节编译、执行、回收和比较。仅选择整层 GDN；已通过的 Attention 结果继续保留。新终端直接从本节开始，不需要重新执行第 1–2 节采集或 Attention 导出；跨主机时在各主机设置本节对应的本地路径。
+用户已确认本节 AIR 导出成功，接着执行[第 7.1 节](#71-air-导出后编译与精度测试)。下面的导出命令保留供复核：复用第 1.1 节的同一 golden-capture，在已跑通的 CPro AIR 导出环境生成六张整层 GDN 图。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
@@ -338,3 +338,99 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 ```
 
 应导出、编译各 6 张图，summary.csv 共 18 行。每个 case 同时返回 hidden、new_conv_state、recurrent_state_fp32 三个输出，按真实 dtype/bytes 拆分比较；不是三张独立边界图。末态数值与 FP32 ABI 均需核实，FP32 接口仍不证明内核内部累加精度。整层 GDN 通过后，再验证它与 Attention 在整图中的串联和状态反馈，并重建可信整图参考。
+
+### 7.1 AIR 导出后：编译与精度测试
+
+用户已确认整层 GDN AIR 导出成功。下面直接使用已有的 target/tests/gdn-layer/air，顺序为编译 → 上板 → 回收 → 比较，结果预期为六张图、18 个输出。无需重新采集或导出。
+
+**A. 在编译主机初始化路径**
+
+进入仓库，使用此前 Attention 编译成功的环境（custom_pypto）和同一 DDK。AI_RUN_DIR 指向存放这批 AIR 的运行目录，默认沿用仓库旁的运行目录。跨主机时复制整个 air 目录，包含 manifest、schema、输入和 golden。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export BATCH="$BATCH_ROOT/air"
+export OMC_BATCH="$BATCH_ROOT/omc"
+export PYTHONDONTWRITEBYTECODE=1
+: "${CPRO_DDK_ROOT:?请设置此前成功编译 Attention 的 DDK 根目录}"
+export CPRO_DDK_ID="${CPRO_DDK_ID:-100.520.020.010}"
+export TBE_DIAGNOSIS="${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+```
+
+**B. 编译这六张 GDN 图**
+
+```bash
+(
+set -e
+test -f "$BATCH/manifest.json"
+test -f "$TBE_DIAGNOSIS/report.json"
+test ! -e "$OMC_BATCH"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
+  --batch "$BATCH" --output "$OMC_BATCH" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile isolated-kirinx90 \
+  --tbe-diagnosis "$TBE_DIAGNOSIS" --use-origin-format
+)
+cat "$OMC_BATCH/compile.json"
+```
+
+预期 `COMPILED 6/6`。失败项看 `$OMC_BATCH/models/<case>/omc/compile.log`，保留现有 AIR；回传 `compile.json` 和失败日志即可继续定位。OMC 目录若已经存在，先查看其中 compile.json，不覆盖重编。跨主机上板时复制整个 BATCH_ROOT，保留 air／omc 相对位置；上板会读取两者。
+
+**C. 在上板主机执行**
+
+沿用此前 Attention 成功的 HDC、runtime.json 和 runner。在仓库目录执行；如果编译和上板是同一主机，继续使用当前环境。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+if test -f "${QWEN35_ENV_CONFIG:-$REPO_DIR/../qwen35-cpro.env}"; then
+  source "$REPO_DIR/targets/cpro/scripts/env.sh"
+fi
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export OMC_BATCH="$BATCH_ROOT/omc"
+export EXECUTION="$BATCH_ROOT/execution"
+export RECOVERY="$BATCH_ROOT/recovery"
+export COMPARISON="$BATCH_ROOT/comparison"
+export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+export HDC="${HDC:-hdc}"
+export PYTHONDONTWRITEBYTECODE=1
+(
+set -e
+: "${BIP:?沿用原 HDC 服务端 IP:端口}" "${SN:?沿用原设备序列号}"
+: "${CPRO_DDK_ROOT:?请设置上板主机实际 DDK 根目录}"
+test -f "$RUNTIME_CONFIG"
+test -f "$OMC_BATCH/compile.json"
+test -f "$BATCH_ROOT/air/manifest.json"
+python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$OMC_BATCH" --config "$RUNTIME_CONFIG" \
+  --ddk-root "$CPRO_DDK_ROOT" --output "$EXECUTION" --apply
+)
+```
+
+每图预热 3 次、采样 10 次，每次恢复捕获输入。部分图编译失败时只执行已编译项，缺项不算通过。启动后使用下面的 recover 回收同一个请求，不重复 apply。
+
+**D. 回收结果**
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$EXECUTION" --output "$RECOVERY"
+```
+
+若返回 PENDING，稍后重复本条 recover。回收完成并取得 native 输出后进入比较；数值失败导致回收非零时，仍可使用已回收输出进行五项比较。
+
+**E. 比较三个输出**
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
+  --fixture "$EXECUTION/fixture" --native "$RECOVERY/native" \
+  --output "$COMPARISON"
+cat "$COMPARISON/summary.csv"
+```
+
+完整结果应有 18 行：L0–L2 × Prefill／Decode × hidden／new_conv_state／recurrent_state_fp32。五项仍按 cosine >0.99、relative-L2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1，且检查状态 dtype 与重复稳定性。
+
+回传 `gdn-layer/comparison/summary.csv` 和 `report.json`。这些是整层串联结果，仍未测试跨调用的连续状态反馈。
