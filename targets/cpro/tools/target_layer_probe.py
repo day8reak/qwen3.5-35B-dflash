@@ -64,7 +64,7 @@ def main():
     s.add_argument('--output', required=True, help='fresh inspection directory, separate from AIR/OMC')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'), required=not bool(os.environ.get('CPRO_DDK_ROOT')))
     s.add_argument('--fixture', help='optional prepared execution fixture directory containing manifest.json and per-case inputs')
-    s = sub.add_parser('inspect-attention', help='read attention extents, source length constants and per-head/Q-block errors; no compile or device run')
+    s = sub.add_parser('inspect-attention', help='read attention extents, source lengths and per-head/block/row errors; no compile or device run')
     s.add_argument('--batch', required=True, help='OMC batch that produced the attention results')
     s.add_argument('--fixture', required=True, help='matching execution/fixture directory')
     s.add_argument('--native', required=True, help='matching recovered native directory')

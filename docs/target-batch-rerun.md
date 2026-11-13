@@ -1,6 +1,6 @@
 # Target：Attention 定位与整层 GatedDeltaNet 测试
 
-旧 target-layer-accuracy 产物目录及 golden capture 已删除。用户已回传：换回原 310P 参考环境后重新采集成功，**现在从第 2 节导出 AIR 继续**，复用新 capture。本页保留从零采集步骤，所有新产物放在 target/tests 下。当前只导出、编译 L3 Prefill／Decode 两张 Attention 图，保持算子实现和原数值调用不变，回收后按 head／16 行 Q 块查看误差。采集成功不代表 Attention 的 CPro 精度通过。
+L3 Prefill／Decode 两张 Attention 图已回传逐 head 检查：Prefill 各 head relative-L2 为 72.71%–99.84%，Decode 为 0.10%–0.64%，两图均为十次相同输出。**当前从第 5.1 节重做离线检查继续**，复用已有 AIR、OMC、fixture 和 native dump。下一步定位 golden 的零行与最大误差两侧数值，保持算子和数值调用不变。本页同时保留从零采集、导出与执行步骤；新 capture 已在原 310P 环境采集成功。
 
 采集仍覆盖四层，供 Attention 和后续整层 GDN 共用。已实现的测试范围如下；本页默认命令只选择 Attention：
 
@@ -15,7 +15,7 @@ GDN 包含五个 QLinear、ConvState、卷积、SiLU、g/beta、Q/K 重复、Chu
 
 Attention 沿用捕获 Q/K/V、mask、block_table 和长度参数，新增 Q 轴、Q 长度常量字节与 allQLen 传递检查。当前范围为 B=1 静态图。Q 为 `[B, heads×D/16, S, 16]`，序列轴是 2；旧捕获 Prefill S256、Decode S1。源码全图 S64 对应 `[1,256,64,16]`，旧捕获小图对应 `[1,256,256,16]`；两者均没有把 Prefill Q 变成 1。新采集的 S 以实际 manifest 为准，不为了复现旧长度补齐或截断输入。`allQLen` 单独记录，不能强制等于当前 Q 长度；它在用户提供的内核中控制 KV 块循环。实际 tiling 和完整生产图仍需编译产物核对。
 
-每张图每次都使用捕获输入；此轮包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。旧 48 个独立边界已回传 43 PASS / 5 FAIL，本组是新实验，尚无设备结果。已通过的独立 QLinear、RoPE、Prefill Cache 不单独复跑。
+每张图每次都使用捕获输入；整层 GDN 包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。48 个 GDN 独立边界已回传 43 PASS / 5 FAIL，整层 GDN 尚待执行。Attention 已有上述检查结果，五项比较表尚待回传。已通过的独立 QLinear、RoPE、Prefill Cache 不单独复跑。
 
 ## 1. 初始化路径
 
@@ -248,9 +248,12 @@ Attention 的 `export.json.attention_contract` 会记录 Q shape、actual_seq_le
 
 ### 5.1 Attention 输出检查
 
-对本轮新产物执行以下只读检查。它检查源 AIR 的长度常量、各 head 和每 16 行 Q 的非零数、max_abs、relative_l2，所有元素参与统计。重复调用只有输出 SHA256 相同才合并统计。原始 capture 无需带到此主机，但 BATCH_ROOT/air 中的源 AIR、air-schema.pb、golden 仍需保留。
+对现有产物执行离线检查。它检查源 AIR 的长度常量，以及各 head、每 16 行 Q 块和每行 Q 的数值；输出零行、整行数值相等的位置、两侧绝对值最大值、最大差值处的两侧数值与 query/channel 坐标。所有元素参与统计，坐标从 0 开始，按源码 packed 布局解释。重复调用只有输出 SHA256 相同才合并。原始 capture 无需带到此主机，但 BATCH_ROOT/air 中的源 AIR、air-schema.pb、golden 仍需保留。
+
+先同步仓库 main。以下重建已结束的 inspection 报告目录；其他测试产物继续复用，不执行导出、编译或上板：
 
 ```bash
+rm -rf -- "${BATCH_ROOT:?}/inspection"
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-attention \
   --batch "$OMC_BATCH" \
   --fixture "$EXECUTION/fixture" --native "$RECOVERY/native" \
@@ -260,7 +263,11 @@ cat "$BATCH_ROOT/inspection/summary.txt"
 cat "$BATCH_ROOT/inspection/head-summary.csv"
 ```
 
-回传 comparison/summary.csv、inspection/summary.txt 和 inspection/head-summary.csv。report.json 和 query-blocks.csv 留在 inspection 内。若 Prefill 只有 head0 接近 golden、其余 head 全零而 golden 非零，支持任务数不足的怀疑；若各 head 都有结果，则再看逐块误差。零输出也可能来自计算或写回，不能直接认定任务未调度。expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks 保留 null；工具未读取实际 tiling，也未独立证明设备输出布局。
+回传 comparison/summary.csv、inspection/summary.txt 和 inspection/head-summary.csv；逐行明细在 query-rows.csv，逐块明细在 query-blocks.csv。summary 的 row_locations 指出每个 head 的全零行和整行数值相等位置。
+
+当前证据：Prefill 各 head 均有输出，没有出现“只有 head0 有结果”的模式；golden 每个 head 恰有 4096 个零，数量相当于 16 行，但尚未确定是否集中在同一块。head6 最大差值为 1766.9140625，尚不知道哪一侧数值较大。先用新统计区分整块零值、分散零值和误差位置，再决定是否需要独立 Q/K/V+mask 数学参考。不得将这些零直接视为 padding 后裁掉，也不能据此断言 golden 错误。
+
+expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks 保留 null；工具未读取实际 tiling，也未独立证明设备输出布局。非零输出不能证明完整调度，Decode 逐 head L2 较小也不代替五项整输出验收。
 
 ## 6. Attention Prefill 调用合同
 

@@ -93,26 +93,41 @@ def output_pattern(actual, golden, contract):
         return value.reshape(b, heads, dim//16, seq, 16).transpose(0, 1, 3, 2, 4).reshape(b, heads, seq, dim)
     av, gv = view(actual), view(golden)
 
-    def stats(a, g):
+    def stats(a, g, query_start=0):
         af, gf = a.astype(np.float64), g.astype(np.float64)
         finite = bool(np.isfinite(af).all() and np.isfinite(gf).all())
         delta = af-gf
         gn, en = (float(np.linalg.norm(gf)), float(np.linalg.norm(delta))) if finite else (None, None)
+        coord = np.unravel_index(np.abs(delta).argmax(), delta.shape) if finite else None
         return dict(elements=a.size, actual_nonzero=int(np.count_nonzero(a)), golden_nonzero=int(np.count_nonzero(g)),
             exact_elements=int(np.count_nonzero(a == g)), nonfinite_actual=int((~np.isfinite(a)).sum()),
             nonfinite_golden=int((~np.isfinite(g)).sum()), max_abs=float(np.abs(delta).max()) if finite else None,
-            relative_l2=en/gn if finite and gn else 0.0 if finite and en == 0 else None)
+            relative_l2=en/gn if finite and gn else 0.0 if finite and en == 0 else None,
+            actual_abs_max=float(np.abs(af).max()) if np.isfinite(af).all() else None,
+            golden_abs_max=float(np.abs(gf).max()) if np.isfinite(gf).all() else None,
+            max_error_query=query_start+int(coord[0]) if coord is not None else None,
+            max_error_channel=int(coord[1]) if coord is not None else None,
+            actual_at_max_error=float(af[coord]) if coord is not None else None,
+            golden_at_max_error=float(gf[coord]) if coord is not None else None)
 
-    rows, blocks = [], []
+    rows, blocks, queries, locations = [], [], [], []
     step = contract['query_seq_step']
     for head in range(heads):
         rows.append(dict(head=head, **stats(av[0,head], gv[0,head])))
+        locations.append(dict(head=head,
+            zero_actual_query_rows=np.flatnonzero(np.all(av[0,head] == 0, axis=1)).tolist(),
+            zero_golden_query_rows=np.flatnonzero(np.all(gv[0,head] == 0, axis=1)).tolist(),
+            equal_value_query_rows=np.flatnonzero(np.all(av[0,head] == gv[0,head], axis=1)).tolist()))
         for start in range(0,seq,step):
             stop = min(seq,start+step)
             blocks.append(dict(head=head, query_start=start, query_stop=stop,
-                **stats(av[0,head,start:stop], gv[0,head,start:stop])))
+                **stats(av[0,head,start:stop], gv[0,head,start:stop], start)))
+        for query in range(seq):
+            queries.append(dict(head=head, query=query,
+                **stats(av[0,head,query:query+1], gv[0,head,query:query+1], query)))
     return dict(scope='SOURCE_PACKED_HEAD_AND_QUERY_BLOCK_VIEW; NO_TILING_EXECUTION_PROOF',
-        heads=rows, query_blocks=blocks,
+        coordinate_basis='LOGICAL_QUERY_AND_CHANNEL_WITHIN_HEAD; ZERO_BASED; SOURCE_PACKED_LAYOUT',
+        heads=rows, query_blocks=blocks, query_rows=queries, row_locations=locations,
         zero_actual_nonzero_golden_heads=[r['head'] for r in rows if r['actual_nonzero']==0 and r['golden_nonzero']>0])
 
 
@@ -287,10 +302,13 @@ def inspect_attention(batch, fixture, native, output, capture=None):
         report['status'] = 'PARTIAL'
     csv_paths = {}
     for group, filename, prefix in (('heads','head-summary.csv',['head']),
-                                    ('query_blocks','query-blocks.csv',['head','query_start','query_stop'])):
+                                    ('query_blocks','query-blocks.csv',['head','query_start','query_stop']),
+                                    ('query_rows','query-rows.csv',['head','query'])):
         path = out/filename
         fields = ['case','phase','invocations'] + prefix + ['elements','actual_nonzero','golden_nonzero',
-            'exact_elements','nonfinite_actual','nonfinite_golden','max_abs','relative_l2']
+            'exact_elements','nonfinite_actual','nonfinite_golden','max_abs','relative_l2',
+            'actual_abs_max','golden_abs_max','max_error_query','max_error_channel',
+            'actual_at_max_error','golden_at_max_error']
         with path.open('w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=fields)
             writer.writeheader()
@@ -304,6 +322,7 @@ def inspect_attention(batch, fixture, native, output, capture=None):
     save_json(out/'report.json', report)
     lines = ['Read-only attention extent inspection; no export, compilation or device execution.',
         'No cropping, padding or new accuracy verdict. Head/block statistics use the SOURCE packed layout.',
+        'Query/channel coordinates are zero-based within each head; per-row statistics cover every element.',
         'Zero output does not prove a task was skipped. Actual tiling and device layout remain unverified.',
         'Compiled descriptors below are retained fixture records, not a new decode of OMC.',
         'Length attributes/controls are evidence only; no valid-query mask inferred.']
@@ -328,7 +347,11 @@ def inspect_attention(batch, fixture, native, output, capture=None):
                 '; zero_actual_nonzero_golden_heads=' + str(pattern['zero_actual_nonzero_golden_heads']))
             for head in pattern['heads']:
                 lines.append(f'head {head["head"]}: actual_nonzero={head["actual_nonzero"]}/{head["elements"]} '
-                    f'golden_nonzero={head["golden_nonzero"]}/{head["elements"]} relative_l2={head["relative_l2"]}')
+                    f'golden_nonzero={head["golden_nonzero"]}/{head["elements"]} relative_l2={head["relative_l2"]} '
+                    f'actual_abs_max={head["actual_abs_max"]} golden_abs_max={head["golden_abs_max"]} '
+                    f'max_error_at_q_channel=[{head["max_error_query"]},{head["max_error_channel"]}] '
+                    f'actual_at_max_error={head["actual_at_max_error"]} golden_at_max_error={head["golden_at_max_error"]}')
+                lines.append('row_locations=' + json.dumps(pattern['row_locations'][head['head']]))
         lines.extend('ERROR: ' + e for e in row['errors'])
     (out/'summary.txt').write_text('\n'.join(lines)+'\n')
     return dict(status=report['status'], cases=len(selected), report=str(out/'report.json'),
