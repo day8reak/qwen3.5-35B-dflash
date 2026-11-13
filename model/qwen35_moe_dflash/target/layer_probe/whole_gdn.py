@@ -78,11 +78,14 @@ def adapt_forward(owner):
     initial = [k for k in op.keywords if k.arg == 'initial_state']
     if len(initial) != 1 or ast.unparse(initial[0].value) != 'recurrent_state':
         raise ValueError('review changed GDN initial_state expression')
-    # Existing tested Conv1d -> explicit singleton-height Conv2d lowering.
+    # Source ConvState returns NCL, but this DDK infers NC1L for its padded
+    # output. Reshape fixes the Conv2D rank in either case; unsqueeze would
+    # turn the target's already-4D output into a rejected 5D tensor.
     conv = assignment(tree, 'conv_out')
     if ast.unparse(conv.value) != 'F.conv1d(padded, self.conv1d.weight, groups=self.conv_dim)':
         raise ValueError('review changed whole GDN convolution')
-    conv.value = ast.parse('F.conv2d(padded.unsqueeze(2), self.conv1d.weight.unsqueeze(2), '
+    conv.value = ast.parse('F.conv2d(padded.reshape(batch_size, self.conv_dim, 1, -1), '
+                           'self.conv1d.weight.unsqueeze(2), '
                            'groups=self.conv_dim).squeeze(2)', mode='eval').body
     returns = [n for n in tree.body if isinstance(n, ast.Return)]
     if len(returns) != 1 or ast.unparse(returns[0].value) != '(output, past_key_values)':
@@ -92,7 +95,10 @@ def adapt_forward(owner):
     namespace = dict(owner.__globals__)
     exec(compile(module, evidence['file'], 'exec'), namespace)
     evidence.update(adaptations=['FP32_RECURRENT_INPUT_AND_WRITEBACK', 'EXPLICIT_CONV2D_SINGLETON_HEIGHT',
+                                 'CONVSTATE_PADDED_RESHAPE_NC1L',
                                  'RETURN_HIDDEN_CONV_STATE_RECURRENT_STATE'],
+                    conv_input=dict(operation='reshape', shape='[batch_size, conv_dim, 1, -1]',
+                                    preserves='ELEMENT_ORDER_AND_DTYPE'),
                     arithmetic_precision='INTERNAL_KERNEL_ACCUMULATION_NOT_ESTABLISHED')
     return namespace[tree.name], evidence
 

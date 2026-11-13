@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**整层 GDN AIR 已导出；最新 OMC 编译为 0/6 成功，六项均在 OMG 阶段返回 1。当前读取[第 7.2 节的失败日志](#72-gdn-六图编译失败读取已有日志)，暂不进入上板。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)，本页保留已有流程供复核。
+**整层 GDN 六图编译失败的首个已定位问题已修复：ConvState 输出在 DDK 中已是四维，旧适配再次 Unsqueeze 变成五维，导致 Conv2D 校验失败。当前按[第 7.3 节](#73-修复-convstate--conv2d-的重复升维)重导出并编译六图。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -293,7 +293,7 @@ expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks
 
 ## 7. 后续整层 GDN 测试
 
-用户已确认本节 AIR 导出成功，接着执行[第 7.1 节](#71-air-导出后编译与精度测试)。下面的导出命令保留供复核：复用第 1.1 节的同一 golden-capture，在已跑通的 CPro AIR 导出环境生成六张整层 GDN 图。
+首次 AIR 导出已成功，随后编译暴露重复升维问题；本次按[第 7.3 节](#73-修复-convstate--conv2d-的重复升维)更新并重试。下面是通用导出命令：复用第 1.1 节的同一 golden-capture，在已跑通的 CPro AIR 导出环境生成六张整层 GDN 图。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
@@ -458,4 +458,104 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
 cat "$BATCH_ROOT/compile-inspection/summary.txt"
 ```
 
-回传两份日志末尾，或 compile-inspection/summary.txt 中的错误片段；完整上下文在该目录 report.json 的 cases/<case>/log/diagnostic_excerpt。检查状态 PARTIAL 也可能表示缺少 IR，不等于再次编译失败。定位具体报错后再决定修改调用、状态接口或编译适配；现阶段保留 AIR 与失败 OMC 目录，不将 FP32 改回 FP16，也不重复全批编译。
+两份日志已回传，Conv2D 输入五维问题与重试命令见第 7.3 节。后续若仍有编译失败，可用本节只读方法提取新日志。完整上下文在 report.json 的 cases/<case>/log/diagnostic_excerpt；检查状态 PARTIAL 也可能表示缺少 IR，不等于再次编译失败。
+
+### 7.3 修复 ConvState → Conv2D 的重复升维
+
+L0 Prefill／Decode 日志已确定同一个失败点：DDK 将 ConvState 的 padded 输出推导为四维，旧整层适配又执行 unsqueeze(2)，Conv2D 因输入五维而拒绝。六图都编译失败，但目前具体错误日志覆盖的是 L0 两图；其余四图使用相同适配，随本次一起修复重测。
+
+| 阶段 | DDK padded 输出 | 旧 Unsqueeze 后 | 修复后 Conv2D 输入 |
+| --- | --- | --- | --- |
+| Prefill T256 | [1,8192,1,259] | [1,8192,1,1,259] | [1,8192,1,259] |
+| Decode T1 | [1,8192,1,4] | [1,8192,1,1,4] | [1,8192,1,4] |
+
+whole_gdn.py 已将 padded.unsqueeze(2) 改为 padded.reshape(batch_size, self.conv_dim, 1, -1)，固定四维形状，不增加数值运算；权重仍从 [C,1,4] 变为 [C,1,1,4]。原始 Conv1d 函数、dtype 和分组语义保持。initial_state／last_recurrent_state／writeback 继续 FP32。
+
+这两份日志中 QuantBatchMatmulV4444 和 ConvState 均已通过 infershape；UnknownShapeFormat 与 ImportWarning 没有在该处终止流程。终止点是 Convolution 输入 rank=5 校验，不据此判断后续 FP32 GDN 内核是否可编译。
+
+本地检查已复现旧报错，并验证：源函数适配、3D/4D padded 等价、FP16/FP32、B1 T1/T256 与 B2 T17、C8192/K4 的卷积数值一致，以及导出计算图保留四维 Reshape。这里的导出检查是 CPU 图检查，CPro AIR/OMC 重试与端侧数值仍待执行。
+
+**A. 更新并腾出本组失败的输出槽位**
+
+旧 AIR 中已有 Unsqueeze，不能直接复用重编。导出主机和编译主机若分开，分别在各自仓库执行下面一段；同一主机只执行一次。它仅处理本组 gdn-layer/air 与 omc，先保留编译摘要和错误上下文到 compile-failure.json，再清理这些可重建产物。golden-capture、其他模块与私有源码保留。存在 execution/recovery 或不是本组六图时会停止。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export PYTHONDONTWRITEBYTECODE=1
+PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python - "$BATCH_ROOT" <<'PY_RESET'
+import json, os, shutil, sys
+from pathlib import Path
+from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
+
+root = Path(sys.argv[1])
+run = Path(os.environ['AI_RUN_DIR']).resolve()
+if root.is_symlink() or root.resolve() != run/'target/tests/gdn-layer':
+    raise SystemExit('只处理本次 run 的固定 gdn-layer 目录')
+if any((root/n).exists() or (root/n).is_symlink() for n in ('execution', 'recovery')):
+    raise SystemExit('已有执行/回收记录，先核对任务状态，不清理')
+expected = {f'l{layer:02d}_c{call:02d}_gdn_layer_all'
+            for layer in range(3) for call in range(2)}
+for name in ('air', 'omc'):
+    p = root/name
+    if p.is_symlink():
+        raise SystemExit('不清理符号链接: ' + str(p))
+    if p.exists():
+        m = json.loads((p/'manifest.json').read_text())
+        if (m.get('artifact_kind') != 'qwen35-target-cpro-boundary-probe-v1'
+                or m.get('status') not in ('EXPORTED', 'PARTIAL') or len(m['cases']) != 6
+                or {c['id'] for c in m['cases']} != expected
+                or any(c.get('kind') != 'gdn_layer' or c.get('status') not in ('EXPORTED', 'FAILED')
+                       for c in m['cases'])):
+            raise SystemExit('目录不是预期的六张整层 GDN 图')
+omc = root/'omc'
+if omc.exists():
+    report = json.loads((omc/'compile.json').read_text())
+    if (report.get('status') != 'PARTIAL' or set(report['cases']) != expected
+            or any(c['status'] != 'FAILED' for c in report['cases'].values())):
+        raise SystemExit('仅清理本次已结束且六图全失败的 OMC 批次')
+    saved = {'compile': report, 'diagnostics': {
+        name: compilation_diagnostics(omc/'models'/name/'omc')
+        for name in sorted(expected)}}
+    (root/'compile-failure.json').write_text(
+        json.dumps(saved, ensure_ascii=False, indent=2) + '\n')
+for name in ('air', 'omc'):
+    p = root/name
+    if p.exists():
+        shutil.rmtree(p)
+print('本组旧 AIR/失败 OMC 槽位已清理；现可重导出。')
+PY_RESET
+```
+
+**B. 在 CPro AIR 导出环境重新导出六图**
+
+继续使用此前已成功导出的 qwen3_5_cpro 环境、原 TARGET_SOURCE/TARGET_CONFIG 和同一 golden capture：
+
+```bash
+: "${TARGET_SOURCE:?原 Target 源码根目录}"
+: "${TARGET_CONFIG:?原 Target 权重 YAML 路径}"
+export GOLDEN_CAPTURE="${GOLDEN_CAPTURE:-$AI_RUN_DIR/target/tests/golden-capture}"
+export BATCH="$BATCH_ROOT/air"
+export CPRO_EXPORT_SCRIPT="${CPRO_EXPORT_SCRIPT:-$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py}"
+(
+set -e
+test -f "$GOLDEN_CAPTURE/manifest.json"
+test -f "$TARGET_CONFIG"
+test -f "$CPRO_EXPORT_SCRIPT"
+test ! -e "$BATCH"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
+  --capture "$GOLDEN_CAPTURE" \
+  --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
+  --converter-script "$CPRO_EXPORT_SCRIPT" \
+  --points gdn_layer --qlinear-scales fp16 --gdn-state-dtype float32 \
+  --phases prefill decode --output "$BATCH"
+)
+```
+
+预期 EXPORTED 6/6；每图 export.json 的 source_contract/source/adaptations 应含 CONVSTATE_PADDED_RESHAPE_NC1L。跨主机时复制整个新 air 目录到编译主机对应的 gdn-layer/air。
+
+**C. 编译和验证**
+
+回到第 7.1 节 A、B，沿用同一 DDK、TBE 兼容与 origin-format 设置，编译这六张新 AIR。成功后再执行 C–E 上板、回收和比较。若出现新的失败节点，回传新 compile.log；本次修复不预先代表整层已经编译或精度通过。
