@@ -1,6 +1,7 @@
 """Sequential export/compile, exact compiled binding, and batch numerical reports."""
 from __future__ import annotations
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -27,6 +28,9 @@ POINT_ORDER = {name: i for i, name in enumerate((
 
 
 def export_variants(region, cache_indexing):
+    if region['kind'] == 'gdn_layer':
+        yield 'kernel', '', None, dict(name='whole_layer')
+        return
     modes = ('float', 'integer') if region['kind'] == 'cache' and cache_indexing == 'both' else (
         cache_indexing if region['kind'] == 'cache' else 'kernel',)
     for mode in modes:
@@ -37,9 +41,9 @@ def export_variants(region, cache_indexing):
 
 def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None, phases=None,
                  timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel',
-                 rope_precision='source'):
+                 rope_precision='source', gdn_state_dtype='source'):
     if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both')
-            or rope_precision not in ('source', 'fp32')):
+            or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float32')):
         raise ValueError('unknown module candidate')
     if phases is not None and (not phases or set(phases) - {'prefill', 'decode'}):
         raise ValueError('select prefill and/or decode phases')
@@ -47,7 +51,11 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     source = json.loads((capture/'manifest.json').read_text())
     if source.get('artifact_kind') != KIND or source.get('status') != 'CAPTURED':
         raise ValueError('requires completed 310P capture')
-    regions = [r for r in source['regions'] if (not points or r['point'] in points)
+    available_regions = list(source['regions'])
+    if points and 'gdn_layer' in points or kinds and 'gdn_layer' in kinds:
+        from .whole_gdn import assemble
+        available_regions += assemble(source)
+    regions = [r for r in available_regions if (not points or r['point'] in points)
                and (not kinds or r['kind'] in kinds)
                and (phases is None or r['phase'] in phases)]
     if not regions:
@@ -58,6 +66,9 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         raise ValueError('requested phase is missing from selected captured regions')
     if any('weights' in r for r in regions) and not target_config:
         raise ValueError('weighted regions require --target-config with original model_file and quanted_pth')
+    if any(r['kind'] == 'gdn_layer' for r in regions) and (
+            gdn_state_dtype != 'float32' or qlinear_scales != 'fp16' or not target_config):
+        raise ValueError('whole GDN requires --gdn-state-dtype float32 --qlinear-scales fp16 --target-config')
     root = new_output(output)
     report = dict(artifact_kind=KIND, status='EXPORTING', cases=[],
         capture_sha256=sha(capture/'manifest.json'), golden_source=source['reference'],
@@ -68,13 +79,13 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         reference_baseline_equivalence=source.get('quant_matmul', {}).get('baseline_equivalence', 'ORIGINAL_CALL_UNCHANGED'),
         reference_model_layers=source.get('placement', {}).get('executed_num_hidden_layers'))
     report['candidate_options'] = dict(qlinear_scales=qlinear_scales, cache_indexing=cache_indexing,
-        rope_precision=rope_precision, reference='ORIGINAL_CAPTURE_UNCHANGED')
+        rope_precision=rope_precision, gdn_state_dtype=gdn_state_dtype, reference='ORIGINAL_CAPTURE_UNCHANGED')
     report['selected_phases'] = sorted({r['phase'] for r in regions})
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
     for region in regions:
         for mode, suffix, index, tensor in export_variants(region, cache_indexing):
-            name = region['id'] + suffix + f'_o{index}'
+            name = region['id'] + suffix + (f'_o{index}' if index is not None else '_all')
             folder = root/'models'/name
             folder.parent.mkdir(exist_ok=True)
             row = dict(id=name, region=region['id'], layer=region['layer'], call=region['call'],
@@ -83,9 +94,15 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
             report['cases'].append(row)
             save_json(root/'manifest.json', report)
             argv = [sys.executable, str(tool), 'export-one', '--capture', str(capture),
-                '--region', region['id'], '--output-index', str(index), '--output', str(folder),
+                '--region', region['id'], '--output', str(folder),
                 '--source-root', str(Path(source_root).resolve()),
                 '--converter-script', str(Path(converter_script).resolve())]
+            if index is not None:
+                argv += ['--output-index', str(index)]
+            else:
+                row['output_names'] = [s['name'] for s in region['outputs']]
+            if gdn_state_dtype != 'source':
+                argv += ['--gdn-state-dtype', gdn_state_dtype]
             if qlinear_scales != 'source':
                 argv += ['--qlinear-scales', qlinear_scales]
             if mode != 'kernel':
@@ -110,7 +127,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                     raise ValueError('export receipt differs from captured golden')
                 if receipt.get('source_contract', {}).get('status') != 'BOUND_TO_SOURCE':
                     raise ValueError('export worker did not bind this region to original Target source')
-                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or mode != 'kernel'
+                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or region['kind'] == 'gdn_layer' or mode != 'kernel'
                         or (region['kind'] == 'rope' and rope_precision == 'fp32')):
                     if not receipt.get('candidate') or receipt.get('candidate_graph_check', {}).get('status') != 'PASSED':
                         raise ValueError('candidate export is missing its source AIR checks')
@@ -200,7 +217,7 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
     return report
 
 
-def bind_compiled(document, source_inputs, golden, enums):
+def bind_compiled(document, source_inputs, golden, enums, output_contract=None):
     from qwen35_moe_dflash.draft.compile_precision import _observed_desc
     graphs = document.get('graph', [])
     if len(graphs) != 1:
@@ -231,16 +248,27 @@ def bind_compiled(document, source_inputs, golden, enums):
                              f'expected={json.dumps(expected)}; observed={json.dumps(observed)}')
         inputs.append(dict(spec, index=slot))
     nets = [n for n in nodes if n['type'] == 'NetOutput']
-    if len(nets) != 1 or len(nets[0].get('input_desc', [])) != 1:
-        raise ValueError('region must have exactly one compiled output; never guess K/V order')
-    observed = _observed_desc(nets[0]['input_desc'][0], enums)
-    if observed['shape'] != golden['shape'] or observed['dtype'] not in DTYPES:
-        raise ValueError('compiled output shape or dtype is incompatible with captured boundary')
-    output = dict(golden, index=0, dtype=observed['dtype'], golden_dtype=golden['dtype'],
-                  bytes=math.prod(observed['shape'])*np.dtype(DTYPES[observed['dtype']]).itemsize)
-    return dict(inputs=inputs, outputs=[output], source_dtype_preserved=observed['dtype'] == golden['dtype'],
+    goldens = golden if isinstance(golden, list) else [golden]
+    if len(goldens) > 1 and (not output_contract or output_contract.get('order') != [g['name'] for g in goldens]
+            or len([e for e in output_contract.get('source_edges', []) if not e.endswith(':-1')]) != len(goldens)):
+        raise ValueError('multi-output graph requires its explicit source tuple/NetOutput order')
+    if len(nets) != 1 or len(nets[0].get('input_desc', [])) != len(goldens):
+        raise ValueError('compiled output count differs from explicit captured output order')
+    outputs = []
+    for index, item in enumerate(goldens):
+        observed = _observed_desc(nets[0]['input_desc'][index], enums)
+        if observed['shape'] != item['shape'] or observed['dtype'] not in DTYPES:
+            raise ValueError(f'compiled output {index} shape or dtype is incompatible with captured boundary')
+        required = (output_contract or {}).get('required_dtypes', {})
+        dtype = required.get(str(index), required.get(index))
+        if dtype is not None and observed['dtype'] != dtype:
+            raise ValueError(f'compiled output {index} must remain {dtype}, observed {observed["dtype"]}')
+        outputs.append(dict(item, index=index, semantic_name=item.get('name', f'output_{index}'), dtype=observed['dtype'],
+            golden_dtype=item['dtype'], bytes=math.prod(observed['shape'])*np.dtype(DTYPES[observed['dtype']]).itemsize))
+    return dict(inputs=inputs, outputs=outputs, source_dtype_preserved=all(s['dtype'] == s['golden_dtype'] for s in outputs),
                 input_binding='SOURCE_ARGUMENT_NAME_THEN_COMPILED_GRAPHDEF_INPUT_ORDER',
-                output_binding='SOLE_COMPILED_OUTPUT_NO_SHAPE_BASED_SLOT_GUESSING')
+                output_binding=('EXPLICIT_SOURCE_TUPLE_THEN_COMPILED_NETOUTPUT_SLOT_ORDER' if len(outputs) > 1
+                                else 'SOLE_COMPILED_OUTPUT_NO_SHAPE_BASED_SLOT_GUESSING'))
 
 
 def check_io_budget(name, io):
@@ -287,7 +315,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
             raise ValueError('requires embedded weights and one main metadata partition')
         doc = schema.decode(read_partition(model, parts[0]), 'ModelDef')
         try:
-            io = bind_compiled(doc, exported['source_inputs'], exported['golden'], enums)
+            io = bind_compiled(doc, exported['source_inputs'], exported.get('goldens', exported['golden']), enums,
+                               exported.get('output_contract'))
         except ValueError as exc:
             raise ValueError(f'{name}: {exc}') from exc
         check_io_budget(name, io)
@@ -296,7 +325,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']
         for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
             for spec in io[direction]:
-                source = checked(folder, exported['golden'] if direction == 'outputs' else spec)
+                source = checked(folder, exported.get('goldens', [exported['golden']])[spec['index']]
+                                 if direction == 'outputs' else spec)
                 destination = fixture/f'{prefix}_{spec["index"]}.bin'
                 shutil.copyfile(source, destination)
                 spec['fixture_sha256'] = sha(destination)
@@ -305,9 +335,17 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
                 plan.append(' '.join((direction[:-1], str(spec['index']), spec['name'], spec['dtype'], ','.join(map(str, spec['shape'])))))
         (fixture/'plan.txt').write_text('\n'.join(plan)+'\n')
         observed = _compiled_observation(model, ddk)
+        state_contract = None
+        if case['kind'] == 'gdn_layer':
+            from .module_contracts import compiled_state_contract
+            state_contract = compiled_state_contract(observed)
         cases.append(dict(case=name, **io, layer=case['layer'], call=case['call'], point=case['point'],
             kind=case['kind'], phase=case['phase'], ordinal=case['ordinal'], output_name=case['output_name'],
             model=_file_record(model, name+'/model.omc'), graphop_counts=observed['graphop_counts']))
+        if state_contract:
+            cases[-1]['compiled_state_contract'] = state_contract
+        if 'attention_contract' in exported:
+            cases[-1]['attention_contract'] = exported['attention_contract']
         if case['kind'] == 'rope' and 'rope_contract' in exported:
             contract = exported['rope_contract']
             cases[-1]['rope_contract'] = {k: contract[k] for k in (
@@ -346,50 +384,60 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
             for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
                 for s in case[direction]:
                     checked(fixture, dict(path=f'{case["case"]}/{prefix}_{s["index"]}.bin', bytes=s['fixture_bytes'], sha256=s['fixture_sha256']))
-            spec = case['outputs'][0]
-            golden = np.fromfile(fixture/case['case']/'golden_0.bin', dtype=DTYPES[spec['golden_dtype']]).reshape(spec['shape'])
-            tensors, hashes = [], []
-            for index in range(meta['repetitions']):
-                path = folder/f'{index}.bin'
-                if path.stat().st_size != spec['bytes']:
-                    raise ValueError('runtime output byte extent differs from compiled ABI')
-                actual = np.fromfile(path, dtype=DTYPES[spec['dtype']]).reshape(spec['shape'])
-                metric = metrics(actual, golden, atol=atol, rtol=rtol)
-                if case['kind'] == 'rope' and 'rope_contract' in case:
-                    from .rope import partition_metrics
-                    metric['rope_partitions'] = partition_metrics(actual, golden, case['rope_contract']['rotary_dim'])
-                if case['kind'] == 'cache':
-                    identical = actual.dtype == golden.dtype and actual.tobytes() == golden.tobytes()
-                    metric.update(gate='EXACT_WHOLE_CACHE_BITS', passed=identical and metric['passed'])
-                    source_spec = next(s for s in case['inputs'] if s['fixture_index'] == 0)
-                    before = np.fromfile(fixture/case['case']/f'input_{source_spec["index"]}.bin', dtype=DTYPES[source_spec['dtype']]).reshape(golden.shape)
-                    # Classify preserved positions using the executed golden, not an assumed scatter ABI.
-                    if before.dtype != golden.dtype:
-                        raise ValueError('cache golden dtype differs from its input boundary')
-                    bits = np.dtype(f'u{golden.dtype.itemsize}')
-                    preserved = before.view(bits) == golden.view(bits)
-                    changed = (actual.view(bits) != golden.view(bits)
-                               if actual.dtype == golden.dtype else actual != golden)
-                    metric.update(mismatched_preserved_elements=int((changed & preserved).sum()),
-                                  mismatched_updated_elements=int((changed & ~preserved).sum()))
-                tensors.append(metric)
-                hashes.append(sha(path))
-            stable = len(set(hashes)) == 1
-            finite = all(r['nonfinite_actual'] == r['nonfinite_golden'] == 0 for r in tensors)
-            passed = all(r['passed'] is True for r in tensors)
-            failed = not stable or not finite or any(r['passed'] is False for r in tensors)
-            row.update(status='FAILED' if failed else 'PASSED' if passed else 'METRICS_RECORDED',
-                stable=stable, source_dtype_preserved=case['source_dtype_preserved'], invocations=tensors,
-                output_sha256=hashes, api_us=receipt['api_us'], graphop_counts=case['graphop_counts'])
+            total_bytes = sum(s['bytes'] for s in case['outputs'])
+            output_rows, offset = [], 0
+            for spec in case['outputs']:
+                output_row = dict(row)
+                if len(case['outputs']) > 1:
+                    output_row.update(output_index=spec['index'], output_name=spec['semantic_name'])
+                golden = np.fromfile(fixture/case['case']/f'golden_{spec["index"]}.bin', dtype=DTYPES[spec['golden_dtype']]).reshape(spec['shape'])
+                tensors, hashes = [], []
+                for index in range(meta['repetitions']):
+                    path = folder/f'{index}.bin'
+                    if path.stat().st_size != total_bytes:
+                        raise ValueError('runtime output byte extent differs from compiled ABI')
+                    actual = np.fromfile(path, dtype=DTYPES[spec['dtype']], count=math.prod(spec['shape']), offset=offset).reshape(spec['shape'])
+                    metric = metrics(actual, golden, atol=atol, rtol=rtol)
+                    if case['kind'] == 'rope' and 'rope_contract' in case:
+                        from .rope import partition_metrics
+                        metric['rope_partitions'] = partition_metrics(actual, golden, case['rope_contract']['rotary_dim'])
+                    if case['kind'] == 'cache':
+                        identical = actual.dtype == golden.dtype and actual.tobytes() == golden.tobytes()
+                        metric.update(gate='EXACT_WHOLE_CACHE_BITS', passed=identical and metric['passed'])
+                        source_spec = next(s for s in case['inputs'] if s['fixture_index'] == 0)
+                        before = np.fromfile(fixture/case['case']/f'input_{source_spec["index"]}.bin', dtype=DTYPES[source_spec['dtype']]).reshape(golden.shape)
+                        # Classify preserved positions using the executed golden, not an assumed scatter ABI.
+                        if before.dtype != golden.dtype:
+                            raise ValueError('cache golden dtype differs from its input boundary')
+                        bits = np.dtype(f'u{golden.dtype.itemsize}')
+                        preserved = before.view(bits) == golden.view(bits)
+                        changed = (actual.view(bits) != golden.view(bits)
+                                   if actual.dtype == golden.dtype else actual != golden)
+                        metric.update(mismatched_preserved_elements=int((changed & preserved).sum()),
+                                      mismatched_updated_elements=int((changed & ~preserved).sum()))
+                    tensors.append(metric)
+                    hashes.append(hashlib.sha256(actual.tobytes()).hexdigest())
+                stable = len(set(hashes)) == 1
+                finite = all(r['nonfinite_actual'] == r['nonfinite_golden'] == 0 for r in tensors)
+                passed = all(r['passed'] is True for r in tensors)
+                failed = not stable or not finite or any(r['passed'] is False for r in tensors)
+                output_row.update(status='FAILED' if failed else 'PASSED' if passed else 'METRICS_RECORDED',
+                    stable=stable, source_dtype_preserved=spec['dtype'] == spec['golden_dtype'], invocations=tensors,
+                    output_sha256=hashes, api_us=receipt['api_us'], graphop_counts=case['graphop_counts'])
+                output_rows.append(output_row)
+                offset += spec['bytes']
+            rows.extend(output_rows)
+            continue
         except Exception as exc:
             row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
         rows.append(row)
     rows.sort(key=lambda r: (r['call'], r['layer'], POINT_ORDER.get(r['point'], 1000), r['ordinal'], r['case']))
     failed = [r for r in rows if r['status'] == 'FAILED']
     status = 'FAILED' if failed else 'PASSED' if rows and all(r['status']=='PASSED' for r in rows) else 'METRICS_RECORDED'
-    complete = not meta.get('uncompiled_cases') and len(rows) == len(meta['cases'])
+    validated = list(dict.fromkeys(r['case'] for r in rows))
+    complete = not meta.get('uncompiled_cases') and len(validated) == len(meta['cases'])
     return dict(status=status if complete or status == 'FAILED' else 'PARTIAL',
-        numerical_validation=status, coverage_complete=complete, validated_cases=[r['case'] for r in rows],
+        numerical_validation=status, coverage_complete=complete, validated_cases=validated,
         cases=rows, first_failed_boundary=failed[0]['case'] if failed else None,
         uncompiled_cases=meta.get('uncompiled_cases', []), all_model_layers_passed=False,
         reference=meta.get('reference', {}),

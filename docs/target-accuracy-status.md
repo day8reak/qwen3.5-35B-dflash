@@ -1,6 +1,6 @@
 # Target 精度状态
 
-阶段与标准更新：2026-11-13；以下实测结果回传于 2026-11-12。当前按用户安排先做 GDN 相关单模块测试，尚无本轮新设备数值。RoPE Prefill／Decode × Q／K 四图已数值对齐，QuantBatchMatmul scale 适配与 RoPE FP32 旋转改动均已记录。Cache 最新结果仍为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，Decode 历史保留问题暂后处理。
+阶段与标准更新：2026-11-13；GDN 相邻独立边界最新回传 48 项五指标，**43 PASSED / 5 FAILED**，其余模块保留 2026-11-12 最近结果。当前准备整层 GDN FP32 state 和 Attention Prefill／Decode 共 8 图、20 输出，尚无该组设备数值。RoPE 四图已数值对齐，QuantBatchMatmul scale 适配与 RoPE FP32 旋转改动均已记录。Cache 最新结果仍为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，Decode 历史保留问题暂后处理。
 
 **当前浮点标准（CPro / CHS 共用）**：按用户 2026-11-13 指定的下表，五项全部满足才通过；严格比较未四舍五入的值。此标准替换此前 cosine ≥0.9999 和量化 out_proj 单独 L2<2% 的判定。Cache 继续要求整缓存逐位一致，整数／索引／控制量继续精确比较。
 
@@ -28,19 +28,21 @@ Cache 工作恢复后只复测 4 个失败的 Decode 图（K/V × 浮点/整数�
 
 ## GDN 当前独立测试
 
-本轮复现真实 CPro 边界基线：L0–L2 × Prefill／Decode，共 48 个输出图。decay_beta 的 g/beta 12 图、repeat_qk 的 Q/K 12 图、gdn 的 core/raw state 12 图、recurrent_writeback 6 图、linear_attn_norm 6 图。完整步骤见[当前测试命令](target-batch-rerun.md)；已有匹配 fixture/native 时只需筛选这 48 项补算五项指标，不再编译或上板。
+L0–L2 × Prefill／Decode 的 48 个独立边界已回传完整五指标：decay_beta 的 g/beta 12 项、repeat_qk 的 Q/K 12 项、gdn 的 core/raw state 12 项、recurrent_writeback 6 项、linear_attn_norm 6 项。43 项通过；5 项失败均为 Prefill GDN，全部重复稳定。最新 CSV 和 HTML 已按模块替换旧结果。
 
 | 层 | Prefill core L2 | Prefill raw state L2 | Decode core L2 | Decode raw state L2 |
 | --- | ---: | ---: | ---: | ---: |
-| L0 | 5.7719723% | 44.5964183% | 0.1345661% | 0.0682967% |
-| L1 | 7.1231514% | 26.7449980% | 0.1747658% | 0.4292200% |
-| L2 | 1.5583993% | 12.0997546% | 0.1152179% | 0.0648462% |
+| L0 | 5.772% · FAILED | 44.5964% · FAILED | 0.1346% · PASSED | 0.0683% · PASSED |
+| L1 | 7.1232% · FAILED | 26.745% · FAILED | 0.1748% · PASSED | 0.4292% · PASSED |
+| L2 | 1.5584% · PASSED | 12.0998% · FAILED | 0.1152% · PASSED | 0.0648% · PASSED |
 
-以上为历史数据，均保留原 METRICS_RECORDED；6 个 raw state 的 dtype_preserved 为 FALSE。L0/L1 Prefill core 和三个 Prefill raw state 已超出当前 L2<5% 标准，其余项仍缺完整五指标，不能仅凭 L2 较小判通过。
+表中状态取自最新五项判定，并非仅按 L2。L0/L1 Prefill raw state 同时未通过 cosine；其余三项失败只有 relative_l2 超限。六个 raw state 的 dtype_preserved 仍为 FALSE，Decode 数值通过不等于状态接口类型一致。
 
 定位顺序为门控 g/beta → Q/K 重复 → GDN core 和 raw state → 状态转换、gated norm。每个图输入都是该边界的原捕获，所以上游小图误差不会自动传入下游小图。历史 repeat_qk 和 writeback 为零误差，只说明各自独立转换对齐，不证明 CPro GDN 末态或连续 Prefill→Decode 反馈正确。
 
-本轮保留捕获的 T256/T1、effective_length、chunk 参数和调用前 state dtype，并绑定实际 CPro 表达式。暂不改 GDN 公式、强制 state 类型或改 golden；待新指标、源 AIR 和编译输出类型一起核对后，再决定修复位置。六输入合成 GDN 诊断不包含真实边界全部控制，不能替代此轮结果。当前完成的是本地测试流程准备，设备执行由用户完成。
+按用户要求，下一组改测整个 GatedDeltaNet 层：五个投影、ConvState、卷积、SiLU、门控、Q/K 重复、GDN、gated norm 和 out_proj 在同一张图真实串联。输入捕获 state 数值转 FP32，initial_state、last_recurrent_state、层内 writeback 为 FP32，三个输出分别比较 hidden、new_conv_state 与原始 FP32 raw-state golden。仅改变输出类型不能证明内核累加精度；新流程检查源 AIR 和编译后可见 state 边界，拒绝用末端 FP16→FP32 Cast 掩盖半精度 producer。DDK 内核是否支持需实际编译验证。
+
+保留捕获 T256/T1、effective_length、chunk64/1、权重和 golden；六图 GDN 加两图 Attention，共 8 图、20 输出，具体见[当前测试命令](target-batch-rerun.md)。本地 CPU 检查不替代 AIR、OMC 或设备验收；此组尚无新设备结果，也不包含连续 Prefill→Decode 状态反馈。
 
 ## QuantBatchMatmul：保留的改动
 
@@ -91,7 +93,9 @@ INT32 载体内的 packed W4 字节及排布不变，V4444 原属性和可选输
 | MoE、Router、共享专家、LM head | 不在这批独立数值验证覆盖内；独立 residual_mlp 使用 golden 分支输入，也不能证明 MoE 内部正确 |
 | 整图与状态 | 验证修复确实进入生产图、最终 hidden／logits、KV 和 GDN 末态；T64 图需要对应 T64 golden，不能直接裁切 T256 捕获代替 |
 
-当前先按用户安排测试 GDN 相关独立边界；Attention Prefill 仍是后续整图联调的待修项。合入有效改动后还需四层 Prefill 的 hidden／logits 和末态验证。初始空缓存 Prefill 可以与 Decode 分开推进；Decode Cache 历史保留错误仍阻塞后续生成，多段／续接 Prefill 同样需要历史保留验证。已对齐模块不重复编译，独立小图结果不替代整图验收。
+当前 Attention 与整层 GDN 一起准备 Prefill／Decode 新测试。按用户最新要求保持 Attention 算子不变，先检查调用侧：全图与单模块 Q 都采用 packed `[B,heads×D/16,S,16]`，Q 长度在轴 2，actual_seq_lengths_q 传静态列表 `[S]`。导出检查 INT64 常量字节与 captured Q 长度一致，保留 allQLen 的独立 KV 遍历语义及原 mask 跨度。所贴实现统一调用 pa.Decode，多行路径由 mActual 决定；querySeqStep 来自算子内部常量，实际值和总任务数仍待编译证据确认。源码 Const 不等于已经观察到 host GetData 非空。[完整调用检查](target-batch-rerun.md#6-attention-prefill-调用合同)。
+
+合入有效改动后还需四层 Prefill 的 hidden／logits 和末态验证。初始空缓存 Prefill 可以与 Decode 分开推进；Decode Cache 历史保留错误仍阻塞后续生成，多段／续接 Prefill 同样需要历史保留验证。已对齐模块不重复编译，独立小图结果不替代整图验收。
 
 ## 最新 Cache 结果
 

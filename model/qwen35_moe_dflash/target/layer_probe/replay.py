@@ -213,7 +213,7 @@ class Region(torch.nn.Module):
         return self.target.Qwen3_5MoeAttention.transform_nz_2_nd(self, value)
 
 
-def source_bindings(graph, specs, actual_identities=None):
+def source_bindings(graph, specs, actual_identities=None, output_count=1):
     result = []
     for node in graph['op']:
         if node['type'] != 'Data':
@@ -230,8 +230,8 @@ def source_bindings(graph, specs, actual_identities=None):
     if not result:
         raise ValueError('region has no runtime input')
     nets = [n for n in graph['op'] if n['type'] == 'NetOutput']
-    if len(nets) != 1 or len([v for v in nets[0].get('input', []) if not v.endswith(':-1')]) != 1:
-        raise ValueError('each diagnostic graph must expose exactly one tensor output')
+    if len(nets) != 1 or len([v for v in nets[0].get('input', []) if not v.endswith(':-1')]) != output_count:
+        raise ValueError(f'diagnostic graph must expose exactly {output_count} ordered tensor outputs')
     return result
 
 
@@ -278,24 +278,36 @@ def check_adjusted_graph(kind, graph):
 
 
 def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None,
-               *, qlinear_scales='source', cache_indexing='kernel', rope_precision='source'):
+               *, qlinear_scales='source', cache_indexing='kernel', rope_precision='source', gdn_state_dtype='source'):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
     try:
         if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer')
-                or rope_precision not in ('source', 'fp32')):
+                or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float32')):
             raise ValueError('unknown module candidate')
         capture = Path(capture).resolve()
         manifest = json.loads((capture/'manifest.json').read_text())
         if manifest.get('artifact_kind') != KIND or manifest.get('status') != 'CAPTURED':
             raise ValueError('requires a completed original-inference capture')
-        matches = [r for r in manifest['regions'] if r['id'] == region_id]
+        regions = manifest['regions']
+        if region_id.endswith('_gdn_layer'):
+            from .whole_gdn import assemble
+            regions = assemble(manifest)
+        matches = [r for r in regions if r['id'] == region_id]
         if len(matches) != 1:
             raise ValueError('region must identify one captured invocation')
         record = matches[0]
-        golden = record['outputs'][output_index]
-        checked(capture, golden)
+        whole = record['kind'] == 'gdn_layer'
+        if whole:
+            if output_index is not None or gdn_state_dtype != 'float32' or qlinear_scales != 'fp16' or not target_config:
+                raise ValueError('whole GDN requires all outputs, --gdn-state-dtype float32, --qlinear-scales fp16 and --target-config')
+            result['model_scope'] = 'ONE_COMPLETE_GATED_DELTANET_LAYER; THREE_OUTPUTS; NO_MOE_OR_DECODER_LAYER'
+        elif output_index is None or not 0 <= output_index < len(record['outputs']):
+            raise ValueError('single boundary requires a valid --output-index')
+        goldens = record['outputs'] if whole else [record['outputs'][output_index]]
+        for golden in goldens:
+            checked(capture, golden)
         weights = torch.load(checked(capture, record['weights']), map_location='cpu', weights_only=True) if 'weights' in record else {}
         inputs = [torch.from_numpy(read_array(capture, spec).copy()) for spec in record['inputs']]
         input_paths = [checked(capture, spec) for spec in record['inputs']]
@@ -325,8 +337,16 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             record, inputs, input_paths, candidate = prepare_cache_inputs(capture, manifest, record, root, cache_mode)
             candidate['source'] = source
             result['candidate'] = candidate
-        model = Region(record, weights, target, torch_npu, output_index, factory)
-        result['source_contract'] = bind_region(model, target, record)
+        if whole:
+            from .whole_gdn import build
+            model, result['source_contract'] = build(record, capture, target, converters, factory,
+                target_config, source_root, root)
+            result['target_weights'] = dict(status='ORIGINAL_CHECKPOINT_BOUND')
+            result['candidate'] = dict(kind='WHOLE_GDN_FP32_STATE', state_dtype='float32',
+                qlinear_scales='fp16', reference='ORIGINAL_CAPTURE_UNCHANGED')
+        else:
+            model = Region(record, weights, target, torch_npu, output_index, factory)
+            result['source_contract'] = bind_region(model, target, record)
         result['source_contract']['weight_scope'] = result['target_weights']['status']
         result['qlinear_resolution'] = factory_evidence
         result['exported_weights'] = {name: tensor_metadata(value) for name, value in weights.items()}
@@ -356,15 +376,19 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         descriptor, metadata = _producer_schema(torchair_pb2)
         (root/'air-schema.pb').write_bytes(descriptor)
         old = Path.cwd()
+        from .module_contracts import gdn_fp32_state
         try:
             os.chdir(root)
             with (torch.no_grad(), export_input_identity(inputs) as input_identity,
-                  qlinear_ge_scales(qlinear_fp16) as ge_adapter,
+                  qlinear_ge_scales(qlinear_fp16 or whole, expected_calls=5 if whole else 1) as ge_adapter,
+                  gdn_fp32_state(whole) as gdn_adapter,
                   cache_ge_integer_mul(cache_mode == 'integer', record['attrs'].get('block_size')) as cache_adapter):
                 if ge_adapter is not None:
                     result['candidate']['ge_adapter'] = ge_adapter
                 if cache_adapter is not None:
                     result['candidate']['ge_adapter'] = cache_adapter
+                if gdn_adapter is not None:
+                    result['candidate']['state_ge_adapter'] = gdn_adapter
                 torchair.dynamo_export(*inputs, model=model, export_path='weight', export_name='export', dynamic=False)
         finally:
             os.chdir(old)
@@ -373,7 +397,10 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         _, _, graph = _decode(schema, (root/'export.air').read_bytes())
         result['export_graph_check'] = check_adjusted_graph(record['kind'], graph)
         if 'candidate' in result:
-            if rope_fp32:
+            if whole:
+                from .module_contracts import check_gdn_source
+                result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'])
+            elif rope_fp32:
                 from .rope import check_graph as check_rope_graph
                 result['candidate_graph_check'] = check_rope_graph(graph, schema, golden['dtype'])
             else:
@@ -387,13 +414,23 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             path = fixture/f'input_{i}.bin'
             shutil.copyfile(input_paths[i], path)
             specs.append(dict(spec, **identity(path, root)))
-        path = fixture/'golden.bin'
-        shutil.copyfile(checked(capture, golden), path)
-        golden = dict(golden, **identity(path, root))
-        bindings = source_bindings(graph, specs, input_identity['nodes'])
+        copied_goldens = []
+        for i, golden in enumerate(goldens):
+            path = fixture/(f'golden_{i}.bin' if whole else 'golden.bin')
+            shutil.copyfile(checked(capture, golden), path)
+            copied_goldens.append(dict(golden, **identity(path, root)))
+        bindings = source_bindings(graph, specs, input_identity['nodes'], len(copied_goldens))
+        if record['kind'] == 'attention':
+            from .module_contracts import attention_contract
+            result['attention_contract'] = attention_contract(record, inputs, graph, schema, bindings)
+        if whole:
+            result['goldens'] = copied_goldens
+            result['output_contract'] = dict(order=[s['name'] for s in copied_goldens],
+                source_edges=next(n for n in graph['op'] if n['type'] == 'NetOutput')['input'],
+                binding='EXPLICIT_PYTHON_TUPLE_AND_NETOUTPUT_SLOT_ORDER', required_dtypes={2: 'float32'})
         result.update(status='EXPORTED', air=identity(root/'export.air', root),
             schema={k: metadata[k] for k in ('schema_file', 'schema_package')},
-            source_inputs=bindings, golden=golden, export_input_identity=input_identity,
+            source_inputs=bindings, golden=copied_goldens[0], export_input_identity=input_identity,
             capture_manifest_sha256=sha(capture/'manifest.json'),
             source_files=[dict(path=str(Path(p).resolve()), sha256=sha(p))
                           for p in dict.fromkeys((target.__file__, converter_script,

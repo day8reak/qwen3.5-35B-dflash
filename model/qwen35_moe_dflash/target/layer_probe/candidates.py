@@ -201,7 +201,7 @@ def adapt_qlinear(region, root):
 
 
 @contextmanager
-def qlinear_ge_scales(enabled):
+def qlinear_ge_scales(enabled, expected_calls=1):
     """Adapt the selected converter's inputs after stock FakeTensor validation.
 
     Use the installed converter unchanged after the cast; do not replace its
@@ -259,8 +259,8 @@ def qlinear_ge_scales(enabled):
         if getter(op) is not adapted:
             raise ValueError('selected TorchAir did not select the process-local converter adapter')
         yield evidence
-        if evidence['calls'] != 1:
-            raise ValueError('candidate requires exactly one adapted quant_matmul conversion')
+        if evidence['calls'] != expected_calls:
+            raise ValueError(f'candidate requires {expected_calls} adapted quant_matmul conversions')
     finally:
         if existed:
             registry[op] = previous

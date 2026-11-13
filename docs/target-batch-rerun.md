@@ -1,16 +1,19 @@
-# Target GDN：独立边界精度测试
+# Target：整层 GatedDeltaNet FP32 state 与 Fused Attention
 
-当前测试 L0–L2 的 GDN 及其门控、状态转换、归一化边界，覆盖原捕获的 Prefill 和第一次 Decode，**共 48 张单输出小图**。先复现实际 CPro 源码基线，按 CPro / CHS 共用五项标准判定，再据异常边界修改实现。
+当前新增一组 **8 张图、20 个输出**，覆盖 Prefill 和第一次 Decode：
 
-| point | 每层每阶段输出 | 图数（3 层 × 2 阶段） |
-| --- | --- | ---: |
-| decay_beta | golden_g、golden_beta | 12 |
-| repeat_qk | golden_q_repeated、golden_k_repeated | 12 |
-| gdn | golden_core、golden_state_raw | 12 |
-| recurrent_writeback | golden_written_state | 6 |
-| linear_attn_norm | golden_y | 6 |
+| 模块 | 图数 | 每张图输出 |
+| --- | ---: | --- |
+| L0–L2 整层 GatedDeltaNet | 6 | hidden、new_conv_state、recurrent_state_fp32 |
+| L3 AdnFusedInferAttention | 2 | attention_nz |
 
-GDN core 和 raw state 分图导出，都来自真实调用，保留 effective_length、chunk 参数和初始状态。各图独立使用原 CAPTURED 输入和 golden；Prefill T256／Decode T1 以捕获为准，不裁成 T64、不强制将 g／state 改成 FP16。writeback 通过不能证明 CPro GDN 的错误状态被修好。当前不执行 QLinear、RoPE、Cache 或 Attention，也不使用六输入合成测试替代真实边界。[历史数值及定位顺序](target-accuracy-status.md#gdn-当前独立测试)。
+GDN 包含五个 QLinear、ConvState、卷积、SiLU、g/beta、Q/K 重复、ChunkGatedDeltaRule、gated norm 和 out_proj，层内真实串联。它不是把 core/state 再分成小图，也不包含 Decoder 的外部残差或 MoE。QLinear 沿用已验证的 FP16 scale 适配；卷积沿用显式单高度 Conv2d。
+
+输入和三个 golden 从同一 CAPTURED layer/call/phase 的已有边界组合，检查四个输入投影的 hidden 一致；没有重算 golden。原 FP16 递归输入数值转换成 FP32，ChunkGatedDeltaRule 的 initial_state、last_recurrent_state 和层内 writeback 均声明 FP32，末态对比原始 raw-state FP32 golden。**末端 Cast 不算内部精度修复**：准备上板时拒绝非 FP32 状态 ABI 及可见 FP16→FP32 补 Cast，保留 GraphOp 链；不声称能从不透明内核外部证明累加精度。若 DDK 算子仍只支持 FP16 state，需对应算子实现支持，不能改 AIR dtype 标签绕过。
+
+Attention 沿用捕获 Q/K/V、mask、block_table 和长度参数，新增 Q 轴、Q 长度常量字节与 allQLen 传递检查。当前范围为 B=1 静态图。Q 为 `[B, heads×D/16, S, 16]`，序列轴是 2；原捕获 Prefill S256、Decode S1。源码全图 S64 对应 `[1,256,64,16]`，捕获小图对应 `[1,256,256,16]`；两者均没有把 Prefill Q 变成 1。`allQLen` 单独记录，不能强制等于当前 Q 长度；它在用户提供的内核中控制 KV 块循环。实际 tiling 和完整生产图仍需编译产物核对。
+
+每张图每次都使用捕获输入；此轮包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。旧 48 个独立边界已回传 43 PASS / 5 FAIL，本组是新实验，尚无设备结果。已通过的独立 QLinear、RoPE、Prefill Cache 不单独复跑。
 
 ## 1. 初始化路径
 
@@ -21,21 +24,21 @@ export REPO_DIR="$(git rev-parse --show-toplevel)"
 git -C "$REPO_DIR" pull --ff-only origin main
 export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
 export GOLDEN_CAPTURE="${GOLDEN_CAPTURE:-${CAPTURE:-$AI_RUN_DIR/target-layer-accuracy/golden}}"
-export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-boundaries"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer-attention"
 export BATCH="$BATCH_ROOT/air"
 export OMC_BATCH="$BATCH_ROOT/omc"
 export COMPARISON="$BATCH_ROOT/comparison"
 export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
-export EXECUTION="$AI_RUN_DIR/fused/target-gdn-boundaries-execution"
-export RECOVERY="$AI_RUN_DIR/fused/target-gdn-boundaries-recovery"
+export EXECUTION="$AI_RUN_DIR/fused/target-gdn-layer-attention-execution"
+export RECOVERY="$AI_RUN_DIR/fused/target-gdn-layer-attention-recovery"
 export PYTHONDONTWRITEBYTECODE=1
 ```
 
-已有这 48 项的 fixture/native 时，直接执行下方“复用旧 dump”；已有本范围的 AIR／OMC 时，从缺失的下一阶段继续。新建命令要求空输出槽位。固定目录复测前先确认旧请求结束、已回收，再清理该测试的临时产物，不覆盖活动任务。
+旧 48 图不能当作整层图复用；已有本组 AIR／OMC 时，从缺失的下一阶段继续。新建命令要求空输出槽位。固定目录复测前先确认旧请求结束、已回收，再清理该测试的临时产物，不覆盖活动任务。
 
 ## 2. 导出 AIR
 
-TARGET_SOURCE 为原私有源码根目录，TARGET_CONFIG 为此前成功的原权重 YAML。先核对原捕获包含完整 48 项，缺项即停止。
+TARGET_SOURCE 为原私有源码根目录，TARGET_CONFIG 为此前成功的原权重 YAML。先核对原捕获包含所需整层边界，缺项即停止。
 
 ```bash
 : "${TARGET_SOURCE:?请设置原 Target 源码根目录}"
@@ -46,35 +49,31 @@ set -e
 test -f "$TARGET_CONFIG"
 test -f "$CPRO_EXPORT_SCRIPT"
 test ! -e "$BATCH"
-python - "$GOLDEN_CAPTURE/manifest.json" <<'PY'
+PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python - "$GOLDEN_CAPTURE/manifest.json" <<'PY_CHECK'
 import json, sys
+from qwen35_moe_dflash.target.layer_probe.whole_gdn import assemble
 m = json.load(open(sys.argv[1]))
-outputs = {
-    "decay_beta": ["golden_g", "golden_beta"],
-    "repeat_qk": ["golden_q_repeated", "golden_k_repeated"],
-    "gdn": ["golden_core", "golden_state_raw"],
-    "recurrent_writeback": ["golden_written_state"],
-    "linear_attn_norm": ["golden_y"],
-}
-expected = {(layer, call, phase, point, name)
-            for layer in range(3) for call, phase in enumerate(("prefill", "decode"))
-            for point, names in outputs.items() for name in names}
-actual = [(r["layer"], r["call"], r["phase"], r["point"], t["name"])
-          for r in m["regions"] if r["point"] in outputs for t in r["outputs"]]
-if m.get("status") != "CAPTURED" or len(actual) != 48 or set(actual) != expected:
-    raise SystemExit("需要 L0–L2、Prefill/call0 + Decode/call1、五类边界的完整 48 项捕获。")
-print("CAPTURE: 48 GDN-related outputs")
-PY
+gdn = assemble(m)
+attention = [r for r in m['regions'] if r['point'] == 'fused_attention']
+expected = {(layer, call, phase) for layer in range(3)
+            for call, phase in enumerate(('prefill', 'decode'))}
+if m.get('status') != 'CAPTURED' or len(gdn) != 6 or {(r['layer'], r['call'], r['phase']) for r in gdn} != expected:
+    raise SystemExit('需要 L0–L2 Prefill/call0、Decode/call1 的完整 GDN 捕获。')
+if len(attention) != 2 or {(r['layer'], r['call'], r['phase']) for r in attention} != {(3,0,'prefill'), (3,1,'decode')}:
+    raise SystemExit('需要 L3 Prefill/call0、Decode/call1 的 Attention 捕获。')
+print('CAPTURE: 6 whole GDN + 2 attention graphs; 20 outputs')
+PY_CHECK
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --capture "$GOLDEN_CAPTURE" \
   --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
   --converter-script "$CPRO_EXPORT_SCRIPT" \
-  --points decay_beta repeat_qk gdn recurrent_writeback linear_attn_norm \
+  --points gdn_layer fused_attention \
+  --qlinear-scales fp16 --gdn-state-dtype float32 \
   --phases prefill decode --output "$BATCH"
 )
 ```
 
-应为 EXPORTED 48/48。失败看 manifest.json 的 error 和 `$BATCH/<case>.log`。每份 export.json 保留 `source_contract.status=BOUND_TO_SOURCE`、源码表达式、输入与输出类型；不能修改描述符来掩盖 dtype 差异。跨主机复制整个 BATCH，包含清单、schema、输入、golden，不只复制 export.air。
+应为 EXPORTED 8/8。失败看 manifest.json 的 error 和 `$BATCH/<case>.log`。每份 export.json 保留 `source_contract.status=BOUND_TO_SOURCE`、源码表达式、输入与输出类型；不能修改描述符来掩盖 dtype 差异。跨主机复制整个 BATCH，包含清单、schema、输入、golden，不只复制 export.air。
 
 ## 3. 编译 OMC
 
@@ -96,7 +95,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 )
 ```
 
-摘要在 `$OMC_BATCH/compile.json`，日志在 `models/<case>/omc/compile.log`。部分失败时，下一步自动执行已 COMPILED 的项，缺项保留，不代表 48 项全部通过。跨主机复制整个 BATCH_ROOT，保持 air／omc 相对位置。
+摘要在 `$OMC_BATCH/compile.json`，日志在 `models/<case>/omc/compile.log`。部分失败时，下一步自动执行已 COMPILED 的项，缺项保留，不代表 8 张图全部通过。跨主机复制整个 BATCH_ROOT，保持 air／omc 相对位置。
 
 ## 4. 上板与回收
 
@@ -134,42 +133,18 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
 
 回传 `summary.csv` 和 `report.json`。数值通过要求 cosine >0.99、relative_l2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1，所有重复调用通过且稳定。CSV 同时记录 failed_metrics 和 dtype_preserved。raw state 即使数值通过，也须核实最终状态接口，不能忽略类型变化。
 
-先看 decay_beta、repeat_qk，再分别看 gdn/core 和 raw state，最后看 writeback、norm。前两者对齐而 GDN 偏差大时，再查 GDN 布局、输入 dtype、effective_length、Q/K 归一化和累加精度；不能统一归因于量化投影，因为各图独立输入 golden。
+本组 summary.csv 应有 20 行：整层 GDN 18 行、Attention 2 行。同一 GDN case 的三个输出按固定槽位独立统计，完整 dump 按各槽位真实 dtype/bytes 拆分。任何输出或任意一次重复失败，整组不能通过。新输出的数值和类型都需检查；FP32 接口通过仍不证明内核内部每一步都以 FP32 计算。
 
-### 复用旧 dump
+Attention 的 `export.json.attention_contract` 会记录 Q shape、actual_seq_lengths_q、actual_seq_lengths_kv、all_seq_lengths_q 及 AIR 传递链。`query_length_constant` 验证实际 INT64 常量内容，不只看 `_readable_value`。本轮保持算子实现不变，先核对调用与导出。
 
-若旧全边界测试的 fixture/native 完整，只补算这 48 项，跳过导出／编译／上板。COMPARISON 要求空目录；不能从只有 summary.csv 的旧结果反推新指标。
+## 6. Attention Prefill 调用合同
 
-```bash
-: "${GDN_FIXTURE:?设置保留的执行 fixture 目录}"
-: "${GDN_NATIVE:?设置匹配的回收 native 目录}"
-(
-set -e
-GDN_CASE_LIST="$(python - "$GDN_FIXTURE/manifest.json" <<'PY'
-import json, sys
-m = json.load(open(sys.argv[1]))
-outputs = {
-    "decay_beta": ["golden_g", "golden_beta"],
-    "repeat_qk": ["golden_q_repeated", "golden_k_repeated"],
-    "gdn": ["golden_core", "golden_state_raw"],
-    "recurrent_writeback": ["golden_written_state"],
-    "linear_attn_norm": ["golden_y"],
-}
-cases = [c for c in m["cases"] if c["point"] in outputs]
-expected = {(layer, call, phase, point, name)
-            for layer in range(3) for call, phase in enumerate(("prefill", "decode"))
-            for point, names in outputs.items() for name in names}
-actual = {(c["layer"], c["call"], c["phase"], c["point"], c["output_name"]) for c in cases}
-if len(cases) != 48 or len({c["case"] for c in cases}) != 48 or actual != expected:
-    raise SystemExit("已有 fixture 不包含完整 48 项 GDN 边界，请检查来源。")
-print("\n".join(c["case"] for c in cases))
-PY
-)"
-mapfile -t GDN_CASES <<< "$GDN_CASE_LIST"
-python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
-  --fixture "$GDN_FIXTURE" --native "$GDN_NATIVE" \
-  --cases "${GDN_CASES[@]}" --output "$COMPARISON"
-)
-```
+全图 `Qwen3_5MoeAttention.forward` 和单模块复用的源码片段都已经传入多行 Q、Python 列表 `actual_seq_lengths_q=[S]`、`inner_precise=2`、BNSD 和 block_table。保留这些参数；不增加不存在的 `prefill` 开关，也不把 Q reshape 成标准 ND `[B,N,S,D]` 后直接交给这个 packed 接口。
 
-选择旧批次的子集后，`coverage_complete=false` 仍表示未覆盖整个旧 fixture；这 48 项即使通过，总状态也可能是 PARTIAL。查看 `numerical_validation` 和各 case，不能把旧批次未测项改成通过。旧数据仅作为旧图基线；修改源码后仍需重新生成对应产物验证。
+导出必须保持 `dynamic=False`，并让 `actual_seq_lengths_q` 直接成为 INT64 `Const([S])`。原 converter 已调用 `dtype_promote(..., DT_INT64)`；若实际 AIR 已是正确常量，则不需要重复修改。若它变成 Data 或运行时 Shape 路径，应在调用处恢复静态 Python 列表，在 converter 中按该列表创建 INT64 Const；不能把 `.cpu()` 的运行时 tensor 当成编译常量。新单模块检查遇到非直接 Const 或内容不符会停止导出。
+
+`allQLen` 仍走既有的导出 carrier：Python `pse_shift=allQLen` → GE `all_seq_lengths_q`，GE `pse_shift=None`。它决定 KV 遍历长度；Decode 通常大于当前 Q 的 1。`actual_seq_lengths_kv` 在所贴内核中也用于 mask 行跨度，当前 mask 最后一维为 2048，因此不要为了切 Prefill 把这个参数随意改成 Q 长度。
+
+所贴内核统一调用 `pa.Decode`，其中 `mActual>1` 是多行计算路径，`mActual==1` 是单行路径；Prefill 的尾块也可能只有一行。当前调用无法直接设置 `querySeqStep`，该值来自算子内部 `DEFAULT_QUERY_SEQ_STEP`。若它等于 16，S64、S256、S1 的任务数应分别为 64、256、16（B1、16 Q heads），Prefill 非尾块 `mActual=16`。若它等于 1，调用侧无法强制进入多行路径；若大于 16，还需核对所贴固定搬运块数的覆盖范围。不能将未知常量默认当成 16。
+
+源码 AIR 中有 Const 只证明调用侧满足静态输入合同，不保证当前编译器让 tiling 的 `GetData<int64_t>()` 非空。所贴 host 在该指针为空时退回 `batch×heads`，当 S 大于 querySeqStep 时存在任务不足风险。这是漏算任务，不会因此自动把 mActual 变成 1：例如 B1、16 heads、S256、step16 时，16 个任务按所贴索引只覆盖 head0 的 16 个 Q 块，其余 heads 未覆盖。先检查现有编译日志/tiling：`qTokens=S`、`actualSeqLengthsQ=S`、`querySeqStep`、各核 `endBlk` 的最大值。只有实际任务数覆盖全部 Q 块，才能认定 Prefill 调度完整；不根据函数名或一个 blockDim 值下结论。
