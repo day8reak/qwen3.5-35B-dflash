@@ -204,7 +204,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 )
 ```
 
-摘要在 `$OMC_BATCH/compile.json`，日志在 `models/<case>/omc/compile.log`。应为 COMPILED 2/2；部分失败时，下一步自动执行已 COMPILED 的项，缺项保留。跨主机复制整个 BATCH_ROOT，保持 air／omc 相对位置。
+摘要在 `$OMC_BATCH/compile.json`，日志在 `models/<case>/omc/compile.log`。Attention 应为 COMPILED 2/2，整层 GDN 应为 COMPILED 6/6；部分失败时，下一步自动执行已 COMPILED 的项，缺项保留。跨主机复制整个 BATCH_ROOT，保持 air／omc 相对位置。
 
 ## 4. 上板与回收
 
@@ -293,18 +293,28 @@ expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks
 
 ## 7. 后续整层 GDN 测试
 
-复用第 1.1 节的同一 golden-capture，另设 GDN 测试目录。在已跑通的 CPro AIR 导出环境执行下列命令，然后沿用第 3–5 节编译、执行、回收和比较。仅选择整层 GDN；已通过的 Attention 结果继续保留。
+复用第 1.1 节的同一 golden-capture，另设 GDN 测试目录。在已跑通的 CPro AIR 导出环境执行下列命令，然后沿用第 3–5 节编译、执行、回收和比较。仅选择整层 GDN；已通过的 Attention 结果继续保留。新终端直接从本节开始，不需要重新执行第 1–2 节采集或 Attention 导出；跨主机时在各主机设置本节对应的本地路径。
 
 ```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export GOLDEN_CAPTURE="${GOLDEN_CAPTURE:-$AI_RUN_DIR/target/tests/golden-capture}"
+: "${TARGET_SOURCE:?请设置原 Target 源码根目录}"
+: "${TARGET_CONFIG:?请设置原 Target 权重 YAML 路径}"
 export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
 export BATCH="$BATCH_ROOT/air"
 export OMC_BATCH="$BATCH_ROOT/omc"
 export COMPARISON="$BATCH_ROOT/comparison"
 export EXECUTION="$BATCH_ROOT/execution"
 export RECOVERY="$BATCH_ROOT/recovery"
+export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+export PYTHONDONTWRITEBYTECODE=1
 export CPRO_EXPORT_SCRIPT="${CPRO_EXPORT_SCRIPT:-$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py}"
 (
 set -e
+test -f "$TARGET_CONFIG"
+test -f "$CPRO_EXPORT_SCRIPT"
 test ! -e "$BATCH"
 PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python - "$GOLDEN_CAPTURE/manifest.json" <<'PY_CHECK'
 import json, sys
