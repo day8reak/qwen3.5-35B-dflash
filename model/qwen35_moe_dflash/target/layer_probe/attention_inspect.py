@@ -39,7 +39,7 @@ def source_call_contract(folder, exported):
     from .inspection import bounded_bytes
     from qwen35_moe_dflash.toolchain.omc_wire import Schema
     from qwen35_moe_dflash.target.original_air_roundtrip import _attributes, _decode
-    from qwen35_moe_dflash.target.operator_air_review import _data_edges, port_names
+    from qwen35_moe_dflash.target.operator_air_review import _data_edges, port_names, trace_input
     schema_path = folder/'air-schema.pb'
     schema = Schema(bounded_bytes(schema_path, 8 << 20),
         expected_file=exported['schema']['schema_file'], expected_package=exported['schema']['schema_package'])
@@ -69,12 +69,23 @@ def source_call_contract(folder, exported):
         query_shape=shape, query_dtype=query[0]['dtype'], num_heads=heads, head_dim=shape[1]*16//heads,
         query_seq_step=16, query_step_basis='USER_CONFIRMED_OPERATOR_SOURCE; NOT_OBSERVED_TILING',
         expected_total_tasks=heads*((shape[2]+15)//16), observed_total_tasks=None,
-        attributes={k: attrs.get(k) for k in ('input_layout','inner_precise','block_size','num_key_value_heads')})
+        attributes={k: attrs.get(k) for k in ('input_layout','inner_precise','block_size','num_key_value_heads','scale_value')},
+        input_edges=edges,
+        input_chains={k: trace_input(v, nodes, schema.enums[schema.package + '.DataType'])
+                      for k,v in edges.items() if v})
     try:
         result['query_length_constant'] = attention_length_constant(edges['actual_seq_lengths_q'], nodes,
             schema.enums[schema.package + '.DataType'], [shape[2]])
     except (ValueError, KeyError, TypeError) as exc:
         result['query_length_constant'] = dict(status='REVIEW_REQUIRED', error=str(exc))
+    try:
+        lengths = exported['source_contract']['captured_attributes']['actual_seq_lengths_kv']
+        if not isinstance(lengths, list) or len(lengths) != 1 or type(lengths[0]) is not int or lengths[0] < 1:
+            raise ValueError('requires one positive captured KV stride')
+        result['kv_length_constant'] = attention_length_constant(edges['actual_seq_lengths_kv'], nodes,
+            schema.enums[schema.package + '.DataType'], lengths)
+    except (ValueError, KeyError, TypeError) as exc:
+        result['kv_length_constant'] = dict(status='REVIEW_REQUIRED', error=str(exc))
     return result
 
 
@@ -147,7 +158,7 @@ def tensor_extent(path, spec, expected=None):
     return result
 
 
-def inspect_attention(batch, fixture, native, output, capture=None):
+def inspect_attention(batch, fixture, native, output, capture=None, reference=False):
     root, fixture, native = (Path(p).resolve() for p in (batch, fixture, native))
     manifest = json.loads((root/'manifest.json').read_text())
     compiled = json.loads((root/'compile.json').read_text())
@@ -273,6 +284,15 @@ def inspect_attention(batch, fixture, native, output, capture=None):
                 row['errors'].append('runner receipt: ' + str(exc))
             binding_valid = not row['errors']
             patterns = {}
+            reference_data = None
+            if reference and binding_valid:
+                from .attention_reference import prepare_reference
+                try:
+                    reference_data = prepare_reference(folder, exp, row['source_call_contract'])
+                    row['independent_reference'] = reference_data['evidence']
+                except (KeyError, ValueError, TypeError, OSError) as exc:
+                    row['independent_reference'] = dict(status='UNAVAILABLE', error=str(exc))
+                    row['errors'].append('independent reference: ' + str(exc))
             for index in range(meta['repetitions']):
                 path = native/name/f'{index}.bin'
                 try:
@@ -288,6 +308,9 @@ def inspect_attention(batch, fixture, native, output, capture=None):
                             actual = np.fromfile(path, dtype=DTYPES[spec['dtype']]).reshape(spec['shape'])
                             golden = np.fromfile(golden_path, dtype=DTYPES[spec['golden_dtype']]).reshape(spec['shape'])
                             pattern = output_pattern(actual, golden, row['source_call_contract'])
+                            if reference_data is not None:
+                                from .attention_reference import compare_reference
+                                pattern['independent_reference'] = compare_reference(actual, golden, reference_data)
                             pattern.update(output_sha256=digest, invocations=[])
                             patterns[digest] = pattern
                             row['output_patterns'].append(pattern)
@@ -319,6 +342,7 @@ def inspect_attention(batch, fixture, native, output, capture=None):
                             invocations=';'.join(map(str,pattern['invocations'])),**item))
         csv_paths[group] = str(path)
     report['output_pattern_csv'] = csv_paths
+    report['independent_reference_requested'] = reference
     save_json(out/'report.json', report)
     lines = ['Read-only attention extent inspection; no export, compilation or device execution.',
         'No cropping, padding or new accuracy verdict. Head/block statistics use the SOURCE packed layout.',
@@ -341,7 +365,7 @@ def inspect_attention(batch, fixture, native, output, capture=None):
             lines.append(f'input {inp.get("captured_name", inp["source_name"])}: '
                 f'shape={inp["shape"]} dtype={inp["dtype"]} integer_values={inp.get("integer_values", "NOT_SAMPLED")}')
         contract = row.get('source_call_contract', {})
-        lines.append('source_call_contract=' + json.dumps(contract, ensure_ascii=False))
+        lines.append('source_call_contract=' + json.dumps({k:v for k,v in contract.items() if k != 'input_chains'}, ensure_ascii=False))
         for pattern in row['output_patterns']:
             lines.append('invocations=' + str(pattern['invocations']) +
                 '; zero_actual_nonzero_golden_heads=' + str(pattern['zero_actual_nonzero_golden_heads']))
@@ -354,6 +378,12 @@ def inspect_attention(batch, fixture, native, output, capture=None):
                 lines.append('row_locations=' + json.dumps(pattern['row_locations'][head['head']]))
         lines.extend('ERROR: ' + e for e in row['errors'])
     (out/'summary.txt').write_text('\n'.join(lines)+'\n')
+    reference_path = None
+    if reference:
+        from .attention_reference import reference_summary
+        reference_path = out/'reference-summary.txt'
+        reference_path.write_text(reference_summary(report['cases']))
     return dict(status=report['status'], cases=len(selected), report=str(out/'report.json'),
                 summary=str(out/'summary.txt'), output_pattern_csv=csv_paths, numerical_validation='NOT_RUN',
+                independent_reference_summary=str(reference_path) if reference_path else None,
                 model_compilation='NOT_RUN', device_execution='NOT_RUN')

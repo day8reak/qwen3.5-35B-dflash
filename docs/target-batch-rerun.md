@@ -1,6 +1,6 @@
 # Target：Attention 定位与整层 GatedDeltaNet 测试
 
-L3 Prefill／Decode 两张 Attention 图已回传逐 head 检查：Prefill 各 head relative-L2 为 72.71%–99.84%，Decode 为 0.10%–0.64%，两图均为十次相同输出。**当前从第 5.1 节重做离线检查继续**，复用已有 AIR、OMC、fixture 和 native dump。下一步定位 golden 的零行与最大误差两侧数值，保持算子和数值调用不变。本页同时保留从零采集、导出与执行步骤；新 capture 已在原 310P 环境采集成功。
+L3 Attention 已回传逐行检查：Prefill 所有 head 的 golden 第 16–31 行全零，只有第 0 行与 actual 整行一致；head6 最大差值处 golden=1769、actual=2.0859375。Prefill 逐 head relative-L2 为 72.71%–99.84%，Decode 为 0.10%–0.64%，各自十次输出相同。**当前执行第 5.1 节独立 CPU 参考检查**，复用已有 AIR、fixture 和 native dump，核验两侧输出与 V 范围；算子和捕获 golden 保持不变。本页同时保留从零采集、导出与执行步骤。
 
 采集仍覆盖四层，供 Attention 和后续整层 GDN 共用。已实现的测试范围如下；本页默认命令只选择 Attention：
 
@@ -248,24 +248,26 @@ Attention 的 `export.json.attention_contract` 会记录 Q shape、actual_seq_le
 
 ### 5.1 Attention 输出检查
 
-对现有产物执行离线检查。它检查源 AIR 的长度常量，以及各 head、每 16 行 Q 块和每行 Q 的数值；输出零行、整行数值相等的位置、两侧绝对值最大值、最大差值处的两侧数值与 query/channel 坐标。所有元素参与统计，坐标从 0 开始，按源码 packed 布局解释。重复调用只有输出 SHA256 相同才合并。原始 capture 无需带到此主机，但 BATCH_ROOT/air 中的源 AIR、air-schema.pb、golden 仍需保留。
+对现有产物执行离线检查。工具记录源 AIR 的长度常量、各 head／16 行块／逐行统计与零行位置。本次增加 `--reference`，按源 AIR 端口绑定 Q/K/V、mask、页表和 allQLen，独立计算 `softmax(scale × QKᵀ + 原 additive mask) × V`，FP64 算术后转 FP16，分别比较 actual 与 captured_golden；五项标准保持不变。输出坐标从 0 开始，按已核对的源码 packed 布局解释。
+
+参考按页表重建有效 KV、按 GQA 关系选 KV head，用 allQLen 控制 KV 长度；`actual_seq_lengths_kv=2048` 保持 mask 行跨度。不会自动添加 causal mask、裁掉 query 行或覆盖原 golden。若整行 mask 都为 -inf，报告 `UNDEFINED_ALL_MASKED_ROWS`，不擅自填零或给整输出通过结论。还会检查两侧输出是否超出对应 V 通道范围；很小的浮点越界只作诊断，不能代替五项验收。原始 capture 无需带到此主机，但 BATCH_ROOT/air 中的源 AIR、air-schema.pb、golden 及捕获输入仍需保留。仅需 NumPy 与原检查工具依赖，不加载 torch_npu。
 
 先同步仓库 main。以下重建已结束的 inspection 报告目录；其他测试产物继续复用，不执行导出、编译或上板：
 
 ```bash
 rm -rf -- "${BATCH_ROOT:?}/inspection"
-python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-attention \
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-attention --reference \
   --batch "$OMC_BATCH" \
   --fixture "$EXECUTION/fixture" --native "$RECOVERY/native" \
   --output "$BATCH_ROOT/inspection"
 
-cat "$BATCH_ROOT/inspection/summary.txt"
-cat "$BATCH_ROOT/inspection/head-summary.csv"
+cat "$BATCH_ROOT/inspection/reference-summary.txt"
 ```
 
-回传 comparison/summary.csv、inspection/summary.txt 和 inspection/head-summary.csv；逐行明细在 query-rows.csv，逐块明细在 query-blocks.csv。summary 的 row_locations 指出每个 head 的全零行和整行数值相等位置。
+本次回传 `inspection/reference-summary.txt`。重点看 `active_V_bounds`、`full_value_cache_abs_max`、mask 第 16–31 行统计，以及 `actual_vs_reference` / `captured_golden_vs_reference` 的五项指标。原逐行、逐块和两侧比较仍在 report.json、query-rows.csv、query-blocks.csv；inspection/summary.txt 保留逐行位置摘要。
 
-当前证据：Prefill 各 head 均有输出，没有出现“只有 head0 有结果”的模式；golden 每个 head 恰有 4096 个零，数量相当于 16 行，但尚未确定是否集中在同一块。head6 最大差值为 1766.9140625，尚不知道哪一侧数值较大。先用新统计区分整块零值、分散零值和误差位置，再决定是否需要独立 Q/K/V+mask 数学参考。不得将这些零直接视为 padding 后裁掉，也不能据此断言 golden 错误。
+当前证据明显指向 Prefill 参考路径需要优先核验：golden 的零行确定集中在所有 head 的第 16–31 行；head6 大值也确定在 golden。actual 的全张量绝对值最大为 3.494140625，仍不能用它代替输入 V 的范围。若这次读取的 V 仅在几的量级，golden=1769 就违反正常 softmax 加权平均的范围约束。独立参考若与 actual 对齐而与 golden 大幅不符，支持参考计算／采集路径异常；若两侧都不符，继续检查共同输入语义与布局。没有原始文件分析前，不提前给 CPro 判通过，也不删除或替换 captured golden。
 
 expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks 保留 null；工具未读取实际 tiling，也未独立证明设备输出布局。非零输出不能证明完整调度，Decode 逐 head L2 较小也不代替五项整输出验收。
 

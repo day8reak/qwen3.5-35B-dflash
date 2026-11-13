@@ -65,6 +65,7 @@ def main():
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'), required=not bool(os.environ.get('CPRO_DDK_ROOT')))
     s.add_argument('--fixture', help='optional prepared execution fixture directory containing manifest.json and per-case inputs')
     s = sub.add_parser('inspect-attention', help='read attention extents, source lengths and per-head/block/row errors; no compile or device run')
+    s.add_argument('--reference', action='store_true', help='also compute independent NumPy FP64 attention from the retained source-bound inputs; leaves original golden unchanged')
     s.add_argument('--batch', required=True, help='OMC batch that produced the attention results')
     s.add_argument('--fixture', required=True, help='matching execution/fixture directory')
     s.add_argument('--native', required=True, help='matching recovered native directory')
@@ -109,7 +110,7 @@ def main():
         result = inspect_qlinear(a.batch, a.output, a.ddk_root, a.fixture)
     elif a.command == 'inspect-attention':
         from qwen35_moe_dflash.target.layer_probe.attention_inspect import inspect_attention
-        result = inspect_attention(a.batch, a.fixture, a.native, a.output, a.capture)
+        result = inspect_attention(a.batch, a.fixture, a.native, a.output, a.capture, a.reference)
     elif a.command == 'inspect-compile':
         from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
         report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root,

@@ -1,6 +1,6 @@
 # Target 精度状态
 
-阶段与标准更新：2026-11-13；Attention 两图已回传逐 head 检查：Prefill relative-L2 **72.71%–99.84%**，Decode **0.10%–0.64%**，各自十次输出相同。Prefill golden 每个 head 恰有 4096 个零，下一步离线定位零行与最大误差两侧数值，尚不能认定 golden 错误。GDN 相邻独立边界 48 项五指标为 **43 PASSED / 5 FAILED**，整层 GDN FP32 state 六图尚待执行。RoPE 四图数值对齐，QuantBatchMatmul 与 RoPE 有效改动已记录。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
+阶段与标准更新：2026-11-13；Attention 两图最新逐行结果：Prefill 所有 head 的 golden 第 **16–31 行全零**，只有第 0 行与 actual 整行一致；head6 的大值位于 golden：**1769 vs actual 2.0859375**。Prefill 逐 head relative-L2 **72.71%–99.84%**，Decode **0.10%–0.64%**，各自十次输出相同。优先核验 Prefill 参考路径，独立 CPU 参考已准备，等待原始文件计算结果。GDN 48 个独立边界为 **43 PASSED / 5 FAILED**，整层 FP32 state 尚待执行；Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**。
 
 **当前浮点标准（CPro / CHS 共用）**：按用户 2026-11-13 指定的下表，五项全部满足才通过；严格比较未四舍五入的值。此标准替换此前 cosine ≥0.9999 和量化 out_proj 单独 L2<2% 的判定。Cache 继续要求整缓存逐位一致，整数／索引／控制量继续精确比较。
 
@@ -104,11 +104,16 @@ INT32 载体内的 packed W4 字节及排布不变，V4444 原属性和可选输
 | 16 个 head 的 relative-L2 范围 | 0.7270917908–0.9983594853 | 0.0010125552–0.0063916135 |
 | 各 head golden 非零数 | 均为 61,440 / 65,536 | 均为 256 / 256 |
 | 各 head actual 非零数 | 65,534–65,536 / 65,536 | 均为 256 / 256 |
+| golden 全零 query 行 | 所有 head 均为 16–31 | 无 |
+| 与 actual 整行数值相等的 query | 所有 head 均只有 0 | 无整行精确相等 |
+| 最大差值处两侧值 | head6 / query239 / channel15：actual=2.0859375，golden=1769 | head8 / query0 / channel99：actual=-0.19140625，golden=-0.182861328125 |
 | NaN / Inf | 两侧均无 | 两侧均无 |
 
-Q 与常量满足多行调用合同；没有“只有 head0 有输出”的模式，但非零值不能证明任务完整执行，observed_total_tasks 仍未知。Prefill 各 head 的 4096 个 golden 零值仅在数量上相当于 16 行，尚未定位为连续行；每 head 约 256 个相等元素也不能直接认定为同一整行。head6 最大差值 1766.9140625 尚未给出两侧值，不能判断异常在 actual 还是 golden。
+Q 与常量满足多行调用合同；没有“只有 head0 有输出”的模式，但非零值不能证明任务完整执行，observed_total_tasks 仍未知。逐行结果已确认：golden 的 4096 个零集中在第 16–31 行，所有 head 一致；所有 head 只有第 0 行与 actual 整行相等。actual 的 head0–7 绝对值最大均为 3.494140625，head8–15 均为 2.39453125；golden 各 head 最大绝对值为 16.53125–1769。最大差值 1766.9140625 来自 golden=1769 与 actual=2.0859375。
 
-**golden 同样需要核验，当前不能断言它有错。** 先用逐行检查定位零值和误差，再以同一捕获 Q/K/V、页表与 mask 建立独立参考，才能区分参考输出、CPro 输出和布局解释的问题。Decode 的 S=1 会使一些序列轴排列差异退化，因此 Decode 接近不能单独证明 Prefill 布局正确。不能把未知零区当 padding 裁掉或放宽门槛。[离线检查命令](target-batch-rerun.md#51-attention-输出检查)复用现有 dump，无需重编译。
+**Prefill golden 的参考计算／采集路径现在是优先排查对象，CPro 尚不能据此判通过。** 固定 16 行零块、后段异常放大的模式值得核查分块写回、行归一化与缓冲区解释；尚未确定具体指令或错误阶段。若实际 V 范围只有几，golden=1769 将违反正常 Attention 非负权重、权重和为 1 的加权平均范围；目前输入 V 范围尚未回传，不能把 actual 的范围当作 V 的范围。
+
+已新增独立 NumPy FP64 Attention 参考，使用同一捕获 Q/K/V、原 additive mask、页表与 allQLen，最终转 FP16，分别计算 actual/reference、captured_golden/reference 五项指标和 V 通道范围越界计数。它不加载设备算子、不覆盖 capture、不新增 causal mask、不裁 query 行；全 -inf mask 行明确报告未定义。页表置换、GQA、KV 尾块、mask、原始文件绑定及所有重复输出的本地 12 项检查通过，用户数据的参考结果仍待回传。Decode 的 S=1 会使一些序列轴排列差异退化，因此 Decode 接近不能单独证明 Prefill 布局正确。[独立参考执行命令](target-batch-rerun.md#51-attention-输出检查)复用现有 dump。
 
 本次未回传整输出五项 comparison 表，不从逐 head L2 反推整输出 L2 或其他四项，也不将 Decode 标为五项通过。150 项历史边界 CSV 中 Attention 整输出 L2 99.6669611% / 0.2509511% 属于此前记录；HTML 的 Attention 节点优先显示本次逐 head 范围。
 
@@ -196,7 +201,7 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 | LinearAttentionConvstateUpdate | 12 项小图编译失败，无数值；原 T64 整图已编译 | 保留失败定位；对照 RefData、双输出和消费者 |
 | RoPE | FP32 旋转后四图零误差，旋转区／未旋转区均数值一致 | 独立边界已对齐；不再复跑，待整图集成验证 |
 | ChunkGatedDeltaRule | Prefill core 1.56%～7.12%，raw state 12.10%～44.60%；6 个 raw state dtype 不保持 | 整层 GDN FP32 state 待执行 |
-| AdnFusedInferAttention | 最新逐 head：Prefill 72.71%–99.84%，Decode 0.10%–0.64%；十次输出相同 | 离线核验 golden 零行和误差两侧值；实际 tiling 与整输出五项待核对 |
+| AdnFusedInferAttention | Prefill golden 第16–31行全零、head6=1769；actual 同位置2.0859375。Decode逐head L2 0.10%–0.64% | 独立 CPU Attention 与 V 范围检查已准备；参考结果、实际 tiling 与整输出五项待回传 |
 
 各小图使用独立捕获的 golden 输入，不统一归因于上游 QKV 误差传播。整缓存通过也不证明图内 alias 或连续状态反馈已经通过。MoE、Router、共享专家、LM head 与完整 40 层仍待覆盖。[旧静态 SVG](assets/target-architecture-accuracy.svg)为历史快照。
 
