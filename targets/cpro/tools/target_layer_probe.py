@@ -58,6 +58,7 @@ def main():
     selection.add_argument('--failed', action='store_true', help='inspect every FAILED case in the retained compile.json; never rerun OMG')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     s.add_argument('--compiler-entry', action='store_true', help='also read OMG/env entry scripts and compare current shell with probe environment preparation; executes neither script nor compiler')
+    s.add_argument('--state-chain', action='store_true', help='also decode compiled OMC and trace whole-GDN output 2 through visible Cast/shape nodes; writes state-summary.txt without weakening the FP32 ABI gate')
     s.add_argument('--reference-ir', nargs='+', help='up to 8 existing IR files; strictly compare selected DDK and retained AIR producer schemas, without compiling')
     s = sub.add_parser('inspect-qlinear', help='read every QLinear AIR/OMC boundary, constant bytes and kernel build arguments; no compilation')
     s.add_argument('--batch', required=True, help='existing OMC batch; automatically includes every QLinear case')
@@ -114,7 +115,8 @@ def main():
     elif a.command == 'inspect-compile':
         from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
         report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root,
-                                     compiler_entry=a.compiler_entry, reference_ir=a.reference_ir)
+                                     compiler_entry=a.compiler_entry, reference_ir=a.reference_ir,
+                                     state_chain=a.state_chain)
         result = dict(status=report['status'], report=str(Path(a.output).resolve()/'report.json'),
             summary=str(Path(a.output).resolve()/'summary.txt'),
             model_compilation='NOT_RUN', device_execution='NOT_RUN',
@@ -122,6 +124,8 @@ def main():
                 source_error=row.get('source_error'), ir_dumps=len(row['ir_dumps']),
                 ir_inventory=row['ir_inventory']['status'])
                 for name, row in report['cases'].items()})
+        if a.state_chain:
+            result['state_summary'] = str(Path(a.output).resolve()/'state-summary.txt')
     elif a.command == 'compare':
         result = batch.compare(a.fixture, a.native, selection=a.cases, atol=a.atol, rtol=a.rtol)
         root = new_output(a.output)

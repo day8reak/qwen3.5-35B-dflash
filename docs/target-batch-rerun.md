@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**整层 GDN 六图编译失败的首个已定位问题已修复：ConvState 输出在 DDK 中已是四维，旧适配再次 Unsqueeze 变成五维，导致 Conv2D 校验失败。当前按[第 7.3 节](#73-修复-convstate--conv2d-的重复升维)重导出并编译六图。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
+**当前停在整层 GDN 上板前的 FP32 状态接口检查：L0 Prefill 的 OMC 第 3 个输出实际声明为 FP16，设备未执行。按[第 7.4 节](#74-编译后-state-仍为-fp16只读定位)读取已有 AIR／IR／OMC 的状态链，暂不重导出或重编译。** ConvState→Conv2D 重复升维已修复；最新回传尚不足以确认六图全部编译成功。Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -293,7 +293,7 @@ expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks
 
 ## 7. 后续整层 GDN 测试
 
-首次 AIR 导出已成功，随后编译暴露重复升维问题；本次按[第 7.3 节](#73-修复-convstate--conv2d-的重复升维)更新并重试。下面是通用导出命令：复用第 1.1 节的同一 golden-capture，在已跑通的 CPro AIR 导出环境生成六张整层 GDN 图。
+首次 AIR 导出已成功，随后重复升维问题已修复。当前已有 OMC，先执行[第 7.4 节](#74-编译后-state-仍为-fp16只读定位)定位状态类型。下面保留通用导出命令：复用第 1.1 节的同一 golden-capture，在已跑通的 CPro AIR 导出环境生成六张整层 GDN 图。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
@@ -437,7 +437,7 @@ cat "$COMPARISON/summary.csv"
 
 ### 7.2 GDN 六图编译失败：读取已有日志
 
-最新回传的 compile.json 总状态为 PARTIAL，但六个 case 全部 FAILED，即 **0/6 编译成功**。重复出现的两份 JSON 来自 compile 命令打印与随后 cat，不能据此认为运行了两轮。当前摘要只有 CalledProcessError／OMG return code 1，尚无具体失败节点或原因；tbe_compatibility_requested=true 只记录请求启用兼容，不能证明 worker 适配或 FP32 state 已被接受。
+首次回传的 compile.json 总状态为 PARTIAL，但六个 case 全部 FAILED，即 **0/6 编译成功**。重复出现的两份 JSON 来自 compile 命令打印与随后 cat，不能据此认为运行了两轮。当时摘要只有 CalledProcessError／OMG return code 1；随后定位见第 7.3 节，当前状态见第 7.4 节。tbe_compatibility_requested=true 只记录请求启用兼容，不能证明 worker 适配或 FP32 state 已被接受。
 
 在刚才编译的终端执行，先提供 L0 Prefill、Decode 两份日志末尾。此命令只读取文件：
 
@@ -559,3 +559,38 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 **C. 编译和验证**
 
 回到第 7.1 节 A、B，沿用同一 DDK、TBE 兼容与 origin-format 设置，编译这六张新 AIR。成功后再执行 C–E 上板、回收和比较。若出现新的失败节点，回传新 compile.log；本次修复不预先代表整层已经编译或精度通过。
+
+### 7.4 编译后 state 仍为 FP16：只读定位
+
+最新错误为 `l00_c00_gdn_layer_all: compiled output 2 must remain float32, observed float16`。output 2 是第三个输出 recurrent_state_fp32，实际编译描述却是 FP16。失败阶段为 prepare，设备执行和数值验证均为 NOT_RUN。这说明至少 L0 Prefill 已生成可读取的 OMC，尚未取得六图完整编译状态。
+
+源图适配声明 FP32 initial_state 和末态；该声明仍可能被目标形状／类型推导或后续转换改变。现在不能断言具体哪一层改变了类型，也不能仅据此断言算子完全不支持 FP32。保留现有类型门槛和模型，先查看状态生产者、Cast 以及编译中间图。
+
+在存放当前 air／omc 的主机执行，沿用编译时的 DDK。此命令只读已有产物，输出固定 state-inspection 目录；不需要 HDC、runtime 配置或重新编译。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export OMC_BATCH="$BATCH_ROOT/omc"
+export STATE_INSPECTION="$BATCH_ROOT/state-inspection"
+export PYTHONDONTWRITEBYTECODE=1
+(
+set -e
+: "${CPRO_DDK_ROOT:?请设置编译这批 OMC 时的 DDK 根目录}"
+test -f "$OMC_BATCH/compile.json"
+test -f "$BATCH_ROOT/air/manifest.json"
+test ! -e "$STATE_INSPECTION"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
+  --batch "$OMC_BATCH" --ddk-root "$CPRO_DDK_ROOT" \
+  --cases l00_c00_gdn_layer_all l01_c00_gdn_layer_all l02_c00_gdn_layer_all \
+          l00_c01_gdn_layer_all l01_c01_gdn_layer_all l02_c01_gdn_layer_all \
+  --state-chain --output "$STATE_INSPECTION"
+)
+cat "$STATE_INSPECTION/state-summary.txt"
+```
+
+目录已存在时先直接读取 state-summary.txt，不覆盖现有 AIR／OMC 或 execution。回传此摘要；详细描述与原始编译日志摘录保存在同目录 report.json。
+
+摘要列出六项实际编译状态，以及各阶段 NetOutput 槽位、ChunkGatedDeltaRule 输入输出和第三输出的反向连接。Cast 两端 dtype 分别记录；遇到 GraphOp 则保留其可见输入输出并停止推断内部算术。IR 子图的槽位不能直接等同于整层输出。缺少 IR 时报告可能为 PARTIAL，OMC 的可见类型证据仍有效；这不是新的编译或精度判定。末端补 FP16→FP32 Cast 无法恢复已损失的状态信息。

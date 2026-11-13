@@ -36,7 +36,8 @@ def metadata_attributes(value):
     return dict(attributes=metadata, omitted_attributes=sorted(set(attrs)-set(metadata)))
 
 
-def graph_metadata(path, schema, *, focus_type=None, raw=None, compare_interpretation=False):
+def graph_metadata(path, schema, *, focus_type=None, raw=None, compare_interpretation=False,
+                   compiled_metadata=False):
     raw = bounded_bytes(path, 64 << 20) if raw is None else raw
     kind, decoded, _ = _decode(schema, raw)
     enums = schema.enums[schema.package + '.DataType']
@@ -53,6 +54,11 @@ def graph_metadata(path, schema, *, focus_type=None, raw=None, compare_interpret
                         inputs=node.get('input', []), **metadata_attributes(node),
                         input_desc=[descriptor(d, enums) for d in node.get('input_desc', [])],
                         output_desc=[descriptor(d, enums) for d in node.get('output_desc', [])]))
+                    if compiled_metadata:
+                        for desc in nodes[-1]['input_desc'] + nodes[-1]['output_desc']:
+                            desc['dtype_evidence'] = 'COMPILED_METADATA_NOT_RUNTIME_OR_INTERNAL_ARITHMETIC'
+                            if desc.get('shape_evidence') == 'SOURCE_DESCRIPTOR_DIMENSIONS':
+                                desc['shape_evidence'] = 'COMPILED_DESCRIPTOR_DIMENSIONS'
                 counts = dict(Counter(n['type'] for n in nodes))
                 total = len(nodes)
                 if focus_type:
@@ -215,7 +221,7 @@ def compiler_entry_metadata(ddk, inherited=None):
 
 
 def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_entry=False,
-                        reference_ir=None):
+                        reference_ir=None, state_chain=False):
     root = Path(batch).resolve()
     compiled = json.loads((root/'compile.json').read_text())
     manifest = json.loads((root/'manifest.json').read_text())
@@ -232,6 +238,8 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
         raise ValueError('select distinct cases from the AIR manifest')
     if compiler_entry and not ddk_root:
         raise ValueError('compiler-entry inspection requires the selected DDK root')
+    if state_chain and (not ddk_root or any(by_name[name]['kind'] != 'gdn_layer' for name in cases)):
+        raise ValueError('state-chain inspection requires whole GDN cases and the selected DDK root')
     references = [Path(p).resolve() for p in (reference_ir or [])]
     if references and (not ddk_root or len(references) > 8 or len(set(references)) != len(references)):
         raise ValueError('reference IR requires the selected DDK and at most 8 distinct files')
@@ -277,7 +285,8 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
             row['export_evidence'] = {k: exported.get(k) for k in
                 ('export_adjustments', 'export_graph_check', 'source_files', 'torch_version', 'torchair_version',
                  'source_contract', 'qlinear_factory', 'qlinear_resolution', 'target_weights',
-                 'captured_weights', 'exported_weights', 'internal_boundaries')}
+                 'captured_weights', 'exported_weights', 'internal_boundaries', 'output_contract',
+                 'candidate_graph_check')}
             row['source_schema_binding'] = 'CURRENT_RETAINED_DESCRIPTOR; OLDER_EXPORT_HAS_NO_SCHEMA_HASH'
             if references:
                 key = hashlib.sha256(schema_bytes).hexdigest()
@@ -336,6 +345,26 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
             except Exception as exc:
                 item.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
                 result['status'] = 'PARTIAL'
+        if state_chain:
+            from .state_inspect import state_context
+            from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
+            compiled_graph = row['compiled_graph'] = dict(status='NOT_COMPILED')
+            if row['compilation'].get('status') == 'COMPILED':
+                try:
+                    if compiler_schema is None:
+                        raise ValueError('selected DDK schema unavailable')
+                    model = checked(root, row['compilation']['omc'])
+                    part = next(p for p in read_container(model)['partitions'] if p['type'] == 0)
+                    compiled_graph.update(graph_metadata(model, compiler_schema,
+                        raw=read_partition(model, part), compiled_metadata=True),
+                        omc=row['compilation']['omc'])
+                except Exception as exc:
+                    compiled_graph.update(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
+                    result['status'] = 'PARTIAL'
+            row['state_chain'] = [
+                dict(stage=stage, **state_context(metadata))
+                for stage, metadata in [('SOURCE_AIR', row.get('source_graph', {})),
+                    *[(item['path'], item) for item in row['ir_dumps']], ('COMPILED_OMC', compiled_graph)]]
         save_json(output/'report.json', result)
     if references:
         result['reference_ir'] = []
@@ -408,4 +437,7 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
             lines.append('source_error=' + row['source_error'])
         lines.append('')
     (output/'summary.txt').write_text('\n'.join(lines) + '\n')
+    if state_chain:
+        from .state_inspect import state_summary
+        (output/'state-summary.txt').write_text(state_summary(result))
     return result

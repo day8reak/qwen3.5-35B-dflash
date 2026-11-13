@@ -1,6 +1,6 @@
 # Target 精度状态
 
-阶段与标准更新：2026-11-13；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。整层 GDN 首次六图编译全失败；L0 两阶段已定位并修复 ConvState→Conv2D 重复升维，待重导出和编译验证；GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
+阶段与标准更新：2026-11-13；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。整层 GDN 重复升维已修复；最新回传停在 prepare：**L0 Prefill 编译输出 2 为 FP16，未满足 FP32 recurrent state 接口，设备未执行**。六图完整编译状态尚待回传，当前读取已有 AIR／IR／OMC 状态链；GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
 **当前浮点标准（CPro / CHS 共用）**：按用户 2026-11-13 指定的下表，五项全部满足才通过；严格比较未四舍五入的值。此标准替换此前 cosine ≥0.9999 和量化 out_proj 单独 L2<2% 的判定。Cache 继续要求整缓存逐位一致，整数／索引／控制量继续精确比较。
 
@@ -43,6 +43,8 @@ L0–L2 × Prefill／Decode 的 48 个独立边界已回传完整五指标：dec
 按用户要求，下一组改测整个 GatedDeltaNet 层：五个投影、ConvState、卷积、SiLU、门控、Q/K 重复、GDN、gated norm 和 out_proj 在同一张图真实串联。输入捕获 state 数值转 FP32，initial_state、last_recurrent_state、层内 writeback 为 FP32，三个输出分别比较 hidden、new_conv_state 与原始 FP32 raw-state golden。仅改变输出类型不能证明内核累加精度；新流程检查源 AIR 和编译后可见 state 边界，拒绝用末端 FP16→FP32 Cast 掩盖半精度 producer。DDK 内核是否支持需实际编译验证。
 
 保留捕获 T256/T1、effective_length、chunk64/1、权重和 golden；六图 GDN 共 18 输出，具体见[当前测试命令](target-batch-rerun.md)。Attention 两图已先行执行并回传下述检查；整层 GDN 尚无设备结果，也不包含连续 Prefill→Decode 状态反馈。
+
+最新 FP32 实验在准备阶段被真实 OMC 描述拦截：L0 Prefill 第三个输出为 FP16。源 AIR 声明不能替代编译接口，更不能证明内部累加；尚未确定是算子类型推导还是后续转换。按[状态链检查命令](target-batch-rerun.md#74-编译后-state-仍为-fp16只读定位)定位，不放宽 dtype 门槛，不把该报错记作一次设备精度失败。
 
 ## QuantBatchMatmul：保留的改动
 
