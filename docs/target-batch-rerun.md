@@ -1,6 +1,6 @@
 # Target：Attention 定位与整层 GatedDeltaNet 测试
 
-旧 target-layer-accuracy 产物目录及 golden capture 已删除。本页从重新采集开始，所有新产物放在 target/tests 下。当前先定位 Attention：**只导出、编译 L3 Prefill／Decode 两张 Attention 图**，保持算子实现和原数值调用不变，回收后按 head／16 行 Q 块查看误差。旧报告数值不能代替已删除的输入或输出张量，也不能据此重建原 golden。
+旧 target-layer-accuracy 产物目录及 golden capture 已删除。用户已回传：换回原 310P 参考环境后重新采集成功，**现在从第 2 节导出 AIR 继续**，复用新 capture。本页保留从零采集步骤，所有新产物放在 target/tests 下。当前只导出、编译 L3 Prefill／Decode 两张 Attention 图，保持算子实现和原数值调用不变，回收后按 head／16 行 Q 块查看误差。采集成功不代表 Attention 的 CPro 精度通过。
 
 采集仍覆盖四层，供 Attention 和后续整层 GDN 共用。已实现的测试范围如下；本页默认命令只选择 Attention：
 
@@ -149,7 +149,7 @@ print('恢复原 310P 参考环境后，重新执行第 1.1 节')
 PY_QMATMUL_RETRY
 ```
 
-重跑成功后以新 manifest 的 CAPTURED 为准；当前还没有新的成功 golden。若原成功环境也失败，回传同次 qlinear-audit.json 和错误，再用已保存的 qlinear-failure.pt 做单算子重放，先定位环境与后端差异。
+用户随后回传换回原参考环境后采集成功，本次无需显式 group256 或继续重放失败算子。第 2 节仍会检查所选新 capture 的 CAPTURED 状态与两次 Attention 边界；原始 manifest 未回传本地，成功状态来自用户报告。这证明原参考环境的采集流程恢复，尚未完成新 Attention AIR／OMC 的数值验证。
 
 ## 2. 导出 AIR
 
