@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import numpy as np
+from qwen35_moe_dflash.common.accuracy import POLICY, THRESHOLDS
 from .common import KIND, DTYPES, checked, identity, metrics, new_output, read_array, save_json, sha
 from qwen35_moe_dflash.toolchain.compiler_entry import (
     DEFAULT_PROFILE, SOURCED_PROFILE, UNSPECIFIED_PLATFORM,
@@ -359,7 +360,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     metric['rope_partitions'] = partition_metrics(actual, golden, case['rope_contract']['rotary_dim'])
                 if case['kind'] == 'cache':
                     identical = actual.dtype == golden.dtype and actual.tobytes() == golden.tobytes()
-                    metric.update(gate='EXACT_WHOLE_CACHE_BITS', passed=identical)
+                    metric.update(gate='EXACT_WHOLE_CACHE_BITS', passed=identical and metric['passed'])
                     source_spec = next(s for s in case['inputs'] if s['fixture_index'] == 0)
                     before = np.fromfile(fixture/case['case']/f'input_{source_spec["index"]}.bin', dtype=DTYPES[source_spec['dtype']]).reshape(golden.shape)
                     # Classify preserved positions using the executed golden, not an assumed scatter ABI.
@@ -367,7 +368,8 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                         raise ValueError('cache golden dtype differs from its input boundary')
                     bits = np.dtype(f'u{golden.dtype.itemsize}')
                     preserved = before.view(bits) == golden.view(bits)
-                    changed = actual != golden
+                    changed = (actual.view(bits) != golden.view(bits)
+                               if actual.dtype == golden.dtype else actual != golden)
                     metric.update(mismatched_preserved_elements=int((changed & preserved).sum()),
                                   mismatched_updated_elements=int((changed & ~preserved).sum()))
                 tensors.append(metric)
@@ -393,4 +395,5 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
         reference=meta.get('reference', {}),
         scope='CPro boundary replay with 310P inputs; isolated failures are not proof of full-graph root cause',
         first_failure_order='CALL_LAYER_CPRO_DEPENDENCY_ORDER; INDEPENDENT_BRANCHES_HAVE_NO_UNIQUE_FIRST_CAUSE',
-        cpro_continuous_state_feedback='NOT_TESTED', thresholds=dict(atol=atol, rtol=rtol))
+        cpro_continuous_state_feedback='NOT_TESTED', numerical_policy=POLICY,
+        thresholds=dict(metrics=THRESHOLDS, atol=atol, rtol=rtol))

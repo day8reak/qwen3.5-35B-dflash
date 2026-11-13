@@ -26,12 +26,12 @@
 <p>最新 <strong>8 个 Cache 图均有数值</strong>：Prefill K/V × 浮点/整数 4/4 PASSED，Decode 4/4 FAILED。Decode K relative-L2 <strong>99.8086%</strong>、V <strong>99.6897%</strong>；两种索引在回传精度下相同，尚缺配对输出哈希。</p>
 <p>补充的 Decode V 明细：<strong>130,966 个不一致元素全部在 golden 相对输入未变化区，变化区不一致数为 0</strong>。最大误差位置 [0,0,0,6] 为实际 0、golden 3.494140625。该片段证实历史保留失败；未提供 case ID，不能直接归到两个索引版本的全部输出。</p>
 <div class="table-scroll"><table class="focus-table"><thead><tr><th scope="col">算子 / 优先级</th><th scope="col">最新结果</th><th scope="col">下一步</th></tr></thead><tbody>
-<tr><td>QuantBatchMatmul <span class="pill low">保留改动</span></td><td>38 项已有 scale 适配后的数值，8 项 out_proj 按用户 L2&lt;2% 通过。</td><td>weight scale 真实转 FP16；per-token 在前端保留 FP32，通过 meta 后在 GE Reshape 为 [M] 并 Cast FP16。合入实际工厂与 converter。</td></tr>
+<tr><td>QuantBatchMatmul <span class="pill low">保留改动</span></td><td>38 项已有 scale 适配后的数值，8 项 out_proj 按旧 L2&lt;2% 口径通过；五项待补。</td><td>weight scale 真实转 FP16；per-token 在前端保留 FP32，通过 meta 后在 GE Reshape 为 [M] 并 Cast FP16。合入实际工厂与 converter。</td></tr>
 <tr><td>RoPE <span class="pill low">数值对齐</span></td><td>四项整输出、旋转区、未旋转区均零误差；dtype 保持、重复稳定。</td><td>保留显式 FP32 旋转路径；单模块不再复跑，待整图串联验证。</td></tr>
 <tr><td>AdnFusedInferAttention <span class="pill bad">当前</span></td><td>Prefill L2 99.67%；Decode 0.251%。</td><td>优先处理 Prefill；修复后推进 L3 串联和四层 Prefill，仍需检查 GDN、MoE／LM head 及状态。</td></tr>
 <tr><td>CacheUpdate <span class="pill bad">待处理</span></td><td>Prefill 4/4 逐位通过；Decode 4/4 失败。整数索引已越过此前构建阻塞，未改善 Decode。</td><td>核对独立输出是否继承完整输入缓存；检查 functional converter、原位/独立输出契约和实际输出绑定。先读取已有报告，无需重编。</td></tr>
 </tbody></table></div>
-<p><strong>量化 out_proj：按用户 relative-L2 &lt;2% 的口径，已有 8 项全部通过</strong>，包括 L0 的 1.3766%／1.7625%。原始 METRICS_RECORDED 保留，验收结论另列；Cache 继续要求整缓存逐位一致，其他模块不套用 2%。</p>
+<p><strong>当前标准：CPro / CHS 共用五项 AND</strong>：CosineSimilarity &gt;0.99、RelativeEuclideanDistance &lt;0.05、KL &lt;0.005、RMSE &lt;1.0、MeanRelativeError &lt;1.0。使用严格不等号；Cache 仍须整缓存逐位一致。8 项 out_proj 的旧 L2&lt;2% 通过观测保留，缺少新指标时不标成五项通过。</p>
 <div class="focus-notes"><p>修好 Attention 可以推进 Prefill 联调，尚不能宣称完整 Prefill 精度通过：GDN Prefill core 仍有 1.56%～7.12% 偏差，raw state 有 12.10%～44.60% 且 dtype 不保持；ConvState 小图 12 项编译失败，但旧 T64 整图曾编译；MoE／LM head 尚待覆盖。已对齐的 RoPE、已通过的 Prefill Cache 和 QLinear 不再复跑。</p></div>
 <p class="hint">2026-11-12：统一展示各模块最新实测结果。38 项 QLinear、8 项 Cache、4 项 RoPE 已替换为各自最新结果，其余 100 项保留最近一次实测值；没有新结果时不置灰，也不重复显示旧值。这是模块进度汇总，不代表一次整图执行。Cache 历史保留修复尚无新数值，继续保留失败状态。<a href="../target-accuracy-status.md#decode-cache-原因分析">原因分析</a> · <a href="../target-batch-rerun.md#先读已有报告无需重编或上板">读取已有报告</a></p>
 </section>
@@ -45,7 +45,7 @@
 <div id="phase-counts" class="legend"></div></section>
 <section class="card"><h2>3. 40 层导航</h2><p class="hint">点击任意层展开其两条残差和注意力 / MoE 子图。L0–L3 展示各模块最近一次实测结果；L4–L39 不套用其他层的数值。</p><div class="navigator" id="navigator"></div></section>
 <div id="layers"></div>
-<footer><p id="metrics-summary"></p><p>红色表示原始 FAILED 或超出图示阈值。量化 out_proj 按用户 relative_l2 &lt; 0.02 验收，其余浮点边界沿用 &gt; 0.01 图示提示，不自动判通过；Cache 用整缓存逐位门槛。保留原始状态，验收另列。ConvState 橙色表示最近一次小图编译失败，尚无数值。重复稳定不等于计算正确。</p>
+<footer><p id="metrics-summary"></p><p>红色表示原始 FAILED、重复不稳定或已知指标未达当前五项标准。缺失指标显示“未记录”，不能用 L2 反推 cosine 或 KL。青色只表示已有指标未超限；全部五项达标且重复稳定才通过，Cache 另须整缓存逐位一致。ConvState 橙色表示最近一次小图编译失败，尚无数值。历史原始状态保留。</p>
 <p>源码依据：原 Target 的 DecoderLayer 两次 residual + 运算，及 export wrapper 的 hidden_states = layer_outputs[0] 层间传递。此图为模型语义结构，实际编译融合以 AIR / OMC 为准；不含 Draft、视觉编码器和 MTP。</p>
 <p>单文件 HTML，无外部脚本、图片、字体或网络请求；下载后直接用浏览器打开。<a href="../../specs/target-latest-boundary-metrics.csv">各模块最新指标 CSV</a> · <a href="../target-accuracy-status.md">状态说明</a></p></footer>
 <dialog id="metrics-dialog"><div class="dialog-header"><h2 id="dialog-title">边界指标</h2><button id="dialog-close">关闭</button></div><div id="dialog-content"></div></dialog>
@@ -54,9 +54,17 @@
 "use strict";
 const METRICS=JSON.parse(document.getElementById("metrics-data").textContent);
 const outProjGate=r=>["linear_attn_out_proj","self_attn_o_proj"].includes(r.point);
-const flagged=r=>r.status==="FAILED"||(outProjGate(r)?r.relative_l2>=0.02:r.relative_l2>0.01);
+const metricLimits={cosine:[">",0.99],relative_l2:["<",0.05],kl_divergence:["<",0.005],rmse:["<",1],mean_relative_error:["<",1]};
+const metricPass=(key,value)=>Number.isFinite(value)&&(metricLimits[key][0]===">"?value>metricLimits[key][1]:value<metricLimits[key][1]);
+const failedMetrics=r=>Object.keys(metricLimits).filter(k=>Number.isFinite(r[k])&&!metricPass(k,r[k]));
+const flagged=r=>r.status==="FAILED"||r.stable===false||failedMetrics(r).length>0;
 const ropeAligned=r=>r.point==="rope"&&r.status!=="FAILED"&&r.max_abs===0&&r.relative_l2===0&&r.dtype_preserved===true&&r.stable===true;
-const acceptance=r=>ropeAligned(r)?"数值对齐：零误差":outProjGate(r)?(Number.isFinite(r.relative_l2)&&r.relative_l2<0.02?"通过：用户 L2<2%":"未通过：用户 L2<2%"):(r.status==="PASSED"?"通过":r.status==="FAILED"?"失败":"未设浮点验收门槛");
+const acceptance=r=>{
+ if(flagged(r))return "未通过"+(failedMetrics(r).length?"："+failedMetrics(r).join(", "):"");
+ if(r.point.startsWith("cache_"))return r.status==="PASSED"?"整缓存逐位通过（原报告）":"整缓存逐位待确认";
+ if(Object.keys(metricLimits).every(k=>metricPass(k,r[k])))return r.stable===true?"五项通过":"五项达标；稳定性待确认";
+ return (ropeAligned(r)?"数值零误差；":outProjGate(r)&&r.relative_l2<0.02?"旧 L2<2% 通过；":"")+"五项指标待补";
+};
 const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
 const E=s=>String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
 let mode="compare", serial=0;
@@ -223,7 +231,8 @@ function moeGraph(i){
 }
 function metricsTable(rs){
  if(!rs.length)return '<p class="notice">此范围尚无数值回传，不以未测代替通过。</p>';
- return '<div class="table-scroll"><table><thead><tr><th>阶段</th><th>边界</th><th>输出</th><th>relative-L2</th><th>原始比值</th><th>max_abs</th><th>dtype保持</th><th>原始状态</th><th>当前验收</th></tr></thead><tbody>'+rs.map(r=>'<tr class="'+(flagged(r)?"over":"")+'"><td>'+P(r.phase)+'</td><td>'+E(r.point)+'</td><td>'+E(r.output)+'</td><td class="metric">'+fmt(r.relative_l2)+'</td><td>'+E(r.relative_l2)+'</td><td>'+E(r.max_abs)+'</td><td>'+r.dtype_preserved+'</td><td>'+E(r.status)+'</td><td>'+E(acceptance(r))+'</td></tr>').join("")+"</tbody></table></div>";
+ const value=v=>Number.isFinite(v)?E(v):"未记录";
+ return '<div class="table-scroll"><table><thead><tr><th>阶段</th><th>边界</th><th>输出</th><th>relative-L2</th><th>原始比值</th><th>cosine</th><th>KL</th><th>RMSE</th><th>MeanRE</th><th>max_abs</th><th>dtype保持</th><th>原始状态</th><th>当前验收</th></tr></thead><tbody>'+rs.map(r=>'<tr class="'+(flagged(r)?"over":"")+'"><td>'+P(r.phase)+'</td><td>'+E(r.point)+'</td><td>'+E(r.output)+'</td><td class="metric">'+fmt(r.relative_l2)+'</td><td>'+value(r.relative_l2)+'</td>'+[r.cosine,r.kl_divergence,r.rmse,r.mean_relative_error,r.max_abs].map(v=>'<td>'+value(v)+'</td>').join("")+'<td>'+r.dtype_preserved+'</td><td>'+E(r.status)+'</td><td>'+E(acceptance(r))+'</td></tr>').join("")+"</tbody></table></div>";
 }
 function layerBody(i){
  const ps=phases(),mix=i%4===3?"Full Attention":"GDN";
@@ -266,7 +275,7 @@ function openMetric(el){
  const i=+el.dataset.layer,p=el.dataset.phase,points=el.dataset.points.split(";"),output=el.dataset.output||null;
  $("#dialog-title").textContent="L"+i+" · "+P(p)+" · "+points.join(" / ");
  const rs=rowsFor(i,p,points,output);
- $("#dialog-content").innerHTML='<p>本模块最新实测结果</p>'+(points.includes("convstate_update")&&i<3?'<p class="notice">ConvState 两个输出小图最近一次编译失败；尚无数值。</p>':metricsTable(rs))+(points.some(p=>p==="cache_k"||p==="cache_v")?'<p class="notice">Cache 同时列出最新浮点／整数对照，旧结果已替换。Decode V 明细中，golden 未变化区有 130,966 个数值不一致，变化区为 0；该片段未附 case ID，不分别绑定到两种索引。</p>':"")+'<p class="hint">量化 out_proj 按用户 L2&lt;2% 验收；其他浮点边界颜色仅作图示提示。保留原始测量状态。</p>';
+ $("#dialog-content").innerHTML='<p>本模块最新实测结果</p>'+(points.includes("convstate_update")&&i<3?'<p class="notice">ConvState 两个输出小图最近一次编译失败；尚无数值。</p>':metricsTable(rs))+(points.some(p=>p==="cache_k"||p==="cache_v")?'<p class="notice">Cache 同时列出最新浮点／整数对照，旧结果已替换。Decode V 明细中，golden 未变化区有 130,966 个数值不一致，变化区为 0；该片段未附 case ID，不分别绑定到两种索引。</p>':"")+'<p class="hint">当前按五项标准验收，缺项不判通过；旧数值和旧状态保留，无需重新编译。</p>';
  $("#metrics-dialog").showModal();
 }
 document.addEventListener("click",e=>{
@@ -280,7 +289,7 @@ $("#expand-tested").onclick=()=>{for(const i of new Set(METRICS.map(r=>r.layer))
 $("#collapse-all").onclick=()=>{$$(".layer-card").forEach(el=>el.open=false);openLayers.clear();updateNavigation()};
 function exportSVG(){
  const svgs=$$("svg[data-export]").filter(el=>!el.closest("details:not([open])"));
- let y=165,content='<rect width="1605" height="165" fill="#f4f7fb"/><text x="24" y="40" font-size="28" font-family="sans-serif" fill="#182c46">Target: '+E(mode)+' / 层间直连 + 每层两次残差</text><text x="24" y="76" font-size="18" font-family="sans-serif" fill="#61738b">红色：FAILED / 超限；各模块最新实测结果；更新于 2026-11-12</text><text x="24" y="110" font-size="18" font-family="sans-serif" fill="#61738b">量化 out_proj L2&lt;2% 通过；Cache 逐位一致；其他青色不代表验收</text><text x="24" y="144" font-size="18" font-family="sans-serif" fill="#61738b">紫色实线：层内 identity 残差；蓝色虚线：状态读写 / 跨步反馈；每层 MoE 结构相同</text>';
+ let y=165,content='<rect width="1605" height="165" fill="#f4f7fb"/><text x="24" y="40" font-size="28" font-family="sans-serif" fill="#182c46">Target: '+E(mode)+' / 层间直连 + 每层两次残差</text><text x="24" y="76" font-size="18" font-family="sans-serif" fill="#61738b">红色：FAILED / 超限；各模块最新实测结果；标准更新于 2026-11-13</text><text x="24" y="110" font-size="18" font-family="sans-serif" fill="#61738b">CPro / CHS 五项全部达标；Cache 逐位一致；缺项待补</text><text x="24" y="144" font-size="18" font-family="sans-serif" fill="#61738b">紫色实线：层内 identity 残差；蓝色虚线：状态读写 / 跨步反馈；每层 MoE 结构相同</text>';
  const used=new Set();
  for(const el of svgs){
   if(used.has(el))continue;
@@ -302,7 +311,7 @@ $("#export-svg").onclick=()=>{
  $("#toast").textContent="已导出当前阶段及已展开区域；折叠的 MoE 不会加入导出。";
 };
 $("#overview").innerHTML=overview();$("#timeline").innerHTML=timeline();
-$("#metrics-summary").textContent="各模块最新结果共 150 项：38 项 QLinear、8 项 Cache、4 项 RoPE、100 项其他边界；Prefill／Decode 各 75 项。8 个量化 out_proj 按 L2<2% 通过，RoPE 4 项数值零误差；Cache Prefill 4 项通过、Decode 4 项失败。来自各模块最近一次独立测试，完整状态反馈仍未验证。";
+$("#metrics-summary").textContent="各模块最新结果共 150 项：38 项 QLinear、8 项 Cache、4 项 RoPE、100 项其他边界；Prefill／Decode 各 75 项。8 个量化 out_proj 曾按旧 L2<2% 通过，RoPE 4 项数值零误差；五项新指标缺项不补造。Cache Prefill 4 项通过、Decode 4 项失败。来自各模块最近一次独立测试，完整状态反馈仍未验证。";
 buildLayers();setMode(mode);
 window.targetDiagram={setMode,exportSVG,get metrics(){return METRICS},overCount};
 </script></main></body></html>

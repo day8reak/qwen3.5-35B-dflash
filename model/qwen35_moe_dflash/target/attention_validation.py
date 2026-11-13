@@ -8,6 +8,7 @@ import numpy as np
 
 from qwen35_moe_dflash.common.artifacts import checked_file
 from qwen35_moe_dflash.common.hashing import sha256_file
+from qwen35_moe_dflash.common.accuracy import POLICY, THRESHOLDS
 from qwen35_moe_dflash.execution.runtime_config import read_json
 from qwen35_moe_dflash.execution.run_layout import _save
 from . import gdn_probe, cache_probe
@@ -159,6 +160,8 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
                 metrics = gdn_probe.metrics(actual, expected)
                 metrics['bytes_equal'] = actual_raw == expected_raw
                 if written is not None:
+                    metrics.update(gate='EXACT_WHOLE_CACHE_BITS',
+                                   passed=metrics['passed'] and metrics['bytes_equal'])
                     bad = actual.view('<u2') != expected.view('<u2')
                     metrics.update(mismatched_fp16_elements=int(bad.sum()),
                         mismatched_written_elements=int((bad & written).sum()),
@@ -171,20 +174,19 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
         finite = all(v['nonfinite_actual'] == v['nonfinite_golden'] == 0 for v in values)
         exact = all(v['bytes_equal'] for v in values)
         status = ('FAILED' if not finite or not stable or (written is not None and not exact)
-                  else 'PASSED' if written is not None else 'METRICS_RECORDED')
+                  or not all(v['passed'] for v in values) else 'PASSED')
         rows.append(dict(case=name, status=status, family=case['family'],
             repeat_bitwise_stable=stable, finite=finite, all_calls_bytes_equal=exact,
-            numerical_gate='EXACT_WHOLE_CACHE_BITS' if written is not None else 'NO_CALIBRATED_ERROR_THRESHOLD',
+            numerical_gate='EXACT_WHOLE_CACHE_BITS' if written is not None else POLICY,
             invocations=invocations, runner_receipt_sha256=sha256_file(receipt_path),
             graphop_counts=case['graphop_counts'], model=case['model'], api_us=times))
     failed = any(r['status'] == 'FAILED' for r in rows)
-    metrics_only = any(r['family'] == 'gdn' for r in rows)
     complete = set(selected) == set(meta['planned_cases'])
-    status = 'NUMERICAL_FAILED' if failed else 'METRICS_RECORDED' if metrics_only else 'PASSED'
+    status = 'NUMERICAL_FAILED' if failed else 'PASSED'
     if not complete and not failed:
         status = 'PARTIAL'
-    return dict(status=status, numerical_validation='FAILED' if failed else
-        'METRICS_ONLY_NO_CALIBRATED_THRESHOLD' if metrics_only else 'PASSED',
+    return dict(status=status, numerical_validation='FAILED' if failed else 'PASSED',
+        numerical_policy=POLICY, thresholds=THRESHOLDS,
         cases=rows, validated_cases=selected, requested_cases=requested,
         coverage_complete=complete, planned_cases=meta['planned_cases'],
         uncompiled_cases=meta['uncompiled_cases'],

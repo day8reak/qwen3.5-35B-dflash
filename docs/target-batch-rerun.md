@@ -143,7 +143,7 @@ print("coverage_complete:", r["coverage_complete"])
 PY
 ```
 
-回传 summary.csv 和 report.json。整输出指标保持原定义；新增 `rope_partitions.rotated`／`unrotated` 只按捕获的 rotary_dim 切分最后一维，不删 token、不改变 padding／布局、不放宽门槛。RoPE 尚无批准的误差阈值，默认仍记录 METRICS_RECORDED，不能套用量化 out_proj 的 2%。
+回传 summary.csv 和 report.json。比较器现在按[五项共同标准](target-accuracy-status.md)自动判定；CSV 增加 cosine、kl_divergence、rmse、mean_relative_error 和 failed_metrics。已有 fixture/native 时只执行本节 compare，COMPARISON 必须是新的输出目录，不用再跑导出／编译／上板。历史 RoPE 零误差记录保留原状态，不反推缺失指标。`rope_partitions.rotated`／`unrotated` 只按捕获的 rotary_dim 切分最后一维，不删 token、不改变 padding／布局；整输出仍是最终验收范围。
 
 若未旋转部分已有明显误差，先查输入／输出绑定和编译后的类型、布局；若误差集中于旋转部分，再对照本次 AIR／OMC 的乘加与转换。候选改善也不能归功于本图中不存在的 Sin／Cos 修改。
 

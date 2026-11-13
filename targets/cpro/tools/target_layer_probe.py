@@ -123,11 +123,15 @@ def main():
         import csv
         with (root/'summary.csv').open('w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['layer', 'call', 'phase', 'point', 'output', 'status', 'max_abs', 'relative_l2', 'dtype_preserved', 'stable', 'error'])
+            metric_keys = ['max_abs', 'relative_l2', 'cosine', 'kl_divergence', 'rmse', 'mean_relative_error']
+            writer.writerow(['layer', 'call', 'phase', 'point', 'output', 'status'] + metric_keys
+                            + ['failed_metrics', 'dtype_preserved', 'stable', 'error'])
             for row in result['cases']:
                 metric = row.get('invocations', [{}])[0]
                 writer.writerow([row.get(k) for k in ('layer', 'call', 'phase', 'point', 'output_name', 'status')]
-                    + [metric.get('max_abs'), metric.get('relative_l2'), row.get('source_dtype_preserved'), row.get('stable'), row.get('error')])
+                    + [metric.get(k) for k in metric_keys]
+                    + [';'.join(sorted({k for m in row.get('invocations', []) for k in m.get('failed_metrics', [])})),
+                       row.get('source_dtype_preserved'), row.get('stable'), row.get('error')])
         result = dict(status=result['status'], first_failed_boundary=result['first_failed_boundary'], report=str(root/'report.json'), csv=str(root/'summary.csv'))
     else:
         manifest = json.loads((Path(a.capture)/'manifest.json').read_text())

@@ -1,8 +1,8 @@
 # 当前阶段：Target Attention Prefill 精度定位
 
-更新：2026-11-12。**RoPE Prefill／Decode 的 Q/K 四项全部数值对齐**：整输出及前 64 维旋转区、后 192 维未旋转区均零误差，FP16 输出且重复稳定。保留显式 FP32 旋转乘加、最后恢复输出类型的改动；不是重新计算 sin/cos。原始 METRICS_RECORDED 状态保留。
+标准更新：2026-11-13；以下实测结果回传于 2026-11-12。**RoPE Prefill／Decode 的 Q/K 四项全部数值对齐**：整输出及前 64 维旋转区、后 192 维未旋转区均零误差，FP16 输出且重复稳定。保留显式 FP32 旋转乘加、最后恢复输出类型的改动；不是重新计算 sin/cos。原始 METRICS_RECORDED 状态保留。
 
-**QuantBatchMatmul 保留的改动**：weight scale 在导出前真实转 FP16；per-token scale 在 PyTorch 前端保留 FP32，通过 meta 后在 GE 边界 Reshape 为 [M] 并 Cast FP16。packed W4 不变。38 项 QLinear 已有适配后数值，8 项量化 out_proj 按用户 relative-L2 <2% 通过；其他模块不套用该门槛。[改动位置、结果与集成要求](target-accuracy-status.md)。
+**QuantBatchMatmul 保留的改动**：weight scale 在导出前真实转 FP16；per-token scale 在 PyTorch 前端保留 FP32，通过 meta 后在 GE 边界 Reshape 为 [M] 并 Cast FP16。packed W4 不变。38 项 QLinear 已有适配后数值，8 项量化 out_proj 曾按旧 relative-L2 <2% 口径通过。当前 CPro / CHS 统一五项标准：cosine >0.99、relative-L2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1；全部满足才通过，Cache 仍要求逐位一致。历史缺项仅用已有 dump 补算，不重编／上板。[改动位置、结果与集成要求](target-accuracy-status.md)。
 
 下一步优先处理 **AdnFusedInferAttention Prefill**（现有 relative-L2 99.67%），再将两项有效改动接入完整 Target，推进四层 Prefill 联调。完整 Prefill 还需验证 GDN（Prefill core 1.56%～7.12%、raw state 12.10%～44.60% 且 dtype 不保持）、MoE／LM head 和末态。ConvState 12 项小图编译失败不等于整图必然不能编译，旧四层 T64 整图已有成功编译记录。
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from qwen35_moe_dflash.common.artifacts import output_path
+from qwen35_moe_dflash.common.accuracy import POLICY, floating_metrics
 
 KIND = 'qwen35-target-cpro-boundary-probe-v1'
 DTYPES = {'float16': '<f2', 'float32': '<f4', 'int16': '<i2', 'int32': '<i4', 'int64': '<i8'}
@@ -53,33 +54,34 @@ def metrics(actual, golden, *, atol=None, rtol=None):
     a, b = np.asarray(actual), np.asarray(golden)
     if a.shape != b.shape:
         raise ValueError('comparison shape mismatch')
+    if (atol is None) != (rtol is None) or any(v is not None and (not math.isfinite(v) or v < 0) for v in (atol, rtol)):
+        raise ValueError('atol/rtol must both be supplied and finite nonnegative')
+    integer = a.dtype.kind in 'biu' and b.dtype.kind in 'biu'
+    if integer and a.dtype != b.dtype:
+        raise ValueError('integer dtype mismatch; implicit promotion is not a verified mapping')
     finite = np.isfinite(a) & np.isfinite(b)
-    af, bf = a.astype(np.float64), b.astype(np.float64)
-    diff = np.abs(af[finite] - bf[finite])
-    norm = float(np.linalg.norm(bf[finite]))
-    error_norm = float(np.linalg.norm(diff))
-    nonfinite = int((~finite).sum())
     equal = a == b
     result = dict(shape=list(a.shape), actual_dtype=str(a.dtype), golden_dtype=str(b.dtype),
         dtype_equal=a.dtype == b.dtype, nonfinite_actual=int((~np.isfinite(a)).sum()),
-        nonfinite_golden=int((~np.isfinite(b)).sum()), max_abs=float(diff.max()) if diff.size else None,
-        mean_abs=float(diff.mean()) if diff.size else None,
-        relative_l2=error_norm / norm if norm else (0.0 if not error_norm else None),
-        golden_l2=norm, error_l2=error_norm, exact_elements=int(equal.sum()), total_elements=a.size)
-    if not nonfinite and a.size:
-        index = int(np.argmax(np.abs(af - bf)))
-        result.update(max_error_coordinate=list(np.unravel_index(index, a.shape)),
-                      actual_at_max=float(af.flat[index]), golden_at_max=float(bf.flat[index]))
-        result['max_error_coordinate'] = [int(x) for x in result['max_error_coordinate']]
-    if a.dtype.kind in 'iu' and b.dtype.kind in 'iu':
+        nonfinite_golden=int((~np.isfinite(b)).sum()), exact_elements=int(equal.sum()), total_elements=a.size)
+    if integer:
         bad = ~equal
-        result.update(gate='EXACT_INTEGER', passed=not bool(bad.any()))
-    elif atol is not None and rtol is not None:
-        bad = ~finite | (np.abs(af-bf) > atol + rtol*np.abs(bf))
-        result.update(gate='DECLARED_ALLCLOSE', passed=not bool(bad.any()), atol=atol, rtol=rtol)
+        result.update(gate='EXACT_INTEGER', passed=bool(a.size and not bad.any()))
     else:
+        result.update(floating_metrics(a, b))
+        result.update(gate=POLICY, passed=result['reference_metrics_passed'])
         bad = ~finite | ~equal
-        result.update(gate='METRICS_ONLY_NO_CALIBRATED_THRESHOLD', passed=None)
+        af, bf = a.astype(np.float64), b.astype(np.float64)
+        with np.errstate(over='ignore', invalid='ignore'):
+            delta = np.abs(af-bf)
+            if finite.all() and a.size and np.isfinite(delta).all():
+                index = int(np.argmax(delta))
+                result.update(max_error_coordinate=[int(x) for x in np.unravel_index(index, a.shape)],
+                              actual_at_max=float(af.flat[index]), golden_at_max=float(bf.flat[index]))
+            if atol is not None:
+                bad = ~finite | ~np.isfinite(delta) | (delta > atol + rtol*np.abs(bf))
+                result.update(gate=POLICY+'+DECLARED_ALLCLOSE',
+                              passed=result['passed'] and not bool(bad.any()), atol=atol, rtol=rtol)
     result['first_different_coordinates'] = np.argwhere(bad)[:8].tolist()
     return result
 

@@ -1,8 +1,26 @@
 # Target 精度状态
 
-更新：2026-11-12。用户回传 **RoPE Prefill／Decode × Q／K 四图全部数值对齐**：max_abs 和 relative-L2 均为 0，旋转区与未旋转区都一致，输出 FP16 且重复稳定。QuantBatchMatmul 的 scale 适配和 RoPE 的 FP32 旋转改法均已记录，下一步重点是 AdnFusedInferAttention Prefill。Cache 最新结果仍为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，Decode 历史保留问题暂后处理。
+标准更新：2026-11-13；以下实测结果回传于 2026-11-12。用户回传 **RoPE Prefill／Decode × Q／K 四图全部数值对齐**：max_abs 和 relative-L2 均为 0，旋转区与未旋转区都一致，输出 FP16 且重复稳定。QuantBatchMatmul 的 scale 适配和 RoPE 的 FP32 旋转改法均已记录，下一步重点是 AdnFusedInferAttention Prefill。Cache 最新结果仍为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，Decode 历史保留问题暂后处理。
 
-按用户最新验收口径，量化 **out_proj 的 relative-L2 <2% 即通过**。已有 8 项全部满足，包括 L0 Prefill／Decode 的 1.3765734%／1.7624918%。原始 CSV 的 METRICS_RECORDED 保留，当前验收结论另列；其他算子不套用 2%，Cache 仍要求整缓存逐位一致。Cache 工作恢复后只复测 4 个失败的 Decode 图（K/V × 浮点/整数）；已通过的 Prefill Cache 和 QLinear 不再导出、编译或上板。
+**当前浮点标准（CPro / CHS 共用）**：按用户 2026-11-13 指定的下表，五项全部满足才通过；严格比较未四舍五入的值。此标准替换此前 cosine ≥0.9999 和量化 out_proj 单独 L2<2% 的判定。Cache 继续要求整缓存逐位一致，整数／索引／控制量继续精确比较。
+
+| 误差对比算法 | 精度正常的参考标准 | JSON / CSV 字段 |
+| --- | --- | --- |
+| CosineSimilarity | > 0.99 | cosine |
+| RelativeEuclideanDistance | < 0.05 | relative_l2 |
+| KullbackLeiblerDivergence | < 0.005 | kl_divergence |
+| RootMeanSquareError | < 1.0 | rmse |
+| MeanRelativeError | < 1.0 | mean_relative_error |
+
+`relative_l2 = norm(actual-golden)/norm(golden)`，0.05 即 5%；RMSE 为均方误差的平方根。KL 按 [MindStudio 定义](https://github.com/Ascend/msprobe/blob/4729e4e9b31a6f997e6f24e64dddd3fd9ec248ab/python/msprobe/msaccucmp/algorithm_manager/builtin_algorithm/alg_KullbackLeiblerDivergence.py)：两张量分别 min-max 归一化（常量跳过），截至至少 float32 epsilon，再各自除以和，计算 `D_KL(actual || golden)`。这是整张量分布比较，不对原始负数取 log，也不添加 softmax。
+
+MeanRelativeError 为 `mean(abs(actual/golden-1))`；按 [MindStudio 定义](https://github.com/Ascend/msprobe/blob/4729e4e9b31a6f997e6f24e64dddd3fd9ec248ab/python/msprobe/msaccucmp/algorithm_manager/builtin_algorithm/alg_MeanRelativeError.py)，`abs(golden) <= float64 epsilon` 的项贡献 0，仍计入元素总数，报告另列此类元素数。全部使用 float64 归约。非空全零对照约定 cosine=1、relative_l2=0；仅一边为零、空张量、NaN/Inf 或必需指标不可用均不能通过。没有修改张量布局、裁剪有效区或改变 golden。
+
+比较报告记录 `numerical_policy=DEVICE_FIVE_METRICS_V1`、阈值、各次调用的 `metric_checks` 和 `failed_metrics`。显式 `--atol/--rtol` 作为额外 AND 条件；Cache 逐位和重复稳定性检查也不会被五项门槛放宽。CSV 数值来自第一次调用，失败项合并全部调用，最终状态要求每次都通过。
+
+历史 8 项 out_proj 满足旧 L2<2%，RoPE 四项数值零误差、Prefill Cache 四项逐位一致的观测保留；旧 CSV 缺少其余指标，不据此批量改成“五项通过”。有原始 fixture/native 时仅重新执行 compare 到新的输出目录即可，不需要导出、编译或上板。当前仓库只有 CPro 执行入口，公共指标实现不依赖后端；CHS 使用同一技能标准，不声称已有 CHS 实机验证。
+
+Cache 工作恢复后只复测 4 个失败的 Decode 图（K/V × 浮点/整数）；已有通过观测的 Prefill Cache 和 QLinear 不再导出、编译或上板。
 
 [交互 HTML](assets/target-architecture-interactive.html)统一展示[各模块最新指标 CSV](../specs/target-latest-boundary-metrics.csv)中的 150 项：38 项 QLinear 使用 scale 适配后结果、8 项 Cache 使用最新浮点／整数对照、4 项 RoPE 使用 FP32 旋转后的零误差结果，其余 100 项保留最近一次实测值。新结果按层、调用、阶段、边界与输出替换旧值，不再切换结果批次。Prefill／Decode 各 75 项；这是模块进度汇总，不代表一次完整图执行。relative_l2 是比值，乘 100 才是百分比。
 
@@ -21,7 +39,7 @@
 
 INT32 载体内的 packed W4 字节及排布不变，V4444 原属性和可选输入交给原 converter。此修复对齐实际数据类型与当前算子契约，没有修改算子注册、tiling 或 kernel，也不代表仅切换一个 scaleType 就完成了字节转换。前端与 GE 输入的 dtype 要分层处理。
 
-38 项 QLinear 已有设备回传，原数百至上万的 relative-L2 异常消失；本批 relative-L2 范围为 0.054541%～1.762492%。其中 8 项量化 out_proj 按用户 `<2%` 门槛通过，其余 30 项保持原始 METRICS_RECORDED，全部退出当前复跑范围。原始记录见 [QLinear 数值](../specs/target-qlinear-cache-candidate-metrics-20261112.csv)。这支持 scale 适配有效，尚不单独定位是哪一路 scale 导致旧错误。
+38 项 QLinear 已有设备回传，原数百至上万的 relative-L2 异常消失；本批 relative-L2 范围为 0.054541%～1.762492%。其中 8 项量化 out_proj 按旧 `<2%` 门槛通过，其余 30 项保持原始 METRICS_RECORDED，全部退出当前复跑范围。原始记录见 [QLinear 数值](../specs/target-qlinear-cache-candidate-metrics-20261112.csv)。这支持 scale 适配有效，尚不单独定位是哪一路 scale 导致旧错误。
 
 合入完整 Target 时，须沿实际 exporter 的 `quant_model_inplace → replace_linear_to_QLinear → QLinear` 工厂及所选 converter 应用。当前源码的实际工厂可能来自 utils.py 导入的 NZ 类，只改 CPro 文件里的同名类可能无效；共用路径应保持 310P golden 不变。独立导出适配不等于生产整图已合入；MoE 和 LM head 不能继承这 38 项结论。
 
@@ -42,7 +60,7 @@ INT32 载体内的 packed W4 字节及排布不变，V4444 原属性和可选输
 | l03_c01_rope_o0 · Decode Q | [1,16,1,256] | 1024 / 1024 | 3072 / 3072 | 0 / 0 |
 | l03_c01_rope_o1 · Decode K | [1,2,1,256] | 128 / 128 | 384 / 384 | 0 / 0 |
 
-四图 dtype_preserved／stable 均为 TRUE，两个分区均无 NaN／Inf、无数值差异坐标。**已测四项数值完全对齐，不再复跑**；这是数值相等，不额外声称输出字节哈希与 golden 相同。原始状态仍为 METRICS_RECORDED／passed=null，因为比较器没有配置 RoPE 自动验收阈值，并不表示失败。
+四图 dtype_preserved／stable 均为 TRUE，两个分区均无 NaN／Inf、无数值差异坐标。**已测四项数值完全对齐，不再上板复跑**；这是数值相等，不额外声称输出字节哈希与 golden 相同。原始状态仍为 METRICS_RECORDED／passed=null，因为当时比较器没有配置 RoPE 自动验收阈值；现有比较器按上面的五项标准判定，历史缺项不补造。
 
 此前 17.56%～19.62% 的独立边界误差在此候选下消失，支持保留显式 FP32 旋转路径；未重新计算 sin/cos，不能归因于三角函数修复，也尚未确定旧图的具体错误指令。本地未重新执行服务器任务或核验该批完整文件绑定。合入完整 Prefill 后仍需检查串联输出和状态。
 
@@ -116,7 +134,7 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 
 ## 量化 out_proj 验收
 
-按用户 **relative-L2 <0.02（严格小于）**，已有候选结果为：
+按此前用户 **relative-L2 <0.02（严格小于）** 的记录，已有候选结果如下；这不是五项新标准的完整验收：
 
 | 层／边界 | Prefill relative-L2 | Decode relative-L2 | 当前验收 |
 |---|---:|---:|---|
@@ -131,7 +149,7 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 
 ## 高危算子重点定位表
 
-当前优先处理 Attention Prefill；RoPE 数值已对齐，Cache 恢复后仅复测 4 个失败的 Decode 图。下表保留各模块最近已知结果，不自动加入复跑；[风险 CSV](../specs/target-operator-accuracy-risk.csv)分别标注证据范围，量化 out_proj 已按用户 2% 门槛、RoPE 按本轮零误差观测移出高危项。
+当前优先处理 Attention Prefill；RoPE 数值已对齐，Cache 恢复后仅复测 4 个失败的 Decode 图。下表保留各模块最近已知结果，不自动加入复跑；[风险 CSV](../specs/target-operator-accuracy-risk.csv)分别标注证据范围，量化 out_proj 按旧 2% 门槛、RoPE 按零误差观测移出高危项；新标准缺项不补造。
 
 | 区域 | 已观察结果 | 当前处理 |
 |---|---|---|

@@ -1,7 +1,7 @@
 """Six-input installed-DDK GDN diagnostic; never a replacement model adapter.
 
 The mathematical oracle uses FP64 arithmetic and FP16 invocation boundaries.
-It is independent of kernel chunking/rounding and has no accuracy PASS gate.
+It is independent of kernel chunking/rounding; numerical gates do not prove model equivalence.
 """
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ import numpy as np
 
 from qwen35_moe_dflash.common.artifacts import checked_file, output_path
 from qwen35_moe_dflash.common.hashing import sha256_file
+from qwen35_moe_dflash.common.accuracy import POLICY, THRESHOLDS
+from .layer_probe.common import metrics as boundary_metrics
 
 KIND = "qwen35-target-gdn-six-input-diagnostic"
 INPUTS = ("query", "key", "value", "g", "beta", "initial_state")
@@ -123,7 +125,7 @@ def prepare(output):
         "preparation_code": {"path": "model/qwen35_moe_dflash/target/gdn_probe.py",
                              "sha256": sha256_file(Path(__file__)), "numpy_version": np.__version__},
         "fixture_seed": "numpy.default_rng(35000 + sequence); both initial-state scenarios share q/k/v/g/beta",
-        "validation_policy": {"numerical_gate": "METRICS_ONLY_NO_CALIBRATED_THRESHOLD",
+        "validation_policy": {"numerical_gate": POLICY,
             "warmup": 1, "repetitions": 10, "stability_rule": "ALL_OUTPUT_BYTES_IDENTICAL",
             "comparison_extent": "ALL_ELEMENTS_OF_BOTH_OUTPUTS_ON_EVERY_MEASURED_INVOCATION",
             "feedback": "NOT_TESTED_REPEATED_INVOCATIONS_REUSE_ORIGINAL_STATE",
@@ -273,21 +275,8 @@ def compile_prepared(output, *, ge_root, ddk_root, ddk_id, cxx="c++", cxx11_abi=
 
 
 def metrics(actual, golden):
-    actual, golden = np.asarray(actual, dtype=np.float64), np.asarray(golden, dtype=np.float64)
-    if actual.shape != golden.shape:
-        raise ValueError("comparison shape mismatch")
-    finite = np.isfinite(actual) & np.isfinite(golden)
-    result = {"elements": actual.size, "nonfinite_actual": int((~np.isfinite(actual)).sum()),
-              "nonfinite_golden": int((~np.isfinite(golden)).sum()), "allclose_gate": "NOT_DEFINED"}
-    if not finite.all():
-        result.update(max_abs=None, rmse=None, relative_l2=None, cosine=None)
-        return result
-    delta = actual - golden
-    ng, na = np.linalg.norm(golden.ravel()), np.linalg.norm(actual.ravel())
-    result.update(max_abs=float(np.max(np.abs(delta))), rmse=float(np.sqrt(np.mean(delta * delta))),
-                  relative_l2=float(np.linalg.norm(delta.ravel()) / ng) if ng else None,
-                  cosine=float(np.dot(actual.ravel(), golden.ravel()) / (na * ng)) if na and ng else None,
-                  exact_elements=int(np.count_nonzero(actual == golden)))
+    result = boundary_metrics(actual, golden)
+    result['elements'] = result['total_elements']
     return result
 
 
@@ -310,8 +299,8 @@ def runner_commands(output):
 def compare(output, actual_dir):
     root, manifest = load_prepared(output)
     actual_dir = Path(actual_dir).resolve()
-    report = {"artifact_kind": KIND, "status": "DIAGNOSTIC_METRICS_ONLY", "cases": [],
-              "numerical_validation": "METRICS_ONLY_NO_CALIBRATED_THRESHOLD", "all_operators_passed": False,
+    report = {"artifact_kind": KIND, "status": "DIAGNOSTIC_COMPARED", "cases": [],
+              "numerical_policy": POLICY, "thresholds": THRESHOLDS, "all_operators_passed": False,
               "provenance": "RUNNER_RECEIPT_IS_NOT_PROOF_OF_DEPLOYED_MODEL_OR_INPUT_HASHES",
               "manifest_sha256": sha256_file(root / "manifest.json"), "device_execution": "UNVERIFIED"}
     for case in manifest["cases"]:
@@ -346,11 +335,17 @@ def compare(output, actual_dir):
             row.update(status="METRICS_RECORDED", runner_receipt=receipt,
                        receipt_sha256=sha256_file(folder / "result.json"),
                        output_bytes_stable=len({x["sha256"] for x in row["invocations"]}) == 1)
+            row['status'] = ('PASSED' if row['output_bytes_stable'] and all(
+                m['passed'] for i in row['invocations'] for m in i['outputs'].values()) else 'FAILED')
         except (OSError, ValueError, KeyError, TypeError) as error:
             row.update(status="INVALID_EVIDENCE", error=f"{type(error).__name__}: {error}")
-    if all(x["status"] == "METRICS_RECORDED" for x in report["cases"]):
+    report['numerical_validation'] = ('FAILED' if any(x['status'] == 'FAILED' for x in report['cases']) else
+        'PASSED' if report['cases'] and all(x['status'] == 'PASSED' for x in report['cases']) else 'INCOMPLETE')
+    if all(x["status"] in ("PASSED", "FAILED") for x in report["cases"]):
         kinds = {x["runner_receipt"]["evidence_kind"] for x in report["cases"]}
         report["device_execution"] = "REPORTED_BY_RUNNER_UNBOUND_MODEL" if kinds == {"device-hiai"} else "HOST_OR_MIXED_EVIDENCE"
+        if report['numerical_validation'] == 'FAILED':
+            report['status'] = 'FAILED'
     else:
         report["status"] = "PARTIAL"
     return report

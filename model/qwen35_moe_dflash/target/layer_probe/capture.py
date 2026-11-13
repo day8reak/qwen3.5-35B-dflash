@@ -43,7 +43,7 @@ class Capture:
             layers=sorted(self.layers), calls_per_layer=calls, regions=[], errors=[], sources=[],
             torch_version=torch.__version__,
             scope='REAL_INPUT_LOCAL_REGION_REPLAY; NOT_FULL_MODEL_OR_CPRO_STATE_FEEDBACK',
-            numerical_gate='METRICS_ONLY_UNLESS_EXPLICIT_THRESHOLDS_SUPPLIED')
+            numerical_gate='DEVICE_FIVE_METRICS_V1; CACHE_BITS_AND_INTEGER_EXACT')
         self.flush()
 
     def flush(self):

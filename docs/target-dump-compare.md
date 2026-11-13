@@ -77,15 +77,15 @@ golden.layout 默认为 UNVERIFIED。确认其轴和数据含义后才能改为 
 
 ## 指标和结论
 
-浮点默认 gate.mode=metrics，只记录 max-abs、RMSE、relative-L2、cosine、非有限值和不一致坐标，不自动判 PASS。需要验收时使用 mode=allclose 并声明非负有限的 atol、rtol，判定为 abs(actual-golden) <= atol + rtol*abs(golden)。mode=bitwise 要求相同 dtype，逐位核对，包括正负零。
+浮点默认 `gate.mode=metrics` 现按[用户指定的五项标准](target-accuracy-status.md)判定：cosine >0.99、relative-L2 <0.05、KL <0.005、RMSE <1.0、MeanRelativeError <1.0，全部达标才通过。名称保留以兼容已有 mapping；不再表示无阈值。JSON / CSV 记录五项数值与 failed_metrics，公式、KL 方向和零值策略见链接。mode=allclose 额外要求 abs(actual-golden) <= atol + rtol*abs(golden)，atol/rtol 必须非负有限。mode=bitwise 额外要求相同 dtype 逐位一致，包括正负零。
 
 整数控制量始终精确比较，不受浮点容差放宽；int64 不先转 float64 再判断，避免大整数差异消失。NaN/Inf 即使在 metrics 模式也失败。零参考范数对应非零误差时 relative-L2 为 null，RMSE/max-abs 仍保留；不能把 null 当零。
 
 | 状态／诊断 | 含义 |
 |---|---|
 | UNMAPPED / MISSING_FILE / INVALID_TENSOR / EMPTY_TENSOR | 未映射、缺文件、哈希／格式／布局异常或空张量；整体覆盖 PARTIAL |
-| METRICS_RECORDED | 数值有限，但缺少验收阈值或合同／输入覆盖确认 |
-| FAILED | 非有限值、整数不一致，或违反显式数值／逐位门槛 |
+| METRICS_RECORDED | 历史无阈值结果或未闭合的汇总结论，不能当作通过 |
+| FAILED | 非有限值、不可计算的必需指标、任一五项指标超限、整数不一致，或违反额外数值／逐位门槛 |
 | LOCAL_CANDIDATE_EXACT_INPUTS | 输入逐位一致、输入覆盖和合同已声明完整，输出失败 |
 | OUTPUT_FAILURE_WITH_INPUT_DIFFERENCES | 输出失败且输入已有差异，可能包含误差传播 |
 | OUTPUT_FAILURE_INPUTS_OR_CONTRACT_UNVERIFIED | 输出失败，但不能确认局部输入／状态／合同 |

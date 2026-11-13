@@ -325,7 +325,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
 
 `summary.csv` 按调用、层号和 CPro 依赖顺序排列；`report.json` 包含每次调用的最大/平均绝对误差、相对 L2、首个差异坐标、最大误差位置、非有限值、输出 dtype 和重复稳定性。CacheUpdate 要求整个 cache 位一致，并区分原 golden 中保持不变的位置与被更新的位置。
 
-浮点容差尚未校准，默认 METRICS_RECORDED，不假称精度通过。若已有冻结的容差，可在 compare 显式传 `--atol ... --rtol ...`；不要看完结果后放宽阈值。`first_failed_boundary` 是这一批中按依赖顺序最早失败的边界，不自动认定它是完整图的唯一根因；独立分支没有唯一先后因果。
+浮点默认按[五项标准](target-accuracy-status.md)全部达标判 PASSED：cosine >0.99、relative-L2 <0.05、KL <0.005、RMSE <1.0、MeanRelativeError <1.0。缺项／不可计算不通过；显式 `--atol ... --rtol ...` 是额外 AND 条件。Cache 保留整缓存逐位合同，整数精确比较，每次调用均须通过且重复稳定。报告记录五项数值和失败项；已有 fixture/native 只需重跑 compare 到新的输出目录，无需重编／上板。`first_failed_boundary` 是这一批中按依赖顺序最早失败的边界，不自动认定它是完整图的唯一根因；独立分支没有唯一先后因果。
 
 首批正确后再扩大层号或对失败附近做相邻小子图组合。前四层独立重放不能证明后 36 层、完整图融合或 CPro 连续缓存反馈正确。
 

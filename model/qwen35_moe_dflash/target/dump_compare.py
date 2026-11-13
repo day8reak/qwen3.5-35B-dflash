@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+from qwen35_moe_dflash.common.accuracy import POLICY, THRESHOLDS, floating_metrics
 
 from .layer_probe.common import KIND, identity, new_output, save_json, sha
 
@@ -188,7 +189,7 @@ def tensor_metrics(actual, golden, gate, chunk=65536):
         exact_mismatch_count=0, nonfinite_actual=0, nonfinite_golden=0,
         max_abs=None, rmse=None, relative_l2=None, cosine=None,
         first_mismatch_coordinates=[], max_error_coordinate=None)
-    bad_count, bit_bad_count, offset, sum_sq, a_sq, g_sq, dot, maximum = 0, 0, 0, 0., 0., 0., 0., -1.
+    bad_count, bit_bad_count, offset, maximum = 0, 0, 0, -1.
     for av, gv in np.nditer([actual, golden], flags=['external_loop', 'buffered', 'zerosize_ok'],
                            op_flags=[['readonly'], ['readonly']], order='C', buffersize=chunk):
         equal = av == gv  # Preserve int64/uint64 precision for exact comparison.
@@ -207,10 +208,6 @@ def tensor_metrics(actual, golden, gate, chunk=65536):
             with np.errstate(over='ignore', invalid='ignore'):
                 delta = af - gf
                 absdiff = np.abs(delta)
-                sum_sq += float(np.sum(delta[finite] ** 2))
-                a_sq += float(np.sum(af[finite] ** 2))
-                g_sq += float(np.sum(gf[finite] ** 2))
-                dot += float(np.sum(af[finite] * gf[finite]))
             if finite.any():
                 j = int(np.argmax(np.where(finite, absdiff, -1)))
                 if float(absdiff[j]) > maximum:
@@ -237,10 +234,9 @@ def tensor_metrics(actual, golden, gate, chunk=65536):
     result['bitwise_equal'] = bool(total and same_dtype and not bit_bad_count and not nonfinite)
     result['bitwise_mismatch_count'] = bit_bad_count if same_dtype else None
     result['gate_mismatch_count'] = bad_count if mode != 'metrics' else None
-    if total and not integer and not nonfinite:
-        result.update(max_abs=maximum, rmse=math.sqrt(sum_sq / total),
-            relative_l2=math.sqrt(sum_sq / g_sq) if g_sq else (0. if not sum_sq else None),
-            cosine=dot / math.sqrt(a_sq) / math.sqrt(g_sq) if a_sq and g_sq else None)
+    if not integer:
+        result.update(floating_metrics(actual, golden, chunk=chunk))
+        result['gate'] = POLICY if mode == 'metrics' else POLICY+'+'+mode
     # Overflowing metric reductions remain unavailable, never emitted as nonstandard JSON.
     for key, value in list(result.items()):
         if isinstance(value, float) and not math.isfinite(value):
@@ -249,10 +245,9 @@ def tensor_metrics(actual, golden, gate, chunk=65536):
         result['status'] = 'EMPTY_TENSOR'
     elif nonfinite:
         result['status'] = 'FAILED'
-    elif mode == 'metrics':
-        result['status'] = 'METRICS_RECORDED'
     else:
-        result['status'] = 'FAILED' if bad_count else 'PASSED'
+        failed = (not integer and not result['reference_metrics_passed']) or (mode != 'metrics' and bad_count)
+        result['status'] = 'FAILED' if failed else 'PASSED'
     if mode == 'allclose':
         result.update(atol=atol, rtol=rtol)
     return result
@@ -344,12 +339,13 @@ def compare(plan_path, golden_root, actual_root, output):
         local_candidates=[r['id'] for r in rows if r['diagnosis'] == 'LOCAL_CANDIDATE_EXACT_INPUTS'],
         ordering_scope='Original capture ordinal, not verified compiler topology or proof of root cause',
         validation_scope='Explicitly mapped regions only; no model execution, repeat stability or full-model PASS',
-        regions=rows)
+        regions=rows, numerical_policy=POLICY, thresholds=THRESHOLDS)
     root = new_output(output)
     save_json(root / 'report.json', report)
     with (root / 'summary.csv').open('w', newline='') as f:
         writer = csv.writer(f)
-        keys = ['status', 'gate', 'max_abs', 'rmse', 'relative_l2', 'cosine', 'exact_mismatch_count', 'bitwise_mismatch_count',
+        keys = ['status', 'gate', 'max_abs', 'rmse', 'relative_l2', 'cosine', 'kl_divergence', 'mean_relative_error',
+                'failed_metrics', 'exact_mismatch_count', 'bitwise_mismatch_count',
                 'nonfinite_actual', 'nonfinite_golden', 'error']
         writer.writerow(['region', 'layer', 'call', 'phase', 'direction', 'tensor', 'diagnosis'] + keys)
         for row in rows:
