@@ -331,20 +331,37 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
 
 ### Attention 输出范围检查
 
-怀疑 `AdnFusedInferAttention` 的有效长度、padding 或 NZ 解读有误时，先检查**产生该条指标的 OMC 批次、fixture 和回收目录**。下面沿用第 4 节路径；若当时使用其他目录，替换为那次实际产物。QLinear／Cache 候选批次不含 Attention，不能用于此检查。
+当前先检查**产生 Attention Prefill relative-L2 99.67% 的原 OMC 批次、fixture 和回收目录**。算子和数值调用保持不变，不重复编译或上板。检查器可读取旧 export.json，不要求先导出新版 AIR。以下默认目录来自第 3–4 节；若当时用了其他目录，只替换 ATTN_BATCH、ATTN_FIXTURE、ATTN_NATIVE 三项。QLinear／Cache 候选批次不含 Attention，不能用于此检查。AIR batch 及 air-schema.pb 也须保留在 compile.json 引用的位置。
 
 ```bash
-python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-attention \
-  --batch "$OMC_BATCH" \
-  --fixture "$AI_RUN_DIR/target-layer-accuracy/execution/fixture" \
-  --native "$AI_RUN_DIR/target-layer-accuracy/recovery-001/native" \
-  --output "$AI_RUN_DIR/target-layer-accuracy/attention-inspect-001"
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export ATTN_BATCH="${ATTN_BATCH:-$AI_RUN_DIR/target-layer-accuracy/omc-batch-001}"
+export ATTN_FIXTURE="${ATTN_FIXTURE:-$AI_RUN_DIR/target-layer-accuracy/execution/fixture}"
+export ATTN_NATIVE="${ATTN_NATIVE:-$AI_RUN_DIR/target-layer-accuracy/recovery-001/native}"
+export ATTN_INSPECTION="$AI_RUN_DIR/target/tests/attention-inspect-$(date +%Y%m%dT%H%M%S)"
 
-cat "$AI_RUN_DIR/target-layer-accuracy/attention-inspect-001/summary.txt"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-attention \
+  --batch "$ATTN_BATCH" --fixture "$ATTN_FIXTURE" \
+  --native "$ATTN_NATIVE" --output "$ATTN_INSPECTION"
+
+cat "$ATTN_INSPECTION/summary.txt"
 ```
 
-只读取已有文件，不依赖设备或 DDK Python 环境，不重新编译。`summary.txt` 列出 Prefill／Decode 的 golden shape、dtype、numel、字节数、fixture 记录的编译输出描述、每次 dump 大小，以及捕获的属性和小型整数输入。`report.json` 保留源 AIR 边界描述、文件哈希及错误。若提供 `--capture "$CAPTURE"`，还会按 capture 哈希绑定原始输入名和捕获时的 sequence_length。不同批次绑定不符会报错；缺失或尺寸不符的 case 记为 PARTIAL，继续检查其余 case。
+用此前执行 compare 的 Python 环境即可，不导入 torch_npu/TorchAir，也不依赖设备或 DDK 安装。命令自动只选该批的 Attention。首先回传 **summary.txt 和 head-summary.csv**；完整 report.json、query-blocks.csv 留在同目录。
 
-这一步不假定“27／64”，不截断、补零或按 numel 猜 NZ 布局，不改变原精度结论。`INSPECTED` 只表示所选文件检查完成；fixture 描述不是此次重新解码 OMC 的结果，长度属性也不自动等于有效 query 掩码。确认实际布局和有效区间后，才能分别还原两侧张量、沿 query 轴比较有效区域，并单列 padding 区。
+| 文件 | 内容 |
+| --- | --- |
+| summary.txt | Q shape、INT64 查询长度 Const 是否与 `[S]` 字节一致、源码预期任务数、各 head 非零数与误差 |
+| head-summary.csv | 每个 head 的实际／golden 非零数、相等元素数、max_abs、relative_l2 |
+| query-blocks.csv | 每个 head 内每 16 个 Q 行的同类统计，query_stop 为开区间 |
+| report.json | 所有绑定哈希、每次 dump 大小、源 AIR 属性、输出模式和错误；实际 observed_total_tasks 保留 null |
+
+检查所有重复调用；只有输出 SHA256 完全相同才合并统计，其 invocation 编号会全部列出。不同批次或字节绑定不符会报错；缺失或尺寸不符的 case 记为 PARTIAL，继续检查其余 case。可选 `--capture "$CAPTURE"` 额外绑定原始参数名与捕获长度；无需重新采集。
+
+用户确认源码 querySeqStep=16，当前 B1、16 heads、T256 的预期任务数为 256。若 Prefill 的 head0 接近 golden、heads1–15 实际全零而 golden 非零，符合“只分配 16 个任务”的输出特征，下一步核对实际 tiling；若各 head 都有明显结果，则优先看每 16 行块的布局、mask、softmax 或搬运误差。零输出本身不能证明未调度，也可能来自算子内部计算或写回错误；不能只凭该统计定根因。
+
+这一步不裁剪或补零，不推断有效 token 区间，不改变整体五指标验收。分组依据源 AIR 的实际 heads 和绑定的 packed Q `[1,heads×D/16,S,16]`，输出 shape 不匹配就停止分组，不按 numel 猜布局；它仍不能证明实际设备布局与源码一致。`INSPECTED` 是检查完成，不是精度通过。工具不解析内核 tiling bytes，不能把 expected_total_tasks 当成实测任务数；fixture 描述也不是此次重新解码 OMC 的结果。
 
 输入身份观察点沿用 [TorchAir 官方 export_utils 实现](https://github.com/Ascend/torchair/blob/e1118e8b0fc1b95190ab53b732c0872989550e20/python/torchair/_utils/export_utils.py) 的权重转换入口：只记录映射，不改变权重保存决策。已安装版本接口或 Tensor 身份无法确认时导出失败，不按参数编号、shape 或数值猜测 K/V。

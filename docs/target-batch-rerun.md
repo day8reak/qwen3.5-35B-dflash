@@ -1,5 +1,7 @@
 # Target：整层 GatedDeltaNet FP32 state 与 Fused Attention
 
+Attention 当前定位先运行[已有输出检查](target-layer-accuracy.md#attention-输出范围检查)，读取产生 Prefill 99.67% 误差的那批 AIR／OMC、fixture 和 native，按 head／16 行 Q 块查看误差。此步骤不需要重新导出、编译或上板；下面是新一组整层 GDN／Attention 的完整执行流程。
+
 当前新增一组 **8 张图、20 个输出**，覆盖 Prefill 和第一次 Decode：
 
 | 模块 | 图数 | 每张图输出 |

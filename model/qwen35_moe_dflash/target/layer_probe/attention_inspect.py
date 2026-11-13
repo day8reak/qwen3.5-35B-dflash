@@ -1,14 +1,119 @@
 """Read retained attention extents and length evidence; never guess NZ or padding."""
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 import math
 from pathlib import Path
+import struct
 
 import numpy as np
 
 from .common import KIND, DTYPES, checked, identity, new_output, save_json, sha
 from qwen35_moe_dflash.common.artifacts import output_path
+
+
+def attention_length_constant(edge, nodes, enums, lengths):
+    """Verify Const payload identity; this does not establish host GetData access."""
+    from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype
+    from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
+    name, slot = edge.rsplit(':', 1)
+    node = nodes.get(name, {})
+    if slot != '0' or node.get('type') != 'Const':
+        raise ValueError('attention actual_seq_lengths_q must be a direct INT64 Const [S], not a runtime length input')
+    tensor = _attributes(node).get('value', {}).get('t', {})
+    desc = descriptor(tensor.get('desc', {}), enums)
+    data = tensor.get('data', {})
+    expected = struct.pack('<' + 'q' * len(lengths), *lengths)
+    if (_dtype(desc) != 'int64' or desc.get('shape') != [len(lengths)]
+            or data.get('bytes') != len(expected)
+            or data.get('sha256') != hashlib.sha256(expected).hexdigest()):
+        raise ValueError('attention query length Const dtype/shape/bytes differ from captured [S]')
+    return dict(edge=edge, dtype='int64', shape=[len(lengths)], values=lengths,
+        data_sha256=data['sha256'], status='SOURCE_CONST_BYTES_VERIFIED', host_tiling_data='NOT_OBSERVED')
+
+
+def source_call_contract(folder, exported):
+    """Read old or new source AIR; no dependency on Torch/TorchAir installation."""
+    from .inspection import bounded_bytes
+    from qwen35_moe_dflash.toolchain.omc_wire import Schema
+    from qwen35_moe_dflash.target.original_air_roundtrip import _attributes, _decode
+    from qwen35_moe_dflash.target.operator_air_review import _data_edges, port_names
+    schema_path = folder/'air-schema.pb'
+    schema = Schema(bounded_bytes(schema_path, 8 << 20),
+        expected_file=exported['schema']['schema_file'], expected_package=exported['schema']['schema_package'])
+    air = checked(folder, exported['air'])
+    _, _, graph = _decode(schema, bounded_bytes(air, 64 << 20))
+    nodes = {n['name']: n for n in graph['op']}
+    ops = [n for n in nodes.values() if n['type'] == 'AdnFusedInferAttention']
+    if len(ops) != 1:
+        raise ValueError('requires one source AdnFusedInferAttention')
+    op = ops[0]
+    attrs = _attributes(op)
+    ports = port_names(attrs, 'input')
+    edges = {ports[i]: edge for i, edge in enumerate(_data_edges(op)) if i in ports}
+    heads = attrs.get('num_heads', {}).get('i')
+    if (attrs.get('input_layout', {}).get('s') != 'BNSD'
+            or type(heads) is not int or heads < 1):
+        raise ValueError('source attention layout/heads do not match packed BNSD contract')
+    query = [s for s in exported['source_inputs'] if s['name'] + ':0' == edges.get('query')]
+    if len(query) != 1 or nodes.get(query[0]['name'], {}).get('type') != 'Data':
+        raise ValueError('source query must bind directly to one captured Data argument')
+    shape = query[0]['shape']
+    if (len(shape) != 4 or any(type(d) is not int or d < 1 for d in shape)
+            or shape[0] != 1 or shape[3] != 16 or shape[1] % heads):
+        raise ValueError('requires B1 packed query [1, heads*D/16, S, 16]')
+    result = dict(status='INSPECTED', air=identity(air, folder), schema=identity(schema_path, folder),
+        schema_binding='RETAINED_DESCRIPTOR; LEGACY_EXPORT_NO_DESCRIPTOR_HASH',
+        query_shape=shape, query_dtype=query[0]['dtype'], num_heads=heads, head_dim=shape[1]*16//heads,
+        query_seq_step=16, query_step_basis='USER_CONFIRMED_OPERATOR_SOURCE; NOT_OBSERVED_TILING',
+        expected_total_tasks=heads*((shape[2]+15)//16), observed_total_tasks=None,
+        attributes={k: attrs.get(k) for k in ('input_layout','inner_precise','block_size','num_key_value_heads')})
+    try:
+        result['query_length_constant'] = attention_length_constant(edges['actual_seq_lengths_q'], nodes,
+            schema.enums[schema.package + '.DataType'], [shape[2]])
+    except (ValueError, KeyError, TypeError) as exc:
+        result['query_length_constant'] = dict(status='REVIEW_REQUIRED', error=str(exc))
+    return result
+
+
+def output_pattern(actual, golden, contract):
+    """Group all output elements using the source packed layout, with no cropping.
+
+    Zero-valued groups are observations, not evidence that a task never ran.
+    Actual device layout equivalence remains an independent hypothesis.
+    """
+    shape = contract['query_shape']
+    if list(actual.shape) != shape or list(golden.shape) != shape:
+        raise ValueError('output shape differs from source query; cannot assign packed heads')
+    b, _, seq, _ = shape
+    heads, dim = contract['num_heads'], contract['head_dim']
+    def view(value):
+        return value.reshape(b, heads, dim//16, seq, 16).transpose(0, 1, 3, 2, 4).reshape(b, heads, seq, dim)
+    av, gv = view(actual), view(golden)
+
+    def stats(a, g):
+        af, gf = a.astype(np.float64), g.astype(np.float64)
+        finite = bool(np.isfinite(af).all() and np.isfinite(gf).all())
+        delta = af-gf
+        gn, en = (float(np.linalg.norm(gf)), float(np.linalg.norm(delta))) if finite else (None, None)
+        return dict(elements=a.size, actual_nonzero=int(np.count_nonzero(a)), golden_nonzero=int(np.count_nonzero(g)),
+            exact_elements=int(np.count_nonzero(a == g)), nonfinite_actual=int((~np.isfinite(a)).sum()),
+            nonfinite_golden=int((~np.isfinite(g)).sum()), max_abs=float(np.abs(delta).max()) if finite else None,
+            relative_l2=en/gn if finite and gn else 0.0 if finite and en == 0 else None)
+
+    rows, blocks = [], []
+    step = contract['query_seq_step']
+    for head in range(heads):
+        rows.append(dict(head=head, **stats(av[0,head], gv[0,head])))
+        for start in range(0,seq,step):
+            stop = min(seq,start+step)
+            blocks.append(dict(head=head, query_start=start, query_stop=stop,
+                **stats(av[0,head,start:stop], gv[0,head,start:stop])))
+    return dict(scope='SOURCE_PACKED_HEAD_AND_QUERY_BLOCK_VIEW; NO_TILING_EXECUTION_PROOF',
+        heads=rows, query_blocks=blocks,
+        zero_actual_nonzero_golden_heads=[r['head'] for r in rows if r['actual_nonzero']==0 and r['golden_nonzero']>0])
 
 
 def tensor_extent(path, spec, expected=None):
@@ -74,7 +179,7 @@ def inspect_attention(batch, fixture, native, output, capture=None):
         name = case['id']
         if Path(name).name != name or name in ('.', '..'):
             raise ValueError('invalid case name')
-        row = dict(case=name, phase=case['phase'], layer=case['layer'],
+        row = dict(case=name, phase=case['phase'], layer=case['layer'], output_patterns=[],
             compilation_status=compiled['cases'].get(name, {}).get('status'), errors=[], inputs=[], dumps=[])
         report['cases'].append(row)
 
@@ -89,6 +194,11 @@ def inspect_attention(batch, fixture, native, output, capture=None):
             folder = source/'models'/name
             row['captured_attributes'] = exp.get('source_contract', {}).get('captured_attributes', {})
             row['source_air_boundaries'] = exp.get('internal_boundaries', {})
+            try:
+                row['source_call_contract'] = source_call_contract(folder, exp)
+            except (KeyError, OSError, ValueError, TypeError) as exc:
+                row['source_call_contract'] = dict(status='UNAVAILABLE', error=str(exc))
+                row['errors'].append('source call contract: ' + str(exc))
             row['golden'] = observe('export golden', checked(folder, exp['golden']), exp['golden'], exp['golden'])
             region = None
             if capture:
@@ -146,6 +256,8 @@ def inspect_attention(batch, fixture, native, output, capture=None):
                     row['errors'].append('runner receipt does not meet comparison requirements')
             except (OSError, ValueError) as exc:
                 row['errors'].append('runner receipt: ' + str(exc))
+            binding_valid = not row['errors']
+            patterns = {}
             for index in range(meta['repetitions']):
                 path = native/name/f'{index}.bin'
                 try:
@@ -155,6 +267,16 @@ def inspect_attention(batch, fixture, native, output, capture=None):
                     if not dump['matches_fixture_output_bytes']:
                         row['errors'].append(f'dump {index}: size differs from fixture output bytes')
                     row['dumps'].append(dump)
+                    if binding_valid and dump['byte_count_matches'] and dump['matches_fixture_output_bytes']:
+                        digest = dump['sha256']
+                        if digest not in patterns:
+                            actual = np.fromfile(path, dtype=DTYPES[spec['dtype']]).reshape(spec['shape'])
+                            golden = np.fromfile(golden_path, dtype=DTYPES[spec['golden_dtype']]).reshape(spec['shape'])
+                            pattern = output_pattern(actual, golden, row['source_call_contract'])
+                            pattern.update(output_sha256=digest, invocations=[])
+                            patterns[digest] = pattern
+                            row['output_patterns'].append(pattern)
+                        patterns[digest]['invocations'].append(index)
                 except (OSError, ValueError) as exc:
                     row['errors'].append(f'dump {index}: {exc}')
             row['native_provenance'] = 'LOCAL_RECEIPT_AND_FILE_HASHES; NOT_INDEPENDENT_UPLOAD_ATTESTATION'
@@ -163,9 +285,26 @@ def inspect_attention(batch, fixture, native, output, capture=None):
         row['status'] = 'PARTIAL' if row['errors'] else 'INSPECTED'
     if any(row['errors'] for row in report['cases']):
         report['status'] = 'PARTIAL'
+    csv_paths = {}
+    for group, filename, prefix in (('heads','head-summary.csv',['head']),
+                                    ('query_blocks','query-blocks.csv',['head','query_start','query_stop'])):
+        path = out/filename
+        fields = ['case','phase','invocations'] + prefix + ['elements','actual_nonzero','golden_nonzero',
+            'exact_elements','nonfinite_actual','nonfinite_golden','max_abs','relative_l2']
+        with path.open('w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            for row in report['cases']:
+                for pattern in row['output_patterns']:
+                    for item in pattern[group]:
+                        writer.writerow(dict(case=row['case'],phase=row['phase'],
+                            invocations=';'.join(map(str,pattern['invocations'])),**item))
+        csv_paths[group] = str(path)
+    report['output_pattern_csv'] = csv_paths
     save_json(out/'report.json', report)
     lines = ['Read-only attention extent inspection; no export, compilation or device execution.',
-        'No cropping, padding, NZ conversion or new accuracy verdict. Equal extents do not prove equal layout.',
+        'No cropping, padding or new accuracy verdict. Head/block statistics use the SOURCE packed layout.',
+        'Zero output does not prove a task was skipped. Actual tiling and device layout remain unverified.',
         'Compiled descriptors below are retained fixture records, not a new decode of OMC.',
         'Length attributes/controls are evidence only; no valid-query mask inferred.']
     for row in report['cases']:
@@ -182,8 +321,16 @@ def inspect_attention(batch, fixture, native, output, capture=None):
         for inp in row['inputs']:
             lines.append(f'input {inp.get("captured_name", inp["source_name"])}: '
                 f'shape={inp["shape"]} dtype={inp["dtype"]} integer_values={inp.get("integer_values", "NOT_SAMPLED")}')
+        contract = row.get('source_call_contract', {})
+        lines.append('source_call_contract=' + json.dumps(contract, ensure_ascii=False))
+        for pattern in row['output_patterns']:
+            lines.append('invocations=' + str(pattern['invocations']) +
+                '; zero_actual_nonzero_golden_heads=' + str(pattern['zero_actual_nonzero_golden_heads']))
+            for head in pattern['heads']:
+                lines.append(f'head {head["head"]}: actual_nonzero={head["actual_nonzero"]}/{head["elements"]} '
+                    f'golden_nonzero={head["golden_nonzero"]}/{head["elements"]} relative_l2={head["relative_l2"]}')
         lines.extend('ERROR: ' + e for e in row['errors'])
     (out/'summary.txt').write_text('\n'.join(lines)+'\n')
     return dict(status=report['status'], cases=len(selected), report=str(out/'report.json'),
-                summary=str(out/'summary.txt'), numerical_validation='NOT_RUN',
+                summary=str(out/'summary.txt'), output_pattern_csv=csv_paths, numerical_validation='NOT_RUN',
                 model_compilation='NOT_RUN', device_execution='NOT_RUN')

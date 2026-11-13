@@ -1,14 +1,13 @@
 """Explicit source contracts for whole GDN and the attention query boundary."""
 from contextlib import contextmanager
 import functools
-import hashlib
 import importlib
 import inspect
-import struct
 
 import torch
 
 from .source_regions import definition
+from .attention_inspect import attention_length_constant
 
 
 @contextmanager
@@ -138,31 +137,6 @@ def attention_contract(record, inputs, graph, schema, bindings):
         source_query_edge=edges[query_slot[0]], all_length_trace=trace,
         query_length_constant=length_const,
         dispatch='Q_LENGTH_CONTRACT_CHECKED; KERNEL_DISPATCH_AND_TILING_NOT_OBSERVED')
-
-
-def attention_length_constant(edge, nodes, enums, lengths):
-    """Verify actual Const bytes, not a readable-value annotation or Data input.
-
-    This proves the source AIR provides static lengths. It cannot prove the
-    selected compiler makes their data available to the host tiling callback.
-    """
-    from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype
-    from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
-    name, slot = edge.rsplit(':', 1)
-    node = nodes.get(name, {})
-    if slot != '0' or node.get('type') != 'Const':
-        raise ValueError('attention actual_seq_lengths_q must be a direct INT64 Const [S], not a runtime length input')
-    tensor = _attributes(node).get('value', {}).get('t', {})
-    desc = descriptor(tensor.get('desc', {}), enums)
-    data = tensor.get('data', {})
-    expected = struct.pack('<' + 'q' * len(lengths), *lengths)
-    if (_dtype(desc) != 'int64' or desc.get('shape') != [len(lengths)]
-            or data.get('bytes') != len(expected)
-            or data.get('sha256') != hashlib.sha256(expected).hexdigest()):
-        raise ValueError('attention query length Const dtype/shape/bytes differ from captured [S]')
-    return dict(edge=edge, dtype='int64', shape=[len(lengths)], values=lengths,
-        data_sha256=data['sha256'], status='SOURCE_CONST_BYTES_VERIFIED',
-        host_tiling_data='NOT_OBSERVED')
 
 
 def compiled_state_contract(observed, output_index=2):
