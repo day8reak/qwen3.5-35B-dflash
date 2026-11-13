@@ -145,6 +145,14 @@ Attention 的 `export.json.attention_contract` 会记录 Q shape、actual_seq_le
 
 `allQLen` 仍走既有的导出 carrier：Python `pse_shift=allQLen` → GE `all_seq_lengths_q`，GE `pse_shift=None`。它决定 KV 遍历长度；Decode 通常大于当前 Q 的 1。`actual_seq_lengths_kv` 在所贴内核中也用于 mask 行跨度，当前 mask 最后一维为 2048，因此不要为了切 Prefill 把这个参数随意改成 Q 长度。
 
-所贴内核统一调用 `pa.Decode`，其中 `mActual>1` 是多行计算路径，`mActual==1` 是单行路径；Prefill 的尾块也可能只有一行。当前调用无法直接设置 `querySeqStep`，该值来自算子内部 `DEFAULT_QUERY_SEQ_STEP`。若它等于 16，S64、S256、S1 的任务数应分别为 64、256、16（B1、16 Q heads），Prefill 非尾块 `mActual=16`。若它等于 1，调用侧无法强制进入多行路径；若大于 16，还需核对所贴固定搬运块数的覆盖范围。不能将未知常量默认当成 16。
+用户于 2026-11-13 确认这份源码的 `DEFAULT_QUERY_SEQ_STEP=16`。所贴内核统一调用 `pa.Decode`，其中 `mActual>1` 是多行计算路径，`mActual==1` 是单行路径。因此当前 T64/T256 Prefill 的所有 Q 块均应为 `mActual=16`，Decode 为 1；无需通过修改 Q 布局或额外模式参数来切换。其他非 16 整倍数的 Prefill 尾块仍可能只有一行。此结论依据用户确认的源码常量，实际 OMC 的 tiling 尚未回传。
+
+| 场景（B1、16 Q heads） | Q 块数 / head | 每块 mActual | 总任务数 / max(endBlk) |
+| --- | ---: | ---: | ---: |
+| T64 Prefill | 4 | 16 | 64 |
+| T256 Prefill | 16 | 16 | 256 |
+| T1 Decode | 1 | 1 | 16 |
+
+总任务数为 `B × heads × ceil(S/16)`；blockDim 只是启动核数，不能代替总任务数。对于当前 block_size=32、head_dim=256、roundM=16 的完整块，所贴 QK 两个 16×16 块和 PV 十六个 16×16 块在块数上足够覆盖，先前 mActual>16 的覆盖疑虑不适用于这两组 Prefill；这不代表其他搬运、布局或同步已经验证。
 
 源码 AIR 中有 Const 只证明调用侧满足静态输入合同，不保证当前编译器让 tiling 的 `GetData<int64_t>()` 非空。所贴 host 在该指针为空时退回 `batch×heads`，当 S 大于 querySeqStep 时存在任务不足风险。这是漏算任务，不会因此自动把 mActual 变成 1：例如 B1、16 heads、S256、step16 时，16 个任务按所贴索引只覆盖 head0 的 16 个 Q 块，其余 heads 未覆盖。先检查现有编译日志/tiling：`qTokens=S`、`actualSeqLengthsQ=S`、`querySeqStep`、各核 `endBlk` 的最大值。只有实际任务数覆盖全部 Q 块，才能认定 Prefill 调度完整；不根据函数名或一个 blockDim 值下结论。

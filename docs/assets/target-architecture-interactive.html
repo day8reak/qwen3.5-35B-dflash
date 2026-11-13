@@ -30,7 +30,7 @@
 <tr><td>QuantBatchMatmul <span class="pill low">保留改动</span></td><td>38 项已有 scale 适配后的数值，8 项 out_proj 按旧 L2&lt;2% 口径通过；五项待补。</td><td>weight scale 真实转 FP16；per-token 在前端保留 FP32，通过 meta 后在 GE Reshape 为 [M] 并 Cast FP16。合入实际工厂与 converter。</td></tr>
 <tr><td>RoPE <span class="pill low">数值对齐</span></td><td>四项整输出、旋转区、未旋转区均零误差；dtype 保持、重复稳定。</td><td>保留显式 FP32 旋转路径；单模块不再复跑，待整图串联验证。</td></tr>
 <tr><td>ChunkGatedDeltaRule <span class="pill bad">当前</span></td><td>5 项 Prefill 失败；Decode 五指标通过，6 个 raw state dtype 不保持。</td><td>新增整层串联，FP32 initial/final state 与 writeback；输出 hidden、conv state、recurrent state，比较原 golden。</td></tr>
-<tr><td>AdnFusedInferAttention <span class="pill bad">当前</span></td><td>Prefill L2 99.67%；Decode 0.251%。尚无新数值。</td><td>算子不变；Q 多行布局已查，新增静态查询长度常量检查，核对 querySeqStep 和完整任务数。</td></tr>
+<tr><td>AdnFusedInferAttention <span class="pill bad">当前</span></td><td>Prefill L2 99.67%；Decode 0.251%。尚无新数值。</td><td>算子不变；源码 querySeqStep=16 已由用户确认，T64/T256 应走 mActual=16。检查静态长度常量与实际任务数 64/256。</td></tr>
 <tr><td>CacheUpdate <span class="pill bad">待处理</span></td><td>Prefill 4/4 逐位通过；Decode 4/4 失败。整数索引已越过此前构建阻塞，未改善 Decode。</td><td>核对独立输出是否继承完整输入缓存；检查 functional converter、原位/独立输出契约和实际输出绑定。先读取已有报告，无需重编。</td></tr>
 </tbody></table></div>
 <p><strong>当前标准：CPro / CHS 共用五项 AND</strong>：CosineSimilarity &gt;0.99、RelativeEuclideanDistance &lt;0.05、KL &lt;0.005、RMSE &lt;1.0、MeanRelativeError &lt;1.0。使用严格不等号；Cache 仍须整缓存逐位一致。8 项 out_proj 的旧 L2&lt;2% 通过观测保留，缺少新指标时不标成五项通过。</p>

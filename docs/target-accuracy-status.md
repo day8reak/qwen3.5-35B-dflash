@@ -93,7 +93,7 @@ INT32 载体内的 packed W4 字节及排布不变，V4444 原属性和可选输
 | MoE、Router、共享专家、LM head | 不在这批独立数值验证覆盖内；独立 residual_mlp 使用 golden 分支输入，也不能证明 MoE 内部正确 |
 | 整图与状态 | 验证修复确实进入生产图、最终 hidden／logits、KV 和 GDN 末态；T64 图需要对应 T64 golden，不能直接裁切 T256 捕获代替 |
 
-当前 Attention 与整层 GDN 一起准备 Prefill／Decode 新测试。按用户最新要求保持 Attention 算子不变，先检查调用侧：全图与单模块 Q 都采用 packed `[B,heads×D/16,S,16]`，Q 长度在轴 2，actual_seq_lengths_q 传静态列表 `[S]`。导出检查 INT64 常量字节与 captured Q 长度一致，保留 allQLen 的独立 KV 遍历语义及原 mask 跨度。所贴实现统一调用 pa.Decode，多行路径由 mActual 决定；querySeqStep 来自算子内部常量，实际值和总任务数仍待编译证据确认。源码 Const 不等于已经观察到 host GetData 非空。[完整调用检查](target-batch-rerun.md#6-attention-prefill-调用合同)。
+当前 Attention 与整层 GDN 一起准备 Prefill／Decode 新测试。按用户最新要求保持 Attention 算子不变，先检查调用侧：全图与单模块 Q 都采用 packed `[B,heads×D/16,S,16]`，Q 长度在轴 2，actual_seq_lengths_q 传静态列表 `[S]`。导出检查 INT64 常量字节与 captured Q 长度一致，保留 allQLen 的独立 KV 遍历语义及原 mask 跨度。用户确认源码 DEFAULT_QUERY_SEQ_STEP=16，所贴实现的 T64/T256 Prefill 均应在 pa.Decode 内走 mActual=16，T1 Decode 为 1；当前无需为切分支再改 Q 调用。实际 tiling 的任务总数仍待核对，T64/T256 应为 64/256（B1、16 heads）；源码 Const 不等于已经观察到 host GetData 非空。[完整调用检查](target-batch-rerun.md#6-attention-prefill-调用合同)。
 
 合入有效改动后还需四层 Prefill 的 hidden／logits 和末态验证。初始空缓存 Prefill 可以与 Decode 分开推进；Decode Cache 历史保留错误仍阻塞后续生成，多段／续接 Prefill 同样需要历史保留验证。已对齐模块不重复编译，独立小图结果不替代整图验收。
 

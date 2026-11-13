@@ -8,7 +8,7 @@
 
 独立边界五项失败均在 Prefill GDN：L0/L1 core、L0–L2 raw state；Decode 数值均通过，但六个 raw state 的 dtype 不保持。不能只凭类型不同断定全部误差由 FP16 引起。新整层图保留原输入数值与 golden，在层内真实串联；不包含跨图状态反馈。
 
-Attention 算子暂不修改。已核对源码全图 Q `[1,256,64,16]`、捕获小图 Q `[1,256,256,16]` 均为多行；导出新增 INT64 `Const([S])` 查询长度检查。实际是否进入 `mActual>1` 还取决于内部 querySeqStep 和 host 任务数，不能仅由 Q shape 宣布已修好。Attention Prefill（99.67%）、MoE／LM head 和完整末态仍待验证。ConvState 12 项小图编译失败不等于整图必然不能编译，旧四层 T64 整图已有成功编译记录。
+Attention 算子暂不修改。已核对源码全图 Q `[1,256,64,16]`、捕获小图 Q `[1,256,256,16]` 均为多行；导出新增 INT64 `Const([S])` 查询长度检查。用户确认源码 querySeqStep=16，因此两组 Prefill 按源码均应走 mActual=16，无需再改调用来切换分支；下一步核对实际 tiling 总任务数分别为 64、256，不能把漏任务当成误走 Decode。Attention Prefill（99.67%）、MoE／LM head 和完整末态仍待验证。ConvState 12 项小图编译失败不等于整图必然不能编译，旧四层 T64 整图已有成功编译记录。
 
 [交互 HTML](assets/target-architecture-interactive.html)统一显示各模块最新结果：QLinear 38 项、Cache 8 项、RoPE 4 项、其他边界 100 项，共 150 项。RoPE 的旧偏差已替换为零误差，未复测模块保留最近实测值。用户回传清单尚未在本地核验执行文件绑定；独立边界对齐不等于整图精度通过。
 
