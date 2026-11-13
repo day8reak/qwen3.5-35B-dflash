@@ -1,0 +1,161 @@
+{
+  "observation_date": "2026-11-13",
+  "evidence_source": "USER_RETURNED_attention/inspection/reference-summary.txt",
+  "local_native_dump_verification": "NOT_PERFORMED; user retains source and native files",
+  "reference_basis": "INDEPENDENT_NUMPY_FP64_FINAL_FP16",
+  "formula": "softmax(scale * QK^T + captured additive mask) @ V",
+  "scope": "L3 isolated attention; captured Q/K/V, original page table, B1, Q heads16, KV heads2, D256, block32",
+  "original_capture_modified": false,
+  "operator_modified": false,
+  "full_model_validation": "NOT_ESTABLISHED",
+  "full_value_cache_abs_max": 3.494140625,
+  "cases": [
+    {
+      "case": "l03_c00_fused_attention_o0",
+      "phase": "prefill",
+      "query_length": 256,
+      "kv_length": 256,
+      "mask_stride": 2048,
+      "invocations": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "stable": true,
+      "actual_vs_reference": {
+        "max_abs": 0.0146484375,
+        "relative_l2": 0.0011174674753627874,
+        "cosine": 0.9999993757451003,
+        "kl_divergence": 1.712325802574872e-8,
+        "rmse": 0.00043362377180509526,
+        "mean_relative_error": 0.0115462897363784,
+        "passed": true,
+        "failed_metrics": []
+      },
+      "captured_golden_vs_reference": {
+        "max_abs": 1766.916015625,
+        "relative_l2": 60.1418849999551,
+        "cosine": 0.20891017834980768,
+        "kl_divergence": 0.013370064004794149,
+        "rmse": 23.337548154305114,
+        "mean_relative_error": 18.103035020332445,
+        "passed": false,
+        "failed_metrics": [
+          "cosine",
+          "relative_l2",
+          "kl_divergence",
+          "rmse",
+          "mean_relative_error"
+        ]
+      },
+      "actual_V_bounds": {
+        "outside_elements": 0,
+        "max_excess": 0
+      },
+      "captured_golden_V_bounds": {
+        "outside_elements": 588094,
+        "max_excess": 1766.576171875
+      },
+      "captured_golden_zero_query_rows": [
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31
+      ],
+      "zero_row_mask_zero_bias_keys": [
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32
+      ],
+      "max_error_location": {
+        "batch": 0,
+        "head": 6,
+        "query": 239,
+        "channel": 15,
+        "captured_golden": 1769,
+        "reference": 2.083984375,
+        "actual": 2.0859375
+      }
+    },
+    {
+      "case": "l03_c01_fused_attention_o0",
+      "phase": "decode",
+      "query_length": 1,
+      "kv_length": 257,
+      "mask_stride": 2048,
+      "invocations": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "stable": true,
+      "actual_vs_reference": {
+        "max_abs": 0.003173828125,
+        "relative_l2": 0.0011437736008544828,
+        "cosine": 0.9999993463850694,
+        "kl_divergence": 5.821170935691824e-8,
+        "rmse": 0.0004121828360785717,
+        "mean_relative_error": 0.0037892428644126157,
+        "passed": true,
+        "failed_metrics": []
+      },
+      "captured_golden_vs_reference": {
+        "max_abs": 0.007080078125,
+        "relative_l2": 0.0020304956255926517,
+        "cosine": 0.9999979613902638,
+        "kl_divergence": 8.672310738354458e-8,
+        "rmse": 0.0007317317386733358,
+        "mean_relative_error": 0.010376193587054532,
+        "passed": true,
+        "failed_metrics": []
+      },
+      "actual_V_bounds": {
+        "outside_elements": 0,
+        "max_excess": 0
+      },
+      "captured_golden_V_bounds": {
+        "outside_elements": 0,
+        "max_excess": 0
+      }
+    }
+  ]
+}

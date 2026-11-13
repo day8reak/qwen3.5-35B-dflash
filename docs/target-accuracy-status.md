@@ -1,6 +1,6 @@
 # Target 精度状态
 
-阶段与标准更新：2026-11-13；Attention 两图最新逐行结果：Prefill 所有 head 的 golden 第 **16–31 行全零**，只有第 0 行与 actual 整行一致；head6 的大值位于 golden：**1769 vs actual 2.0859375**。Prefill 逐 head relative-L2 **72.71%–99.84%**，Decode **0.10%–0.64%**，各自十次输出相同。优先核验 Prefill 参考路径，独立 CPU 参考已准备，等待原始文件计算结果。GDN 48 个独立边界为 **43 PASSED / 5 FAILED**，整层 FP32 state 尚待执行；Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**。
+阶段与标准更新：2026-11-13；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。当前转入整层 GDN FP32 state 测试；GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
 **当前浮点标准（CPro / CHS 共用）**：按用户 2026-11-13 指定的下表，五项全部满足才通过；严格比较未四舍五入的值。此标准替换此前 cosine ≥0.9999 和量化 out_proj 单独 L2<2% 的判定。Cache 继续要求整缓存逐位一致，整数／索引／控制量继续精确比较。
 
@@ -22,7 +22,7 @@ MeanRelativeError 为 `mean(abs(actual/golden-1))`；按 [MindStudio 定义](htt
 
 Cache 工作恢复后只复测 4 个失败的 Decode 图（K/V × 浮点/整数）；已有通过观测的 Prefill Cache 和 QLinear 不再导出、编译或上板。
 
-[交互 HTML](assets/target-architecture-interactive.html)统一展示[各模块最新指标 CSV](../specs/target-latest-boundary-metrics.csv)中的 150 项：38 项 QLinear 使用 scale 适配后结果、8 项 Cache 使用最新浮点／整数对照、4 项 RoPE 使用 FP32 旋转后的零误差结果，其余 100 项保留最近一次实测值。新结果按层、调用、阶段、边界与输出替换旧值，不再切换结果批次。Prefill／Decode 各 75 项；这是模块进度汇总，不代表一次完整图执行。relative_l2 是比值，乘 100 才是百分比。
+[交互 HTML](assets/target-architecture-interactive.html)统一展示[各模块最新指标 CSV](../specs/target-latest-boundary-metrics.csv)中的 150 项：38 项 QLinear 使用 scale 适配后结果、8 项 Cache 使用最新浮点／整数对照、4 项 RoPE 使用 FP32 旋转后的零误差结果、2 项 Attention 使用独立参考验证后的五项结果，其余 98 项保留最近一次实测值。Attention 的 reference_basis 显式标为 INDEPENDENT_NUMPY_FP64_FINAL_FP16；其他行沿用 captured golden。新结果按模块替换旧值，Prefill／Decode 各 75 项；模块汇总不代表一次完整图执行。relative_l2 是比值，乘 100 才是百分比。
 
 数据来自用户回传表及报告片段，未在本地核验实际执行文件绑定。新表的原始精度按原样保存；V 明细的更多小数仅在下文记录，不填充到未附 case ID 的两行中。dtype_preserved／stable 全 TRUE 表示类型保持和重复稳定，不代表计算正确。
 
@@ -82,44 +82,44 @@ INT32 载体内的 packed W4 字节及排布不变，V4444 原属性和可选输
 
 此前 17.56%～19.62% 的独立边界误差在此候选下消失，支持保留显式 FP32 旋转路径；未重新计算 sin/cos，不能归因于三角函数修复，也尚未确定旧图的具体错误指令。本地未重新执行服务器任务或核验该批完整文件绑定。合入完整 Prefill 后仍需检查串联输出和状态。
 
-## AdnFusedInferAttention 修好后，能否跑 Prefill
+## Attention 独立参考验证
 
-**可以推进全注意力分支串联和四层 Prefill 联调，但不能据此宣布完整 Prefill 精度通过。** L3 的 Q/K/V 投影、RoPE、初始 Prefill Cache 已有独立结果；最新 Attention 检查见下表，Prefill 仍有大幅差异。修好后应将已经验证的 QuantBatchMatmul／RoPE 改动接入同一整图，复查 L3 输出和 Prefill 末态。
+**L3 CPro Attention 的 Prefill、Decode 均对独立数学参考通过五项指标，10 次输出各自一致。原 captured golden 的 Prefill 输出错误；Decode captured golden 对独立参考通过。** 本次没有修改 CPro 算子、Q 调用、mask 或精度门槛。当前这两张小图退出复跑，下一步测试整层 GDN。
+
+用户回传的 reference-summary.txt 基于同一捕获 Q/K/V、页表和 additive mask，以 NumPy FP64 计算 `softmax(scale × QKᵀ + mask) × V`，最后转 FP16。B=1、Q heads=16、KV heads=2、D=256、block_size=32；Prefill Q/KV 长度为 256/256，Decode 为 1/257，mask 行跨度均为 2048。没有裁 query、增加 mask 或覆盖原 golden。原始文件仍在用户机器，本地记录的是回传结果。[完整数值记录](../specs/target-attention-reference-results.json)。
+
+| 与独立参考比较 | max_abs | relative-L2（百分比） | cosine | KL | RMSE | MeanRelativeError | 五项 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| CPro Prefill | 0.0146484375 | 0.1117467475% | 0.9999993757 | 1.7123e-8 | 0.0004336238 | 0.0115462897 | PASSED |
+| CPro Decode | 0.003173828125 | 0.1143773601% | 0.9999993464 | 5.8212e-8 | 0.0004121828 | 0.0037892429 | PASSED |
+| captured golden Prefill | 1766.916015625 | 6014.1885000% | 0.2089101783 | 0.0133700640 | 23.3375481543 | 18.1030350203 | FAILED，五项全部超限 |
+| captured golden Decode | 0.007080078125 | 0.2030495626% | 0.9999979614 | 8.6723e-8 | 0.0007317317 | 0.0103761936 | PASSED |
+
+两组 native dump 的 invocation 0–9 分别具有相同 SHA，因此覆盖各自 10 次调用。此为同一捕获输入的重复稳定性，不是十个不同输入或连续生成验证。检查入口顶层 `numerical_validation=NOT_RUN` 保留了“未重跑原 captured-golden 验收”的含义；本次结论取自 `independent_reference` 的实际计算与五项比较，不把入口 INSPECTED 状态当作精度结论。
+
+Prefill golden 错误有相互印证的数值证据：
+
+- 整个输入 V cache 的绝对值最大仅 **3.494140625**。KV head0 范围为 [-2.078125, 3.494140625]，head1 为 [-2.4375, 2.39453125]。正常 softmax 权重非负且和为 1，输出各通道应落在对应 V 通道范围内。
+- CPro Prefill、Decode 均无元素超出上述通道范围。Prefill captured golden 有 **588,094 个越界元素**，最大越界量 **1766.576171875**；不属于普通浮点舍入差异。
+- head6/query239/channel15：独立参考 **2.083984375**、CPro **2.0859375**、captured golden **1769**。这一巨大差值位于 captured golden。
+- captured golden 所有 head 的 query16–31 全零，但这些行的 mask 分别允许 17–32 个零偏置 key，其余为有限 -65504，完全没有全 -inf 行。全遮罩不能解释该整块零值。
+
+原先以错误 Prefill captured golden 计算的高 L2 不能继续作为这张 CPro 图失败的依据。参考异常已确认，但具体发生在 310P 参考算子的分块计算、归一化、写回还是采集环节，尚未定位；不据此指认某条内核指令。
+
+最新 CSV 与 HTML 已把 Attention 两行替换为 actual 对独立参考的整输出五项结果，并显式记录 `reference_basis=INDEPENDENT_NUMPY_FP64_FINAL_FP16`。原捕获与异常诊断记录保留，比较脚本的原 golden 不被静默替换。复核方法见[离线参考命令](target-batch-rerun.md#51-attention-输出检查)。
+
+Q 长度常量与 source AIR 合同已核对，源码 step=16 下 T256 应为 mActual=16、T1 为 1；这次结果支持保留当前调用。实际 tiling 没有单独解码，数值通过不冒充取得 tiling 记录，也不外推其他 S、batch 或页表场景。
+
+可以继续整层 GDN 与四层 Prefill 联调，完整模型仍需以下验证：
 
 | 范围 | 尚需处理或验证 |
-|---|---|
-| L0–L2 GDN Prefill | core relative-L2 分别为 5.7719723%、7.1231514%、1.5583993%；raw state 为 44.5964183%、26.744998%、12.0997546%，且 raw state dtype 不保持；没有新结果撤销这些偏差 |
-| ConvState | 12 项独立小图编译失败、无数值；旧四层 T64 整图曾编译成功，因此小图失败不等于整图一定不能编译，整图状态更新仍须核验 |
-| MoE、Router、共享专家、LM head | 不在这批独立数值验证覆盖内；独立 residual_mlp 使用 golden 分支输入，也不能证明 MoE 内部正确 |
-| 整图与状态 | 验证修复确实进入生产图、最终 hidden／logits、KV 和 GDN 末态；T64 图需要对应 T64 golden，不能直接裁切 T256 捕获代替 |
+| --- | --- |
+| L0–L2 GDN | 独立边界 43 PASS / 5 FAIL；执行 FP32 initial/final state 的六张整层图，比较 hidden、conv state、recurrent state |
+| 整图参考 | 原 Prefill L3 Attention 错误会影响依赖它的后续 reference 输出；修复参考路径或建立可信整图参考后重采 hidden／logits，不能直接沿用这些下游 golden |
+| ConvState、MoE、Router、LM head | 仍需整层／整图数值覆盖；独立 residual 的 golden 输入比较不能证明内部正确 |
+| Decode 状态反馈 | Cache 历史保留错误仍未解决；Attention 独立输入通过不代表连续 Prefill→Decode 状态正确 |
 
-旧 target-layer-accuracy 产物及 golden 已删除，用户换回原 310P 参考环境重新采集，已执行 Attention 两图并回传 inspection/summary.txt 与 head-summary.csv。以下是最新检查，原始文件未传到本地，依据回传记录分析。
-
-| 最新观测 | Prefill | Decode |
-| --- | --- | --- |
-| packed Q / 输出 shape | [1,256,256,16] | [1,256,1,16] |
-| 每次输出字节数 / 重复 | 2,097,152 / 10 次相同 SHA | 8,192 / 10 次相同 SHA |
-| 源 AIR Q 长度常量 | INT64 [256]，字节已核对 | INT64 [1]，字节已核对 |
-| allQLen / mask 行跨度 | 256 / 2048 | 257 / 2048 |
-| 16 个 head 的 relative-L2 范围 | 0.7270917908–0.9983594853 | 0.0010125552–0.0063916135 |
-| 各 head golden 非零数 | 均为 61,440 / 65,536 | 均为 256 / 256 |
-| 各 head actual 非零数 | 65,534–65,536 / 65,536 | 均为 256 / 256 |
-| golden 全零 query 行 | 所有 head 均为 16–31 | 无 |
-| 与 actual 整行数值相等的 query | 所有 head 均只有 0 | 无整行精确相等 |
-| 最大差值处两侧值 | head6 / query239 / channel15：actual=2.0859375，golden=1769 | head8 / query0 / channel99：actual=-0.19140625，golden=-0.182861328125 |
-| NaN / Inf | 两侧均无 | 两侧均无 |
-
-Q 与常量满足多行调用合同；没有“只有 head0 有输出”的模式，但非零值不能证明任务完整执行，observed_total_tasks 仍未知。逐行结果已确认：golden 的 4096 个零集中在第 16–31 行，所有 head 一致；所有 head 只有第 0 行与 actual 整行相等。actual 的 head0–7 绝对值最大均为 3.494140625，head8–15 均为 2.39453125；golden 各 head 最大绝对值为 16.53125–1769。最大差值 1766.9140625 来自 golden=1769 与 actual=2.0859375。
-
-**Prefill golden 的参考计算／采集路径现在是优先排查对象，CPro 尚不能据此判通过。** 固定 16 行零块、后段异常放大的模式值得核查分块写回、行归一化与缓冲区解释；尚未确定具体指令或错误阶段。若实际 V 范围只有几，golden=1769 将违反正常 Attention 非负权重、权重和为 1 的加权平均范围；目前输入 V 范围尚未回传，不能把 actual 的范围当作 V 的范围。
-
-已新增独立 NumPy FP64 Attention 参考，使用同一捕获 Q/K/V、原 additive mask、页表与 allQLen，最终转 FP16，分别计算 actual/reference、captured_golden/reference 五项指标和 V 通道范围越界计数。它不加载设备算子、不覆盖 capture、不新增 causal mask、不裁 query 行；全 -inf mask 行明确报告未定义。页表置换、GQA、KV 尾块、mask、原始文件绑定及所有重复输出的本地 12 项检查通过，用户数据的参考结果仍待回传。Decode 的 S=1 会使一些序列轴排列差异退化，因此 Decode 接近不能单独证明 Prefill 布局正确。[独立参考执行命令](target-batch-rerun.md#51-attention-输出检查)复用现有 dump。
-
-本次未回传整输出五项 comparison 表，不从逐 head L2 反推整输出 L2 或其他四项，也不将 Decode 标为五项通过。150 项历史边界 CSV 中 Attention 整输出 L2 99.6669611% / 0.2509511% 属于此前记录；HTML 的 Attention 节点优先显示本次逐 head 范围。
-
-按用户最新要求保持 Attention 算子不变，先检查调用侧：全图与单模块 Q 都采用 packed `[B,heads×D/16,S,16]`，Q 长度在轴 2，actual_seq_lengths_q 传静态列表 `[S]`。导出检查 INT64 常量字节与 captured Q 长度一致，保留 allQLen 的独立 KV 遍历语义及原 mask 跨度。用户确认源码 DEFAULT_QUERY_SEQ_STEP=16，所贴实现的 T64/T256 Prefill 均应在 pa.Decode 内走 mActual=16，T1 Decode 为 1；当前无需为切分支再改 Q 调用。实际 tiling 的任务总数仍待核对，T64/T256 应为 64/256（B1、16 heads）；源码 Const 不等于已经观察到 host GetData 非空。[完整调用检查](target-batch-rerun.md#6-attention-prefill-调用合同)。
-
-合入有效改动后还需四层 Prefill 的 hidden／logits 和末态验证。初始空缓存 Prefill 可以与 Decode 分开推进；Decode Cache 历史保留错误仍阻塞后续生成，多段／续接 Prefill 同样需要历史保留验证。已对齐模块不重复编译，独立小图结果不替代整图验收。
+L0–L2 位于 L3 之前，可继续用现有捕获做独立 GDN 层函数测试；这种通过不自动保证由错误参考 logits 选出的 Decode token 或整网生成正确。已通过的 Attention、RoPE、Prefill Cache 不为本次 GDN 测试重复编译。
 
 ## 最新 Cache 结果
 
@@ -193,7 +193,7 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 
 ## 高危算子重点定位表
 
-当前离线定位 Attention Prefill，之后执行整层 GDN；RoPE 数值已对齐，Cache 恢复后仅复测 4 个失败的 Decode 图。下表保留各模块最近已知结果，其他模块不自动加入复跑；[风险 CSV](../specs/target-operator-accuracy-risk.csv)为原整输出记录，Attention 最新逐 head 结果见上文；新标准缺项不补造。
+当前执行整层 GDN；Attention 两图对独立参考通过，RoPE 数值已对齐，Cache 恢复后仅复测 4 个失败的 Decode 图。下表与[风险 CSV](../specs/target-operator-accuracy-risk.csv)同步各模块最新结果，不把已通过模块加入复跑；新标准缺项不补造。
 
 | 区域 | 已观察结果 | 当前处理 |
 |---|---|---|
@@ -201,7 +201,7 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 | LinearAttentionConvstateUpdate | 12 项小图编译失败，无数值；原 T64 整图已编译 | 保留失败定位；对照 RefData、双输出和消费者 |
 | RoPE | FP32 旋转后四图零误差，旋转区／未旋转区均数值一致 | 独立边界已对齐；不再复跑，待整图集成验证 |
 | ChunkGatedDeltaRule | Prefill core 1.56%～7.12%，raw state 12.10%～44.60%；6 个 raw state dtype 不保持 | 整层 GDN FP32 state 待执行 |
-| AdnFusedInferAttention | Prefill golden 第16–31行全零、head6=1769；actual 同位置2.0859375。Decode逐head L2 0.10%–0.64% | 独立 CPU Attention 与 V 范围检查已准备；参考结果、实际 tiling 与整输出五项待回传 |
+| AdnFusedInferAttention | 独立参考五项通过：Prefill L2 0.11175%、Decode 0.11438%；10 次输出一致；原 Prefill golden 错误 | 本轮小图退出复跑，继续整层 GDN；完整图参考需恢复可信路径 |
 
 各小图使用独立捕获的 golden 输入，不统一归因于上游 QKV 误差传播。整缓存通过也不证明图内 alias 或连续状态反馈已经通过。MoE、Router、共享专家、LM head 与完整 40 层仍待覆盖。[旧静态 SVG](assets/target-architecture-accuracy.svg)为历史快照。
 

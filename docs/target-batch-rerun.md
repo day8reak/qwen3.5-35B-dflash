@@ -1,13 +1,13 @@
-# Target：Attention 定位与整层 GatedDeltaNet 测试
+# Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-L3 Attention 已回传逐行检查：Prefill 所有 head 的 golden 第 16–31 行全零，只有第 0 行与 actual 整行一致；head6 最大差值处 golden=1769、actual=2.0859375。Prefill 逐 head relative-L2 为 72.71%–99.84%，Decode 为 0.10%–0.64%，各自十次输出相同。**当前执行第 5.1 节独立 CPU 参考检查**，复用已有 AIR、fixture 和 native dump，核验两侧输出与 V 范围；算子和捕获 golden 保持不变。本页同时保留从零采集、导出与执行步骤。
+**Attention 两图已对独立数学参考通过五项指标：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致。原 Prefill captured golden 错误已确认。当前从第 7 节执行六张整层 GDN FP32 state 图**，复用现有 capture；Attention、RoPE、Prefill Cache 不重复编译。完整结论与参考范围见[精度状态](target-accuracy-status.md#attention-独立参考验证)。本页保留 Attention 的准备与离线复核步骤，原 golden 文件不被覆盖。
 
-采集仍覆盖四层，供 Attention 和后续整层 GDN 共用。已实现的测试范围如下；本页默认命令只选择 Attention：
+采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
 | 模块 | 图数 | 每张图输出 |
 | --- | ---: | --- |
-| L3 AdnFusedInferAttention（本轮） | 2 | attention_nz |
-| L0–L2 整层 GatedDeltaNet（后续切换） | 6 | hidden、new_conv_state、recurrent_state_fp32 |
+| L3 AdnFusedInferAttention（本轮已通过） | 2 | attention_nz |
+| L0–L2 整层 GatedDeltaNet（当前） | 6 | hidden、new_conv_state、recurrent_state_fp32 |
 
 GDN 包含五个 QLinear、ConvState、卷积、SiLU、g/beta、Q/K 重复、ChunkGatedDeltaRule、gated norm 和 out_proj，层内真实串联。它不是把 core/state 再分成小图，也不包含 Decoder 的外部残差或 MoE。QLinear 沿用已验证的 FP16 scale 适配；卷积沿用显式单高度 Conv2d。
 
@@ -15,7 +15,7 @@ GDN 包含五个 QLinear、ConvState、卷积、SiLU、g/beta、Q/K 重复、Chu
 
 Attention 沿用捕获 Q/K/V、mask、block_table 和长度参数，新增 Q 轴、Q 长度常量字节与 allQLen 传递检查。当前范围为 B=1 静态图。Q 为 `[B, heads×D/16, S, 16]`，序列轴是 2；旧捕获 Prefill S256、Decode S1。源码全图 S64 对应 `[1,256,64,16]`，旧捕获小图对应 `[1,256,256,16]`；两者均没有把 Prefill Q 变成 1。新采集的 S 以实际 manifest 为准，不为了复现旧长度补齐或截断输入。`allQLen` 单独记录，不能强制等于当前 Q 长度；它在用户提供的内核中控制 KV 块循环。实际 tiling 和完整生产图仍需编译产物核对。
 
-每张图每次都使用捕获输入；整层 GDN 包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。48 个 GDN 独立边界已回传 43 PASS / 5 FAIL，整层 GDN 尚待执行。Attention 已有上述检查结果，五项比较表尚待回传。已通过的独立 QLinear、RoPE、Prefill Cache 不单独复跑。
+每张图每次都使用捕获输入；整层 GDN 包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。48 个 GDN 独立边界已回传 43 PASS / 5 FAIL，整层 GDN 尚待执行。L0–L2 的独立函数测试可以继续复用捕获；L3 Prefill Attention 下游的整图 golden 需要参考路径修复后重建。
 
 ## 1. 初始化路径
 
@@ -242,7 +242,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
 
 回传 `summary.csv` 和 `report.json`。数值通过要求 cosine >0.99、relative_l2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1，所有重复调用通过且稳定。CSV 同时记录 failed_metrics 和 dtype_preserved。raw state 即使数值通过，也须核实最终状态接口，不能忽略类型变化。
 
-本轮 summary.csv 应有 2 行：L3 Attention Prefill、Decode 各一行。任何输出或任意一次重复失败，整组不能通过。
+Attention 批次 summary.csv 为 2 行，整层 GDN 批次为 18 行。任何输出或任意一次重复失败，整组不能通过。Attention 原 captured-golden 比较仍会复现 Prefill 失败；它已由第 5.1 节独立参考与范围约束确认属于参考错误，当前模块结果明确采用独立参考，不静默更换 fixture golden。
 
 Attention 的 `export.json.attention_contract` 会记录 Q shape、actual_seq_lengths_q、actual_seq_lengths_kv、all_seq_lengths_q 及 AIR 传递链。`query_length_constant` 验证实际 INT64 常量内容，不只看 `_readable_value`。本轮保持算子实现不变，先核对调用与导出。
 
@@ -265,11 +265,11 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-attention --
 cat "$BATCH_ROOT/inspection/reference-summary.txt"
 ```
 
-本次回传 `inspection/reference-summary.txt`。重点看 `active_V_bounds`、`full_value_cache_abs_max`、mask 第 16–31 行统计，以及 `actual_vs_reference` / `captured_golden_vs_reference` 的五项指标。原逐行、逐块和两侧比较仍在 report.json、query-rows.csv、query-blocks.csv；inspection/summary.txt 保留逐行位置摘要。
+此检查已完成，下面的结论来自用户回传 `inspection/reference-summary.txt`。复核时重点看 `active_V_bounds`、`full_value_cache_abs_max`、mask 第 16–31 行统计，以及 `actual_vs_reference` / `captured_golden_vs_reference` 五项指标。原逐行、逐块和两侧比较仍在 report.json、query-rows.csv、query-blocks.csv。
 
-当前证据明显指向 Prefill 参考路径需要优先核验：golden 的零行确定集中在所有 head 的第 16–31 行；head6 大值也确定在 golden。actual 的全张量绝对值最大为 3.494140625，仍不能用它代替输入 V 的范围。若这次读取的 V 仅在几的量级，golden=1769 就违反正常 softmax 加权平均的范围约束。独立参考若与 actual 对齐而与 golden 大幅不符，支持参考计算／采集路径异常；若两侧都不符，继续检查共同输入语义与布局。没有原始文件分析前，不提前给 CPro 判通过，也不删除或替换 captured golden。
+最新结果：CPro 两阶段均五项通过；原 Prefill golden 五项全失败（relative-L2=60.141885，为比值），Decode golden 五项通过。输入 V cache 绝对值最大3.494140625，Prefill golden=1769，且588,094个元素超出 V 通道范围；CPro两阶段越界数均为0。golden 的第16–31行虽全零，mask却分别允许17–32个零偏置key，不能解释为全遮罩。错误已定位到参考计算／采集路径，具体内部原因仍待查；保留原captured golden与诊断记录。
 
-expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks 保留 null；工具未读取实际 tiling，也未独立证明设备输出布局。非零输出不能证明完整调度，Decode 逐 head L2 较小也不代替五项整输出验收。
+expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks 保留 null；工具未读取实际 tiling。本次数值结论依据完整输出对独立参考的五项比较，不用非零数量或函数名证明调度；不外推到未测形状或连续状态反馈。
 
 ## 6. Attention Prefill 调用合同
 
@@ -293,7 +293,7 @@ expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks
 
 ## 7. 后续整层 GDN 测试
 
-复用第 1.1 节的同一 golden-capture，另设 GDN 测试目录。以下命令替代第 2 节的 Attention 导出，然后沿用第 3–5 节编译、执行、回收和比较；不执行第 5.1 节的 Attention 检查。无需再次采集或重复编译已经准备好的 Attention。
+复用第 1.1 节的同一 golden-capture，另设 GDN 测试目录。在已跑通的 CPro AIR 导出环境执行下列命令，然后沿用第 3–5 节编译、执行、回收和比较。仅选择整层 GDN；已通过的 Attention 结果继续保留。
 
 ```bash
 export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
@@ -327,4 +327,4 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 )
 ```
 
-应导出、编译各 6 张图，summary.csv 共 18 行。每个 case 同时返回 hidden、new_conv_state、recurrent_state_fp32 三个输出，按真实 dtype/bytes 拆分比较；不是三张独立边界图。末态数值与 FP32 ABI 均需核实，FP32 接口仍不证明内核内部累加精度。整层 GDN 和 Attention 均通过后，再验证它们在整图中的状态反馈。
+应导出、编译各 6 张图，summary.csv 共 18 行。每个 case 同时返回 hidden、new_conv_state、recurrent_state_fp32 三个输出，按真实 dtype/bytes 拆分比较；不是三张独立边界图。末态数值与 FP32 ABI 均需核实，FP32 接口仍不证明内核内部累加精度。整层 GDN 通过后，再验证它与 Attention 在整图中的串联和状态反馈，并重建可信整图参考。
