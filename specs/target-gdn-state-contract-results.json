@@ -2,10 +2,18 @@
   "schema_version": 1,
   "artifact_kind": "qwen35-target-gdn-state-contract-observation",
   "date": "2026-11-13",
-  "evidence_source": "USER_PASTED_STATE_SUMMARY",
+  "evidence_source": "USER_PASTED_STATE_SUMMARY_AND_INSTALLED_DDK_INSPECTION",
   "local_artifact_binding": "NOT_REVERIFIED",
-  "reported_compilation": {"compiled": 6, "total": 6},
-  "state_shape": [1, 32, 128, 128],
+  "reported_compilation": {
+    "compiled": 6,
+    "total": 6
+  },
+  "state_shape": [
+    1,
+    32,
+    128,
+    128
+  ],
   "source_operator": "ChunkGatedDeltaRule",
   "source_initial_state_port": 5,
   "source_initial_state_dtype": "float32",
@@ -22,12 +30,36 @@
   "source_input_policy": "CAPTURED_FP16_INPUT_CONVERTED_INSIDE_GRAPH; COMPILED_FP16_INPUT_ALONE_DOES_NOT_PROVE_INPUT_ABI_DOWNCAST",
   "visible_post_graphop_cast": false,
   "cases": [
-    {"id": "l00_c00_gdn_layer_all", "phase": "prefill", "chunk_size": 64},
-    {"id": "l01_c00_gdn_layer_all", "phase": "prefill", "chunk_size": 64},
-    {"id": "l02_c00_gdn_layer_all", "phase": "prefill", "chunk_size": 64},
-    {"id": "l00_c01_gdn_layer_all", "phase": "decode", "chunk_size": 1},
-    {"id": "l01_c01_gdn_layer_all", "phase": "decode", "chunk_size": 1},
-    {"id": "l02_c01_gdn_layer_all", "phase": "decode", "chunk_size": 1}
+    {
+      "id": "l00_c00_gdn_layer_all",
+      "phase": "prefill",
+      "chunk_size": 64
+    },
+    {
+      "id": "l01_c00_gdn_layer_all",
+      "phase": "prefill",
+      "chunk_size": 64
+    },
+    {
+      "id": "l02_c00_gdn_layer_all",
+      "phase": "prefill",
+      "chunk_size": 64
+    },
+    {
+      "id": "l00_c01_gdn_layer_all",
+      "phase": "decode",
+      "chunk_size": 1
+    },
+    {
+      "id": "l01_c01_gdn_layer_all",
+      "phase": "decode",
+      "chunk_size": 1
+    },
+    {
+      "id": "l02_c01_gdn_layer_all",
+      "phase": "decode",
+      "chunk_size": 1
+    }
   ],
   "state_abi": "INCOMPATIBLE_WITH_REQUESTED_FP32",
   "compiler_pass_responsible": "NOT_IDENTIFIED",
@@ -40,7 +72,62 @@
     "filename": "chunk_gated_delta_rule.cpp",
     "sha256": "01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a",
     "state_bindings": "initial_state AND last_recurrent_state: GlobalTensor<half>, direct half pointer",
-    "current_source_match": "NOT_CHECKED",
+    "current_source_match": true,
     "compiled_kernel_selection": "NOT_PROVEN_BY_SOURCE_CANDIDATE"
+  },
+  "installed_support_observation": {
+    "ddk_id": "100.520.020.010",
+    "scan": {
+      "status": "PARTIAL",
+      "limited": false,
+      "partial_reasons": [
+        "CANDIDATE_ROOTS_ABSENT"
+      ],
+      "missing_roots": [
+        "ddk/ascendcpp",
+        "tools/platform/kirinx90"
+      ],
+      "errors": []
+    },
+    "registrations": [
+      {
+        "path": "tools/tools_ascendc/custom_op/ascend310b/config/npu_custom_opinfo.json",
+        "sha256": "1eb89cf0d6eb3a267cc9b019a2ea3b48a11ac0975aff92ac32cb0296c39831da"
+      },
+      {
+        "path": "tools/tools_ascendc/custom_op/ascend310b/info/aic-ascend310b-ops-info.json",
+        "sha256": "e82de56ccbb3ca8586928724b267baabb1993a6f67fb7cda11cdd7cceefe61c8"
+      }
+    ],
+    "declared_inputs": {
+      "query": "float16",
+      "key": "float16",
+      "value": "float16",
+      "g": "float16",
+      "beta": "float16",
+      "initial_state": "float16",
+      "effective_length": "int16"
+    },
+    "declared_outputs": {
+      "core_attn": "float16",
+      "last_recurrent_state": "float16"
+    },
+    "source_path": "tools/tools_ascendc/custom_op/ascend310b/src/chunk_gated_delta_rule.cpp",
+    "source_sha256": "01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a",
+    "initial_state_half_binding_line": 1855,
+    "last_recurrent_state_half_binding_line": 1858,
+    "scope": "INSTALLED_TEXT_AND_BOUNDED_SOURCE_PATTERN; BINARY_SELECTION_AND_INTERNAL_ARITHMETIC_UNVERIFIED"
+  },
+  "current_test_contract": {
+    "authorization": "USER_EXPLICITLY_SELECTED_FP16",
+    "state_dtype": "float16",
+    "g_operator_input_dtype": "float16",
+    "golden_state_dtype": "float32",
+    "golden_policy": "ORIGINAL_CAPTURE_BYTES_UNCHANGED",
+    "numeric_gates": "UNCHANGED_DEVICE_FIVE_METRICS_V1",
+    "source_export": "PENDING_USER_EXECUTION",
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "old_batch_policy": "REEXPORT_AND_RECOMPILE; KEEP_ORIGINAL_FP32_REQUEST_GATE"
   }
 }

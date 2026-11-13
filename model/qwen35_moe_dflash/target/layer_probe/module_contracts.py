@@ -11,37 +11,65 @@ from .attention_inspect import attention_length_constant
 
 
 @contextmanager
-def gdn_fp32_state(enabled):
+def gdn_state_contract(enabled, state_dtype='float32'):
     if not enabled:
         yield None
         return
+    if state_dtype not in ('float16', 'float32'):
+        raise ValueError('GDN state dtype must be float16 or float32')
     module = importlib.import_module('torchair._ge_concrete_graph.fx2ge_converter')
+    ge = importlib.import_module('torchair._ge_concrete_graph.ge_apis')
     from torchair.ge import DataType
+    half = state_dtype == 'float16'
+    dtype = DataType.DT_FLOAT16 if half else DataType.DT_FLOAT
+    torch_dtype = getattr(torch, state_dtype)
     op = torch.ops.npu.npu_chunk_gated_delta_rule.default
     getter, registry = module._get_converter, module._CONVERTERS
     original = getter(op)
     signature = inspect.signature(original)
-    if not {'query', 'value', 'initial_state'} <= set(signature.parameters):
+    if not {'query', 'value', 'g', 'initial_state'} <= set(signature.parameters):
         raise ValueError('review installed GDN converter signature')
     _, source = definition(inspect.unwrap(original))
     evidence = dict(calls=0, restored=False, original_converter=source,
-        policy='FP32_INITIAL_STATE_AND_NEW_GE_STATE_OUTPUT; NO_POSTHOC_AIR_REWRITE',
+        state_dtype=state_dtype,
+        policy='EXPLICIT_OPERATOR_STATE_DTYPE; NO_POSTHOC_AIR_REWRITE',
+        gate_policy='SOURCE_COMPUTATION_THEN_GE_FP16_CAST' if half else 'SOURCE_UNCHANGED',
+        frontend_state_policy=('FP16_KERNEL_OUTPUT_CAST_TO_STOCK_FP32_META_THEN_SOURCE_FP16_WRITEBACK'
+                               if half else 'FP32_META_AND_OPERATOR_OUTPUT'),
         internal_accumulation='NOT_ESTABLISHED_BY_OUTPUT_METADATA')
 
     @functools.wraps(original)
     def adapted(*args, **kwargs):
-        values = signature.bind(*args, **kwargs).arguments
+        bound = signature.bind(*args, **kwargs)
+        values = bound.arguments
         state = values['initial_state']
-        if state.dtype != DataType.DT_FLOAT or not isinstance(state.meta, torch.Tensor):
-            raise ValueError('GDN FP32 candidate requires FP32 initial_state at the operator')
-        outputs = original(*args, **kwargs)
-        if len(outputs) != 2 or state.meta.dtype != torch.float32:
-            raise ValueError('GDN FP32 candidate requires two outputs and FP32 state metadata')
+        if (state.dtype != dtype or not isinstance(state.meta, torch.Tensor)
+                or state.meta.dtype != torch_dtype):
+            raise ValueError(f'GDN candidate requires {state_dtype} initial_state and metadata')
+        if half:
+            gate = values['g']
+            if (gate.dtype != DataType.DT_FLOAT or not isinstance(gate.meta, torch.Tensor)
+                    or gate.meta.dtype != torch.float32):
+                raise ValueError('expected original FP32 decay calculation before the FP16 GDN input')
+            gate_half = ge.Cast(gate, dst_type=DataType.DT_FLOAT16)
+            gate_half.set_meta(gate.meta.to(torch.float16))
+            values['g'] = gate_half
+        outputs = list(original(*bound.args, **bound.kwargs))
+        if len(outputs) != 2:
+            raise ValueError('GDN candidate requires two outputs')
         # Metadata for a newly emitted GE operation, not a conversion of existing
-        # FP16 values. Target kernel support is checked again after compilation.
+        # values. Target kernel support is checked again after compilation.
         outputs[1].set_meta(torch.empty_like(state.meta))
-        if outputs[1].dtype != DataType.DT_FLOAT:
-            raise ValueError('GDN GE state output did not retain the FP32 contract')
+        if outputs[1].dtype != dtype:
+            raise ValueError('GDN GE state output did not retain the selected contract')
+        if half:
+            # The private exporter's stock FakeTensor output is FP32. Return an
+            # explicit numeric Cast to satisfy it, keeping the actual custom op
+            # output FP16. The original forward then writes FP16 state. This
+            # lossless widening bridge does not request FP32 kernel arithmetic.
+            bridge = ge.Cast(outputs[1], dst_type=DataType.DT_FLOAT)
+            bridge.set_meta(state.meta.to(torch.float32))
+            outputs[1] = bridge
         evidence['calls'] += 1
         return outputs
 
@@ -66,8 +94,8 @@ def gdn_fp32_state(enabled):
         evidence['restored'] = getter(op) is original
 
 
-def check_gdn_source(graph, schema, phase):
-    from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype, port_names
+def check_gdn_source(graph, schema, phase, state_dtype='float32'):
+    from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype, port_names, _data_edges
     from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
     from .candidates import check_graph
     enums = schema.enums[schema.package + '.DataType']
@@ -77,11 +105,30 @@ def check_gdn_source(graph, schema, phase):
         raise ValueError('whole GDN must retain one ChunkGatedDeltaRule')
     op = selected[0]
     names = port_names(_attributes(op), 'input')
-    slots = [i for i, n in names.items() if n == 'initial_state']
-    if (len(slots) != 1 or _dtype(descriptor(op['input_desc'][slots[0]], enums)) != 'float32'
-            or len(op.get('output_desc', [])) != 2
-            or _dtype(descriptor(op['output_desc'][1], enums)) != 'float32'):
-        raise ValueError('GDN source initial_state and last_recurrent_state must both be FP32')
+    if state_dtype not in ('float16', 'float32'):
+        raise ValueError('GDN state dtype must be float16 or float32')
+    expected = {'initial_state': state_dtype}
+    if state_dtype == 'float16':
+        expected.update(query='float16', key='float16', value='float16', g='float16',
+                        beta='float16', effective_length='int16')
+    for name, dtype in expected.items():
+        slots = [i for i, n in names.items() if n == name]
+        if len(slots) != 1 or _dtype(descriptor(op['input_desc'][slots[0]], enums)) != dtype:
+            raise ValueError(f'GDN source {name} must be {dtype}')
+    if state_dtype == 'float16':
+        gate_slot = next(i for i, name in names.items() if name == 'g')
+        edge = _data_edges(op)[gate_slot]
+        producer = next((n for n in nodes if n['name'] == edge.rsplit(':', 1)[0]), {})
+        if (not edge.endswith(':0') or producer.get('type') != 'Cast'
+                or _dtype(descriptor(producer['input_desc'][0], enums)) != 'float32'
+                or _dtype(descriptor(producer['output_desc'][0], enums)) != 'float16'):
+            raise ValueError('GDN g must use an explicit FP32-to-FP16 Cast after source computation')
+    nets = [n for n in nodes if n['type'] == 'NetOutput']
+    if (len(op.get('output_desc', [])) != 2
+            or _dtype(descriptor(op['output_desc'][1], enums)) != state_dtype
+            or len(nets) != 1 or len(nets[0].get('input_desc', [])) != 3
+            or _dtype(descriptor(nets[0]['input_desc'][2], enums)) != state_dtype):
+        raise ValueError(f'GDN source operator output and writeback must both be {state_dtype}')
     chunk = _attributes(op).get('chunk_size', {}).get('i')
     if chunk != (1 if phase == 'decode' else 64):
         raise ValueError('GDN chunk_size differs from original phase branch')
@@ -90,7 +137,8 @@ def check_gdn_source(graph, schema, phase):
         raise ValueError('whole GDN must contain all five projections and convstate update')
     for p in projections:
         check_graph(dict(op=[n for n in nodes if n['type'] != 'QuantBatchMatmulV4444' or n is p]), schema, True)
-    return dict(status='PASSED', initial_state='float32', last_recurrent_state='float32',
+    return dict(status='PASSED', initial_state=state_dtype, last_recurrent_state=state_dtype,
+                checked_inputs=expected, writeback=state_dtype,
                 quantized_projections=5, chunk_size=chunk, scope='SOURCE_AIR_ONLY')
 
 
@@ -139,14 +187,16 @@ def attention_contract(record, inputs, graph, schema, bindings):
         dispatch='Q_LENGTH_CONTRACT_CHECKED; KERNEL_DISPATCH_AND_TILING_NOT_OBSERVED')
 
 
-def compiled_state_contract(observed, output_index=2):
-    """Reject a visible FP16 state producer hidden by an FP32 output Cast."""
+def compiled_state_contract(observed, output_index=2, state_dtype='float32'):
+    """Check the requested ABI; FP32 still rejects hidden FP16 producers."""
+    if state_dtype not in ('float16', 'float32'):
+        raise ValueError('compiled GDN requires an explicit state dtype contract')
     nodes = {n['name']: n for n in observed['nodes']}
     nets = [n for n in nodes.values() if n['type'] == 'NetOutput']
     if len(nets) != 1 or len(nets[0]['inputs']) <= output_index:
         raise ValueError('compiled whole GDN state output is missing')
-    if nets[0]['inputs'][output_index]['dtype'] != 'float32':
-        raise ValueError('compiled GDN state ABI is not FP32; update selected operator support')
+    if nets[0]['inputs'][output_index]['dtype'] != state_dtype:
+        raise ValueError(f'compiled GDN state ABI is not {state_dtype}')
     edge = nets[0]['input'][output_index]
     chain, seen = [], set()
     while edge not in seen:
@@ -157,12 +207,15 @@ def compiled_state_contract(observed, output_index=2):
             break
         dtype = node['outputs'][int(slot)]['dtype']
         chain.append(dict(name=name, type=node['type'], slot=int(slot), dtype=dtype))
-        if dtype != 'float32':
-            raise ValueError('compiled state producer is not FP32: ' + str(chain))
+        if dtype != state_dtype:
+            raise ValueError('compiled state producer differs from selected dtype: ' + str(chain))
+        if state_dtype == 'float16':
+            break  # Explicitly selected FP16 output; no internal precision claim.
         if node['type'] not in ('Cast', 'CastT', 'Identity'):
             break
         if node.get('inputs') and node['inputs'][0]['dtype'] != 'float32':
             raise ValueError('compiled state Cast consumes non-FP32 data')
         edge = node['input'][0]
-    return dict(status='FP32_VISIBLE_BOUNDARY_VERIFIED', chain=chain,
+    return dict(status=('FP16' if state_dtype == 'float16' else 'FP32') + '_VISIBLE_BOUNDARY_VERIFIED',
+        state_dtype=state_dtype, chain=chain,
         internal_accumulation='UNVERIFIED_INSIDE_OPAQUE_KERNEL; NOT_PROVEN_BY_NETOUTPUT_OR_GRAPHOP')

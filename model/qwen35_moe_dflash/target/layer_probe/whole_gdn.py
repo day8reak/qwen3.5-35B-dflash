@@ -51,7 +51,7 @@ def assemble(manifest):
             raise ValueError('whole GDN capture sequence lengths differ')
         state = tensor(core, 'outputs', 'golden_state_raw', 'golden_recurrent_state_fp32')
         if state['dtype'] != 'float32':
-            raise ValueError('whole GDN FP32 experiment requires an original FP32 raw-state golden')
+            raise ValueError('whole GDN comparison requires an original FP32 raw-state golden')
         records.append(dict(core, id=core['id'].removesuffix('_gdn') + '_gdn_layer',
             point='gdn_layer', kind='gdn_layer', attrs=dict(core['attrs']),
             inputs=[hidden, tensor(conv, 'inputs', 'old_conv_state'),
@@ -65,15 +65,17 @@ def assemble(manifest):
     return records
 
 
-def adapt_forward(owner):
+def adapt_forward(owner, state_dtype='float32'):
+    if state_dtype not in ('float16', 'float32'):
+        raise ValueError('whole GDN state must be float16 or float32')
     tree, evidence = definition(owner)
     tree = copy.deepcopy(tree)
     tree.decorator_list = []
-    # Make the state interface genuinely FP32; no FP16 writeback is retained.
+    # Keep the original FP16 writeback for the installed-kernel candidate.
     state = assignment(tree, 'last_recurrent_state')
     if ast.unparse(state.value) != 'last_recurrent_state.to(torch.float16)':
-        raise ValueError('review changed GDN state writeback before applying FP32 candidate')
-    state.value = ast.parse('last_recurrent_state.to(torch.float32)', mode='eval').body
+        raise ValueError('review changed GDN state writeback before applying dtype candidate')
+    state.value = ast.parse(f'last_recurrent_state.to(torch.{state_dtype})', mode='eval').body
     op = call(tree, 'torch_npu.npu_chunk_gated_delta_rule')
     initial = [k for k in op.keywords if k.arg == 'initial_state']
     if len(initial) != 1 or ast.unparse(initial[0].value) != 'recurrent_state':
@@ -94,7 +96,8 @@ def adapt_forward(owner):
     module = ast.fix_missing_locations(ast.Module(body=[tree], type_ignores=[]))
     namespace = dict(owner.__globals__)
     exec(compile(module, evidence['file'], 'exec'), namespace)
-    evidence.update(adaptations=['FP32_RECURRENT_INPUT_AND_WRITEBACK', 'EXPLICIT_CONV2D_SINGLETON_HEIGHT',
+    evidence.update(adaptations=[('FP16' if state_dtype == 'float16' else 'FP32') + '_RECURRENT_INPUT_AND_WRITEBACK',
+                                 'EXPLICIT_CONV2D_SINGLETON_HEIGHT',
                                  'CONVSTATE_PADDED_RESHAPE_NC1L',
                                  'RETURN_HIDDEN_CONV_STATE_RECURRENT_STATE'],
                     conv_input=dict(operation='reshape', shape='[batch_size, conv_dim, 1, -1]',
@@ -104,19 +107,22 @@ def adapt_forward(owner):
 
 
 class WholeGDN(torch.nn.Module):
-    def __init__(self, op):
+    def __init__(self, op, state_dtype='float32'):
         super().__init__()
+        if state_dtype not in ('float16', 'float32'):
+            raise ValueError('whole GDN state must be float16 or float32')
         self.op = op
+        self.state_dtype = getattr(torch, state_dtype)
         self.export_adjustments = []
 
     def forward(self, probe_input_000, probe_input_001, probe_input_002, probe_input_003, probe_input_004):
         conv = probe_input_001.clone()
-        state = probe_input_002.to(torch.float32).clone()
+        state = probe_input_002.to(self.state_dtype).clone()
         return self.op(probe_input_000, past_key_values=(conv, state), export_flag=True,
                        linear_update_tensor=probe_input_003, effective_length=probe_input_004)
 
 
-def build(record, capture, target, converters, factory, config_path, source_root, root):
+def build(record, capture, target, converters, factory, config_path, source_root, root, state_dtype='float32'):
     import yaml
     from .candidates import adapt_qlinear
     from .target_weights import load_weights
@@ -157,13 +163,14 @@ def build(record, capture, target, converters, factory, config_path, source_root
                 setattr(parent, name, torch.nn.Parameter(value, requires_grad=False))
     if any(t.is_meta for t in (*op.parameters(), *op.buffers())):
         raise ValueError('whole GDN has unbound meta weights')
-    forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward)
+    forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward, state_dtype)
     op.forward = MethodType(forward, op)
-    model = WholeGDN(op).eval()
+    model = WholeGDN(op, state_dtype).eval()
     evidence = dict(status='BOUND_TO_SOURCE', kind='gdn_layer', source=source,
         config_loader=loader, config_sha256=sha(model_path/'config.json'),
         input_scope='CAPTURED_LAYER_HIDDEN_AND_PRE_CALL_STATES; SAME_INVOCATION',
-        output_scope='WHOLE_LAYER_HIDDEN_CONV_STATE_AND_FP32_RECURRENT_STATE',
+        output_scope='WHOLE_LAYER_HIDDEN_CONV_STATE_AND_RECURRENT_STATE',
+        recurrent_state_dtype=state_dtype, golden_state_dtype='float32',
         weight_scope='ORIGINAL_CHECKPOINT_BOUND', weights=weights,
         qlinear_candidates=quant, golden_state_feedback='CAPTURED_310P_TRAJECTORY',
         cpro_state_feedback='NOT_TESTED')

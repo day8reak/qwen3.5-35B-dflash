@@ -1,17 +1,17 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**整层 GDN 已确认 6/6 编译成功，但六图 state 输出 ABI 全部为 FP16，设备未执行。源 AIR／保留 dump 声明 FP32，最终 OMC 由 NPUCL 子图直接输出 FP16。当前执行[第 7.4 节末尾的安装实现核对](#74-编译后-state-仍为-fp16只读定位)，已有状态链不用重复检查，暂不重导出或重编译。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
+**当前按用户确认的 FP16 算子接口测试整层 GDN。执行[第 7 节](#7-整层-gdnfp16-状态测试)：复用现有 golden，重新导出六图，再编译、上板、回收和比较。原 FP32 请求批次虽 6/6 编译成功，但因实际 FP16 ABI 在准备阶段被拦截，设备未执行。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
 | 模块 | 图数 | 每张图输出 |
 | --- | ---: | --- |
 | L3 AdnFusedInferAttention（本轮已通过） | 2 | attention_nz |
-| L0–L2 整层 GatedDeltaNet（当前） | 6 | hidden、new_conv_state、recurrent_state_fp32 |
+| L0–L2 整层 GatedDeltaNet（当前） | 6 | hidden、new_conv_state、recurrent_state（FP16） |
 
 GDN 包含五个 QLinear、ConvState、卷积、SiLU、g/beta、Q/K 重复、ChunkGatedDeltaRule、gated norm 和 out_proj，层内真实串联。它不是把 core/state 再分成小图，也不包含 Decoder 的外部残差或 MoE。QLinear 沿用已验证的 FP16 scale 适配；卷积沿用显式单高度 Conv2d。
 
-输入和三个 golden 从同一 CAPTURED layer/call/phase 的已有边界组合，检查四个输入投影的 hidden 一致；没有重算 golden。原 FP16 递归输入数值转换成 FP32，ChunkGatedDeltaRule 的 initial_state、last_recurrent_state 和层内 writeback 均声明 FP32，末态对比原始 raw-state FP32 golden。**末端 Cast 不算内部精度修复**：准备上板时拒绝非 FP32 状态 ABI 及可见 FP16→FP32 补 Cast，保留 GraphOp 链；不声称能从不透明内核外部证明累加精度。若 DDK 算子仍只支持 FP16 state，需对应算子实现支持，不能改 AIR dtype 标签绕过。
+输入和三个 golden 从同一 CAPTURED layer/call/phase 的已有边界组合，检查四个输入投影的 hidden 一致。使用显式选项 --gdn-state-dtype float16：初态、GDN 末态和层内 writeback 为 FP16；g 沿用原计算，在 GE 算子入口数值 Cast 为 FP16。原始 raw-state FP32 golden 字节保留，实际 FP16 输出提升到比较精度后计算误差，五项门槛保持。CSV 的 actual_dtype/golden_dtype 分别记录两端类型，state 的 dtype_preserved=false 是已选择的接口差异，不单独判数值失败；输出仍须满足本次 FP16 ABI 和重复稳定性。
 
 Attention 沿用捕获 Q/K/V、mask、block_table 和长度参数，新增 Q 轴、Q 长度常量字节与 allQLen 传递检查。当前范围为 B=1 静态图。Q 为 `[B, heads×D/16, S, 16]`，序列轴是 2；旧捕获 Prefill S256、Decode S1。源码全图 S64 对应 `[1,256,64,16]`，旧捕获小图对应 `[1,256,256,16]`；两者均没有把 Prefill Q 变成 1。新采集的 S 以实际 manifest 为准，不为了复现旧长度补齐或截断输入。`allQLen` 单独记录，不能强制等于当前 Q 长度；它在用户提供的内核中控制 KV 块循环。实际 tiling 和完整生产图仍需编译产物核对。
 
@@ -291,28 +291,89 @@ expected_total_tasks 依据确认的源码 step=16 推导，observed_total_tasks
 
 源码 AIR 中有 Const 只证明调用侧满足静态输入合同，不保证当前编译器让 tiling 的 `GetData<int64_t>()` 非空。所贴 host 在该指针为空时退回 `batch×heads`，当 S 大于 querySeqStep 时存在任务不足风险。这是漏算任务，不会因此自动把 mActual 变成 1：例如 B1、16 heads、S256、step16 时，16 个任务按所贴索引只覆盖 head0 的 16 个 Q 块，其余 heads 未覆盖。先检查现有编译日志/tiling：`qTokens=S`、`actualSeqLengthsQ=S`、`querySeqStep`、各核 `endBlk` 的最大值。只有实际任务数覆盖全部 Q 块，才能认定 Prefill 调度完整；不根据函数名或一个 blockDim 值下结论。
 
-## 7. 后续整层 GDN 测试
+## 7. 整层 GDN：FP16 状态测试
 
-首次 AIR 导出已成功，随后重复升维问题已修复。当前已有 OMC，先执行[第 7.4 节](#74-编译后-state-仍为-fp16只读定位)定位状态类型。下面保留通用导出命令：复用第 1.1 节的同一 golden-capture，在已跑通的 CPro AIR 导出环境生成六张整层 GDN 图。
+本节替代此前 FP32 请求流程。复用成功采集的 golden-capture；导出环境仍用已跑通的 qwen3_5_cpro，编译环境仍用 custom_pypto 与选定 DDK。只重导出 L0–L2 Prefill／Decode 六图，不重新采集 golden。
+
+**A. 更新代码，清理已结束的旧 FP32 请求产物**
+
+在持有旧 gdn-layer/air 或 omc 的各主机各执行一次；同一主机只执行一次。下面只接受原六图、FP32 请求，以及未上板的 prepare 失败。先保存编译与准备摘要，再释放本组 air/omc/execution 槽位；保留 golden-capture、state-inspection 和其他测试。已导出的 FP16 批次会被拒绝清理，直接继续其下一阶段。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
 git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export PYTHONDONTWRITEBYTECODE=1
+python - "$BATCH_ROOT" <<'PY_RESET'
+import fcntl, json, os, shutil, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+if root.is_symlink() or root.resolve() != Path(os.environ['AI_RUN_DIR']).resolve()/'target/tests/gdn-layer':
+    raise SystemExit('只处理当前 run 的固定 gdn-layer 目录')
+root.mkdir(parents=True, exist_ok=True)
+with (root/'.omc.lock').open('a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    expected = {f'l{layer:02d}_c{call:02d}_gdn_layer_all' for layer in range(3) for call in range(2)}
+    paths = [root/n for n in ('air', 'omc', 'execution')]
+    if any(p.is_symlink() for p in paths):
+        raise SystemExit('不清理符号链接')
+    if any((root/n).exists() or (root/n).is_symlink() for n in ('recovery', 'comparison')):
+        raise SystemExit('已有回收或比较记录，先核对本组任务状态')
+    saved = {}
+    for name in ('air', 'omc'):
+        folder = root/name
+        if not folder.exists():
+            continue
+        m = json.loads((folder/'manifest.json').read_text())
+        if (m.get('artifact_kind') != 'qwen35-target-cpro-boundary-probe-v1'
+                or m.get('status') != 'EXPORTED'
+                or m.get('candidate_options', {}).get('gdn_state_dtype') != 'float32'
+                or len(m.get('cases', [])) != 6
+                or {c['id'] for c in m['cases']} != expected
+                or any(c.get('kind') != 'gdn_layer' or c.get('status') != 'EXPORTED' for c in m['cases'])):
+            raise SystemExit('不是已结束的原六图 FP32 请求批次: ' + str(folder))
+        saved[name+'_manifest'] = m
+    if (root/'omc').exists():
+        compiled = json.loads((root/'omc/compile.json').read_text())
+        if (compiled.get('status') != 'COMPILED' or set(compiled.get('cases', {})) != expected
+                or any(c['status'] != 'COMPILED' for c in compiled['cases'].values())):
+            raise SystemExit('旧编译批次不是已确认的六图完成状态')
+        saved['compile'] = compiled
+    if (root/'execution').exists():
+        result = json.loads((root/'execution/result.json').read_text())
+        if (result.get('status') != 'FAILED' or result.get('stage') != 'prepare'
+                or result.get('device_execution') != 'NOT_RUN'
+                or result.get('lock_state') != 'NO_KNOWN_OWNED_LOCK'
+                or result.get('launch_requested') or result.get('board_attempt')):
+            raise SystemExit('执行记录不是已结束的上板前失败，先回收原任务')
+        saved['prepare'] = result
+    if saved:
+        (root/'fp32-contract-summary.json').write_text(json.dumps(saved, ensure_ascii=False, indent=2)+'\n')
+    for folder in paths:
+        if folder.exists():
+            shutil.rmtree(folder)
+print('旧 FP32 请求产物已处理，可以导出 FP16 六图')
+PY_RESET
+```
+
+**B. 在 CPro AIR 导出主机执行**
+
+TARGET_SOURCE/TARGET_CONFIG 沿用此前成功导出的私有源码和权重配置。保持原 T256/T1、chunk64/1、effective_length 和权重。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
 export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
 export GOLDEN_CAPTURE="${GOLDEN_CAPTURE:-$AI_RUN_DIR/target/tests/golden-capture}"
 : "${TARGET_SOURCE:?请设置原 Target 源码根目录}"
 : "${TARGET_CONFIG:?请设置原 Target 权重 YAML 路径}"
 export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
 export BATCH="$BATCH_ROOT/air"
-export OMC_BATCH="$BATCH_ROOT/omc"
-export COMPARISON="$BATCH_ROOT/comparison"
-export EXECUTION="$BATCH_ROOT/execution"
-export RECOVERY="$BATCH_ROOT/recovery"
-export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
 export PYTHONDONTWRITEBYTECODE=1
 export CPRO_EXPORT_SCRIPT="${CPRO_EXPORT_SCRIPT:-$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py}"
 (
 set -e
+test -f "$GOLDEN_CAPTURE/manifest.json"
 test -f "$TARGET_CONFIG"
 test -f "$CPRO_EXPORT_SCRIPT"
 test ! -e "$BATCH"
@@ -325,23 +386,25 @@ expected = {(layer, call, phase) for layer in range(3)
             for call, phase in enumerate(('prefill', 'decode'))}
 if (m.get('status') != 'CAPTURED' or len(gdn) != 6
         or {(r['layer'], r['call'], r['phase']) for r in gdn} != expected):
-    raise SystemExit('需要 L0–L2 Prefill/call0、Decode/call1 的完整 GDN 捕获。')
+    raise SystemExit('需要 L0–L2 Prefill/call0、Decode/call1 的完整 GDN 捕获')
 print('CAPTURE: 6 whole GDN graphs; 18 outputs')
 PY_CHECK
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --capture "$GOLDEN_CAPTURE" \
   --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
   --converter-script "$CPRO_EXPORT_SCRIPT" \
-  --points gdn_layer --qlinear-scales fp16 --gdn-state-dtype float32 \
+  --points gdn_layer --qlinear-scales fp16 --gdn-state-dtype float16 \
   --phases prefill decode --output "$BATCH"
 )
 ```
 
-应导出、编译各 6 张图，summary.csv 共 18 行。每个 case 同时返回 hidden、new_conv_state、recurrent_state_fp32 三个输出，按真实 dtype/bytes 拆分比较；不是三张独立边界图。末态数值与 FP32 ABI 均需核实，FP32 接口仍不证明内核内部累加精度。整层 GDN 通过后，再验证它与 Attention 在整图中的串联和状态反馈，并重建可信整图参考。
+预期 EXPORTED 6/6。每图 export.json 的 candidate.state_dtype、candidate_graph_check.initial_state/last_recurrent_state/writeback 和 output_contract.required_dtypes["2"] 均应为 float16，golden_state_dtype 仍为 float32。源图还检查 g 的真实 FP32→FP16 Cast，以及 query/key/value/beta 为 FP16、effective_length 为 INT16。
+
+私有 exporter 的 stock Meta 将末态声明为 FP32，因此进程内 converter 用显式 Cast 将真实 FP16 算子输出接回该前端类型，原 forward 再写回 FP16。此桥接没有恢复精度，也没有声称内核使用 FP32；直接算子输出与整图状态输出都检查为 FP16。旧 --gdn-state-dtype float32 仍执行严格 FP32 检查，不能用新代码直接放行旧批次。
 
 ### 7.1 AIR 导出后：编译与精度测试
 
-用户已确认整层 GDN AIR 导出成功。下面直接使用已有的 target/tests/gdn-layer/air，顺序为编译 → 上板 → 回收 → 比较，结果预期为六张图、18 个输出。无需重新采集或导出。
+完成上节 FP16 六图导出后，顺序执行编译 → 上板 → 回收 → 比较。使用新 target/tests/gdn-layer/air，不复用原 FP32 请求的 AIR／OMC。跨主机时更新代码并传输新 air，保留其输入与 golden。
 
 **A. 在编译主机初始化路径**
 
@@ -368,6 +431,12 @@ set -e
 test -f "$BATCH/manifest.json"
 test -f "$TBE_DIAGNOSIS/report.json"
 test ! -e "$OMC_BATCH"
+python - "$BATCH/manifest.json" <<'PY_DTYPE'
+import json, sys
+m = json.load(open(sys.argv[1]))
+if m.get('candidate_options', {}).get('gdn_state_dtype') != 'float16':
+    raise SystemExit('需要第 7 节新导出的 FP16 批次；不能复用旧 FP32 请求的 AIR')
+PY_DTYPE
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
   --batch "$BATCH" --output "$OMC_BATCH" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
@@ -431,233 +500,22 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
 cat "$COMPARISON/summary.csv"
 ```
 
-完整结果应有 18 行：L0–L2 × Prefill／Decode × hidden／new_conv_state／recurrent_state_fp32。五项仍按 cosine >0.99、relative-L2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1，且检查状态 dtype 与重复稳定性。
+完整结果应有 18 行：L0–L2 × Prefill／Decode × hidden／new_conv_state／recurrent_state。state 的 output 名称沿用 golden_recurrent_state_fp32，表示参考数据类型；实际输出为 FP16，golden 为 FP32，可直接看新增 actual_dtype/golden_dtype 两列。五项仍按 cosine >0.99、relative-L2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1，且检查状态 dtype 与重复稳定性。
 
 回传 `gdn-layer/comparison/summary.csv` 和 `report.json`。这些是整层串联结果，仍未测试跨调用的连续状态反馈。
 
-### 7.2 GDN 六图编译失败：读取已有日志
+### 7.2 编译失败时查看日志
 
-首次回传的 compile.json 总状态为 PARTIAL，但六个 case 全部 FAILED，即 **0/6 编译成功**。重复出现的两份 JSON 来自 compile 命令打印与随后 cat，不能据此认为运行了两轮。当时摘要只有 CalledProcessError／OMG return code 1；随后定位见第 7.3 节，当前状态见第 7.4 节。tbe_compatibility_requested=true 只记录请求启用兼容，不能证明 worker 适配或 FP32 state 已被接受。
-
-在刚才编译的终端执行，先提供 L0 Prefill、Decode 两份日志末尾。此命令只读取文件：
-
-```bash
-export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
-export OMC_BATCH="$BATCH_ROOT/omc"
-tail -n 160 "$OMC_BATCH/models/l00_c00_gdn_layer_all/omc/compile.log"
-tail -n 160 "$OMC_BATCH/models/l00_c01_gdn_layer_all/omc/compile.log"
-```
-
-如果末尾只有错误传播信息，用已有只读检查入口提取六项的优先错误、Python traceback、编译报告和 AIR／IR 描述。输出到新的 compile-inspection 槽位，不调用 OMG、不重新导出、不上板；槽位已存在时直接读取其 summary.txt／report.json。
-
-```bash
-python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
-  --batch "$OMC_BATCH" --failed \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$BATCH_ROOT/compile-inspection"
-cat "$BATCH_ROOT/compile-inspection/summary.txt"
-```
-
-两份日志已回传，Conv2D 输入五维问题与重试命令见第 7.3 节。后续若仍有编译失败，可用本节只读方法提取新日志。完整上下文在 report.json 的 cases/<case>/log/diagnostic_excerpt；检查状态 PARTIAL 也可能表示缺少 IR，不等于再次编译失败。
+仅在新 FP16 批次编译失败时读取对应 $OMC_BATCH/models/<case>/omc/compile.log。已有 AIR 不必重新导出；回传 compile.json 与首个失败日志末尾即可定位。当前安装检查已经结束，无需重复扫描 DDK。
 
 ### 7.3 修复 ConvState → Conv2D 的重复升维
 
-L0 Prefill／Decode 日志已确定同一个失败点：DDK 将 ConvState 的 padded 输出推导为四维，旧整层适配又执行 unsqueeze(2)，Conv2D 因输入五维而拒绝。六图都编译失败，但目前具体错误日志覆盖的是 L0 两图；其余四图使用相同适配，随本次一起修复重测。
-
-| 阶段 | DDK padded 输出 | 旧 Unsqueeze 后 | 修复后 Conv2D 输入 |
-| --- | --- | --- | --- |
-| Prefill T256 | [1,8192,1,259] | [1,8192,1,1,259] | [1,8192,1,259] |
-| Decode T1 | [1,8192,1,4] | [1,8192,1,1,4] | [1,8192,1,4] |
-
-whole_gdn.py 已将 padded.unsqueeze(2) 改为 padded.reshape(batch_size, self.conv_dim, 1, -1)，固定四维形状，不增加数值运算；权重仍从 [C,1,4] 变为 [C,1,1,4]。原始 Conv1d 函数、dtype 和分组语义保持。initial_state／last_recurrent_state／writeback 继续 FP32。
-
-这两份日志中 QuantBatchMatmulV4444 和 ConvState 均已通过 infershape；UnknownShapeFormat 与 ImportWarning 没有在该处终止流程。终止点是 Convolution 输入 rank=5 校验，不据此判断后续 FP32 GDN 内核是否可编译。
-
-本地检查已复现旧报错，并验证：源函数适配、3D/4D padded 等价、FP16/FP32、B1 T1/T256 与 B2 T17、C8192/K4 的卷积数值一致，以及导出计算图保留四维 Reshape。这里的导出检查是 CPU 图检查，CPro AIR/OMC 重试与端侧数值仍待执行。
-
-**A. 更新并腾出本组失败的输出槽位**
-
-旧 AIR 中已有 Unsqueeze，不能直接复用重编。导出主机和编译主机若分开，分别在各自仓库执行下面一段；同一主机只执行一次。它仅处理本组 gdn-layer/air 与 omc，先保留编译摘要和错误上下文到 compile-failure.json，再清理这些可重建产物。golden-capture、其他模块与私有源码保留。存在 execution/recovery 或不是本组六图时会停止。
-
-```bash
-export REPO_DIR="$(git rev-parse --show-toplevel)"
-git -C "$REPO_DIR" pull --ff-only origin main
-export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
-export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
-export PYTHONDONTWRITEBYTECODE=1
-PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python - "$BATCH_ROOT" <<'PY_RESET'
-import json, os, shutil, sys
-from pathlib import Path
-from qwen35_moe_dflash.common.tool_logs import compilation_diagnostics
-
-root = Path(sys.argv[1])
-run = Path(os.environ['AI_RUN_DIR']).resolve()
-if root.is_symlink() or root.resolve() != run/'target/tests/gdn-layer':
-    raise SystemExit('只处理本次 run 的固定 gdn-layer 目录')
-if any((root/n).exists() or (root/n).is_symlink() for n in ('execution', 'recovery')):
-    raise SystemExit('已有执行/回收记录，先核对任务状态，不清理')
-expected = {f'l{layer:02d}_c{call:02d}_gdn_layer_all'
-            for layer in range(3) for call in range(2)}
-for name in ('air', 'omc'):
-    p = root/name
-    if p.is_symlink():
-        raise SystemExit('不清理符号链接: ' + str(p))
-    if p.exists():
-        m = json.loads((p/'manifest.json').read_text())
-        if (m.get('artifact_kind') != 'qwen35-target-cpro-boundary-probe-v1'
-                or m.get('status') not in ('EXPORTED', 'PARTIAL') or len(m['cases']) != 6
-                or {c['id'] for c in m['cases']} != expected
-                or any(c.get('kind') != 'gdn_layer' or c.get('status') not in ('EXPORTED', 'FAILED')
-                       for c in m['cases'])):
-            raise SystemExit('目录不是预期的六张整层 GDN 图')
-omc = root/'omc'
-if omc.exists():
-    report = json.loads((omc/'compile.json').read_text())
-    if (report.get('status') != 'PARTIAL' or set(report['cases']) != expected
-            or any(c['status'] != 'FAILED' for c in report['cases'].values())):
-        raise SystemExit('仅清理本次已结束且六图全失败的 OMC 批次')
-    saved = {'compile': report, 'diagnostics': {
-        name: compilation_diagnostics(omc/'models'/name/'omc')
-        for name in sorted(expected)}}
-    (root/'compile-failure.json').write_text(
-        json.dumps(saved, ensure_ascii=False, indent=2) + '\n')
-for name in ('air', 'omc'):
-    p = root/name
-    if p.exists():
-        shutil.rmtree(p)
-print('本组旧 AIR/失败 OMC 槽位已清理；现可重导出。')
-PY_RESET
-```
-
-**B. 在 CPro AIR 导出环境重新导出六图**
-
-继续使用此前已成功导出的 qwen3_5_cpro 环境、原 TARGET_SOURCE/TARGET_CONFIG 和同一 golden capture：
-
-```bash
-: "${TARGET_SOURCE:?原 Target 源码根目录}"
-: "${TARGET_CONFIG:?原 Target 权重 YAML 路径}"
-export GOLDEN_CAPTURE="${GOLDEN_CAPTURE:-$AI_RUN_DIR/target/tests/golden-capture}"
-export BATCH="$BATCH_ROOT/air"
-export CPRO_EXPORT_SCRIPT="${CPRO_EXPORT_SCRIPT:-$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py}"
-(
-set -e
-test -f "$GOLDEN_CAPTURE/manifest.json"
-test -f "$TARGET_CONFIG"
-test -f "$CPRO_EXPORT_SCRIPT"
-test ! -e "$BATCH"
-python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
-  --capture "$GOLDEN_CAPTURE" \
-  --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
-  --converter-script "$CPRO_EXPORT_SCRIPT" \
-  --points gdn_layer --qlinear-scales fp16 --gdn-state-dtype float32 \
-  --phases prefill decode --output "$BATCH"
-)
-```
-
-预期 EXPORTED 6/6；每图 export.json 的 source_contract/source/adaptations 应含 CONVSTATE_PADDED_RESHAPE_NC1L。跨主机时复制整个新 air 目录到编译主机对应的 gdn-layer/air。
-
-**C. 编译和验证**
-
-回到第 7.1 节 A、B，沿用同一 DDK、TBE 兼容与 origin-format 设置，编译这六张新 AIR。成功后再执行 C–E 上板、回收和比较。若出现新的失败节点，回传新 compile.log；本次修复不预先代表整层已经编译或精度通过。
+此前 DDK padded 为 [1,8192,1,259]／[1,8192,1,4]，旧 unsqueeze 又升为五维。现使用 padded.reshape(batch_size, conv_dim, 1, -1)，兼容源函数三维与 DDK 四维 padded；卷积权重和元素顺序保持。随后原 FP32 请求批次已 6/6 编译成功。本次 FP16 导出保留此修复。
 
 ### 7.4 编译后 state 仍为 FP16：只读定位
 
-最初错误为 `l00_c00_gdn_layer_all: compiled output 2 must remain float32, observed float16`。随后六图状态链已全部回传：**L0–L2 Prefill／Decode 均 COMPILED，但第三个输出 recurrent_state_fp32 均实际声明为 FP16**。失败阶段为 prepare，设备执行和数值验证均为 NOT_RUN。
+此轮定位已结束，原批次记录见[状态接口证据](../specs/target-gdn-state-contract-results.json)。六图源 AIR／保留 dump 声明 FP32，最终 OMC 由 NPUCL SubGraph_0 直接输出 FP16；prepare 按原 FP32 要求拦截，设备未执行。
 
-| 阶段 | initial_state／输入 | last_recurrent_state／输出 |
-| --- | --- | --- |
-| 源 AIR 的 GDN 算子 | slot 5：FP32 | slot 1：FP32 |
-| 保留 dump 的 GDN 算子 | slot 5：FP32 | slot 1：FP32 |
-| 最终 NPUCL SubGraph_0 | arg1_1：FP16 | slot 0：FP16，直接接 NetOutput slot 2 |
+当前安装 DDK 100.520.020.010 的两份 ChunkGatedDeltaRule 注册都声明 g、initial_state、last_recurrent_state 为 FP16。C++ 源码 SHA256 01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a 与历史相同，第 1855／1858 行均直接用 half 指针绑定状态缓冲区。扫描 PARTIAL 仅来自两个候选目录不存在，未否定这些已读取的声明和源码。编译二进制选择与内核内部累加 dtype 仍未独立核验。
 
-六图现象相同，chunk_size 分别为 Prefill 64／Decode 1。源图末态直接来自 ChunkGatedDeltaRule:1；最终 OMC 主图没有末端 Cast。可以确认 FP32 输出请求未保留到编译 ABI，但 dump 阶段未标明、NPUCL 内部不可见，尚不能定位具体类型推导／优化 pass 或证明内部累加 dtype。图输入从捕获的 FP16 状态进入，再由 WholeGDN 在图内转 FP32；所以 arg1_1 是 FP16 本身并不证明编译器把输入接口降成了 FP16。
-
-下面的状态链命令已经完成，保留用于查阅；当前直接运行本节末尾的安装实现核对。
-
-在存放当前 air／omc 的主机执行，沿用编译时的 DDK。此命令只读已有产物，输出固定 state-inspection 目录；不需要 HDC、runtime 配置或重新编译。
-
-```bash
-export REPO_DIR="$(git rev-parse --show-toplevel)"
-git -C "$REPO_DIR" pull --ff-only origin main
-export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
-export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
-export OMC_BATCH="$BATCH_ROOT/omc"
-export STATE_INSPECTION="$BATCH_ROOT/state-inspection"
-export PYTHONDONTWRITEBYTECODE=1
-(
-set -e
-: "${CPRO_DDK_ROOT:?请设置编译这批 OMC 时的 DDK 根目录}"
-test -f "$OMC_BATCH/compile.json"
-test -f "$BATCH_ROOT/air/manifest.json"
-test ! -e "$STATE_INSPECTION"
-python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
-  --batch "$OMC_BATCH" --ddk-root "$CPRO_DDK_ROOT" \
-  --cases l00_c00_gdn_layer_all l01_c00_gdn_layer_all l02_c00_gdn_layer_all \
-          l00_c01_gdn_layer_all l01_c01_gdn_layer_all l02_c01_gdn_layer_all \
-  --state-chain --output "$STATE_INSPECTION"
-)
-cat "$STATE_INSPECTION/state-summary.txt"
-```
-
-目录已存在时先直接读取 state-summary.txt，不覆盖现有 AIR／OMC 或 execution。回传此摘要；详细描述与原始编译日志摘录保存在同目录 report.json。
-
-摘要列出六项实际编译状态，以及各阶段 NetOutput 槽位、ChunkGatedDeltaRule 输入输出和第三输出的反向连接。Cast 两端 dtype 分别记录；遇到 GraphOp 则保留其可见输入输出并停止推断内部算术。IR 子图的槽位不能直接等同于整层输出。缺少 IR 时报告可能为 PARTIAL，OMC 的可见类型证据仍有效；这不是新的编译或精度判定。末端补 FP16→FP32 Cast 无法恢复已损失的状态信息。
-
-**当前执行：核对安装实现的状态 ABI**
-
-2026-10-27 同 DDK 版本曾回传 GDN C++ 源码 SHA256 为 `01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a`，initial_state／last_recurrent_state 均直接绑定 half 缓冲区。该历史证据与本次 OMC 一致，但当前源码是否相同、是否被编译选中仍需分别确认。下面复用已有只读扫描器，输出当前 GDN 注册、状态指针片段和已保存的 OMG help 相关项；不导入 DDK Python 模块，也不执行工具链。
-
-```bash
-export REPO_DIR="$(git rev-parse --show-toplevel)"
-git -C "$REPO_DIR" pull --ff-only origin main
-export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
-export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
-export OMC_BATCH="$BATCH_ROOT/omc"
-export PYTHONDONTWRITEBYTECODE=1
-: "${CPRO_DDK_ROOT:?请设置编译本批 OMC 的 DDK 根目录}"
-python - <<'PY'
-import json, os, re, sys
-from pathlib import Path
-sys.path.insert(0, str(Path(os.environ["REPO_DIR"]) / "model"))
-from qwen35_moe_dflash.target.operator_inventory import ddk_inventory
-from qwen35_moe_dflash.graph.fused.bindings import _installed_fp16_state_evidence
-
-ddk = Path(os.environ["CPRO_DDK_ROOT"]).resolve()
-batch = Path(os.environ["OMC_BATCH"])
-compiled = json.loads((batch / "compile.json").read_text())
-scan = ddk_inventory(ddk)
-historical = "01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a"
-result = dict(ddk_root=str(ddk), compiled_ddk_id=compiled.get("ddk_id"),
-    scan={k: scan[k] for k in ("status", "limited", "partial_reasons", "missing_roots", "errors")},
-    gdn_declarations=[entry for kind in ("registrations", "python_registrations")
-                      for entry in scan[kind] if entry["family"] == "gdn"],
-    state_source_candidates=[], model_compilation="NOT_RUN", device_execution="NOT_RUN",
-    scope="INSTALLED_TEXT_CANDIDATES; COMPILED_KERNEL_SELECTION_AND_INTERNAL_PRECISION_UNVERIFIED")
-for match in scan["matches"]:
-    if "gdn" not in match["families"]:
-        continue
-    path = ddk / match["path"]
-    if path.name != "chunk_gated_delta_rule.cpp":
-        continue
-    item = dict(path=str(path), sha256=match["sha256"],
-                matches_historical_source=match["sha256"] == historical)
-    try:
-        item.update(status="DIRECT_HALF_STATE_BUFFERS", evidence=_installed_fp16_state_evidence(path))
-    except (OSError, ValueError) as exc:
-        item.update(status="REQUIRES_SOURCE_REVIEW", error=str(exc))
-    result["state_source_candidates"].append(item)
-help_path = batch / "models/l00_c00_gdn_layer_all/omc/help.log"
-if help_path.is_file():
-    lines = help_path.read_text(errors="replace").splitlines()
-    indices = {j for i, line in enumerate(lines)
-               if re.search(r"precision|dtype|data_type|output_type|keep.*type", line, re.I)
-               for j in range(max(0, i - 1), min(len(lines), i + 3))}
-    result["retained_help"] = dict(path=str(help_path),
-        lines=[dict(line=i + 1, text=lines[i]) for i in sorted(indices)])
-else:
-    result["retained_help"] = dict(path=str(help_path), status="ABSENT")
-print(json.dumps(result, indent=2, ensure_ascii=False))
-PY
-```
-
-回传上述输出即可。扫描未找到源码或词法检查未匹配，不等于算子没有 FP32 支持；若仍匹配历史 half 实现，下一步需要核对／更新目标 GDN 的状态类型注册、类型推导、实际读写及缓冲区大小，不能只改 Python 的 .float() 或 AIR 标签。保持同一输入、权重与 golden，待编译后的状态接口真正保留 FP32，再继续原六图精度流程。可见接口通过仍不替代内部累加和设备数值验证。
+用户已确认按 FP16 跑，当前执行第 7 节。状态 shape [1,32,128,128] 的实际 FP16 输出为 1,048,576 bytes，原 FP32 golden 为 2,097,152 bytes；读取时分别使用各自 dtype/bytes，保持五项比较门槛。无需使用 OMG --output_type 补 FP32 输出。整层新批次编译和设备数值尚待回传。

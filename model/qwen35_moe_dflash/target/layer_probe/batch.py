@@ -43,7 +43,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                  timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel',
                  rope_precision='source', gdn_state_dtype='source'):
     if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both')
-            or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float32')):
+            or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')):
         raise ValueError('unknown module candidate')
     if phases is not None and (not phases or set(phases) - {'prefill', 'decode'}):
         raise ValueError('select prefill and/or decode phases')
@@ -67,8 +67,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     if any('weights' in r for r in regions) and not target_config:
         raise ValueError('weighted regions require --target-config with original model_file and quanted_pth')
     if any(r['kind'] == 'gdn_layer' for r in regions) and (
-            gdn_state_dtype != 'float32' or qlinear_scales != 'fp16' or not target_config):
-        raise ValueError('whole GDN requires --gdn-state-dtype float32 --qlinear-scales fp16 --target-config')
+            gdn_state_dtype == 'source' or qlinear_scales != 'fp16' or not target_config):
+        raise ValueError('whole GDN requires --gdn-state-dtype float16|float32 --qlinear-scales fp16 --target-config')
     root = new_output(output)
     report = dict(artifact_kind=KIND, status='EXPORTING', cases=[],
         capture_sha256=sha(capture/'manifest.json'), golden_source=source['reference'],
@@ -338,7 +338,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         state_contract = None
         if case['kind'] == 'gdn_layer':
             from .module_contracts import compiled_state_contract
-            state_contract = compiled_state_contract(observed)
+            required = exported['output_contract']['required_dtypes']
+            state_contract = compiled_state_contract(observed, state_dtype=required.get('2', required.get(2)))
         cases.append(dict(case=name, **io, layer=case['layer'], call=case['call'], point=case['point'],
             kind=case['kind'], phase=case['phase'], ordinal=case['ordinal'], output_name=case['output_name'],
             model=_file_record(model, name+'/model.omc'), graphop_counts=observed['graphop_counts']))
@@ -422,6 +423,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                 passed = all(r['passed'] is True for r in tensors)
                 failed = not stable or not finite or any(r['passed'] is False for r in tensors)
                 output_row.update(status='FAILED' if failed else 'PASSED' if passed else 'METRICS_RECORDED',
+                    actual_dtype=spec['dtype'], golden_dtype=spec['golden_dtype'],
                     stable=stable, source_dtype_preserved=spec['dtype'] == spec['golden_dtype'], invocations=tensors,
                     output_sha256=hashes, api_us=receipt['api_us'], graphop_counts=case['graphop_counts'])
                 output_rows.append(output_row)

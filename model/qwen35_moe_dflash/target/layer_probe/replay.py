@@ -284,7 +284,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
     try:
         if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer')
-                or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float32')):
+                or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')):
             raise ValueError('unknown module candidate')
         capture = Path(capture).resolve()
         manifest = json.loads((capture/'manifest.json').read_text())
@@ -300,8 +300,8 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         record = matches[0]
         whole = record['kind'] == 'gdn_layer'
         if whole:
-            if output_index is not None or gdn_state_dtype != 'float32' or qlinear_scales != 'fp16' or not target_config:
-                raise ValueError('whole GDN requires all outputs, --gdn-state-dtype float32, --qlinear-scales fp16 and --target-config')
+            if output_index is not None or gdn_state_dtype == 'source' or qlinear_scales != 'fp16' or not target_config:
+                raise ValueError('whole GDN requires all outputs, --gdn-state-dtype float16|float32, --qlinear-scales fp16 and --target-config')
             result['model_scope'] = 'ONE_COMPLETE_GATED_DELTANET_LAYER; THREE_OUTPUTS; NO_MOE_OR_DECODER_LAYER'
         elif output_index is None or not 0 <= output_index < len(record['outputs']):
             raise ValueError('single boundary requires a valid --output-index')
@@ -340,9 +340,10 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if whole:
             from .whole_gdn import build
             model, result['source_contract'] = build(record, capture, target, converters, factory,
-                target_config, source_root, root)
+                target_config, source_root, root, gdn_state_dtype)
             result['target_weights'] = dict(status='ORIGINAL_CHECKPOINT_BOUND')
-            result['candidate'] = dict(kind='WHOLE_GDN_FP32_STATE', state_dtype='float32',
+            result['candidate'] = dict(kind='WHOLE_GDN_' + ('FP16' if gdn_state_dtype == 'float16' else 'FP32') + '_STATE',
+                state_dtype=gdn_state_dtype, golden_state_dtype='float32',
                 qlinear_scales='fp16', reference='ORIGINAL_CAPTURE_UNCHANGED')
         else:
             model = Region(record, weights, target, torch_npu, output_index, factory)
@@ -376,12 +377,12 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         descriptor, metadata = _producer_schema(torchair_pb2)
         (root/'air-schema.pb').write_bytes(descriptor)
         old = Path.cwd()
-        from .module_contracts import gdn_fp32_state
+        from .module_contracts import gdn_state_contract
         try:
             os.chdir(root)
             with (torch.no_grad(), export_input_identity(inputs) as input_identity,
                   qlinear_ge_scales(qlinear_fp16 or whole, expected_calls=5 if whole else 1) as ge_adapter,
-                  gdn_fp32_state(whole) as gdn_adapter,
+                  gdn_state_contract(whole, gdn_state_dtype) as gdn_adapter,
                   cache_ge_integer_mul(cache_mode == 'integer', record['attrs'].get('block_size')) as cache_adapter):
                 if ge_adapter is not None:
                     result['candidate']['ge_adapter'] = ge_adapter
@@ -399,7 +400,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if 'candidate' in result:
             if whole:
                 from .module_contracts import check_gdn_source
-                result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'])
+                result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'], gdn_state_dtype)
             elif rope_fp32:
                 from .rope import check_graph as check_rope_graph
                 result['candidate_graph_check'] = check_rope_graph(graph, schema, golden['dtype'])
@@ -427,7 +428,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             result['goldens'] = copied_goldens
             result['output_contract'] = dict(order=[s['name'] for s in copied_goldens],
                 source_edges=next(n for n in graph['op'] if n['type'] == 'NetOutput')['input'],
-                binding='EXPLICIT_PYTHON_TUPLE_AND_NETOUTPUT_SLOT_ORDER', required_dtypes={2: 'float32'})
+                binding='EXPLICIT_PYTHON_TUPLE_AND_NETOUTPUT_SLOT_ORDER', required_dtypes={2: gdn_state_dtype})
         result.update(status='EXPORTED', air=identity(root/'export.air', root),
             schema={k: metadata[k] for k in ('schema_file', 'schema_package')},
             source_inputs=bindings, golden=copied_goldens[0], export_input_identity=input_identity,

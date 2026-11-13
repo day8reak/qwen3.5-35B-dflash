@@ -21,8 +21,8 @@ def main():
         s.add_argument('--converter-script', required=True)
         s.add_argument('--target-config', help='original Target YAML (model_file/quanted_pth); required for weighted regions')
         s.add_argument('--torchair-pb2')
-        s.add_argument('--gdn-state-dtype', choices=('source', 'float32'), default='source',
-                       help='whole gdn_layer candidate: FP32 recurrent input, operator output and writeback')
+        s.add_argument('--gdn-state-dtype', choices=('source', 'float16', 'float32'), default='source',
+                       help='whole gdn_layer: explicit recurrent input/output/writeback dtype; float16 also casts g at the GE operator input; golden unchanged')
         s.add_argument('--qlinear-scales', choices=('source', 'fp16'), default='source',
                        help='opt-in candidate: numeric FP16 weight scale and per-token scale, original golden')
         s.add_argument('--rope-precision', choices=('source', 'fp32'), default='source',
@@ -58,7 +58,7 @@ def main():
     selection.add_argument('--failed', action='store_true', help='inspect every FAILED case in the retained compile.json; never rerun OMG')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     s.add_argument('--compiler-entry', action='store_true', help='also read OMG/env entry scripts and compare current shell with probe environment preparation; executes neither script nor compiler')
-    s.add_argument('--state-chain', action='store_true', help='also decode compiled OMC and trace whole-GDN output 2 through visible Cast/shape nodes; writes state-summary.txt without weakening the FP32 ABI gate')
+    s.add_argument('--state-chain', action='store_true', help='also decode compiled OMC and trace whole-GDN output 2 through visible Cast/shape nodes; writes state-summary.txt without changing the requested ABI')
     s.add_argument('--reference-ir', nargs='+', help='up to 8 existing IR files; strictly compare selected DDK and retained AIR producer schemas, without compiling')
     s = sub.add_parser('inspect-qlinear', help='read every QLinear AIR/OMC boundary, constant bytes and kernel build arguments; no compilation')
     s.add_argument('--batch', required=True, help='existing OMC batch; automatically includes every QLinear case')
@@ -135,13 +135,14 @@ def main():
             writer = csv.writer(f)
             metric_keys = ['max_abs', 'relative_l2', 'cosine', 'kl_divergence', 'rmse', 'mean_relative_error']
             writer.writerow(['layer', 'call', 'phase', 'point', 'output', 'status'] + metric_keys
-                            + ['failed_metrics', 'dtype_preserved', 'stable', 'error'])
+                            + ['failed_metrics', 'dtype_preserved', 'stable', 'error', 'actual_dtype', 'golden_dtype'])
             for row in result['cases']:
                 metric = row.get('invocations', [{}])[0]
                 writer.writerow([row.get(k) for k in ('layer', 'call', 'phase', 'point', 'output_name', 'status')]
                     + [metric.get(k) for k in metric_keys]
                     + [';'.join(sorted({k for m in row.get('invocations', []) for k in m.get('failed_metrics', [])})),
-                       row.get('source_dtype_preserved'), row.get('stable'), row.get('error')])
+                       row.get('source_dtype_preserved'), row.get('stable'), row.get('error'),
+                       row.get('actual_dtype'), row.get('golden_dtype')])
         result = dict(status=result['status'], first_failed_boundary=result['first_failed_boundary'], report=str(root/'report.json'), csv=str(root/'summary.csv'))
     else:
         manifest = json.loads((Path(a.capture)/'manifest.json').read_text())
