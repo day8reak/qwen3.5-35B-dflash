@@ -19,7 +19,7 @@ Attention 沿用捕获 Q/K/V、mask、block_table 和长度参数，新增 Q 轴
 
 ## 1. 初始化路径
 
-各主机沿用此前成功的 Python／vendor 环境。AIR 主机需要原捕获、私有 Target 源码和权重 YAML；编译主机使用已选 DDK；上板主机沿用 runtime.json、HDC 和 runner。
+各阶段使用各自已跑通的环境。用户确认：成功采集 golden 的 **310P 参考推理环境与 qwen3_5_cpro 不同**；参考采集必须恢复那套 Python、CANN 和自定义算子初始化方式。qwen3_5_cpro 用于此前已成功的 CPro AIR 导出，不能因导出成功就用于生成参考。编译主机使用已选 DDK；上板主机沿用 runtime.json、HDC 和 runner。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
@@ -41,6 +41,19 @@ export PYTHONDONTWRITEBYTECODE=1
 ### 1.1 重新采集 golden（310P 主机）
 
 在原先已跑通的 PyTorch／torch_npu 环境中执行。TARGET_SOURCE 和 TARGET_CONFIG 分别设置为原私有项目根目录和原权重 YAML 的绝对路径，保留原配置中的权重、prompt 与量化参数。使用已验证的 inference_target_probe.py，实际构造前四层并执行原 inference.py；采集 Prefill 和第一次 Decode。此步执行参考模型，但不编译 CPro 的 QLinear、RoPE、Cache 等独立测试图。
+
+在参考主机的新终端按原成功方式初始化 CANN／自定义算子环境，并激活原参考 Conda 环境。REFERENCE_CONDA_ENV 填原成功环境的实际名称；不能填当前报 V5 groupSize 错误的 qwen3_5_cpro。只切 Conda 不能保证清除上一套环境留下的库搜索路径，因此仍需沿用原初始化方式。
+
+```bash
+: "${REFERENCE_CONDA_ENV:?请设置此前成功采集 golden 的 310P Conda 环境名}"
+conda activate "$REFERENCE_CONDA_ENV"
+python - <<'PY_ENV'
+import sys, torch, torch_npu
+print('python:', sys.executable)
+print('torch:', torch.__version__)
+print('torch_npu:', getattr(torch_npu, '__version__', 'unknown'), torch_npu.__file__)
+PY_ENV
+```
 
 ```bash
 : "${TARGET_SOURCE:?请设置原 Target 源码根目录的绝对路径}"
@@ -100,9 +113,47 @@ PY_RETRY
 
 在本地 Transformers 5.13.0 复现相同异常并验证修复后 AutoConfig／AutoTokenizer 可加载、token ID 不变、原文件字节不变，两个四层构造入口同步了列表。本地检查不代表 310P 采集已经成功；仍以重跑的 CAPTURED 结果为准。
 
+### 1.3 首个 QLinear 报 V5 groupSize 错误
+
+2026-11-13 回传已进入四层模型，在 L0 in_proj_qkv 首次调用失败：K=2048、scale 有 8 组，对应 group size=256；original_kwargs 和 effective_kwargs 均未传 group_sizes，实际调用 aclnnQuantMatmulV5 报 161002。公开 [op-plugin 7.1.0 实现](https://github.com/Ascend/op-plugin/blob/7.1.0/op_plugin/ops/opapi/QuantMatmulKernelNpuOpApi.cpp)的未传分组分支返回 0，并将该值交给 V5；与本次错误一致，安装包的完整行为仍以本机日志为准。
+
+用户已确认旧 golden 来自另一个环境，当前先恢复原参考环境，保持原 npu_quant_matmul 参数。不要把 CPro QuantBatchMatmul 已验证的 FP16 scale 适配应用到 310P 参考，也不通过添加 --qlinear-group-size 256 声称恢复原 golden。显式 group256 是另一个已有诊断选项，其基线等价性未验证；本次暂不启用。
+
+本次 FAILED capture 含真实 QLinear 输入，不能使用第 1.2 节的空目录清理。先移到固定 qlinear-failure 槽位保留，再用原 GOLDEN_CAPTURE 路径重采集；不覆盖已有槽位：
+
+```bash
+git -C "$REPO_DIR" pull --ff-only origin main
+python - "$GOLDEN_CAPTURE" <<'PY_QMATMUL_RETRY'
+import json, os, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+run = Path(os.environ['AI_RUN_DIR']).resolve()
+dest = run/'target/tests/qlinear-failure'
+if p.is_symlink() or run not in p.resolve().parents:
+    raise SystemExit('失败 capture 必须位于本次 run 内且不是符号链接')
+m = json.loads((p/'manifest.json').read_text())
+audit = json.loads((p/'qlinear-audit.json').read_text())
+failed = audit.get('failed_call') or {}
+error = failed.get('error', '')
+if (m.get('artifact_kind') != 'qwen35-target-cpro-boundary-probe-v1'
+        or m.get('status') != 'FAILED' or failed.get('status') != 'FAILED'
+        or 'aclnnQuantMatmulV5' not in error or 'groupSize' not in error
+        or not (p/'qlinear-failure.pt').is_file()):
+    raise SystemExit('目录不是本次带重放输入的 V5 groupSize 失败采集')
+if dest.exists() or dest.is_symlink():
+    raise SystemExit('qlinear-failure 槽位已存在，不覆盖；请先核对其内容')
+dest.parent.mkdir(parents=True, exist_ok=True)
+p.rename(dest)
+print('失败输入保留在:', dest)
+print('恢复原 310P 参考环境后，重新执行第 1.1 节')
+PY_QMATMUL_RETRY
+```
+
+重跑成功后以新 manifest 的 CAPTURED 为准；当前还没有新的成功 golden。若原成功环境也失败，回传同次 qlinear-audit.json 和错误，再用已保存的 qlinear-failure.pt 做单算子重放，先定位环境与后端差异。
+
 ## 2. 导出 AIR
 
-TARGET_SOURCE 为原私有源码根目录，TARGET_CONFIG 为此前成功的原权重 YAML。先核对新 capture 包含两次 Attention 边界，缺项即停止。
+切回此前已成功导出 AIR 的环境（qwen3_5_cpro），读取第 1.1 节生成的 capture，不在这个环境重新采集。TARGET_SOURCE 为原私有源码根目录，TARGET_CONFIG 为此前成功的原权重 YAML。先核对新 capture 包含两次 Attention 边界，缺项即停止。
 
 ```bash
 : "${TARGET_SOURCE:?请设置原 Target 源码根目录}"
