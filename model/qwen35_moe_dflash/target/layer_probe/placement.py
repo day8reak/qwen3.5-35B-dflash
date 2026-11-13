@@ -5,6 +5,7 @@ import functools
 import inspect
 
 import torch
+from .reference_config import set_layer_prefix
 
 
 class LayerStreaming:
@@ -56,7 +57,7 @@ class LayerStreaming:
                     full_model_forward_preserved=self.model_layers == total,
                     decode_token_source=f'FIRST_{self.model_layers}_LAYERS_PLUS_ORIGINAL_NORM_LM_HEAD')
                 # Original inference allocates caches and unpacks outputs using this field.
-                model.config.num_hidden_layers = self.model_layers
+                set_layer_prefix(model.config, self.model_layers)
                 return model
             self.patch(wrapper_module, 'load_npu_model', load)
 

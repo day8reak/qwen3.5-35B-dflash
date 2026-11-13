@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from .common import identity, new_output, save_json, sha
+from .reference_config import hf_config_prefix, set_layer_prefix
 
 
 @contextmanager
@@ -56,7 +57,7 @@ def build_four_layers(source, model_path, record):
             raise ValueError('original loader did not construct exactly four layers')
         record['checkpoint_layers'] = model.config.num_hidden_layers
         record['constructed_layers'] = 4
-        model.config.num_hidden_layers = 4
+        set_layer_prefix(model.config, 4)
         return model
     owner.load_npu_model = load
     try:
@@ -149,10 +150,11 @@ def run_steps(source_root, config_path, output, *, device='npu:0', max_token=1,
         record['runtime'] = runtime(npu)
         source.device, source.quant, source.penalty = device, 'enable', 1.0
         source.config_data = cfg
-        source.tokenizer = source.AutoTokenizer.from_pretrained(cfg['model_file'])
-        stage('LOAD_FOUR_LAYERS_ON_CPU')
-        with working_directory(source_root):
-            wrapper = build_four_layers(source, cfg['model_file'], record)
+        with hf_config_prefix(cfg['model_file'], 4, record):
+            source.tokenizer = source.AutoTokenizer.from_pretrained(cfg['model_file'])
+            stage('LOAD_FOUR_LAYERS_ON_CPU')
+            with working_directory(source_root):
+                wrapper = build_four_layers(source, cfg['model_file'], record)
         if wrapper.model.config.kv_cache_max_len != cfg['kv_cache_max_len']:
             raise ValueError('config cache length differs from constructed model; do not silently change its block table')
         stage('ORIGINAL_W4_QUANTIZATION')

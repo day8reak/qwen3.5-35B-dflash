@@ -64,6 +64,42 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" list \
 
 成功条件是 manifest.json 的 status=CAPTURED，且包含 L3 call0/prefill 与 call1/decode 的 fused_attention；下一步会检查。采集后可跳过本节复用同一 capture；缺失时必须重新采集，不能从 CSV 或指标表反推 golden。原 inference.py 的其他已验证参数继续放在 `--` 后，不切换 pseudo_quant 或额外量化策略。
 
+### 1.2 四层配置校验失败后的重试
+
+若报 `num_hidden_layers (4) must be equal to the number of layer_types (40)`，且 list 显示 FAILED、regions=[]，失败发生在 AutoTokenizer → AutoConfig 的配置构造阶段，尚未执行模型计算。Transformers 的[配置校验](https://github.com/huggingface/transformers/blob/main/src/transformers/configuration_utils.py)要求两者一致；pkg_resources 警告不是这次退出原因。
+
+当前采集入口已做进程内兼容：只针对 YAML 的 model_file 指向的 checkpoint，且文本配置已经声明本次请求的四层时，保留 layer_types 前四项及原顺序，再交给正常 HF 校验。合法的 40/40 配置保持原样；模型工厂仍只构造四层，并同步构造后配置的层数与层类型列表。原 config.json、权重和 tokenizer 文件均不写入，不需要降级 Transformers 或关闭校验。manifest.json 的 config_compatibility 记录实际适配。
+
+先更新代码，清理本次配置错误产生的空失败目录，然后重新执行第 1.1 节。下面只允许删除本次 run 内、因该错误失败且无 regions 的 manifest／qlinear-audit 两类文件；已有采集、活动状态或其他文件会停止清理。仍使用原 GOLDEN_CAPTURE 路径。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only origin main
+python - "$GOLDEN_CAPTURE" <<'PY_RETRY'
+import json, os, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+run = Path(os.environ['AI_RUN_DIR']).resolve()
+if p.is_symlink() or run not in p.resolve().parents:
+    raise SystemExit('拒绝清理 run 目录外或符号链接路径')
+m = json.loads((p/'manifest.json').read_text())
+error = '\n'.join(m.get('errors', []))
+if (m.get('artifact_kind') != 'qwen35-target-cpro-boundary-probe-v1'
+        or m.get('status') != 'FAILED' or m.get('regions') != []
+        or 'num_hidden_layers' not in error or 'layer_types' not in error):
+    raise SystemExit('只清理本次层数配置错误产生的空 FAILED capture')
+files = list(p.iterdir())
+if any(f.name not in {'manifest.json', 'qlinear-audit.json'}
+       or f.is_symlink() or not f.is_file() for f in files):
+    raise SystemExit('目录包含其他产物，停止清理')
+for f in files:
+    f.unlink()
+p.rmdir()
+print('已清理空失败 capture；重新执行第 1.1 节采集命令')
+PY_RETRY
+```
+
+在本地 Transformers 5.13.0 复现相同异常并验证修复后 AutoConfig／AutoTokenizer 可加载、token ID 不变、原文件字节不变，两个四层构造入口同步了列表。本地检查不代表 310P 采集已经成功；仍以重跑的 CAPTURED 结果为准。
+
 ## 2. 导出 AIR
 
 TARGET_SOURCE 为原私有源码根目录，TARGET_CONFIG 为此前成功的原权重 YAML。先核对新 capture 包含两次 Attention 边界，缺项即停止。

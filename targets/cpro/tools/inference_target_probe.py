@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the user's original 310P inference with CPro-boundary observations."""
 import argparse
+from contextlib import nullcontext
 import importlib
 import os
 from pathlib import Path
@@ -68,7 +69,14 @@ def main():
         placement.install(wrappers)
         capture.flush()
         sys.argv = [str(entry), *forwarded]
-        runpy.run_path(str(entry), run_name='__main__')
+        config_guard = nullcontext()
+        if reference.config:
+            import yaml
+            from qwen35_moe_dflash.target.layer_probe.reference_config import hf_config_prefix
+            model_path = yaml.safe_load(Path(reference.config).read_text())['model_file']
+            config_guard = hf_config_prefix(model_path, a.model_layers, capture.report)
+        with config_guard:
+            runpy.run_path(str(entry), run_name='__main__')
     except SystemExit as exc:
         if exc.code not in (0, None):
             error = f'original inference exited {exc.code}'
