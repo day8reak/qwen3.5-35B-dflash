@@ -21,19 +21,21 @@
 <div id="toast" role="status" aria-live="polite"></div>
 <div class="legend"><span class="pill bad">红：FAILED 或超限</span><span class="pill low">青：未超限；验收看详情</span><span class="pill blocked">橙：小图编译阻塞</span><span class="pill">灰：未测 / 结构节点</span><span class="pill purple">紫色实线：层内 identity 残差</span><span class="pill blue">蓝色虚线：状态读写 / 跨步反馈</span></div>
 <section class="card" id="accuracy-focus" aria-labelledby="accuracy-focus-title">
-<h2 id="accuracy-focus-title">RoPE 四项零误差；下一步 Attention Prefill</h2>
+<h2 id="accuracy-focus-title">当前：GDN 及相邻边界独立测试</h2>
+<p>本轮覆盖 L0–L2 × Prefill／Decode：decay_beta、repeat_qk、gdn、recurrent_writeback、linear_attn_norm，共 <strong>48 张单输出图</strong>。先建立真实 CPro 源码的五指标基线；已有匹配 dump 可只补算。当前仅完成本地流程准备，尚无本轮新设备结果。<a href="../target-batch-rerun.md">当前执行命令</a></p>
 <p>RoPE Prefill／Decode × Q／K 共 4 张小图现已<strong>数值完全对齐，max_abs／relative-L2 均为 0</strong>；旋转的前 64 维与未旋转的后 192 维均一致，FP16 输出且重复稳定。有效改动是显式 FP32 旋转乘加、最后恢复输出类型；sin/cos 沿用捕获系数。原始 METRICS_RECORDED 保留，单列数值对齐结论。<a href="../target-accuracy-status.md">两项有效改动与最新结果</a></p>
 <p>最新 <strong>8 个 Cache 图均有数值</strong>：Prefill K/V × 浮点/整数 4/4 PASSED，Decode 4/4 FAILED。Decode K relative-L2 <strong>99.8086%</strong>、V <strong>99.6897%</strong>；两种索引在回传精度下相同，尚缺配对输出哈希。</p>
 <p>补充的 Decode V 明细：<strong>130,966 个不一致元素全部在 golden 相对输入未变化区，变化区不一致数为 0</strong>。最大误差位置 [0,0,0,6] 为实际 0、golden 3.494140625。该片段证实历史保留失败；未提供 case ID，不能直接归到两个索引版本的全部输出。</p>
 <div class="table-scroll"><table class="focus-table"><thead><tr><th scope="col">算子 / 优先级</th><th scope="col">最新结果</th><th scope="col">下一步</th></tr></thead><tbody>
 <tr><td>QuantBatchMatmul <span class="pill low">保留改动</span></td><td>38 项已有 scale 适配后的数值，8 项 out_proj 按旧 L2&lt;2% 口径通过；五项待补。</td><td>weight scale 真实转 FP16；per-token 在前端保留 FP32，通过 meta 后在 GE Reshape 为 [M] 并 Cast FP16。合入实际工厂与 converter。</td></tr>
 <tr><td>RoPE <span class="pill low">数值对齐</span></td><td>四项整输出、旋转区、未旋转区均零误差；dtype 保持、重复稳定。</td><td>保留显式 FP32 旋转路径；单模块不再复跑，待整图串联验证。</td></tr>
-<tr><td>AdnFusedInferAttention <span class="pill bad">当前</span></td><td>Prefill L2 99.67%；Decode 0.251%。</td><td>优先处理 Prefill；修复后推进 L3 串联和四层 Prefill，仍需检查 GDN、MoE／LM head 及状态。</td></tr>
+<tr><td>ChunkGatedDeltaRule <span class="pill bad">当前</span></td><td>Prefill core L2 1.56%～7.12%；raw state 12.10%～44.60%，6 个 raw state dtype 不保持。</td><td>连同门控、Q/K 重复、状态转换、gated norm 共测 48 图。保留原 effective_length 和初始状态，分别看 core/state。</td></tr>
+<tr><td>AdnFusedInferAttention <span class="pill bad">待处理</span></td><td>Prefill L2 99.67%；Decode 0.251%。</td><td>GDN 定位后继续处理 Prefill，再验证四层串联、MoE／LM head 及末态。</td></tr>
 <tr><td>CacheUpdate <span class="pill bad">待处理</span></td><td>Prefill 4/4 逐位通过；Decode 4/4 失败。整数索引已越过此前构建阻塞，未改善 Decode。</td><td>核对独立输出是否继承完整输入缓存；检查 functional converter、原位/独立输出契约和实际输出绑定。先读取已有报告，无需重编。</td></tr>
 </tbody></table></div>
 <p><strong>当前标准：CPro / CHS 共用五项 AND</strong>：CosineSimilarity &gt;0.99、RelativeEuclideanDistance &lt;0.05、KL &lt;0.005、RMSE &lt;1.0、MeanRelativeError &lt;1.0。使用严格不等号；Cache 仍须整缓存逐位一致。8 项 out_proj 的旧 L2&lt;2% 通过观测保留，缺少新指标时不标成五项通过。</p>
-<div class="focus-notes"><p>修好 Attention 可以推进 Prefill 联调，尚不能宣称完整 Prefill 精度通过：GDN Prefill core 仍有 1.56%～7.12% 偏差，raw state 有 12.10%～44.60% 且 dtype 不保持；ConvState 小图 12 项编译失败，但旧 T64 整图曾编译；MoE／LM head 尚待覆盖。已对齐的 RoPE、已通过的 Prefill Cache 和 QLinear 不再复跑。</p></div>
-<p class="hint">2026-11-12：统一展示各模块最新实测结果。38 项 QLinear、8 项 Cache、4 项 RoPE 已替换为各自最新结果，其余 100 项保留最近一次实测值；没有新结果时不置灰，也不重复显示旧值。这是模块进度汇总，不代表一次整图执行。Cache 历史保留修复尚无新数值，继续保留失败状态。<a href="../target-accuracy-status.md#decode-cache-原因分析">原因分析</a> · <a href="../target-batch-rerun.md#先读已有报告无需重编或上板">读取已有报告</a></p>
+<div class="focus-notes"><p>各小图独立输入原捕获，writeback 零误差不能证明 CPro GDN 末态正确。此次保留 T256/T1，不将六输入合成诊断替代真实边界。独立测试尚不覆盖连续状态反馈；完整 Prefill 仍需 Attention、MoE／LM head 及末态验证。已对齐的 RoPE、已通过的 Prefill Cache 和 QLinear 不再复跑。</p></div>
+<p class="hint">阶段更新于 2026-11-13，最新实测结果回传于 2026-11-12。38 项 QLinear、8 项 Cache、4 项 RoPE 已替换为各自最新结果，其余 100 项保留最近实测值；无新结果时不重复显示旧值，也不补造五项指标。这是模块进度汇总，不代表一次整图执行。<a href="../target-accuracy-status.md#gdn-当前独立测试">GDN 基线与定位顺序</a> · <a href="../target-accuracy-status.md#decode-cache-原因分析">Cache 原因分析</a></p>
 </section>
 <section class="card"><h2>1. 层间如何连接：上一层的第二次 Add 输出，直接进入下一层</h2>
 <div class="formula">u[i] = h[i] + Mixer[i](InputNorm[i](h[i]), state[i])<br>h[i+1] = u[i] + MoE[i](PostNorm[i](u[i]))</div>

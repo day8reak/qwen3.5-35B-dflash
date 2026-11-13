@@ -72,6 +72,7 @@ def main():
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
     s.add_argument('--output', required=True)
+    s.add_argument('--cases', nargs='+', help='compare only these retained fixture cases; full-fixture coverage remains explicit')
     s.add_argument('--atol', type=float)
     s.add_argument('--rtol', type=float)
     s = sub.add_parser('list')
@@ -117,7 +118,7 @@ def main():
                 ir_inventory=row['ir_inventory']['status'])
                 for name, row in report['cases'].items()})
     elif a.command == 'compare':
-        result = batch.compare(a.fixture, a.native, atol=a.atol, rtol=a.rtol)
+        result = batch.compare(a.fixture, a.native, selection=a.cases, atol=a.atol, rtol=a.rtol)
         root = new_output(a.output)
         save_json(root/'report.json', result)
         import csv

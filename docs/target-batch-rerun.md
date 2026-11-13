@@ -1,81 +1,87 @@
-# Target RoPE：已测结果与复现命令
+# Target GDN：独立边界精度测试
 
-用户已回传 **4 张 RoPE 小图：Prefill／Decode × Q／K，全部零误差**，旋转前缀与未旋转尾部均数值一致，FP16 输出且重复稳定。当前不再复跑 RoPE、已通过的 Prefill Cache 或 QLinear；下一步处理 AdnFusedInferAttention Prefill，Decode Cache 暂后。QuantBatchMatmul／RoPE 有效改动及 Prefill 剩余问题见[精度状态](target-accuracy-status.md)，最新指标见[交互 HTML](assets/target-architecture-interactive.html)。
+当前测试 L0–L2 的 GDN 及其门控、状态转换、归一化边界，覆盖原捕获的 Prefill 和第一次 Decode，**共 48 张单输出小图**。先复现实际 CPro 源码基线，按 CPro / CHS 共用五项标准判定，再据异常边界修改实现。
 
-私有源码 `models/modeling_qwen3_5_moe_hiai_cpro.py` 中，`rotate_half` 在第 60 行、`apply_rotary_pos_emb` 在第 66 行、`Qwen3_5MoeRotaryEmbedding` 在第 140 行，`_init_rope_cache()` 在第 184 行。行号对应本地旧快照，服务器当前源码以本次实际导出的文件为准。
+| point | 每层每阶段输出 | 图数（3 层 × 2 阶段） |
+| --- | --- | ---: |
+| decay_beta | golden_g、golden_beta | 12 |
+| repeat_qk | golden_q_repeated、golden_k_repeated | 12 |
+| gdn | golden_core、golden_state_raw | 12 |
+| recurrent_writeback | golden_written_state | 6 |
+| linear_attn_norm | golden_y | 6 |
 
-该快照已经在 FP32 下计算 sin/cos，查表后才转类型。当前捕获点只含 Q、K、cos、sin，不能反推角度。本轮 `--rope-precision fp32` 是**旋转乘加候选**：四个输入先转 FP32，调用实际 CPro partial RoPE helper，最后恢复各自 golden 输出 dtype。输入文件、系数和 golden 不变，不把输出强制降为 Q/K 的输入类型，也不将它称为 sin/cos 生成修复。
+GDN core 和 raw state 分图导出，都来自真实调用，保留 effective_length、chunk 参数和初始状态。各图独立使用原 CAPTURED 输入和 golden；Prefill T256／Decode T1 以捕获为准，不裁成 T64、不强制将 g／state 改成 FP16。writeback 通过不能证明 CPro GDN 的错误状态被修好。当前不执行 QLinear、RoPE、Cache 或 Attention，也不使用六输入合成测试替代真实边界。[历史数值及定位顺序](target-accuracy-status.md#gdn-当前独立测试)。
 
-本地主机检查覆盖源码系数生成顺序、两种长度／系数 dtype、partial rotary 尾部、PyTorch 导出、AIR 描述检查和四图筛选。用户随后在原环境完成执行并回传零误差；未在本地重新核验服务器完整产物。原始状态 METRICS_RECORDED 表示未配置自动浮点门槛，本次数值已经对齐。**以下命令仅供今后修改后需要回归时复用，当前不用重编或上板。**
+## 1. 初始化路径
 
-## 1. 每台主机初始化
-
-在该主机仓库中，激活此前成功的 Python／vendor 环境。AIR 主机需要原 CAPTURED 捕获和私有 Target 源码；编译主机需要完整 AIR；上板主机沿用已成功运行的 runtime.json、HDC 和 runner。
+各主机沿用此前成功的 Python／vendor 环境。AIR 主机需要原捕获、私有 Target 源码和权重 YAML；编译主机使用已选 DDK；上板主机沿用 runtime.json、HDC 和 runner。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
 git -C "$REPO_DIR" pull --ff-only origin main
 export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
 export GOLDEN_CAPTURE="${GOLDEN_CAPTURE:-${CAPTURE:-$AI_RUN_DIR/target-layer-accuracy/golden}}"
-export BATCH_ROOT="$AI_RUN_DIR/target/tests/rope-candidate"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-boundaries"
 export BATCH="$BATCH_ROOT/air"
 export OMC_BATCH="$BATCH_ROOT/omc"
 export COMPARISON="$BATCH_ROOT/comparison"
 export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
-export EXECUTION="$AI_RUN_DIR/fused/target-rope-execution"
-export RECOVERY="$AI_RUN_DIR/fused/target-rope-recovery"
+export EXECUTION="$AI_RUN_DIR/fused/target-gdn-boundaries-execution"
+export RECOVERY="$AI_RUN_DIR/fused/target-gdn-boundaries-recovery"
 export PYTHONDONTWRITEBYTECODE=1
 ```
 
-AIR／OMC／comparison 要求空输出槽位。后续复测复用这些固定路径；先确认上次执行结束并回收，再处理它的临时产物，不覆盖活动请求或公共模型。
+已有这 48 项的 fixture/native 时，直接执行下方“复用旧 dump”；已有本范围的 AIR／OMC 时，从缺失的下一阶段继续。新建命令要求空输出槽位。固定目录复测前先确认旧请求结束、已回收，再清理该测试的临时产物，不覆盖活动任务。
 
-## 2. 导出四张 RoPE 图
+## 2. 导出 AIR
 
-在原 TorchAir 环境设置 TARGET_SOURCE 为私有 Target 源码根目录，converter 沿用此前成功路径。RoPE 无权重，不需要权重 YAML。
+TARGET_SOURCE 为原私有源码根目录，TARGET_CONFIG 为此前成功的原权重 YAML。先核对原捕获包含完整 48 项，缺项即停止。
 
 ```bash
 : "${TARGET_SOURCE:?请设置原 Target 源码根目录}"
+: "${TARGET_CONFIG:?请设置原 Target 权重 YAML 路径}"
 export CPRO_EXPORT_SCRIPT="${CPRO_EXPORT_SCRIPT:-$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py}"
 (
 set -e
-test -f "$GOLDEN_CAPTURE/manifest.json"
+test -f "$TARGET_CONFIG"
 test -f "$CPRO_EXPORT_SCRIPT"
 test ! -e "$BATCH"
+python - "$GOLDEN_CAPTURE/manifest.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+outputs = {
+    "decay_beta": ["golden_g", "golden_beta"],
+    "repeat_qk": ["golden_q_repeated", "golden_k_repeated"],
+    "gdn": ["golden_core", "golden_state_raw"],
+    "recurrent_writeback": ["golden_written_state"],
+    "linear_attn_norm": ["golden_y"],
+}
+expected = {(layer, call, phase, point, name)
+            for layer in range(3) for call, phase in enumerate(("prefill", "decode"))
+            for point, names in outputs.items() for name in names}
+actual = [(r["layer"], r["call"], r["phase"], r["point"], t["name"])
+          for r in m["regions"] if r["point"] in outputs for t in r["outputs"]]
+if m.get("status") != "CAPTURED" or len(actual) != 48 or set(actual) != expected:
+    raise SystemExit("需要 L0–L2、Prefill/call0 + Decode/call1、五类边界的完整 48 项捕获。")
+print("CAPTURE: 48 GDN-related outputs")
+PY
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --capture "$GOLDEN_CAPTURE" \
-  --source-root "$TARGET_SOURCE" \
+  --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
   --converter-script "$CPRO_EXPORT_SCRIPT" \
-  --points rope --phases prefill decode --rope-precision fp32 \
-  --output "$BATCH"
-python - "$BATCH/manifest.json" <<'PY'
-import json, sys
-r = json.load(open(sys.argv[1]))
-cases = r["cases"]
-expected = {(p, n) for p in ("prefill", "decode")
-            for n in ("golden_q_rotated", "golden_k_rotated")}
-if (r["status"] != "EXPORTED" or len(cases) != 4
-        or {(c["phase"], c["output_name"]) for c in cases} != expected
-        or any(c["kind"] != "rope" or c["status"] != "EXPORTED" for c in cases)):
-    raise SystemExit("需要完整四张 RoPE 图；请检查捕获选择及各 case 日志。")
-print("AIR: EXPORTED 4/4 RoPE")
-PY
+  --points decay_beta repeat_qk gdn recurrent_writeback linear_attn_norm \
+  --phases prefill decode --output "$BATCH"
 )
 ```
 
-每份 `models/<case>/export.json` 应有：
-
-- `candidate.kind=ROPE_ROTATION_FP32`，`candidate_graph_check.status=PASSED`。
-- `rope_contract.rotary_dim`、原输出 dtype 和系数生成函数的来源信息。
-- `rope_contract.host_check.outputs`：原 CPro helper／FP32 候选与原 golden 的 CPU 对照，仅供诊断。
-
-AIR 检查逐条核对乘加输入的生产端／消费端及输出均为 FP32，同时核对最终输出 dtype；不证明 OMC 内部未再降精度。失败时查看 `$BATCH/<case>.log`，不要绕过检查。跨机器复制**整个 BATCH 目录**，含 schema、输入、golden、清单，不能只拷 export.air。
+应为 EXPORTED 48/48。失败看 manifest.json 的 error 和 `$BATCH/<case>.log`。每份 export.json 保留 `source_contract.status=BOUND_TO_SOURCE`、源码表达式、输入与输出类型；不能修改描述符来掩盖 dtype 差异。跨主机复制整个 BATCH，包含清单、schema、输入、golden，不只复制 export.air。
 
 ## 3. 编译 OMC
 
-在此前成功的 custom_pypto／DDK 环境执行。以下默认 DDK 是此前实测配置，TBE_DIAGNOSIS 沿用已经完成的诊断目录。
+沿用此前成功的 DDK（本轮 ID 为 100.520.020.010）和已完成的 TBE 诊断。GDN 曾遇到 TE worker 初始化失败，继续使用现有兼容配置。
 
 ```bash
-export CPRO_DDK_ROOT="${CPRO_DDK_ROOT:-/home/l00886453/ddk_0806/image/hiai_ddk/ddk_internal}"
+: "${CPRO_DDK_ROOT:?请设置该主机此前成功的 DDK 根目录}"
 export CPRO_DDK_ID="${CPRO_DDK_ID:-100.520.020.010}"
 export TBE_DIAGNOSIS="${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
 (
@@ -90,11 +96,11 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
 )
 ```
 
-摘要在 `$OMC_BATCH/compile.json`，单项日志在 `models/<case>/omc/compile.log`。若部分失败，成功项仍可上板，但不能视为四图完整验证。上板在另一主机时复制整个 BATCH_ROOT，保持 air／omc 相对位置。
+摘要在 `$OMC_BATCH/compile.json`，日志在 `models/<case>/omc/compile.log`。部分失败时，下一步自动执行已 COMPILED 的项，缺项保留，不代表 48 项全部通过。跨主机复制整个 BATCH_ROOT，保持 air／omc 相对位置。
 
 ## 4. 上板与回收
 
-沿用此前跑 Cache/QLinear 的 runtime.json 和 runner，本轮无需重建运行器。在原 HDC 主机设置实际 DDK 路径及原 BIP／SN。
+沿用已成功的 runtime.json 和 runner，无需重建运行器。每图预热 3 次、采样 10 次，每次恢复捕获输入。
 
 ```bash
 if test -f "${QWEN35_ENV_CONFIG:-$REPO_DIR/../qwen35-cpro.env}"; then
@@ -109,90 +115,61 @@ python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --ddk-root "$CPRO_DDK_ROOT" --output "$EXECUTION" --apply
 ```
 
-该入口虽名为 draft，也支持 Target。每图预热 3 次、采样 10 次，每次恢复捕获输入。启动后回收**同一个请求**：
+入口名虽然包含 draft，也支持 Target。启动后只回收同一个请求：
 
 ```bash
 python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
   --recover "$EXECUTION" --output "$RECOVERY"
 ```
 
-若返回 PENDING，稍后重复回收，不重复 apply。数值异常可能使回收返回非零；有 native 输出后仍可继续比较。
+返回 PENDING 时稍后重复 recover，不重复 apply。数值失败可能让回收返回非零；有 native 输出后仍可继续比较。
 
-## 5. 比较整输出及旋转分区
+## 5. 五项指标比较
 
 ```bash
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
   --fixture "$EXECUTION/fixture" --native "$RECOVERY/native" \
   --output "$COMPARISON"
-
-python - "$COMPARISON/report.json" <<'PY'
-import json, sys
-r = json.load(open(sys.argv[1]))
-for row in r["cases"]:
-    m = row.get("invocations", [{}])[0]
-    p = m.get("rope_partitions", {})
-    print(json.dumps({
-        "case": row["case"], "status": row["status"],
-        "whole_relative_l2": m.get("relative_l2"),
-        "rotary_dim": p.get("rotary_dim"),
-        "rotated": p.get("rotated"), "unrotated": p.get("unrotated"),
-        "dtype_preserved": row.get("source_dtype_preserved"),
-        "stable": row.get("stable"), "error": row.get("error")
-    }, ensure_ascii=False))
-print("coverage_complete:", r["coverage_complete"])
-PY
 ```
 
-回传 summary.csv 和 report.json。比较器现在按[五项共同标准](target-accuracy-status.md)自动判定；CSV 增加 cosine、kl_divergence、rmse、mean_relative_error 和 failed_metrics。已有 fixture/native 时只执行本节 compare，COMPARISON 必须是新的输出目录，不用再跑导出／编译／上板。历史 RoPE 零误差记录保留原状态，不反推缺失指标。`rope_partitions.rotated`／`unrotated` 只按捕获的 rotary_dim 切分最后一维，不删 token、不改变 padding／布局；整输出仍是最终验收范围。
+回传 `summary.csv` 和 `report.json`。数值通过要求 cosine >0.99、relative_l2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1，所有重复调用通过且稳定。CSV 同时记录 failed_metrics 和 dtype_preserved。raw state 即使数值通过，也须核实最终状态接口，不能忽略类型变化。
 
-若未旋转部分已有明显误差，先查输入／输出绑定和编译后的类型、布局；若误差集中于旋转部分，再对照本次 AIR／OMC 的乘加与转换。候选改善也不能归功于本图中不存在的 Sin／Cos 修改。
+先看 decay_beta、repeat_qk，再分别看 gdn/core 和 raw state，最后看 writeback、norm。前两者对齐而 GDN 偏差大时，再查 GDN 布局、输入 dtype、effective_length、Q/K 归一化和累加精度；不能统一归因于量化投影，因为各图独立输入 golden。
 
-## 暂后的 Cache 工作
+### 复用旧 dump
 
-Decode Cache 仍有四项失败；恢复 Cache 工作时只复测 Decode，已通过的 Prefill 不重编。当前不因 RoPE 修改启动 Cache。此前证据与修复方向见[精度状态](target-accuracy-status.md#decode-cache-原因分析)。
-
-## 先读已有报告，无需重编或上板
-
-在保留本次数值的回收主机执行，COMPARISON 沿用已有实际目录。默认指向本页 Cache 固定测试目录；若本批仍在 qlinear-cache-candidates 下，设置为该批 comparison 目录。命令只读，不改变数值或产物。
+若旧全边界测试的 fixture/native 完整，只补算这 48 项，跳过导出／编译／上板。COMPARISON 要求空目录；不能从只有 summary.csv 的旧结果反推新指标。
 
 ```bash
-export REPO_DIR="$(git rev-parse --show-toplevel)"
-export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
-export COMPARISON="${COMPARISON:-$AI_RUN_DIR/target/tests/cache-candidates/comparison}"
-
-python - "$COMPARISON/report.json" <<'PY'
+: "${GDN_FIXTURE:?设置保留的执行 fixture 目录}"
+: "${GDN_NATIVE:?设置匹配的回收 native 目录}"
+(
+set -e
+GDN_CASE_LIST="$(python - "$GDN_FIXTURE/manifest.json" <<'PY'
 import json, sys
-from pathlib import Path
-path = Path(sys.argv[1])
-if not path.is_file():
-    raise SystemExit(f"未找到 {path}；请把 COMPARISON 设置为产生本批表格的 comparison 目录。")
-report = json.loads(path.read_text())
-pairs = {}
-for row in report["cases"]:
-    if row.get("phase") != "decode" or not row.get("point", "").startswith("cache_"):
-        continue
-    invocations = row.get("invocations", [])
-    m = invocations[0] if invocations else {}
-    hashes = row.get("output_sha256", [])
-    first_hash = hashes[0] if hashes else None
-    print(json.dumps({
-        "case": row["case"], "status": row["status"],
-        "mismatched_preserved_elements": m.get("mismatched_preserved_elements"),
-        "mismatched_updated_elements": m.get("mismatched_updated_elements"),
-        "max_error_coordinate": m.get("max_error_coordinate"),
-        "actual_at_max": m.get("actual_at_max"),
-        "golden_at_max": m.get("golden_at_max"),
-        "output_sha256_0": first_hash, "error": row.get("error"),
-    }, ensure_ascii=False))
-    point = row["point"]
-    if "_index_" in point:
-        base, mode = point.rsplit("_index_", 1)
-        pairs.setdefault((row["layer"], row["call"], base), {})[mode] = first_hash
-for key, pair in sorted(pairs.items()):
-    a, b = pair.get("float"), pair.get("integer")
-    print(key, "float_integer_same_bytes:",
-          a == b if a and b else "UNKNOWN_MISSING_HASH")
+m = json.load(open(sys.argv[1]))
+outputs = {
+    "decay_beta": ["golden_g", "golden_beta"],
+    "repeat_qk": ["golden_q_repeated", "golden_k_repeated"],
+    "gdn": ["golden_core", "golden_state_raw"],
+    "recurrent_writeback": ["golden_written_state"],
+    "linear_attn_norm": ["golden_y"],
+}
+cases = [c for c in m["cases"] if c["point"] in outputs]
+expected = {(layer, call, phase, point, name)
+            for layer in range(3) for call, phase in enumerate(("prefill", "decode"))
+            for point, names in outputs.items() for name in names}
+actual = {(c["layer"], c["call"], c["phase"], c["point"], c["output_name"]) for c in cases}
+if len(cases) != 48 or len({c["case"] for c in cases}) != 48 or actual != expected:
+    raise SystemExit("已有 fixture 不包含完整 48 项 GDN 边界，请检查来源。")
+print("\n".join(c["case"] for c in cases))
 PY
+)"
+mapfile -t GDN_CASES <<< "$GDN_CASE_LIST"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
+  --fixture "$GDN_FIXTURE" --native "$GDN_NATIVE" \
+  --cases "${GDN_CASES[@]}" --output "$COMPARISON"
+)
 ```
 
-已有 V 片段说明历史未保留；哈希相同才进一步支持两种索引生成了逐字节相同输出。分区计数定义为 golden 与输入未变化／变化的位置，不完全等同物理写入范围。下一步修改应依据实际 CacheUpdate 的独立输出／原位契约，保留整缓存逐位门槛；不要通过预填输出或忽略历史区来制造通过。
+选择旧批次的子集后，`coverage_complete=false` 仍表示未覆盖整个旧 fixture；这 48 项即使通过，总状态也可能是 PARTIAL。查看 `numerical_validation` 和各 case，不能把旧批次未测项改成通过。旧数据仅作为旧图基线；修改源码后仍需重新生成对应产物验证。

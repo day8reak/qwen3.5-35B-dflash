@@ -1,6 +1,6 @@
 # Target 精度状态
 
-标准更新：2026-11-13；以下实测结果回传于 2026-11-12。用户回传 **RoPE Prefill／Decode × Q／K 四图全部数值对齐**：max_abs 和 relative-L2 均为 0，旋转区与未旋转区都一致，输出 FP16 且重复稳定。QuantBatchMatmul 的 scale 适配和 RoPE 的 FP32 旋转改法均已记录，下一步重点是 AdnFusedInferAttention Prefill。Cache 最新结果仍为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，Decode 历史保留问题暂后处理。
+阶段与标准更新：2026-11-13；以下实测结果回传于 2026-11-12。当前按用户安排先做 GDN 相关单模块测试，尚无本轮新设备数值。RoPE Prefill／Decode × Q／K 四图已数值对齐，QuantBatchMatmul scale 适配与 RoPE FP32 旋转改动均已记录。Cache 最新结果仍为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，Decode 历史保留问题暂后处理。
 
 **当前浮点标准（CPro / CHS 共用）**：按用户 2026-11-13 指定的下表，五项全部满足才通过；严格比较未四舍五入的值。此标准替换此前 cosine ≥0.9999 和量化 out_proj 单独 L2<2% 的判定。Cache 继续要求整缓存逐位一致，整数／索引／控制量继续精确比较。
 
@@ -25,6 +25,22 @@ Cache 工作恢复后只复测 4 个失败的 Decode 图（K/V × 浮点/整数�
 [交互 HTML](assets/target-architecture-interactive.html)统一展示[各模块最新指标 CSV](../specs/target-latest-boundary-metrics.csv)中的 150 项：38 项 QLinear 使用 scale 适配后结果、8 项 Cache 使用最新浮点／整数对照、4 项 RoPE 使用 FP32 旋转后的零误差结果，其余 100 项保留最近一次实测值。新结果按层、调用、阶段、边界与输出替换旧值，不再切换结果批次。Prefill／Decode 各 75 项；这是模块进度汇总，不代表一次完整图执行。relative_l2 是比值，乘 100 才是百分比。
 
 数据来自用户回传表及报告片段，未在本地核验实际执行文件绑定。新表的原始精度按原样保存；V 明细的更多小数仅在下文记录，不填充到未附 case ID 的两行中。dtype_preserved／stable 全 TRUE 表示类型保持和重复稳定，不代表计算正确。
+
+## GDN 当前独立测试
+
+本轮复现真实 CPro 边界基线：L0–L2 × Prefill／Decode，共 48 个输出图。decay_beta 的 g/beta 12 图、repeat_qk 的 Q/K 12 图、gdn 的 core/raw state 12 图、recurrent_writeback 6 图、linear_attn_norm 6 图。完整步骤见[当前测试命令](target-batch-rerun.md)；已有匹配 fixture/native 时只需筛选这 48 项补算五项指标，不再编译或上板。
+
+| 层 | Prefill core L2 | Prefill raw state L2 | Decode core L2 | Decode raw state L2 |
+| --- | ---: | ---: | ---: | ---: |
+| L0 | 5.7719723% | 44.5964183% | 0.1345661% | 0.0682967% |
+| L1 | 7.1231514% | 26.7449980% | 0.1747658% | 0.4292200% |
+| L2 | 1.5583993% | 12.0997546% | 0.1152179% | 0.0648462% |
+
+以上为历史数据，均保留原 METRICS_RECORDED；6 个 raw state 的 dtype_preserved 为 FALSE。L0/L1 Prefill core 和三个 Prefill raw state 已超出当前 L2<5% 标准，其余项仍缺完整五指标，不能仅凭 L2 较小判通过。
+
+定位顺序为门控 g/beta → Q/K 重复 → GDN core 和 raw state → 状态转换、gated norm。每个图输入都是该边界的原捕获，所以上游小图误差不会自动传入下游小图。历史 repeat_qk 和 writeback 为零误差，只说明各自独立转换对齐，不证明 CPro GDN 末态或连续 Prefill→Decode 反馈正确。
+
+本轮保留捕获的 T256/T1、effective_length、chunk 参数和调用前 state dtype，并绑定实际 CPro 表达式。暂不改 GDN 公式、强制 state 类型或改 golden；待新指标、源 AIR 和编译输出类型一起核对后，再决定修复位置。六输入合成 GDN 诊断不包含真实边界全部控制，不能替代此轮结果。当前完成的是本地测试流程准备，设备执行由用户完成。
 
 ## QuantBatchMatmul：保留的改动
 
@@ -75,7 +91,7 @@ INT32 载体内的 packed W4 字节及排布不变，V4444 原属性和可选输
 | MoE、Router、共享专家、LM head | 不在这批独立数值验证覆盖内；独立 residual_mlp 使用 golden 分支输入，也不能证明 MoE 内部正确 |
 | 整图与状态 | 验证修复确实进入生产图、最终 hidden／logits、KV 和 GDN 末态；T64 图需要对应 T64 golden，不能直接裁切 T256 捕获代替 |
 
-优先顺序为 **Attention Prefill → 合入两项有效改动并跑四层 Prefill → 按首次真实偏差继续定位 GDN／MoE／输出**。初始空缓存 Prefill 可以先与 Decode 分开推进；Decode Cache 的历史保留错误仍会阻塞后续生成，多段／续接 Prefill 也不能借初始 Prefill 的通过跳过历史保留验证。当前不要求重复编译已通过的单模块，也不把解决 Attention 作为等待所有独立小图全部通过的前提。
+当前先按用户安排测试 GDN 相关独立边界；Attention Prefill 仍是后续整图联调的待修项。合入有效改动后还需四层 Prefill 的 hidden／logits 和末态验证。初始空缓存 Prefill 可以与 Decode 分开推进；Decode Cache 历史保留错误仍阻塞后续生成，多段／续接 Prefill 同样需要历史保留验证。已对齐模块不重复编译，独立小图结果不替代整图验收。
 
 ## 最新 Cache 结果
 
@@ -125,7 +141,7 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 
 ### 接下来修改哪里
 
-1. **先补全已有四个 Decode case 的分区计数与配对输出哈希**，使用[只读报告命令](target-batch-rerun.md#先读已有报告无需重编或上板)。已有 V 片段不需要重复上板才能确认历史保留失败。
+1. **先补全已有四个 Decode case 的分区计数与配对输出哈希**：读取保留的 comparison/report.json 中 invocations 的 mismatched_preserved_elements、mismatched_updated_elements，以及 output_sha256。已有 V 片段不需要重复上板才能确认历史保留失败。
 2. **核对 CacheUpdate 的真实输出契约**：若它声明返回独立完整缓存，输出须先保留全部输入历史，再应用更新；若仅支持原位写入，GE 注册、别名／RefData 和调用者必须遵循同一契约，并返回实际更新后的存储。不能只加一个会导出为 Identity 的 clone。
 3. **若仍不能区分内核与绑定**，下一次有界诊断同时读取执行后的输入缓存与输出，并核对实际槽位。如果输入已完整更新、输出只有新 token，优先修复 functional／输出绑定；若输入保持原样、独立输出缺历史，检查独立输出实现是否遗漏全量复制。图内可能另有缓存副本，读回外部输入时需结合实际编译图判断。
 4. 修复后只复测 4 个失败的 Decode K/V 图，两种索引均需整缓存逐位通过；Prefill 保留已通过记录，不再编译。连续状态反馈另待验证。仅预填输出、屏蔽历史区域或放宽 Cache 容差，不能作为精度修复。
@@ -149,15 +165,15 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 
 ## 高危算子重点定位表
 
-当前优先处理 Attention Prefill；RoPE 数值已对齐，Cache 恢复后仅复测 4 个失败的 Decode 图。下表保留各模块最近已知结果，不自动加入复跑；[风险 CSV](../specs/target-operator-accuracy-risk.csv)分别标注证据范围，量化 out_proj 按旧 2% 门槛、RoPE 按零误差观测移出高危项；新标准缺项不补造。
+当前先测 GDN 及相邻边界；RoPE 数值已对齐，Cache 恢复后仅复测 4 个失败的 Decode 图。下表保留各模块最近已知结果，其他模块不自动加入复跑；[风险 CSV](../specs/target-operator-accuracy-risk.csv)分别标注证据范围，量化 out_proj 按旧 2% 门槛、RoPE 按零误差观测移出高危项；新标准缺项不补造。
 
 | 区域 | 已观察结果 | 当前处理 |
 |---|---|---|
 | CacheUpdate | 最新 Prefill 4/4 PASSED；Decode 4/4 FAILED，L2 99.69%～99.81% | 暂后：检查历史保留与 functional 输出契约 |
 | LinearAttentionConvstateUpdate | 12 项小图编译失败，无数值；原 T64 整图已编译 | 保留失败定位；对照 RefData、双输出和消费者 |
 | RoPE | FP32 旋转后四图零误差，旋转区／未旋转区均数值一致 | 独立边界已对齐；不再复跑，待整图集成验证 |
-| ChunkGatedDeltaRule | 历史 Prefill core 1.56%～7.12%，raw state 12.10%～44.60%；6 个 raw state dtype 不保持 | 历史记录，本轮 Cache 结果不能解释它 |
-| AdnFusedInferAttention | Prefill 99.67%、Decode 0.251% | 当前优先处理 Prefill；27／64 token 例子来源未明，不能撤销指标 |
+| ChunkGatedDeltaRule | 历史 Prefill core 1.56%～7.12%，raw state 12.10%～44.60%；6 个 raw state dtype 不保持 | 当前：GDN 及相邻边界共 48 图，建立五指标基线 |
+| AdnFusedInferAttention | Prefill 99.67%、Decode 0.251% | 待处理 Prefill；27／64 token 例子来源未明，不能撤销指标 |
 
 各小图使用独立捕获的 golden 输入，不统一归因于上游 QKV 误差传播。整缓存通过也不证明图内 alias 或连续状态反馈已经通过。MoE、Router、共享专家、LM head 与完整 40 层仍待覆盖。[旧静态 SVG](assets/target-architecture-accuracy.svg)为历史快照。
 

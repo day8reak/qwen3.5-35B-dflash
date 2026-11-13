@@ -1,6 +1,6 @@
 # Target W4：310P golden → CPro 小子图精度定位
 
-环境修正后的本轮执行命令集中在[批量重新生成 OMC、上板与比较](target-batch-rerun.md)，默认覆盖全部已导出边界，使用独立新目录保留结果。
+当前执行命令集中在[GDN 独立边界测试](target-batch-rerun.md)，只覆盖 L0–L2 的五类 GDN 相关边界，共 48 个输出图；可直接复用已有 dump 补算五项指标。
 
 2026-11-10：当前主线已调整为[四层整图 dump 与 OMC／精度状态表](target-accuracy-status.md)。本页保留独立边界捕获、重放和编译排查的方法，用于整图首次偏差已经缩小后的复现；不再要求先逐个编译通过所有边界图。
 
@@ -33,7 +33,7 @@
 | attention 布局恢复与 gate | 原 attention 输出、Q projection 中的 gate、实际 o_proj 输入 |
 | residual add | 原分支输出、残差和实际加法结果 |
 
-CPro GDN 接收调用前缓存的 dtype；310P 传入内核前的 FP32 cast 不会被误当成 CPro 的输入合同。量化投影沿原 exporter 的 replacement globals 选择实际 QLinear，不因 CPro 文件中有同名类就替换。重新导出通过 `--target-config` 读取原 HF／W4 权重：普通 Norm 按 CPro 参数 dtype 加载，W4 由原工具重建并与 capture 核对，golden 不改。当前完整命令与全部类别复查见[全批重跑](target-batch-rerun.md)。
+CPro GDN 接收调用前缓存的 dtype；310P 传入内核前的 FP32 cast 不会被误当成 CPro 的输入合同。量化投影沿原 exporter 的 replacement globals 选择实际 QLinear，不因 CPro 文件中有同名类就替换。重新导出通过 `--target-config` 读取原 HF／W4 权重：普通 Norm 按 CPro 参数 dtype 加载，W4 由原工具重建并与 capture 核对，golden 不改。当前选择范围与完整命令见[GDN 单模块测试](target-batch-rerun.md)。
 
 Convstate 的辅助 `linear_update_tensor` 使用原 CPro 导出声明的零 INT32[128]，并在夹具记录该策略。`effective_length` 来自实际 310P 调用，不使用导出示例里的零长度。若原程序走外部卷积实现，未观察到有效 Conv1D 边界，采集标记 INCOMPLETE；不会编造 golden。
 
