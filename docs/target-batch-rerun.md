@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**整层 GDN AIR 已导出，当前从[第 7.1 节](#71-air-导出后编译与精度测试)开始编译、上板和比较六张图。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)，本页保留已有流程供复核。
+**整层 GDN AIR 已导出；最新 OMC 编译为 0/6 成功，六项均在 OMG 阶段返回 1。当前读取[第 7.2 节的失败日志](#72-gdn-六图编译失败读取已有日志)，暂不进入上板。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)，本页保留已有流程供复核。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -434,3 +434,28 @@ cat "$COMPARISON/summary.csv"
 完整结果应有 18 行：L0–L2 × Prefill／Decode × hidden／new_conv_state／recurrent_state_fp32。五项仍按 cosine >0.99、relative-L2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1，且检查状态 dtype 与重复稳定性。
 
 回传 `gdn-layer/comparison/summary.csv` 和 `report.json`。这些是整层串联结果，仍未测试跨调用的连续状态反馈。
+
+### 7.2 GDN 六图编译失败：读取已有日志
+
+最新回传的 compile.json 总状态为 PARTIAL，但六个 case 全部 FAILED，即 **0/6 编译成功**。重复出现的两份 JSON 来自 compile 命令打印与随后 cat，不能据此认为运行了两轮。当前摘要只有 CalledProcessError／OMG return code 1，尚无具体失败节点或原因；tbe_compatibility_requested=true 只记录请求启用兼容，不能证明 worker 适配或 FP32 state 已被接受。
+
+在刚才编译的终端执行，先提供 L0 Prefill、Decode 两份日志末尾。此命令只读取文件：
+
+```bash
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export OMC_BATCH="$BATCH_ROOT/omc"
+tail -n 160 "$OMC_BATCH/models/l00_c00_gdn_layer_all/omc/compile.log"
+tail -n 160 "$OMC_BATCH/models/l00_c01_gdn_layer_all/omc/compile.log"
+```
+
+如果末尾只有错误传播信息，用已有只读检查入口提取六项的优先错误、Python traceback、编译报告和 AIR／IR 描述。输出到新的 compile-inspection 槽位，不调用 OMG、不重新导出、不上板；槽位已存在时直接读取其 summary.txt／report.json。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-compile \
+  --batch "$OMC_BATCH" --failed \
+  --ddk-root "$CPRO_DDK_ROOT" \
+  --output "$BATCH_ROOT/compile-inspection"
+cat "$BATCH_ROOT/compile-inspection/summary.txt"
+```
+
+回传两份日志末尾，或 compile-inspection/summary.txt 中的错误片段；完整上下文在该目录 report.json 的 cases/<case>/log/diagnostic_excerpt。检查状态 PARTIAL 也可能表示缺少 IR，不等于再次编译失败。定位具体报错后再决定修改调用、状态接口或编译适配；现阶段保留 AIR 与失败 OMC 目录，不将 FP32 改回 FP16，也不重复全批编译。
