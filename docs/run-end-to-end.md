@@ -70,6 +70,8 @@ PENDING只回收同一请求；不得重复启动。上述公开位置是模型�
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 
+若已用修改后的私有导出器直接得到两份静态 AIR，使用[实际 AIR 输入生成 `--input_shape` 的编译命令](compile-target-air.md)。下面的准备流程包含额外的规范化和 Target features；其固定 profile 不能直接替代新图的实际输入检查。
+
 2026-11-16 当前候选：先在私有 Target 工程应用本地交付的 `qwen35-cpro-full-model-adaptations.patch`，再执行本节准备。Patch 包含 modeling、实际 QLinear 工厂和导出器的配套适配，CPro 使用 A8W4（`quant_bits=4`）。私有源码和 patch 不上传本仓库。已回传的显式 ConvState 整层结果为 11/18 通过，见[结果](target-accuracy-status.md#显式-convstate-最新结果)；这份 40 层集成尚未上板。
 
 首次采用 B=1、有效长度为 64 的 Prefill 和有效长度为 1 的 Decode。部分 padding 的 ConvState 更新尚未验证；不能把 exporter 的零值 tracing 控制量原样当作运行输入。新图可能裁剪未使用的 `linear_update_tensor`，应重新生成实际输入绑定和状态映射。原 4 层捕获不是 40 层 golden，原 Prefill Attention 参考错误也需处理后再验证下游。完整精度、连续状态反馈和加载／推理时延分别记录，尚未提供这轮完整运行数据。

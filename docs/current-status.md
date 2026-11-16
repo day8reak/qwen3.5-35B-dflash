@@ -8,4 +8,6 @@ Attention Prefill／Decode 对独立数学参考的五项已通过，relative-L2
 
 用户确认下一步跑原模型 40 层，包含 MoE、输出头和状态反馈；精度、可运行性、性能分别验收。先使用 B=1、有效长度等于静态长度的 Prefill 和单 token Decode；部分 padding 的 ConvState 更新未覆盖。新图必须重新读取编译 ABI，不能沿用旧输入槽位。40 层的 golden、设备精度和时延仍待取得，旧四层捕获不替代整模参考。
 
+两份静态 AIR 的显式 `--input_shape` 可由[读取实际输入描述的脚本](compile-target-air.md)生成。该工具已完成本地主机检查，真实 AIR 编译与设备执行仍由目标环境完成。
+
 [详细结果](target-accuracy-status.md) · [交互 HTML](assets/target-architecture-interactive.html) · [完整流程](run-end-to-end.md) · [已完成的小图命令](target-batch-rerun.md)
