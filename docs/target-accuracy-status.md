@@ -2,7 +2,26 @@
 
 阶段与标准更新：2026-11-13；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求批次 **6/6 编译成功，但末态 ABI 为 FP16**，准备阶段拦截，设备未执行。安装注册及源码确认使用 FP16 状态接口；用户已选择按 FP16 重新导出六图，精度结果待回传；GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
-2026-11-16 进展：最新整层 GDN 请求停在 prepare 的 torch_npu 后端导入，设备及数值验证均 NOT_RUN。已将 Torch 依赖移到源图导出路径，并修复启动／回收对整层 `_all` 用例名的校验。本地模拟六用例可在禁止加载 Torch 时完成准备；现有 FP16 AIR／OMC 按[第 7.5 节](target-batch-rerun.md#75-准备阶段-torch_npu-加载失败后重试)复用重试，精度状态仍待设备结果。
+2026-11-16 最新结果：准备阶段的 Torch 导入问题已修复，用户回传整层 GDN 六图、18 个输出的比较结果：**0 PASSED / 18 FAILED，全部 stable=True**。本次已进入设备输出比较，FP16 接口可跑；数值尚未对齐。下一步先对已有 dump 检查 ConvState 是否返回旧输入，执行[只读状态检查](target-batch-rerun.md#76-整层-gdn-数值失败后的只读检查)，复用现有 AIR／OMC 和输出。
+
+## 整层 GDN FP16 最新结果
+
+原始 18 行见[整层 GDN 指标 CSV](../specs/target-gdn-layer-metrics.csv)，来源为用户回传 summary.csv，本地未重新核验远端文件绑定。下表 L2 已乘 100 转成百分比；每行三个输出均未通过五项门槛，不能以重复稳定替代精度通过。
+
+| 层／阶段 | hidden L2 | ConvState L2 | recurrent state L2 |
+| --- | ---: | ---: | ---: |
+| L0 Prefill | 28.8665% | 100% | 44.5686% |
+| L1 Prefill | 51.3277% | 100% | 26.7849% |
+| L2 Prefill | 55.0184% | 100% | 12.1200% |
+| L0 Decode | 156.7452% | 145.7440% | 20.7399% |
+| L1 Decode | 110.6568% | 142.8510% | 43.5084% |
+| L2 Decode | 78.2154% | 142.5070% | 46.2725% |
+
+Prefill ConvState 的三项 L2=1、cosine=0 提示零输出，但仅凭汇总不能证明全部元素为零。结合 Decode ConvState 的 L2 接近 sqrt(2)、cosine 接近 0，优先检验“输出仍是旧状态”假设：直接按源参数到 runtime 槽位映射读取旧输入，与全部 10 次输出逐位比较，再检查四个历史位置的对应关系。不根据 shape 猜槽位，也不据此断言内核未写入或存在别名错误。
+
+Prefill recurrent state 与此前独立 GDN 的 44.5964%／26.745%／12.0998% 很接近；Decode 则从独立测试的 0.0683%／0.4292%／0.0648% 增至 20.74%／43.51%／46.27%。这支持先核对整层状态及其上游连接，尚不足以锁定某条内部边。`first_failed_boundary=l00_c00_gdn_layer_all` 指首个失败的整层图，不是已定位的首个内部算子。
+
+六个 recurrent state 的 dtype_preserved=False 是已选择的 FP16 实际输出与原 FP32 golden 的差别；本次失败来自列出的数值指标。初态、门控和输出的半精度适配不构成精度通过证明，连续 Prefill→Decode 状态反馈仍未测试。
 
 **当前浮点标准（CPro / CHS 共用）**：按用户 2026-11-13 指定的下表，五项全部满足才通过；严格比较未四舍五入的值。此标准替换此前 cosine ≥0.9999 和量化 out_proj 单独 L2<2% 的判定。Cache 继续要求整缓存逐位一致，整数／索引／控制量继续精确比较。
 

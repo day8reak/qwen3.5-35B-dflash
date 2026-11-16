@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN 按 FP16 接口测试。最新上板请求在 prepare 阶段因 torch_npu 自动加载失败，设备未执行；已移除准备路径对 Torch 的不必要依赖。已有 FP16 AIR／OMC 时执行[第 7.5 节](#75-准备阶段-torch_npu-加载失败后重试)，复用现有产物重试上板。尚未切换 FP16 的旧批次才从[第 7 节](#7-整层-gdnfp16-状态测试)开始。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
+**当前整层 GDN FP16 六图已回传数值：18 个输出全部 FAILED，全部重复稳定。下一步执行[第 7.6 节](#76-整层-gdn-数值失败后的只读检查)，直接检查已有 dump 的 ConvState／recurrent state 与旧输入的关系，不重导出、重编译或重新上板。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -15,7 +15,7 @@ GDN 包含五个 QLinear、ConvState、卷积、SiLU、g/beta、Q/K 重复、Chu
 
 Attention 沿用捕获 Q/K/V、mask、block_table 和长度参数，新增 Q 轴、Q 长度常量字节与 allQLen 传递检查。当前范围为 B=1 静态图。Q 为 `[B, heads×D/16, S, 16]`，序列轴是 2；旧捕获 Prefill S256、Decode S1。源码全图 S64 对应 `[1,256,64,16]`，旧捕获小图对应 `[1,256,256,16]`；两者均没有把 Prefill Q 变成 1。新采集的 S 以实际 manifest 为准，不为了复现旧长度补齐或截断输入。`allQLen` 单独记录，不能强制等于当前 Q 长度；它在用户提供的内核中控制 KV 块循环。实际 tiling 和完整生产图仍需编译产物核对。
 
-每张图每次都使用捕获输入；整层 GDN 包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。48 个 GDN 独立边界已回传 43 PASS / 5 FAIL，整层 GDN 尚待执行。L0–L2 的独立函数测试可以继续复用捕获；L3 Prefill Attention 下游的整图 golden 需要参考路径修复后重建。
+每张图每次都使用捕获输入；整层 GDN 包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。48 个 GDN 独立边界已回传 43 PASS / 5 FAIL，整层 GDN 当前 18 个输出全部失败。L0–L2 的独立函数测试可以继续复用捕获；L3 Prefill Attention 下游的整图 golden 需要参考路径修复后重建。
 
 ## 1. 初始化路径
 
@@ -603,3 +603,34 @@ python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
 ```
 
 启动成功后按第 7.1 节 D／E 回收和比较同一个请求。准备阶段修复仅通过本地模拟 OMC 描述的六用例检查（禁止导入 Torch），不代表设备执行或整层精度已通过；仍需回传 18 个输出的 summary.csv。
+
+### 7.6 整层 GDN 数值失败后的只读检查
+
+最新 18 行结果已记录在[精度状态](target-accuracy-status.md#整层-gdn-fp16-最新结果)。先检查异常最明显的 ConvState：Prefill 三项 L2 恰为 1，Decode 三项约为 1.43–1.46。当前假设是输出仍等于旧输入，须用原始张量验证，不能从这两个数字直接定因。
+
+在保存 execution／recovery 的主机执行下面命令。它读取现有 fixture 与 10 次 native dump，检查完整输出字节范围，记录零值／非有限值、实际输出与旧输入／golden 的差异、四个历史位置的对应关系及两个控制张量。源参数编号通过 fixture_index 映射到实际 runtime 槽位，不按 shape 猜测。无 Torch、DDK 或设备依赖。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export EXECUTION="$BATCH_ROOT/execution"
+export RECOVERY="$BATCH_ROOT/recovery"
+export INSPECTION="$BATCH_ROOT/output-inspection"
+export PYTHONDONTWRITEBYTECODE=1
+(
+set -e
+test -f "$EXECUTION/fixture/manifest.json"
+test -d "$RECOVERY/native"
+test ! -e "$INSPECTION"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-gdn-output \
+  --fixture "$EXECUTION/fixture" --native "$RECOVERY/native" \
+  --output "$INSPECTION"
+)
+cat "$INSPECTION/summary.txt"
+```
+
+回传 summary.txt；详细的历史位置对照在 report.json 的 conv_history_slots。重点看 ConvState 的 `actual.all_zero`、`actual_vs_old_input.equal_bits`、`all_invocations_equal_old_input_bits` 与 `golden_vs_old_input`。如果全部旧状态匹配且 golden 已改变，便确认返回值保留了旧状态；仍需后续图／实现检查区分返回连接、状态更新控制和存储别名。未匹配时依据历史位置对照继续查布局或更新范围。检查仅报告观测，不修补输出、不替换 golden，也不重新判定精度通过。
+
+当前 AIR／OMC、execution、recovery 和 comparison 均继续使用。output-inspection 若已存在，先读取现有报告，不覆盖正在检查的目录。

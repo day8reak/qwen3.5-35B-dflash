@@ -125,9 +125,24 @@
     "golden_state_dtype": "float32",
     "golden_policy": "ORIGINAL_CAPTURE_BYTES_UNCHANGED",
     "numeric_gates": "UNCHANGED_DEVICE_FIVE_METRICS_V1",
-    "source_export": "PENDING_USER_EXECUTION",
-    "model_compilation": "NOT_RUN",
-    "device_execution": "NOT_RUN",
-    "old_batch_policy": "REEXPORT_AND_RECOMPILE; KEEP_ORIGINAL_FP32_REQUEST_GATE"
+    "source_export": "REPORTED_COMPLETED",
+    "model_compilation": "REPORTED_COMPLETED",
+    "device_execution": "REPORTED_EXECUTED",
+    "old_batch_policy": "REEXPORT_AND_RECOMPILE; KEEP_ORIGINAL_FP32_REQUEST_GATE",
+    "numerical_validation": "FAILED"
+  },
+  "latest_whole_layer_result": {
+    "date": "2026-11-16",
+    "evidence_source": "USER_PASTED_COMPARISON_CSV",
+    "local_artifact_binding": "NOT_REVERIFIED",
+    "metrics": "target-gdn-layer-metrics.csv",
+    "cases": 6,
+    "outputs": 18,
+    "passed_outputs": 0,
+    "failed_outputs": 18,
+    "stable_outputs": 18,
+    "first_failed_graph": "l00_c00_gdn_layer_all",
+    "next_diagnostic": "COMPARE_CONV_STATE_OUTPUT_WITH_OLD_INPUT; NO_NEW_DEVICE_EXECUTION",
+    "cause": "UNDETERMINED"
   }
 }

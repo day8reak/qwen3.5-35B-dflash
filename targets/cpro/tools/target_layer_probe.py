@@ -72,6 +72,10 @@ def main():
     s.add_argument('--native', required=True, help='matching recovered native directory')
     s.add_argument('--capture', help='optional original capture for hash-bound argument names and sequence metadata')
     s.add_argument('--output', required=True, help='fresh inspection directory separate from retained inputs')
+    s = sub.add_parser('inspect-gdn-output', help='read whole-GDN dumps and compare state outputs with old state inputs; no export or device run')
+    s.add_argument('--fixture', required=True)
+    s.add_argument('--native', required=True)
+    s.add_argument('--output', required=True)
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
@@ -112,6 +116,9 @@ def main():
     elif a.command == 'inspect-attention':
         from qwen35_moe_dflash.target.layer_probe.attention_inspect import inspect_attention
         result = inspect_attention(a.batch, a.fixture, a.native, a.output, a.capture, a.reference)
+    elif a.command == 'inspect-gdn-output':
+        from qwen35_moe_dflash.target.layer_probe.gdn_output_inspect import inspect_gdn_outputs
+        result = inspect_gdn_outputs(a.fixture, a.native, a.output)
     elif a.command == 'inspect-compile':
         from qwen35_moe_dflash.target.layer_probe.inspection import inspect_compilation
         report = inspect_compilation(a.batch, a.output, a.cases, ddk_root=a.ddk_root,
