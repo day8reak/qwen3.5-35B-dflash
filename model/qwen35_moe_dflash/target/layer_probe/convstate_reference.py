@@ -5,7 +5,7 @@ installed LinearAttentionConvstateUpdate. Captured golden bytes are read only.
 """
 import numpy as np
 
-from .common import read_array
+from .common import checked, read_array
 
 
 def tensor_update(mixed_qkv, old_state):
@@ -17,12 +17,16 @@ def tensor_update(mixed_qkv, old_state):
 
 
 def validate_capture(record, capture):
-    """Require both source state and convolution-input bytes to match the rule."""
+    """Match saved bytes, including the reference's lossless padded widening."""
     components = {r['point']: r for r in record['components']}
     conv = components['convstate_update']
     inputs = {s['name']: s for s in conv['inputs']}
     outputs = {s['name']: s for s in conv['outputs']}
     qspec, sspec = inputs['mixed_qkv'], inputs['old_conv_state']
+    conv_input = next(s for s in components['conv1d']['inputs'] if s['name'] == 'padded')
+    if any(conv_input[k] != outputs['golden_padded'][k] for k in ('shape', 'dtype', 'bytes', 'sha256')):
+        raise ValueError('ConvState padded capture must match the executed convolution input boundary')
+    checked(capture, conv_input)
     projected = components['linear_attn_in_proj_qkv']['outputs'][0]
     if any(qspec[k] != projected[k] for k in ('shape', 'dtype', 'bytes', 'sha256')):
         raise ValueError('ConvState capture must use the same executed QKV projection')
@@ -45,11 +49,21 @@ def validate_capture(record, capture):
     checks = {}
     for name, value in expected.items():
         saved = read_array(capture, outputs[name])
-        same = (saved.shape == value.shape and saved.dtype == value.dtype
-                and saved.tobytes() == value.tobytes())
+        compared, conversion = value, 'NONE'
+        if name == 'golden_padded' and saved.dtype == np.float32:
+            # The NZ reference concatenates FP16 data, then casts to the
+            # convolution weight dtype. Widen the candidate, never round the
+            # saved FP32 golden down; even a one-bit FP32 difference must fail.
+            compared, conversion = value.astype(np.float32), 'LOSSLESS_FP16_TO_FP32'
+        same = (saved.shape == compared.shape and saved.dtype == compared.dtype
+                and saved.tobytes() == compared.tobytes())
         if not same:
-            raise ValueError(f'captured {name} does not match reference concat/tail bytes; keep original golden')
-        checks[name] = dict(shape=list(saved.shape), dtype=str(saved.dtype), equal_bits=True)
+            raise ValueError(f'captured {name} does not match reference concat/tail bytes; '
+                f'candidate={list(value.shape)}/{value.dtype}, captured={list(saved.shape)}/{saved.dtype}, '
+                f'comparison_cast={conversion}; keep original golden')
+        checks[name] = dict(shape=list(saved.shape), dtype=str(saved.dtype), equal_bits=True,
+            candidate_dtype=str(value.dtype), comparison_cast=conversion,
+            comparison_scope='ORIGINAL_CAPTURE_DTYPE; SAVED_BYTES_UNCHANGED')
     return dict(status='PASSED', scope='CAPTURED_QKV_AND_OLD_STATE; NOT_TARGET_EXECUTION',
         batch=1, length=length, history_width=width, checks=checks,
         update='CONCAT_OLD_BCK_AND_QKV_BCT; LAST_K_STATE; LAST_T_PLUS_K_MINUS_1_CONV_INPUT',

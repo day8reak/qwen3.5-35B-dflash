@@ -2,7 +2,7 @@
 
 阶段与标准更新：2026-11-16；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求因末态 ABI 为 FP16 在准备阶段拦截；用户选择 FP16 后六图已执行，18 个输出均未通过精度门槛。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
-2026-11-16 最新设备结果：整层 GDN 六图、18 个输出为 **0 PASSED / 18 FAILED，全部 stable=True**。Prefill 三图 ConvState 全零、10 次均与旧输入逐位相等；Decode 的三种输出序列化假设均未恢复历史保留关系。host 入口及安装 GE 枚举已核对，llmConfig 字段和完整状态布局仍未知。下一步执行[显式 ConvState 对照](target-batch-rerun.md#77-显式-convstate-对照)：复用捕获导出六图，比较图级 concat/tail 更新路径；本地检查已通过，目标编译与设备精度待回传。
+2026-11-16 最新设备结果：整层 GDN 六图、18 个输出为 **0 PASSED / 18 FAILED，全部 stable=True**。Prefill 三图 ConvState 全零、10 次均与旧输入逐位相等；Decode 的三种输出序列化假设均未恢复历史保留关系。host 入口及安装 GE 枚举已核对，llmConfig 字段和完整状态布局仍未知。显式 ConvState 候选六项在导出前的 padded 校验处失败；已复现参考 FP32 padded 与候选 FP16 的类型校验问题，下一步按[第 7.8 节](target-batch-rerun.md#78-golden_padded-类型校验失败后的重试)先逐项检查捕获，再重新导出。尚无候选目标编译或设备结果。
 
 ## 整层 GDN FP16 最新结果
 
@@ -31,7 +31,9 @@ DDK 二进制定位已取得更强证据：libgraph_host.so 含 GE 注册及 Ver
 
 最新六个 host 函数正文显示：BuildOffChipDataInfo 传递 input0／1／2 和 output0／1 的描述，x3 对应 flowtable +0x58，未解析其字段。executor 只配置调用、设置两个 8 字节参数并 rtLaunch；129 字节 host wrapper 与日志中的 748 字节设备 kernel 是不同记录。rtLaunch 地址的就近符号注释不能证明错调算子。Check／ProduceTiling 返回 0，IsSupport 返回 true，InitAttr 无可见属性解析；这些函数体不能验证控制语义。kernel 库没有普通符号，动态 executor 已存在。设备指令和 llmConfig 运行时读法仍未解码。
 
-图级候选 `--gdn-convstate reference` 用 concat(old_BCK, qkv_BCT) 的末 K／末 T+K−1 分别表达新状态和卷积输入。导出前要求与同次捕获的两项 golden 逐位相同，限定 B=1、effective_length=T、单 token Decode。其余算子、FP16 状态适配和五项门槛保持；Decode 每次调用还要求历史保留区逐位一致。候选默认关闭，原捕获与失败批次保留；裁剪未使用的控制输入后仍按源参数身份绑定。本地参考、Torch 导出、输入不变、绑定及历史门槛检查通过，目标 AIR／OMC／设备验证尚未运行。它不推定安装算子 ABI，也不保证独立 GDN 的 Prefill 误差一并消失。
+图级候选 `--gdn-convstate reference` 用 concat(old_BCK, qkv_BCT) 的末 K／末 T+K−1 分别表达新状态和卷积输入，限定 B=1、effective_length=T、单 token Decode。其余算子、FP16 状态适配和五项门槛保持；Decode 每次调用还要求历史保留区逐位一致。候选默认关闭，裁剪未使用的控制输入后仍按源参数身份绑定。它不推定安装算子 ABI，也不保证独立 GDN 的 Prefill 误差一并消失。
+
+候选首轮回传 6 FAILED／PARTIAL，均为 golden_padded 校验失败，未进入 TorchAir 导出。已找到与 captured manifest 的 NZ 源码 SHA256 完全相同的本地快照：fc64d3075cc4c13b6e61e3ed3ed47b882e9b2265d32d2a0692804c5aad6567c1。该参考路径按卷积权重类型转换拼接张量，再把状态写回 FP16 缓存；实际卷积输入可为 FP32。旧检查强制 padded 与候选同为 FP16，已用原函数和实际 Capture 钩子在 CPU 复现。修正后 FP16 state 仍逐位检查；FP32 padded 只允许候选无损扩大后与原字节逐位比较，且须绑定实际 conv1d 输入。原 golden、目标图、kernel 和误差门槛均未改。T1/T256、FP16/FP32 卷积输入均通过本地检查；不能被 FP16 表示的微小 FP32 差异仍拒绝。远端六项需重新校验，不能将此本地复现记作目标精度通过。
 
 Prefill recurrent state 与此前独立 GDN 的 44.5964%／26.745%／12.0998% 很接近；Decode 则从独立测试的 0.0683%／0.4292%／0.0648% 增至 20.74%／43.51%／46.27%。这支持先核对整层状态及其上游连接，尚不足以锁定某条内部边。`first_failed_boundary=l00_c00_gdn_layer_all` 指首个失败的整层图，不是已定位的首个内部算子。
 

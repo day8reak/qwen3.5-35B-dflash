@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。host 入口及 GE 枚举已核对，llmConfig 字段仍未知。下一步执行[第 7.7 节：显式 ConvState 对照](#77-显式-convstate-对照)，复用原捕获导出六图；旧 gdn-layer 批次保留。该候选已通过本地检查，尚无目标编译或设备精度结果。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
+**当前整层 GDN FP16 基线仍为 18 项 FAILED。显式 ConvState 候选六图在 golden_padded 校验处停止；已复现并修正参考卷积输入 FP32、候选 FP16 的校验差异。下一步执行[第 7.8 节重试](#78-golden_padded-类型校验失败后的重试)，先检查原捕获，再重新导出；目标精度尚未验证。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -909,7 +909,7 @@ BuildOffChipDataInfo 将 input0／1／2 的描述分别写到 flowtable +0x8／+
 
 新选项 `--gdn-convstate reference` 只用于整层 GDN：将原 ConvState 调用替换为 `concat(old_BCK, qkv_BCT)`，取末 K 个元素为新状态、末 T+K−1 个元素为卷积输入。它保留原五个投影、卷积、GDN 和 norm/out_proj 的串联；不修改 DDK 或 kernel。默认 `kernel` 路径保留。
 
-导出前用捕获的 QKV 和旧状态验证这两个结果与原 golden **逐位一致**，并检查 QKV 正是同次投影输出。仅支持 B=1、effective_length=T 的完整静态调用，Decode 必须 T=1。检查不通过就停止，不能重写 golden 放行。原 FP16 state/g 与 QLinear scale 选项保持。全零 linear_update_tensor 在该候选中不参与计算，编译器可以裁剪此输入，运行时仍按源参数身份绑定。
+导出前用捕获的 QKV 和旧状态验证两项结果：FP16 新状态必须逐位一致；若原 padded 为 FP32，仅将候选 FP16 无损扩大到 FP32 后逐位比较，绝不向下转换原 golden。还检查 QKV 正是同次投影输出、padded 对应捕获的实际卷积输入。仅支持 B=1、effective_length=T 的完整静态调用，Decode 必须 T=1。检查不通过就停止。原 FP16 state/g 与 QLinear scale 选项保持。全零 linear_update_tensor 在该候选中不参与计算，编译器可以裁剪此输入，运行时仍按源参数身份绑定。
 
 **A. 每台主机进入仓库、初始化本组路径。** 各阶段继续使用此前已跑通的导出、编译、上板环境。跨主机传输整个新批次，保留 air/omc 相对位置。下面只创建新的 gdn-layer-convstate 路径；已有相应阶段目录时检查结果并继续下一阶段，不覆盖。
 
@@ -950,7 +950,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 )
 ```
 
-预期 EXPORTED 6/6。每图 export.json 的 convstate_reference_check 两项 equal_bits=true；candidate.convstate_mode=reference；candidate_graph_check.convstate.operator_count=0。源 AIR 还检查实际 concat/slice 路径与 FP16 GDN 状态接口。捕获校验通过只证明参考表达式吻合，不能替代目标计算验证。
+预期 EXPORTED 6/6。每图 export.json 的 convstate_reference_check 两项 equal_bits=true，比较发生在原 captured dtype；FP32 padded 的 comparison_cast=LOSSLESS_FP16_TO_FP32。candidate.convstate_mode=reference；candidate_graph_check.convstate.operator_count=0。源 AIR 还检查实际 concat/slice 路径与 FP16 GDN 状态接口。捕获校验通过只证明输入表达式吻合，不验证卷积或 GDN 的计算精度。
 
 **C. 在原 custom_pypto／DDK 编译环境执行。**
 
@@ -1021,3 +1021,69 @@ cat "$COMPARISON/summary.csv"
 五项门槛、FP16 输出 ABI、十次稳定性继续检查；另对每次 Decode 的 ConvState 前 K−1 槽与输入后 K−1 槽要求逐位一致。report.json 的 invocations 记录 convstate_preserved_history_equal_bits，失败时 CSV 含 convstate_preserved_history_bits。传回本组 comparison/summary.csv 与 report.json 即可对照原 18 项失败。
 
 本地已检查标量参考、signed zero、捕获拒绝条件、Torch 图导出、输入不变、裁剪控制输入后的身份绑定，以及五项数值通过但历史位损坏仍失败。目标 AIR／OMC 与设备结果待执行；此候选没有宣称解决独立 GDN 的五项 Prefill 失败，也未测试跨调用连续状态反馈。
+
+### 7.8 golden_padded 类型校验失败后的重试
+
+六个候选均在校验阶段报 captured golden_padded does not match，尚未进入 TorchAir 导出。已找到与回传 SHA256 完全一致的 NZ 源码：参考更新把拼接结果转为卷积权重 dtype，再写回原 FP16 状态；捕获工具保存的是实际卷积输入的有效后缀。因此 padded 可以是 FP32，而状态仍是 FP16。用户贴出的 CPro 融合注释与当前拼接／截取表达式在值和位置上相符。
+
+旧校验错误地要求两项捕获都为 FP16。本地直接执行哈希匹配的参考 helper，并通过实际 Capture 钩子，复现了该失败。修正只允许 padded 的 FP16→FP32 无损比较；原 FP32 中任何不一致的位仍失败，未降低精度门槛，未改 captured 数据、目标图或 kernel。远端六项是否仅此原因，由下面第一步逐项确认；仍失败时错误会给出两端 shape/dtype 和比较转换方式。
+
+在刚才导出失败的主机执行以下命令。它先校验全部六项，再确认旧 air 中只有本次失败的日志及 export.json，保存失败摘要后释放同一 air 槽位。已导出的 AIR、有其他产物或仍有活动进程时拒绝清理；原 gdn-layer 批次和 golden-capture 保留。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export GOLDEN_CAPTURE="${GOLDEN_CAPTURE:-$AI_RUN_DIR/target/tests/golden-capture}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer-convstate"
+export BATCH="$BATCH_ROOT/air"
+export PYTHONDONTWRITEBYTECODE=1
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python - <<'PY_RETRY'
+import fcntl, json, os, shutil
+from pathlib import Path
+from qwen35_moe_dflash.execution.run_layout import _active_processes
+from qwen35_moe_dflash.target.layer_probe.common import sha
+from qwen35_moe_dflash.target.layer_probe.whole_gdn import assemble
+from qwen35_moe_dflash.target.layer_probe.convstate_reference import validate_capture
+
+capture = Path(os.environ['GOLDEN_CAPTURE']).resolve()
+manifest = json.loads((capture/'manifest.json').read_text())
+records = assemble(manifest)
+expected = {f'l{l:02d}_c{c:02d}_gdn_layer_all' for l in range(3) for c in range(2)}
+if (manifest.get('status') != 'CAPTURED' or len(records) != 6
+        or {r['id']+'_all' for r in records} != expected):
+    raise SystemExit('需要原 L0–L2 Prefill/Decode 六项捕获')
+for r in records:
+    check = validate_capture(r, capture)
+    print(r['id'], check['status'], json.dumps(check['checks']), flush=True)
+run = Path(os.environ['AI_RUN_DIR']).resolve()
+root = Path(os.environ['BATCH_ROOT']).absolute()
+if root.is_symlink() or root.resolve() != run/'target/tests/gdn-layer-convstate':
+    raise SystemExit('只处理本组固定路径')
+with (root/'.omc.lock').open('a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if _active_processes(root) or any((root/n).exists() for n in ('omc','execution','recovery','comparison')):
+        raise SystemExit('已有后续产物或活动进程，保留 air')
+    air = root/'air'
+    if air.is_symlink() or any(p.is_symlink() for p in air.rglob('*')):
+        raise SystemExit('不清理符号链接')
+    m = json.loads((air/'manifest.json').read_text())
+    if (m.get('status') != 'PARTIAL' or len(m.get('cases', [])) != 6
+            or {r['id'] for r in m['cases']} != expected
+            or m.get('candidate_options', {}).get('gdn_convstate') != 'reference'
+            or m.get('capture_sha256') != sha(capture/'manifest.json')
+            or any(r['status'] != 'FAILED' or 'captured golden_padded does not match' not in r.get('error','')
+                   for r in m['cases'])):
+        raise SystemExit('不是本次全部六项 padded 校验失败的批次')
+    allowed = {'manifest.json'} | {n+'.log' for n in expected} | {'models/'+n+'/export.json' for n in expected}
+    allowed_dirs = {'models'} | {'models/'+n for n in expected}
+    if any(p.relative_to(air).as_posix() not in (allowed_dirs if p.is_dir() else allowed)
+           for p in air.rglob('*')):
+        raise SystemExit('air 内还有其他产物，保留原目录')
+    (root/'padded-validation-failure.json').write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n')
+    shutil.rmtree(air)
+print('六项捕获校验通过；仅本次失败 air 已释放，可以按第 7.7 节 B 重新导出')
+PY_RETRY
+```
+
+看到最后一行后，使用原导出环境和参数执行第 7.7 节 B；成功后继续 C–E。无需重采 golden，也不重复 DDK 反汇编。新 export.json 会保留候选 dtype、captured dtype、comparison_cast 和逐位检查结果。

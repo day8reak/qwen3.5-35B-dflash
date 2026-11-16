@@ -360,14 +360,14 @@
   },
   "reference_convstate_candidate": {
     "date": "2026-11-16",
-    "status": "LOCAL_CHECKS_PASSED; TARGET_PENDING",
+    "status": "FIRST_EXPORT_6_FAILED_AT_CAPTURE_GUARD; PADDED_DTYPE_FIX_LOCALLY_VERIFIED; RETRY_PENDING",
     "option": "--gdn-convstate reference",
     "default": "kernel",
     "implementation": "model/qwen35_moe_dflash/target/layer_probe/convstate_reference.py",
     "batch_directory": "target/tests/gdn-layer-convstate",
     "scope": "WHOLE_GDN_GRAPH_ADAPTATION; NO_OPERATOR_KERNEL_CHANGE",
     "reference_rule": "CONCAT_OLD_BCK_QKV_BCT; LAST_K_STATE; LAST_T_PLUS_K_MINUS_1_CONV_INPUT",
-    "capture_gate": "SAME_EXECUTED_QKV; ORIGINAL_STATE_AND_PADDED_GOLDENS_EQUAL_BITS",
+    "capture_gate": "SAME_EXECUTED_QKV_AND_CONV_INPUT; FP16_STATE_EQUAL_BITS; PADDED_EQUAL_BITS_IN_CAPTURE_DTYPE_WITH_ONLY_LOSSLESS_FP16_TO_FP32_CANDIDATE_WIDENING",
     "supported_calls": "BATCH1; EFFECTIVE_LENGTH_EQUALS_T; ONE_TOKEN_DECODE",
     "control_policy": "LINEAR_UPDATE_TENSOR_UNUSED; PRUNING_ALLOWED_WITH_IDENTITY_BINDING",
     "comparison": "ORIGINAL_FIVE_METRICS_AND_TEN_RUN_STABILITY; DECODE_RETAINED_HISTORY_EXACT_BITS",
@@ -391,5 +391,29 @@
     "device_execution": "NOT_RUN",
     "numerical_validation": "NOT_RUN_ON_TARGET",
     "continuous_state_feedback": "NOT_TESTED"
+  },
+  "reference_convstate_padded_guard_failure": {
+    "date": "2026-11-16",
+    "evidence_source": "USER_PASTED_SIX_EXPORT_FAILURES_AND_LOCAL_HASH_MATCHED_PRIVATE_SOURCE",
+    "capture_manifest_sha256": "fc30fa5a029b5d69bf51522b4464afcd92a89612d62e4ac7416d6471342b9a08",
+    "reference_source_sha256": "fc64d3075cc4c13b6e61e3ed3ed47b882e9b2265d32d2a0692804c5aad6567c1",
+    "export_status": "PARTIAL; 6_FAILED",
+    "error": "ValueError: captured golden_padded does not match reference concat/tail bytes; keep original golden",
+    "stage": "CAPTURE_CONTRACT_BEFORE_TORCHAIR_EXPORT",
+    "source_observation": "REFERENCE_CONCAT_CASTS_TO_CONV_WEIGHT_DTYPE; STATE_COPY_RETAINS_CACHE_DTYPE; CAPTURE_READS_EXECUTED_CONV_INPUT_SUFFIX",
+    "local_reproduction": "HASH_MATCHED_REFERENCE_HELPER_WITH_REAL_CAPTURE_HOOK; FP16_STATE_AND_FP32_PADDED_FAIL_OLD_SAME_DTYPE_GUARD",
+    "fix": "ONLY_WIDEN_CANDIDATE_PADDED_FP16_TO_FP32_FOR_BIT_COMPARISON; NO_GOLDEN_DOWNCAST; VERIFY_CAPTURED_CONV_INPUT_BINDING",
+    "local_checks": [
+      "T1_T256_WITH_FP16_AND_FP32_CONV_WEIGHTS",
+      "OLD_GUARD_FAILURE_REPRODUCED_FOR_FP32_PADDED",
+      "ORIGINAL_CAPTURE_BYTES_UNCHANGED",
+      "FP32_ONE_BIT_CHANGE_BELOW_FP16_RESOLUTION_REJECTED",
+      "PADDED_TO_CONV_INPUT_BINDING_MISMATCH_REJECTED"
+    ],
+    "remote_capture_values_and_dtypes": "AWAIT_RETRY_PRECHECK; NOT_READ_LOCALLY",
+    "target_graph_change_in_this_fix": false,
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN_ON_TARGET"
   }
 }
