@@ -633,7 +633,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-gdn-output \
 cat "$INSPECTION/conv-layout-summary.txt"
 ```
 
-**B. 在编译主机读取当前 DDK 的 ConvState 文本定义。** 这是状态更新算子的控制／布局检查，区别于已完成的 GDN FP16 注册检查。只搜索所选 DDK 的 ddk、tools、include 文本目录，不执行编译器或修改安装。优先使用 rg，未安装时使用 grep；可与 A 在同一主机顺序执行。旧命令在没有 rg 时会因 set -e 静默退出，随后 cat 报文件不存在；这不表示没有找到算子。以下命令显式记录搜索工具、根目录及失败原因。
+**B. 在编译主机读取当前 DDK 的 ConvState 文本定义。** 这是状态更新算子的控制／布局检查，区别于已完成的 GDN FP16 注册检查。只搜索所选 DDK 的 ddk、tools、include 文本目录，不执行编译器或修改安装。优先使用 rg，未安装时使用 grep。旧命令在没有 rg 时会因 set -e 静默退出，随后 cat 报文件不存在；这不表示没有找到算子。以下命令显式记录搜索工具、根目录及失败原因，文本结果直接保存到 BATCH_ROOT，避免提前创建 A 需要的新输出目录。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
@@ -642,9 +642,9 @@ export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
 (
 set -e
 : "${CPRO_DDK_ROOT:?沿用编译这六图的 DDK 根目录}"
-mkdir -p "$BATCH_ROOT/convstate-inspection"
-ddk_search_output="$BATCH_ROOT/convstate-inspection/ddk-convstate.txt"
-ddk_search_errors="$BATCH_ROOT/convstate-inspection/ddk-search-errors.txt"
+mkdir -p "$BATCH_ROOT"
+ddk_search_output="$BATCH_ROOT/ddk-convstate.txt"
+ddk_search_errors="$BATCH_ROOT/ddk-search-errors.txt"
 printf 'DDK_ROOT=%s\n' "$CPRO_DDK_ROOT" > "$ddk_search_output"
 : > "$ddk_search_errors"
 if test ! -d "$CPRO_DDK_ROOT"; then
@@ -694,4 +694,4 @@ cat "$ddk_search_output"
 
 回传 conv-layout-summary.txt 和 ddk-convstate.txt。如果 DDK 只有接口／shape 声明，还需要 LinearAttentionConvstateUpdate 的实现或 llmConfig[128] 字段定义；不能把零占位直接猜改为某个长度。源码中的候选声明也不单独证明编译后采用的实现。
 
-当前 AIR／OMC、execution、recovery 和 comparison 均继续使用。A 的目录若已存在，直接读取已生成的报告。跨主机时先完成 A，再把 B 的两个文本结果放在对应诊断目录；没有新增导出、编译或上板任务。
+当前 AIR／OMC、execution、recovery 和 comparison 均继续使用。A 的目录若已存在，直接读取已生成的报告。A、B 可独立执行；跨主机时分别回传各自结果。B 的结果为 BATCH_ROOT/ddk-convstate.txt 和 BATCH_ROOT/ddk-search-errors.txt，没有新增导出、编译或上板任务。
