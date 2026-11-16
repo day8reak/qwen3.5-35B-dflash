@@ -444,5 +444,36 @@
     "model_compilation": "NOT_RUN",
     "device_execution": "NOT_RUN",
     "numerical_validation": "NOT_RUN_ON_TARGET"
+  },
+  "reference_convstate_result": {
+    "date": "2026-11-16",
+    "evidence_source": "USER_PASTED_COMPARISON_CSV",
+    "local_artifact_binding": "NOT_REVERIFIED",
+    "metrics_csv": "target-gdn-layer-convstate-metrics.csv",
+    "status": "FAILED",
+    "first_failed_boundary": "l00_c00_gdn_layer_all",
+    "cases": 6,
+    "outputs": 18,
+    "passed": 11,
+    "failed": 7,
+    "all_reported_stable": true,
+    "prefill": {
+      "passed": 3,
+      "failed": 6
+    },
+    "decode": {
+      "passed": 8,
+      "failed": 1
+    },
+    "convstate_passed": 6,
+    "decode_state_passed": 3,
+    "remaining_decode_failure": "L1_HIDDEN_RELATIVE_L2_0.07415819769723102",
+    "prefill_hidden_and_state_metrics": "SIX_ROWS_IDENTICAL_TO_BASELINE_METRICS; NOT_BYTE_EQUALITY_PROOF",
+    "model_compilation": "COMPLETED_USER_REPORTED",
+    "device_execution": "COMPLETED_USER_REPORTED",
+    "continuous_state_feedback": "NOT_TESTED",
+    "full_model_40_layers": "NOT_RUN",
+    "performance": "NOT_PROVIDED",
+    "next_scope": "ORIGINAL_40_LAYERS_PREFILL_AND_DECODE"
   }
 }

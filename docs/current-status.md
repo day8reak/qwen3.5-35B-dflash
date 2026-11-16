@@ -1,15 +1,11 @@
-# 当前阶段：整层 GDN FP32 state 与 Attention Prefill 调用检查
+# 当前阶段：40 层 Prefill／Decode 集成准备
 
-更新：2026-11-13；GDN 相邻独立边界已回传 48 项五指标，43 PASSED、5 FAILED。其余模块保留 2026-11-12 最近结果。**RoPE Prefill／Decode 的 Q/K 四项全部数值对齐**：整输出及前 64 维旋转区、后 192 维未旋转区均零误差，FP16 输出且重复稳定。保留显式 FP32 旋转乘加、最后恢复输出类型的改动；不是重新计算 sin/cos。原始 METRICS_RECORDED 状态保留。
+更新：2026-11-16。显式 ConvState 整层 GDN 六图：**11 PASSED / 7 FAILED，18 项全部重复稳定**。ConvState 6/6 通过；Decode 8/9 通过，仅 L1 hidden 的 relative-L2=7.41582% 超限。Prefill 3/9 通过，hidden 与 recurrent state 的六组已报告指标与旧基线相同。
 
-**QuantBatchMatmul 保留的改动**：weight scale 在导出前真实转 FP16；per-token scale 在 PyTorch 前端保留 FP32，通过 meta 后在 GE 边界 Reshape 为 [M] 并 Cast FP16。packed W4 不变。38 项 QLinear 已有适配后数值，8 项量化 out_proj 曾按旧 relative-L2 <2% 口径通过。当前 CPro / CHS 统一五项标准：cosine >0.99、relative-L2 <0.05、KL <0.005、RMSE <1、MeanRelativeError <1；全部满足才通过，Cache 仍要求逐位一致。历史缺项仅用已有 dump 补算，不重编／上板。[改动位置、结果与集成要求](target-accuracy-status.md)。
+保留有效适配：显式 concat／tail ConvState、单高度 Conv2d、FP32 RoPE 旋转后恢复输出 dtype、QLinear weight scale FP16 与 GE per-token reshape／FP16 cast，以及 GDN FP16 状态接口。已生成供私有源码使用的 patch；本地主机检查通过，未执行这份整模 patch 的目标编译或上板。
 
-当前新增 **整层 GatedDeltaNet**（含投影、卷积、门控、norm、out_proj），将 initial_state、last_recurrent_state 和层内 writeback 设为 FP32，分别输出 hidden、conv state、recurrent state。L0–L2 Prefill／Decode 六图加 L3 Attention 两图，共 **8 张图、20 个输出**。[当前测试命令](target-batch-rerun.md)已更新；此组只有本地准备与 CPU 检查，没有新设备数值。
+Attention Prefill／Decode 对独立数学参考的五项已通过，relative-L2 为 0.11175%／0.11438%；原 Prefill 捕获参考有误。RoPE 四项零误差。GDN 相邻独立边界仍为 43/48 通过；Cache Prefill 4/4 逐位通过、Decode 4/4 失败。QLinear 38 项已有适配后数值，历史缺五项指标的记录不升级为五项通过。
 
-独立边界五项失败均在 Prefill GDN：L0/L1 core、L0–L2 raw state；Decode 数值均通过，但六个 raw state 的 dtype 不保持。不能只凭类型不同断定全部误差由 FP16 引起。新整层图保留原输入数值与 golden，在层内真实串联；不包含跨图状态反馈。
+用户确认下一步跑原模型 40 层，包含 MoE、输出头和状态反馈；精度、可运行性、性能分别验收。先使用 B=1、有效长度等于静态长度的 Prefill 和单 token Decode；部分 padding 的 ConvState 更新未覆盖。新图必须重新读取编译 ABI，不能沿用旧输入槽位。40 层的 golden、设备精度和时延仍待取得，旧四层捕获不替代整模参考。
 
-Attention 算子暂不修改。已核对源码全图 Q `[1,256,64,16]`、捕获小图 Q `[1,256,256,16]` 均为多行；导出新增 INT64 `Const([S])` 查询长度检查。用户确认源码 querySeqStep=16，因此两组 Prefill 按源码均应走 mActual=16，无需再改调用来切换分支；下一步核对实际 tiling 总任务数分别为 64、256，不能把漏任务当成误走 Decode。Attention Prefill（99.67%）、MoE／LM head 和完整末态仍待验证。ConvState 12 项小图编译失败不等于整图必然不能编译，旧四层 T64 整图已有成功编译记录。
-
-[交互 HTML](assets/target-architecture-interactive.html)统一显示各模块最新结果：QLinear 38 项、Cache 8 项、RoPE 4 项、其他边界 100 项，共 150 项。RoPE 的旧偏差已替换为零误差，未复测模块保留最近实测值。用户回传清单尚未在本地核验执行文件绑定；独立边界对齐不等于整图精度通过。
-
-已对齐的 RoPE、已通过的 Prefill Cache 和 QLinear 不再复跑。Decode Cache 四项仍失败，K/V relative-L2 99.8086%／99.6897%，历史保留问题暂后处理；不影响先单独推进初始空缓存 Prefill，但仍阻塞后续生成。[Cache 原因分析](target-accuracy-status.md#decode-cache-原因分析)。Draft 保留约 60 ms 的既有测量基线，性能实验暂停；计时口径见[结果](results.md)。
+[详细结果](target-accuracy-status.md) · [交互 HTML](assets/target-architecture-interactive.html) · [完整流程](run-end-to-end.md) · [已完成的小图命令](target-batch-rerun.md)

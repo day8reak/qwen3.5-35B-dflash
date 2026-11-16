@@ -70,6 +70,10 @@ PENDING只回收同一请求；不得重复启动。上述公开位置是模型�
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 
+2026-11-16 当前候选：先在私有 Target 工程应用本地交付的 `qwen35-cpro-full-model-adaptations.patch`，再执行本节准备。Patch 包含 modeling、实际 QLinear 工厂和导出器的配套适配，CPro 使用 A8W4（`quant_bits=4`）。私有源码和 patch 不上传本仓库。已回传的显式 ConvState 整层结果为 11/18 通过，见[结果](target-accuracy-status.md#显式-convstate-最新结果)；这份 40 层集成尚未上板。
+
+首次采用 B=1、有效长度为 64 的 Prefill 和有效长度为 1 的 Decode。部分 padding 的 ConvState 更新尚未验证；不能把 exporter 的零值 tracing 控制量原样当作运行输入。新图可能裁剪未使用的 `linear_update_tensor`，应重新生成实际输入绑定和状态映射。原 4 层捕获不是 40 层 golden，原 Prefill Attention 参考错误也需处理后再验证下游。完整精度、连续状态反馈和加载／推理时延分别记录，尚未提供这轮完整运行数据。
+
 分别导出40层静态64和静态1，将输出规范化为logits、80路状态和Target features。原始导出使用TorchAir，编译使用指定DDK。公共AIR目录统一为`air/export.air`＋`air/weight/`；同步改写AIR的权重路径，同盘移动导出产物，不再复制一份大权重。
 
 ```bash

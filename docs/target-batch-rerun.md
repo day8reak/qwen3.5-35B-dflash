@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN FP16 基线仍为 18 项 FAILED。显式 ConvState 候选六图已越过 golden_padded 校验，最新失败为 Dynamo 找不到注入的 helper；已本地复现并修正函数绑定。下一步执行[第 7.8 节重试](#78-reference-convstate-导出失败后的重试)，复用原捕获重新导出；目标精度尚未验证。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
+**显式 ConvState 整层 GDN 六图：11 PASSED / 7 FAILED，18 项全部重复稳定。ConvState 6/6 通过；Decode 8/9 通过，仅 L1 hidden 的 relative-L2=7.41582% 超限。Prefill 3/9 通过，hidden 与 recurrent state 的六组已报告指标与旧基线相同。 当前进入原模型 40 层 Prefill／Decode 集成准备；第 7.8 节为此前导出修复命令，不需要因这次结果重复执行。** 结果与未解决项见[精度状态](target-accuracy-status.md)，整模准备见[完整流程](run-end-to-end.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -15,7 +15,7 @@ GDN 包含五个 QLinear、ConvState、卷积、SiLU、g/beta、Q/K 重复、Chu
 
 Attention 沿用捕获 Q/K/V、mask、block_table 和长度参数，新增 Q 轴、Q 长度常量字节与 allQLen 传递检查。当前范围为 B=1 静态图。Q 为 `[B, heads×D/16, S, 16]`，序列轴是 2；旧捕获 Prefill S256、Decode S1。源码全图 S64 对应 `[1,256,64,16]`，旧捕获小图对应 `[1,256,256,16]`；两者均没有把 Prefill Q 变成 1。新采集的 S 以实际 manifest 为准，不为了复现旧长度补齐或截断输入。`allQLen` 单独记录，不能强制等于当前 Q 长度；它在用户提供的内核中控制 KV 块循环。实际 tiling 和完整生产图仍需编译产物核对。
 
-每张图每次都使用捕获输入；整层 GDN 包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。48 个 GDN 独立边界已回传 43 PASS / 5 FAIL，整层 GDN 当前 18 个输出全部失败。L0–L2 的独立函数测试可以继续复用捕获；L3 Prefill Attention 下游的整图 golden 需要参考路径修复后重建。
+每张图每次都使用捕获输入；整层 GDN 包含层内误差传递，仍不包含跨图连续 Prefill→Decode 状态反馈。48 个 GDN 独立边界已回传 43 PASS / 5 FAIL，显式 ConvState 整层 GDN 最新为 11/18 通过。L0–L2 的独立函数测试可以继续复用捕获；L3 Prefill Attention 下游的整图 golden 需要参考路径修复后重建。
 
 ## 1. 初始化路径
 

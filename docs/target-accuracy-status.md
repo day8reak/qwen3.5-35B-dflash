@@ -1,10 +1,28 @@
 # Target 精度状态
 
-阶段与标准更新：2026-11-16；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求因末态 ABI 为 FP16 在准备阶段拦截；用户选择 FP16 后六图已执行，18 个输出均未通过精度门槛。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
+阶段与标准更新：2026-11-16；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求因末态 ABI 为 FP16 在准备阶段拦截；用户选择 FP16 后的旧基线 18 项均失败；显式 ConvState 候选最新为 11 通过、7 失败。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
-2026-11-16 最新设备结果：整层 GDN 六图、18 个输出为 **0 PASSED / 18 FAILED，全部 stable=True**。Prefill 三图 ConvState 全零、10 次均与旧输入逐位相等；Decode 的三种输出序列化假设均未恢复历史保留关系。host 入口及安装 GE 枚举已核对，llmConfig 字段和完整状态布局仍未知。显式 ConvState 候选六项已越过 padded 校验，最新失败为 Dynamo 找不到 helper；已复现并修正函数绑定，下一步按[第 7.8 节](target-batch-rerun.md#78-reference-convstate-导出失败后的重试)复用原捕获重新导出。尚无候选目标编译或设备结果。
+## 显式 ConvState 最新结果
 
-## 整层 GDN FP16 最新结果
+显式 ConvState 整层 GDN 六图：**11 PASSED / 7 FAILED，18 项全部重复稳定**。ConvState 6/6 通过；Decode 8/9 通过，仅 L1 hidden 的 relative-L2=7.41582% 超限。Prefill 3/9 通过，hidden 与 recurrent state 的六组已报告指标与旧基线相同。
+
+原始 18 行见[显式 ConvState 指标 CSV](../specs/target-gdn-layer-convstate-metrics.csv)。来源为用户回传的 comparison/summary.csv；本地未重新核验远端原始张量和执行文件绑定。下表百分比为 relative-L2 × 100，判定使用未舍入的五项指标。
+
+| 层／阶段 | hidden L2／判定 | ConvState L2／判定 | recurrent state L2／判定 |
+| --- | ---: | ---: | ---: |
+| L0 Prefill | 28.86654% / 失败 | 0.08576% / 通过 | 44.56857% / 失败 |
+| L1 Prefill | 51.32772% / 失败 | 0.11485% / 通过 | 26.78495% / 失败 |
+| L2 Prefill | 55.01842% / 失败 | 0.13210% / 通过 | 12.11996% / 失败 |
+| L0 Decode | 4.26827% / 通过 | 0.03542% / 通过 | 0.09830% / 通过 |
+| L1 Decode | 7.41582% / 失败 | 0.04823% / 通过 | 0.83278% / 通过 |
+| L2 Decode | 4.74855% / 通过 | 0.05272% / 通过 | 0.32468% / 通过 |
+
+六个 recurrent state 的 dtype_preserved=False 对应已选 FP16 输出与原 FP32 golden；三项 Decode state 的五指标均通过。相同误差指标不证明 Prefill 输出字节相同。此批只做捕获输入重放，没有连续 CPro Prefill→Decode 状态反馈，也没有性能数据。
+
+下一阶段按用户确认执行**原模型 40 层** Prefill／Decode，包含 MoE 和输出头。将已验证的 ConvState 表达、单高度 Conv2d、FP32 RoPE 和 QLinear／GDN 的导出 dtype 适配迁入私有项目；patch 本地交付，不上传私有源码。完整模型精度与性能分别记录，现有 4 层捕获不能作为 40 层 golden。Prefill GDN、L1 Decode hidden 和 Decode CacheUpdate 的未解决项继续保留。
+
+## 整层 GDN FP16 旧基线
+
 
 原始 18 行见[整层 GDN 指标 CSV](../specs/target-gdn-layer-metrics.csv)，来源为用户回传 summary.csv，本地未重新核验远端文件绑定。下表 L2 已乘 100 转成百分比；每行三个输出均未通过五项门槛，不能以重复稳定替代精度通过。
 
@@ -33,11 +51,11 @@ DDK 二进制定位已取得更强证据：libgraph_host.so 含 GE 注册及 Ver
 
 图级候选 `--gdn-convstate reference` 用 concat(old_BCK, qkv_BCT) 的末 K／末 T+K−1 分别表达新状态和卷积输入，限定 B=1、effective_length=T、单 token Decode。其余算子、FP16 状态适配和五项门槛保持；Decode 每次调用还要求历史保留区逐位一致。候选默认关闭，裁剪未使用的控制输入后仍按源参数身份绑定。它不推定安装算子 ABI，也不保证独立 GDN 的 Prefill 误差一并消失。
 
-候选首轮 golden_padded 校验失败已修正。与 captured manifest 哈希一致的 NZ 参考会按卷积权重类型转换拼接张量，再写回 FP16 状态；padded 可为 FP32。检查现允许候选无损升为 FP32 后逐位比较，并绑定实际 conv1d 输入；任何低位差异仍拒绝，原 golden 不变。最新六项均越过该校验，在 Dynamo 阶段报原 CPro 模块没有 _probe_convstate_reference 属性。
+候选首轮 golden_padded 校验失败已修正。与 captured manifest 哈希一致的 NZ 参考会按卷积权重类型转换拼接张量，再写回 FP16 状态；padded 可为 FP32。检查现允许候选无损升为 FP32 后逐位比较，并绑定实际 conv1d 输入；任何低位差异仍拒绝，原 golden 不变。修复前六项越过该校验后，在 Dynamo 阶段报原 CPro 模块没有 _probe_convstate_reference 属性。
 
-该 helper 原来只注入复制的 globals，Dynamo guard 却从函数所属的原模块解析它。已改为 forward 内局部导入真实模块中的 helper，不污染原模块。CPU 上用私有 CPro 原 forward、合成小权重和 NPU 占位实现复现完全相同错误；修复后 reference/kernel × FP16/FP32 状态 × T1/T256 共八组通过 Dynamo ATen 导出，以及每组两次调用的 fullgraph 捕获。三项输出与 eager 数值完全一致，源文件和输入不变。此检查验证前端函数绑定，实际 TorchAir/GE、DDK 编译和设备数值仍待[重试](target-batch-rerun.md#78-reference-convstate-导出失败后的重试)。
+该 helper 原来只注入复制的 globals，Dynamo guard 却从函数所属的原模块解析它。已改为 forward 内局部导入真实模块中的 helper，不污染原模块。CPU 上用私有 CPro 原 forward、合成小权重和 NPU 占位实现复现完全相同错误；修复后 reference/kernel × FP16/FP32 状态 × T1/T256 共八组通过 Dynamo ATen 导出，以及每组两次调用的 fullgraph 捕获。三项输出与 eager 数值完全一致，源文件和输入不变。此检查只验证前端函数绑定；随后用户完成目标执行并回传上方显式 ConvState 的 18 项结果。
 
-Prefill recurrent state 与此前独立 GDN 的 44.5964%／26.745%／12.0998% 很接近；Decode 则从独立测试的 0.0683%／0.4292%／0.0648% 增至 20.74%／43.51%／46.27%。这支持先核对整层状态及其上游连接，尚不足以锁定某条内部边。`first_failed_boundary=l00_c00_gdn_layer_all` 指首个失败的整层图，不是已定位的首个内部算子。
+旧基线 Prefill recurrent state 与此前独立 GDN 的 44.5964%／26.745%／12.0998% 很接近；Decode 则从独立测试的 0.0683%／0.4292%／0.0648% 增至 20.74%／43.51%／46.27%。这支持先核对整层状态及其上游连接，尚不足以锁定某条内部边。`first_failed_boundary=l00_c00_gdn_layer_all` 指首个失败的整层图，不是已定位的首个内部算子。
 
 六个 recurrent state 的 dtype_preserved=False 是已选择的 FP16 实际输出与原 FP32 golden 的差别；本次失败来自列出的数值指标。初态、门控和输出的半精度适配不构成精度通过证明，连续 Prefill→Decode 状态反馈仍未测试。
 
