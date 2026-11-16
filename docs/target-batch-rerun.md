@@ -633,7 +633,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-gdn-output \
 cat "$INSPECTION/conv-layout-summary.txt"
 ```
 
-**B. 在编译主机读取当前 DDK 的 ConvState 文本定义。** 这是状态更新算子的控制／布局检查，区别于已完成的 GDN FP16 注册检查。只搜索所选 DDK 的 ddk、tools、include 文本目录，不执行编译器或修改安装。需要 rg；可与 A 在同一主机顺序执行。
+**B. 在编译主机读取当前 DDK 的 ConvState 文本定义。** 这是状态更新算子的控制／布局检查，区别于已完成的 GDN FP16 注册检查。只搜索所选 DDK 的 ddk、tools、include 文本目录，不执行编译器或修改安装。优先使用 rg，未安装时使用 grep；可与 A 在同一主机顺序执行。旧命令在没有 rg 时会因 set -e 静默退出，随后 cat 报文件不存在；这不表示没有找到算子。以下命令显式记录搜索工具、根目录及失败原因。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
@@ -642,30 +642,54 @@ export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
 (
 set -e
 : "${CPRO_DDK_ROOT:?沿用编译这六图的 DDK 根目录}"
-command -v rg >/dev/null
 mkdir -p "$BATCH_ROOT/convstate-inspection"
+ddk_search_output="$BATCH_ROOT/convstate-inspection/ddk-convstate.txt"
+ddk_search_errors="$BATCH_ROOT/convstate-inspection/ddk-search-errors.txt"
+printf 'DDK_ROOT=%s\n' "$CPRO_DDK_ROOT" > "$ddk_search_output"
+: > "$ddk_search_errors"
+if test ! -d "$CPRO_DDK_ROOT"; then
+  echo '错误：CPRO_DDK_ROOT 目录不存在，请改为本机实际 DDK 根目录。' | tee -a "$ddk_search_output"
+  exit 2
+fi
 ddk_text_roots=()
 for part in ddk tools include; do
   if test -d "$CPRO_DDK_ROOT/$part"; then
     ddk_text_roots+=("$CPRO_DDK_ROOT/$part")
+  else
+    printf '跳过不存在的候选目录：%s\n' "$CPRO_DDK_ROOT/$part" >> "$ddk_search_output"
   fi
 done
-test "${#ddk_text_roots[@]}" -gt 0
+if test "${#ddk_text_roots[@]}" -eq 0; then
+  echo '错误：DDK 根目录下没有 ddk、tools 或 include，请核对 CPRO_DDK_ROOT 的目录层级。' | tee -a "$ddk_search_output"
+  exit 2
+fi
+if command -v rg >/dev/null 2>&1; then
+  search_cmd=(rg -n -i -C 12 --max-filesize 4M --max-columns 400 --max-columns-preview
+    --glob '*.{cpp,c,cc,h,hpp,py,json,ini}')
+elif command -v grep >/dev/null 2>&1; then
+  search_cmd=(grep -r -n -i -I -E -C 12
+    --include='*.cpp' --include='*.c' --include='*.cc' --include='*.h'
+    --include='*.hpp' --include='*.py' --include='*.json' --include='*.ini')
+else
+  echo '错误：rg 和 grep 均不可用，尚未执行搜索。' | tee -a "$ddk_search_output"
+  exit 2
+fi
+printf 'SEARCH_TOOL=%s\n' "${search_cmd[0]}" >> "$ddk_search_output"
+printf '正在使用 %s 搜索 ConvState 文本定义……\n' "${search_cmd[0]}"
 search_rc=0
-rg -n -i -C 12 --max-filesize 4M --max-columns 400 --max-columns-preview \
-  --glob '*.{cpp,c,cc,h,hpp,py,json,ini}' \
+"${search_cmd[@]}" \
   'LinearAttentionConvstateUpdate|linear_attention_convstate_update' \
   "${ddk_text_roots[@]}" \
-  > "$BATCH_ROOT/convstate-inspection/ddk-convstate.txt" \
-  2> "$BATCH_ROOT/convstate-inspection/ddk-search-errors.txt" || search_rc=$?
+  >> "$ddk_search_output" 2> "$ddk_search_errors" || search_rc=$?
 if test "$search_rc" -eq 1; then
-  echo '未找到匹配文本；不能据此断言算子不存在。' > "$BATCH_ROOT/convstate-inspection/ddk-convstate.txt"
+  echo '未找到匹配文本；不能据此断言算子不存在。' >> "$ddk_search_output"
 elif test "$search_rc" -ne 0; then
-  cat "$BATCH_ROOT/convstate-inspection/ddk-search-errors.txt"
+  printf '搜索失败，退出码=%s\n' "$search_rc" | tee -a "$ddk_search_output"
+  cat "$ddk_search_errors"
   exit "$search_rc"
 fi
+cat "$ddk_search_output"
 )
-cat "$BATCH_ROOT/convstate-inspection/ddk-convstate.txt"
 ```
 
 回传 conv-layout-summary.txt 和 ddk-convstate.txt。如果 DDK 只有接口／shape 声明，还需要 LinearAttentionConvstateUpdate 的实现或 llmConfig[128] 字段定义；不能把零占位直接猜改为某个长度。源码中的候选声明也不单独证明编译后采用的实现。
