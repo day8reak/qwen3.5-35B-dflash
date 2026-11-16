@@ -41,9 +41,10 @@ def export_variants(region, cache_indexing):
 
 def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None, phases=None,
                  timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel',
-                 rope_precision='source', gdn_state_dtype='source'):
+                 rope_precision='source', gdn_state_dtype='source', gdn_convstate='kernel'):
     if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both')
-            or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')):
+            or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')
+            or gdn_convstate not in ('kernel', 'reference')):
         raise ValueError('unknown module candidate')
     if phases is not None and (not phases or set(phases) - {'prefill', 'decode'}):
         raise ValueError('select prefill and/or decode phases')
@@ -60,6 +61,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                and (phases is None or r['phase'] in phases)]
     if not regions:
         raise ValueError('no matching captured regions')
+    if gdn_convstate != 'kernel' and any(r['kind'] != 'gdn_layer' for r in regions):
+        raise ValueError('--gdn-convstate reference requires only whole gdn_layer regions')
     if points and set(points) - {r['point'] for r in regions}:
         raise ValueError('requested point is missing from capture')
     if phases is not None and set(phases) - {r['phase'] for r in regions}:
@@ -79,7 +82,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         reference_baseline_equivalence=source.get('quant_matmul', {}).get('baseline_equivalence', 'ORIGINAL_CALL_UNCHANGED'),
         reference_model_layers=source.get('placement', {}).get('executed_num_hidden_layers'))
     report['candidate_options'] = dict(qlinear_scales=qlinear_scales, cache_indexing=cache_indexing,
-        rope_precision=rope_precision, gdn_state_dtype=gdn_state_dtype, reference='ORIGINAL_CAPTURE_UNCHANGED')
+        rope_precision=rope_precision, gdn_state_dtype=gdn_state_dtype, gdn_convstate=gdn_convstate,
+        reference='ORIGINAL_CAPTURE_UNCHANGED')
     report['selected_phases'] = sorted({r['phase'] for r in regions})
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
@@ -103,6 +107,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 row['output_names'] = [s['name'] for s in region['outputs']]
             if gdn_state_dtype != 'source':
                 argv += ['--gdn-state-dtype', gdn_state_dtype]
+            if gdn_convstate != 'kernel':
+                argv += ['--gdn-convstate', gdn_convstate]
             if qlinear_scales != 'source':
                 argv += ['--qlinear-scales', qlinear_scales]
             if mode != 'kernel':
@@ -345,6 +351,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
             model=_file_record(model, name+'/model.omc'), graphop_counts=observed['graphop_counts']))
         if state_contract:
             cases[-1]['compiled_state_contract'] = state_contract
+            cases[-1]['convstate_mode'] = exported.get('candidate', {}).get('convstate_mode', 'kernel')
         if 'attention_contract' in exported:
             cases[-1]['attention_contract'] = exported['attention_contract']
         if case['kind'] == 'rope' and 'rope_contract' in exported:
@@ -402,6 +409,19 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     if case['kind'] == 'rope' and 'rope_contract' in case:
                         from .rope import partition_metrics
                         metric['rope_partitions'] = partition_metrics(actual, golden, case['rope_contract']['rotary_dim'])
+                    if (case['kind'] == 'gdn_layer' and case.get('convstate_mode') == 'reference'
+                            and case['phase'] == 'decode' and spec['index'] == 1):
+                        previous = next(s for s in case['inputs'] if s['fixture_index'] == 1)
+                        before = np.fromfile(fixture/case['case']/f'input_{previous["index"]}.bin',
+                                             dtype=DTYPES[previous['dtype']]).reshape(previous['shape'])
+                        if actual.ndim != 3 or before.shape != actual.shape or actual.shape[-1] < 1:
+                            raise ValueError('reference ConvState Decode history extent is invalid')
+                        preserved = (actual.dtype == before.dtype and
+                                     actual[..., :-1].tobytes() == before[..., 1:].tobytes())
+                        metric['convstate_preserved_history_equal_bits'] = preserved
+                        metric['passed'] = metric['passed'] and preserved
+                        if not preserved:
+                            metric.setdefault('failed_metrics', []).append('convstate_preserved_history_bits')
                     if case['kind'] == 'cache':
                         identical = actual.dtype == golden.dtype and actual.tobytes() == golden.tobytes()
                         metric.update(gate='EXACT_WHOLE_CACHE_BITS', passed=identical and metric['passed'])

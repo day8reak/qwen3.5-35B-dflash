@@ -96,7 +96,7 @@ def gdn_state_contract(enabled, state_dtype='float32'):
         evidence['restored'] = getter(op) is original
 
 
-def check_gdn_source(graph, schema, phase, state_dtype='float32'):
+def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode='kernel'):
     from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype, port_names, _data_edges
     from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
     from .candidates import check_graph
@@ -135,13 +135,20 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32'):
     if chunk != (1 if phase == 'decode' else 64):
         raise ValueError('GDN chunk_size differs from original phase branch')
     projections = [n for n in nodes if n['type'] == 'QuantBatchMatmulV4444']
-    if len(projections) != 5 or sum(n['type'] == 'LinearAttentionConvstateUpdate' for n in nodes) != 1:
-        raise ValueError('whole GDN must contain all five projections and convstate update')
+    if convstate_mode not in ('kernel', 'reference'):
+        raise ValueError('unknown ConvState source graph contract')
+    expected_convstate = 1 if convstate_mode == 'kernel' else 0
+    if len(projections) != 5 or sum(n['type'] == 'LinearAttentionConvstateUpdate' for n in nodes) != expected_convstate:
+        raise ValueError('whole GDN projections or ConvState operator count differs from selected candidate')
+    convstate = dict(mode=convstate_mode, operator_count=expected_convstate)
+    if convstate_mode == 'reference':
+        from .convstate_reference import check_graph as check_convstate_reference
+        convstate['reference_graph'] = check_convstate_reference(graph)
     for p in projections:
         check_graph(dict(op=[n for n in nodes if n['type'] != 'QuantBatchMatmulV4444' or n is p]), schema, True)
     return dict(status='PASSED', initial_state=state_dtype, last_recurrent_state=state_dtype,
                 checked_inputs=expected, writeback=state_dtype,
-                quantized_projections=5, chunk_size=chunk, scope='SOURCE_AIR_ONLY')
+                quantized_projections=5, chunk_size=chunk, convstate=convstate, scope='SOURCE_AIR_ONLY')
 
 
 def attention_contract(record, inputs, graph, schema, bindings):

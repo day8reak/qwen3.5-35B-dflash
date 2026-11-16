@@ -23,6 +23,8 @@ def main():
         s.add_argument('--torchair-pb2')
         s.add_argument('--gdn-state-dtype', choices=('source', 'float16', 'float32'), default='source',
                        help='whole gdn_layer: explicit recurrent input/output/writeback dtype; float16 also casts g at the GE operator input; golden unchanged')
+        s.add_argument('--gdn-convstate', choices=('kernel', 'reference'), default='kernel',
+                       help='whole gdn_layer only: reference uses explicit concat/tail after exact capture checks; full-length calls, one-token Decode; golden unchanged')
         s.add_argument('--qlinear-scales', choices=('source', 'fp16'), default='source',
                        help='opt-in candidate: numeric FP16 weight scale and per-token scale, original golden')
         s.add_argument('--rope-precision', choices=('source', 'fp32'), default='source',
@@ -100,12 +102,12 @@ def main():
         result = batch.export_batch(a.capture, a.output, a.source_root, a.converter_script,
             points=a.points, kinds=a.kinds, phases=a.phases, timeout=a.timeout, torchair_pb2=a.torchair_pb2, target_config=a.target_config,
             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
-            gdn_state_dtype=a.gdn_state_dtype)
+            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate)
     elif a.command == 'export-one':
         from qwen35_moe_dflash.target.layer_probe.replay import export_one
         result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2, a.target_config,
                             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
-                            gdn_state_dtype=a.gdn_state_dtype)
+                            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate)
     elif a.command == 'compile':
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format,

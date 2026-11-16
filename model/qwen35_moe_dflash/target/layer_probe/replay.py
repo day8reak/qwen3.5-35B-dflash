@@ -278,13 +278,15 @@ def check_adjusted_graph(kind, graph):
 
 
 def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None,
-               *, qlinear_scales='source', cache_indexing='kernel', rope_precision='source', gdn_state_dtype='source'):
+               *, qlinear_scales='source', cache_indexing='kernel', rope_precision='source', gdn_state_dtype='source',
+               gdn_convstate='kernel'):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
     try:
         if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer')
-                or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')):
+                or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')
+                or gdn_convstate not in ('kernel', 'reference')):
             raise ValueError('unknown module candidate')
         capture = Path(capture).resolve()
         manifest = json.loads((capture/'manifest.json').read_text())
@@ -299,6 +301,8 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             raise ValueError('region must identify one captured invocation')
         record = matches[0]
         whole = record['kind'] == 'gdn_layer'
+        if gdn_convstate != 'kernel' and not whole:
+            raise ValueError('--gdn-convstate reference requires a whole gdn_layer region')
         if whole:
             if output_index is not None or gdn_state_dtype == 'source' or qlinear_scales != 'fp16' or not target_config:
                 raise ValueError('whole GDN requires all outputs, --gdn-state-dtype float16|float32, --qlinear-scales fp16 and --target-config')
@@ -311,6 +315,9 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         weights = torch.load(checked(capture, record['weights']), map_location='cpu', weights_only=True) if 'weights' in record else {}
         inputs = [torch.from_numpy(read_array(capture, spec).copy()) for spec in record['inputs']]
         input_paths = [checked(capture, spec) for spec in record['inputs']]
+        if whole and gdn_convstate == 'reference':
+            from .convstate_reference import validate_capture
+            result['convstate_reference_check'] = validate_capture(record, capture)
         sys.path.insert(0, str(Path(source_root).resolve()))
         import torch_npu
         import torchair
@@ -340,10 +347,10 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if whole:
             from .whole_gdn import build
             model, result['source_contract'] = build(record, capture, target, converters, factory,
-                target_config, source_root, root, gdn_state_dtype)
+                target_config, source_root, root, gdn_state_dtype, gdn_convstate)
             result['target_weights'] = dict(status='ORIGINAL_CHECKPOINT_BOUND')
             result['candidate'] = dict(kind='WHOLE_GDN_' + ('FP16' if gdn_state_dtype == 'float16' else 'FP32') + '_STATE',
-                state_dtype=gdn_state_dtype, golden_state_dtype='float32',
+                state_dtype=gdn_state_dtype, golden_state_dtype='float32', convstate_mode=gdn_convstate,
                 qlinear_scales='fp16', reference='ORIGINAL_CAPTURE_UNCHANGED')
         else:
             model = Region(record, weights, target, torch_npu, output_index, factory)
@@ -400,7 +407,8 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if 'candidate' in result:
             if whole:
                 from .module_contracts import check_gdn_source
-                result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'], gdn_state_dtype)
+                result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'], gdn_state_dtype,
+                                                                   gdn_convstate)
             elif rope_fp32:
                 from .rope import check_graph as check_rope_graph
                 result['candidate_graph_check'] = check_rope_graph(graph, schema, golden['dtype'])

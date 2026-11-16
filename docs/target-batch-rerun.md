@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。host 反汇编已确认参数生成读取 x1/x2 的 shape，两个描述符设置的 format 编号不同；llmConfig 字段仍未知。下一步执行[第 7.6 节 F](#76-整层-gdn-数值失败后的只读检查)，读取已生成的 executor 等文件并核对当前 DDK 枚举，不重跑提取。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
+**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。host 入口及 GE 枚举已核对，llmConfig 字段仍未知。下一步执行[第 7.7 节：显式 ConvState 对照](#77-显式-convstate-对照)，复用原捕获导出六图；旧 gdn-layer 批次保留。该候选已通过本地检查，尚无目标编译或设备精度结果。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -518,7 +518,7 @@ cat "$COMPARISON/summary.csv"
 
 当前安装 DDK 100.520.020.010 的两份 ChunkGatedDeltaRule 注册都声明 g、initial_state、last_recurrent_state 为 FP16。C++ 源码 SHA256 01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a 与历史相同，第 1855／1858 行均直接用 half 指针绑定状态缓冲区。扫描 PARTIAL 仅来自两个候选目录不存在，未否定这些已读取的声明和源码。编译二进制选择与内核内部累加 dtype 仍未独立核验。
 
-用户已确认按 FP16 跑，状态 shape [1,32,128,128] 的实际 FP16 输出为 1,048,576 bytes，原 FP32 golden 为 2,097,152 bytes；读取时分别使用各自 dtype/bytes，保持五项比较门槛。无需使用 OMG --output_type 补 FP32 输出。整层新批次已回传 18 项数值失败，当前继续第 7.6 节。
+用户已确认按 FP16 跑，状态 shape [1,32,128,128] 的实际 FP16 输出为 1,048,576 bytes，原 FP32 golden 为 2,097,152 bytes；读取时分别使用各自 dtype/bytes，保持五项比较门槛。无需使用 OMG --output_type 补 FP32 输出。整层批次已回传 18 项数值失败，第 7.6 节只读检查已完成，当前继续第 7.7 节。
 
 ### 7.5 准备阶段 torch_npu 加载失败后重试
 
@@ -820,7 +820,7 @@ fi
 
 回传 `ddk-convstate-details.txt` 和非空的 `ddk-convstate-details-errors.txt`。如果能获取对应版本源码，优先查 `linear_attention_convstate_update_desc.h`、`linear_attention_convstate_update_graph_builder.cc`、`linear_attention_convstate_update_generator.cc`、`linear_attention_convstate_update_kernel.cce` 及其引用的 LLMConfig 结构定义。需要确认的是 x3 各字段读法、初态／末态物理布局和两个输出的语义；目前仍不能猜填控制值或认定数值失败已解决。
 
-**E. 普通符号和编译路径已回传：提取限定函数反汇编（已提取，下一步看 F）。**
+**E. 普通符号和编译路径已回传：提取限定函数反汇编（已完成，保留复现命令）。**
 
 L0 Prefill／Decode 日志依次出现多个 store 的 not supported、compatibility check 的 force supported by NPU、ConvState GetOutputDesc，以及 SaveKernelBinInfo 的 executor_linear_attention_convstate_update／kernelSize=748。这证明本次编译流程保存了该 kernel 的二进制信息；前段警告不能单独证明缺失或跳过算子。它仍不证明运行时读写语义正确。kernelSize 小也不能证明为空实现。
 
@@ -843,7 +843,7 @@ cat "$CONV_DISASM/set_format.txt" \
 
 先回传 report.json 和这三个函数的文本；其余 Check／InitAttr／IsSupport／ProduceTiling／BuildOffChipDataInfo／executor 文件留在同一目录，供需要时继续分析。已有该目录时直接读取报告，不覆盖；工具缺失、符号缺失或反汇编未解码起始指令会明确失败／PARTIAL，不把空输出当成成功。本地用生成的 host ELF 验证了普通／动态符号提取、剥离符号后的 PARTIAL 和输出目录保护；未在用户 DDK 上执行本步。
 
-**F. 三个函数反汇编已回传：继续读取现有文件和当前 DDK 枚举（当前步骤）。**
+**F. host 函数与当前 DDK 枚举（已完成，保留复现命令）。**
 
 用户报告 9 个函数全部 EXTRACTED，并回传了格式设置、输出描述和参数生成函数正文。当前可直接从指令得出：
 
@@ -852,7 +852,7 @@ cat "$CONV_DISASM/set_format.txt" \
 | BuildLinearAttentionConvstateUpdateParam 的参数对象 +0x8 | x1.shape[1]，维度不存在时填 1 | 是 TLV 编译参数偏移，不是 x3 下标 |
 | 参数对象 +0x10 | x1.shape[2]，维度不存在时填 1 | 未回传实际生成的 TLV 字节 |
 | 参数对象 +0x18 | x2.shape[2]，维度不存在时填 1 | 该函数没有读取 x3 张量内容 |
-| SetFormatAndDataType 的前两个描述符 | format 分别为 2、3，DataType 都为 1 | 须核对该 DDK 的 ge::Format／ge::DataType；不能套用 AIR protobuf 枚举 |
+| SetFormatAndDataType 的前两个描述符 | ND／FP16、NC1HWC0／FP16 | 已按安装 GE 头文件核对；仍不能据此选定外部 ConvState 序列化方式 |
 | GetOutputDesc | 两个描述符都调用 SetReuseInput(false) | 这是描述符设置，不证明运行时无别名或没有写入 |
 
 若参数生成时输入描述保持日志中的 x1=[1,T,8192]、x2=[1,8192,4]，上述三个值应为 T、8192、4；Prefill T=256、Decode T=1。这是按形状推得的期望，不是对最终 flowtable 的实测。运行时仍可能读取 x3，所以不能因 host 参数来自 shape 就认定全零 llmConfig 合法，也不能据结构偏移猜填控制量。
@@ -901,4 +901,123 @@ cat "$BATCH_ROOT/ddk-convstate-enums.txt"
 )
 ```
 
-回传六个已有文件的文本、executor 普通符号和枚举搜索结果。host executor 也可能只是封装／登记设备 kernel 的入口，须读完其指令后再判断；它的 129 字节大小与编译日志中的 748 字节 kernel 属于不同记录，不能混为同一段代码。本步没有模型或算子改动。
+六个文件及枚举已回传：GE 头文件明确 DT_FLOAT16=1、FORMAT_ND=2、FORMAT_NC1HWC0=3。129 字节 executor 调用 rtConfigureCall，设置两个 8 字节启动参数，再调用 rtLaunch；没有设备端状态更新正文。rtLaunch 地址旁的其他函数名是 objdump 的就近符号注释，不能据此判定启动了错误算子。kernel 库没有普通符号，动态 host executor 仍存在，不继续重复普通符号搜索。
+
+BuildOffChipDataInfo 将 input0／1／2 的描述分别写到 flowtable +0x8／+0x30／+0x58，output0／1 写到 +0x148／+0x170。它证明 x3 描述被传递，未揭示 x3 数组字段。Check／ProduceTiling 分别直接返回 0，IsSupport 返回 true；这些函数体不验证状态更新语义，也不代表设备 kernel 为空。InitAttr 没有可见属性解析。这批证据仍未确定 llmConfig 字段或运行时布局，后续使用下面的图级对照。
+
+### 7.7 显式 ConvState 对照
+
+新选项 `--gdn-convstate reference` 只用于整层 GDN：将原 ConvState 调用替换为 `concat(old_BCK, qkv_BCT)`，取末 K 个元素为新状态、末 T+K−1 个元素为卷积输入。它保留原五个投影、卷积、GDN 和 norm/out_proj 的串联；不修改 DDK 或 kernel。默认 `kernel` 路径保留。
+
+导出前用捕获的 QKV 和旧状态验证这两个结果与原 golden **逐位一致**，并检查 QKV 正是同次投影输出。仅支持 B=1、effective_length=T 的完整静态调用，Decode 必须 T=1。检查不通过就停止，不能重写 golden 放行。原 FP16 state/g 与 QLinear scale 选项保持。全零 linear_update_tensor 在该候选中不参与计算，编译器可以裁剪此输入，运行时仍按源参数身份绑定。
+
+**A. 每台主机进入仓库、初始化本组路径。** 各阶段继续使用此前已跑通的导出、编译、上板环境。跨主机传输整个新批次，保留 air/omc 相对位置。下面只创建新的 gdn-layer-convstate 路径；已有相应阶段目录时检查结果并继续下一阶段，不覆盖。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export GOLDEN_CAPTURE="${GOLDEN_CAPTURE:-$AI_RUN_DIR/target/tests/golden-capture}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer-convstate"
+export BATCH="$BATCH_ROOT/air"
+export OMC_BATCH="$BATCH_ROOT/omc"
+export EXECUTION="$BATCH_ROOT/execution"
+export RECOVERY="$BATCH_ROOT/recovery"
+export COMPARISON="$BATCH_ROOT/comparison"
+export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+export PYTHONDONTWRITEBYTECODE=1
+```
+
+**B. 在已跑通的 AIR 导出环境执行。** TARGET_SOURCE/TARGET_CONFIG 沿用原私有源码和权重 YAML。
+
+```bash
+(
+set -e
+: "${TARGET_SOURCE:?沿用原 Target 源码根目录}"
+: "${TARGET_CONFIG:?沿用原 Target 权重 YAML}"
+export CPRO_EXPORT_SCRIPT="${CPRO_EXPORT_SCRIPT:-$TARGET_SOURCE/export_glm_model_qwen3_5_moe.py}"
+test -f "$GOLDEN_CAPTURE/manifest.json"
+test -f "$TARGET_CONFIG"
+test -f "$CPRO_EXPORT_SCRIPT"
+test ! -e "$BATCH"
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
+  --capture "$GOLDEN_CAPTURE" \
+  --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
+  --converter-script "$CPRO_EXPORT_SCRIPT" \
+  --points gdn_layer --phases prefill decode \
+  --qlinear-scales fp16 --gdn-state-dtype float16 \
+  --gdn-convstate reference --output "$BATCH"
+)
+```
+
+预期 EXPORTED 6/6。每图 export.json 的 convstate_reference_check 两项 equal_bits=true；candidate.convstate_mode=reference；candidate_graph_check.convstate.operator_count=0。源 AIR 还检查实际 concat/slice 路径与 FP16 GDN 状态接口。捕获校验通过只证明参考表达式吻合，不能替代目标计算验证。
+
+**C. 在原 custom_pypto／DDK 编译环境执行。**
+
+```bash
+(
+set -e
+: "${CPRO_DDK_ROOT:?沿用这六图的 DDK 根目录}"
+export CPRO_DDK_ID="${CPRO_DDK_ID:-100.520.020.010}"
+export TBE_DIAGNOSIS="${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+test -f "$TBE_DIAGNOSIS/report.json"
+test ! -e "$OMC_BATCH"
+python - "$BATCH/manifest.json" <<'PY_CANDIDATE'
+import json, sys
+m = json.load(open(sys.argv[1]))
+expected = {f'l{l:02d}_c{c:02d}_gdn_layer_all' for l in range(3) for c in range(2)}
+options = m.get('candidate_options', {})
+if (m.get('status') != 'EXPORTED' or len(m.get('cases', [])) != 6
+        or {r['id'] for r in m['cases']} != expected
+        or any(r['status'] != 'EXPORTED' for r in m['cases'])
+        or options.get('gdn_convstate') != 'reference'
+        or options.get('gdn_state_dtype') != 'float16'):
+    raise SystemExit('需要六张新导出的 reference ConvState／FP16 state 整层图')
+PY_CANDIDATE
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compile \
+  --batch "$BATCH" --output "$OMC_BATCH" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile isolated-kirinx90 \
+  --tbe-diagnosis "$TBE_DIAGNOSIS" --use-origin-format
+)
+cat "$OMC_BATCH/compile.json"
+```
+
+预期 COMPILED 6/6。编译失败时保留新 AIR，查看首个失败 case 的 omc/compile.log；不要重新采集或复用旧 gdn-layer 的 OMC。
+
+**D. 上板、回收同一个请求。** 沿用已成功的 HDC、BIP、SN、runtime.json 与 runner。下面仅对准备／上板命令关闭 Torch 后端自动加载，避免此前 torch_npu 加载失败。
+
+```bash
+(
+set -e
+: "${BIP:?沿用原 HDC 服务端 IP:端口}" "${SN:?沿用原设备序列号}"
+: "${CPRO_DDK_ROOT:?沿用上板主机实际 DDK 根目录}"
+test -f "$RUNTIME_CONFIG"
+test -f "$OMC_BATCH/compile.json"
+test -f "$BATCH/manifest.json"
+test ! -e "$EXECUTION"
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$OMC_BATCH" --config "$RUNTIME_CONFIG" \
+  --ddk-root "$CPRO_DDK_ROOT" --output "$EXECUTION" --apply
+)
+```
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --recover "$EXECUTION" --output "$RECOVERY"
+```
+
+PENDING 时稍后重复 recover，不重复 apply。各图预热 3 次、采样 10 次，每次恢复捕获输入。取得 native 输出后比较；回收阶段因数值失败退出时仍可运行下一步。
+
+**E. 比较并回传 18 行结果。**
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
+  --fixture "$EXECUTION/fixture" --native "$RECOVERY/native" \
+  --output "$COMPARISON"
+cat "$COMPARISON/summary.csv"
+```
+
+五项门槛、FP16 输出 ABI、十次稳定性继续检查；另对每次 Decode 的 ConvState 前 K−1 槽与输入后 K−1 槽要求逐位一致。report.json 的 invocations 记录 convstate_preserved_history_equal_bits，失败时 CSV 含 convstate_preserved_history_bits。传回本组 comparison/summary.csv 与 report.json 即可对照原 18 项失败。
+
+本地已检查标量参考、signed zero、捕获拒绝条件、Torch 图导出、输入不变、裁剪控制输入后的身份绑定，以及五项数值通过但历史位损坏仍失败。目标 AIR／OMC 与设备结果待执行；此候选没有宣称解决独立 GDN 的五项 Prefill 失败，也未测试跨调用连续状态反馈。

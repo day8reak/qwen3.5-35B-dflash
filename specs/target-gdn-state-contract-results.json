@@ -142,7 +142,7 @@
     "failed_outputs": 18,
     "stable_outputs": 18,
     "first_failed_graph": "l00_c00_gdn_layer_all",
-    "next_diagnostic": "READ_EXISTING_EXECUTOR_AND_OFFCHIP_DISASSEMBLY; VERIFY_SELECTED_DDK_ENUMS_AND_KERNEL_SYMBOLS",
+    "next_diagnostic": "WHOLE_GDN_REFERENCE_CONVSTATE_CONCAT_TAIL_CANDIDATE; ORIGINAL_CAPTURE_AND_KERNELS_UNCHANGED",
     "cause": "UNDETERMINED"
   },
   "latest_convstate_inspection": {
@@ -302,11 +302,11 @@
   },
   "latest_convstate_host_disassembly_review": {
     "date": "2026-11-16",
-    "evidence_source": "USER_PASTED_EXTRACTION_REPORT_AND_THREE_FUNCTION_BODIES",
+    "evidence_source": "USER_PASTED_EXTRACTION_REPORT_NINE_FUNCTION_BODIES_AND_INSTALLED_GE_HEADERS",
     "local_binary_binding": "NOT_REVERIFIED",
     "host_architecture": "elf64-x86-64",
     "reported_extracted_functions": 9,
-    "reviewed_function_bodies": ["SetFormatAndDataType", "GetOutputDesc", "BuildLinearAttentionConvstateUpdateParam"],
+    "reviewed_function_bodies": ["SetFormatAndDataType", "GetOutputDesc", "BuildLinearAttentionConvstateUpdateParam", "BuildOffChipDataInfo", "run_executor_linear_attention_convstate_update", "Desc::InitAttr", "Desc::Check", "CheckSupport::IsSupport", "Strategy::ProduceTiling"],
     "compile_parameter_writes": [
       {"offset": "0x8", "bytes": 8, "source": "input0.shape[1]", "missing_dimension_value": 1},
       {"offset": "0x10", "bytes": 8, "source": "input0.shape[2]", "missing_dimension_value": 1},
@@ -316,20 +316,80 @@
     "actual_final_flowtable_values": "NOT_OBSERVED",
     "expected_if_input_descriptors_retain_reported_shapes": {"prefill": [256, 8192, 4], "decode": [1, 8192, 4]},
     "descriptor_writes": [
-      {"vector_byte_offset": "0x0", "format_raw": 2, "datatype_raw": 1},
-      {"vector_byte_offset": "0x40", "format_raw": 3, "datatype_raw": 1}
+      {"vector_byte_offset": "0x0", "format_raw": 2, "datatype_raw": 1, "format": "FORMAT_ND", "datatype": "DT_FLOAT16"},
+      {"vector_byte_offset": "0x40", "format_raw": 3, "datatype_raw": 1, "format": "FORMAT_NC1HWC0", "datatype": "DT_FLOAT16"}
     ],
-    "installed_cpp_enum_mapping": "NOT_VERIFIED; DISTINCT_FROM_AIR_PROTO_ENUM",
+    "installed_cpp_enum_mapping": {
+      "evidence": "USER_PASTED_SELECTED_DDK_GE_HEADERS; DISTINCT_FROM_AIR_PROTO_ENUM",
+      "headers": ["ddk/ai_ddk_lib/include/graph/types.h", "ddk/hiai_pipe_lib/include/graph/types.h"],
+      "ge::DT_FLOAT16": 1,
+      "ge::FORMAT_ND": 2,
+      "ge::FORMAT_NC1HWC0": 3
+    },
     "get_output_desc": {"set_reuse_input_false_calls": 2, "physical_storage_aliasing": "NOT_ESTABLISHED"},
     "host_executor_bytes_reported": 129,
-    "host_executor_body_review": "PENDING_EXISTING_EXECUTOR_TXT",
+    "host_executor_body_review": "RT_CONFIGURE_CALL; TWO_8_BYTE_RT_SETUP_ARGUMENT_CALLS; RT_LAUNCH; NOT_DEVICE_UPDATE_BODY",
+    "host_executor_argument_offsets": [0, 8],
+    "launch_address": "0x90c3a0",
+    "launch_registration_binding": "UNTRACED; NEAREST_SYMBOL_ANNOTATION_DOES_NOT_IDENTIFY_LAUNCHED_KERNEL",
+    "kernel_library_ordinary_symbols": "NM_REPORTS_NO_SYMBOLS; DYNAMIC_HOST_EXECUTOR_PRESENT",
+    "offchip_descriptor_writes": [
+      {"port": "input0", "flowtable_offset": "0x8"},
+      {"port": "input1", "flowtable_offset": "0x30"},
+      {"port": "input2", "flowtable_offset": "0x58"},
+      {"port": "output0", "flowtable_offset": "0x148"},
+      {"port": "output1", "flowtable_offset": "0x170"}
+    ],
+    "offchip_scope": "TLV_DESCRIPTOR_LOCATIONS; NOT_X3_ARRAY_INDICES_OR_RUNTIME_READS",
+    "short_function_bodies": {
+      "Desc::Check": "RETURNS_0",
+      "Desc::InitAttr": "GETS_OPDESC_THEN_RETURNS_0; NO_OBSERVED_ATTRIBUTE_PARSE",
+      "CheckSupport::IsSupport": "RETURNS_TRUE",
+      "Strategy::ProduceTiling": "RETURNS_0; NO_OBSERVED_TILING_OBJECT_WRITE"
+    },
     "runtime_llmconfig_reads": "UNVERIFIED",
     "scope": "HOST_DESCRIPTOR_AND_PARAMETER_CONSTRUCTION; NO_DEVICE_INSTRUCTION_SEMANTICS",
     "rejected_inferences": [
       "TLV_STRUCT_OFFSETS_ARE_LLMCONFIG_ARRAY_INDICES",
       "SHAPE_DERIVED_HOST_PARAMS_PROVE_ZERO_LLMCONFIG_VALID",
       "FORMAT_CODES_ALONE_PROVE_RUNTIME_OUTPUT_REORDERING",
-      "SET_REUSE_INPUT_FALSE_PROVES_RUNTIME_NO_ALIAS_OR_NO_WRITES"
+      "SET_REUSE_INPUT_FALSE_PROVES_RUNTIME_NO_ALIAS_OR_NO_WRITES",
+      "SHORT_HOST_FUNCTIONS_PROVE_EMPTY_DEVICE_KERNEL",
+      "NEAREST_SYMBOL_LABEL_PROVES_WRONG_KERNEL_LAUNCH"
     ]
+  },
+  "reference_convstate_candidate": {
+    "date": "2026-11-16",
+    "status": "LOCAL_CHECKS_PASSED; TARGET_PENDING",
+    "option": "--gdn-convstate reference",
+    "default": "kernel",
+    "implementation": "model/qwen35_moe_dflash/target/layer_probe/convstate_reference.py",
+    "batch_directory": "target/tests/gdn-layer-convstate",
+    "scope": "WHOLE_GDN_GRAPH_ADAPTATION; NO_OPERATOR_KERNEL_CHANGE",
+    "reference_rule": "CONCAT_OLD_BCK_QKV_BCT; LAST_K_STATE; LAST_T_PLUS_K_MINUS_1_CONV_INPUT",
+    "capture_gate": "SAME_EXECUTED_QKV; ORIGINAL_STATE_AND_PADDED_GOLDENS_EQUAL_BITS",
+    "supported_calls": "BATCH1; EFFECTIVE_LENGTH_EQUALS_T; ONE_TOKEN_DECODE",
+    "control_policy": "LINEAR_UPDATE_TENSOR_UNUSED; PRUNING_ALLOWED_WITH_IDENTITY_BINDING",
+    "comparison": "ORIGINAL_FIVE_METRICS_AND_TEN_RUN_STABILITY; DECODE_RETAINED_HISTORY_EXACT_BITS",
+    "gdn_state_dtype": "float16",
+    "golden_state_dtype": "float32",
+    "golden": "ORIGINAL_CAPTURE_UNCHANGED",
+    "local_validation": [
+      "SCALAR_REFERENCE_T1_T2_T4_T16_T256_AND_SIGNED_ZERO",
+      "GOLDEN_MISMATCH_PARTIAL_LENGTH_AND_MULTI_TOKEN_DECODE_REJECTED",
+      "SOURCE_AST_ADAPTATION_AND_TORCH_EXPORT_T1_T256",
+      "INPUT_IMMUTABILITY_AND_UNUSED_CONTROL",
+      "SOURCE_AIR_STRUCTURE_GUARD_ON_SYNTHETIC_GRAPHS",
+      "PRUNED_CONTROL_AND_SHUFFLED_COMPILED_INPUT_BINDING",
+      "NUMERIC_METRICS_PASS_BUT_SINGLE_HISTORY_BIT_CORRUPTION_FAILS",
+      "HISTORY_GATE_CHECKS_ALL_TEN_INVOCATIONS",
+      "DEFAULT_KERNEL_NUMERIC_POLICY_UNCHANGED",
+      "INSPECTOR_ACCEPTS_REFERENCE_PRUNING_AND_REQUIRES_KERNEL_CONTROL"
+    ],
+    "source_air_export": "NOT_RUN",
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN_ON_TARGET",
+    "continuous_state_feedback": "NOT_TESTED"
   }
 }

@@ -65,12 +65,21 @@ def assemble(manifest):
     return records
 
 
-def adapt_forward(owner, state_dtype='float32'):
+def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel'):
     if state_dtype not in ('float16', 'float32'):
         raise ValueError('whole GDN state must be float16 or float32')
     tree, evidence = definition(owner)
     tree = copy.deepcopy(tree)
     tree.decorator_list = []
+    if convstate_mode not in ('kernel', 'reference'):
+        raise ValueError('unknown whole GDN ConvState candidate')
+    if convstate_mode == 'reference':
+        update = call(tree, 'torch.ops.my_ops.linear_attention_convstate_update')
+        if ([ast.unparse(a) for a in update.args] != ['mixed_qkv', 'conv_state', 'linear_update_tensor']
+                or update.keywords):
+            raise ValueError('review changed ConvState update arguments')
+        update.func = ast.Name(id='_probe_convstate_reference', ctx=ast.Load())
+        update.args = update.args[:2]
     # Keep the original FP16 writeback for the installed-kernel candidate.
     state = assignment(tree, 'last_recurrent_state')
     if ast.unparse(state.value) != 'last_recurrent_state.to(torch.float16)':
@@ -95,6 +104,9 @@ def adapt_forward(owner, state_dtype='float32'):
     returns[0].value = ast.parse('(output, conv_state, recurrent_state)', mode='eval').body
     module = ast.fix_missing_locations(ast.Module(body=[tree], type_ignores=[]))
     namespace = dict(owner.__globals__)
+    if convstate_mode == 'reference':
+        from .convstate_reference import tensor_update
+        namespace['_probe_convstate_reference'] = tensor_update
     exec(compile(module, evidence['file'], 'exec'), namespace)
     evidence.update(adaptations=[('FP16' if state_dtype == 'float16' else 'FP32') + '_RECURRENT_INPUT_AND_WRITEBACK',
                                  'EXPLICIT_CONV2D_SINGLETON_HEIGHT',
@@ -103,6 +115,9 @@ def adapt_forward(owner, state_dtype='float32'):
                     conv_input=dict(operation='reshape', shape='[batch_size, conv_dim, 1, -1]',
                                     preserves='ELEMENT_ORDER_AND_DTYPE'),
                     arithmetic_precision='INTERNAL_KERNEL_ACCUMULATION_NOT_ESTABLISHED')
+    evidence['convstate_mode'] = convstate_mode
+    if convstate_mode == 'reference':
+        evidence['adaptations'].append('REFERENCE_CONVSTATE_CONCAT_TAIL; FULL_CAPTURE_LENGTH_ONLY')
     return namespace[tree.name], evidence
 
 
@@ -122,7 +137,8 @@ class WholeGDN(torch.nn.Module):
                        linear_update_tensor=probe_input_003, effective_length=probe_input_004)
 
 
-def build(record, capture, target, converters, factory, config_path, source_root, root, state_dtype='float32'):
+def build(record, capture, target, converters, factory, config_path, source_root, root, state_dtype='float32',
+          convstate_mode='kernel'):
     import yaml
     from .candidates import adapt_qlinear
     from .target_weights import load_weights
@@ -163,7 +179,7 @@ def build(record, capture, target, converters, factory, config_path, source_root
                 setattr(parent, name, torch.nn.Parameter(value, requires_grad=False))
     if any(t.is_meta for t in (*op.parameters(), *op.buffers())):
         raise ValueError('whole GDN has unbound meta weights')
-    forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward, state_dtype)
+    forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward, state_dtype, convstate_mode)
     op.forward = MethodType(forward, op)
     model = WholeGDN(op, state_dtype).eval()
     evidence = dict(status='BOUND_TO_SOURCE', kind='gdn_layer', source=source,

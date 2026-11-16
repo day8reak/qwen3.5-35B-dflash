@@ -2,7 +2,7 @@
 
 阶段与标准更新：2026-11-16；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求因末态 ABI 为 FP16 在准备阶段拦截；用户选择 FP16 后六图已执行，18 个输出均未通过精度门槛。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
-2026-11-16 最新结果：整层 GDN 六图、18 个输出为 **0 PASSED / 18 FAILED，全部 stable=True**。Prefill 三图 ConvState 全零、10 次均与旧输入逐位相等；Decode 的三种输出序列化假设均未恢复历史保留关系。最新 host 反汇编显示编译参数来自输入 shape，前两个描述符使用 format 编号 2／3；llmConfig 字段和完整状态布局仍未知。下一步执行[第 7.6 节 F](target-batch-rerun.md#76-整层-gdn-数值失败后的只读检查)，读取已生成的 executor 等文件并核对当前 DDK 枚举，不重跑提取。
+2026-11-16 最新设备结果：整层 GDN 六图、18 个输出为 **0 PASSED / 18 FAILED，全部 stable=True**。Prefill 三图 ConvState 全零、10 次均与旧输入逐位相等；Decode 的三种输出序列化假设均未恢复历史保留关系。host 入口及安装 GE 枚举已核对，llmConfig 字段和完整状态布局仍未知。下一步执行[显式 ConvState 对照](target-batch-rerun.md#77-显式-convstate-对照)：复用捕获导出六图，比较图级 concat/tail 更新路径；本地检查已通过，目标编译与设备精度待回传。
 
 ## 整层 GDN FP16 最新结果
 
@@ -27,7 +27,11 @@ DDK 二进制定位已取得更强证据：libgraph_host.so 含 GE 注册及 Ver
 
 后续普通符号／编译日志回传进一步确认：两张 L0 图均经过多个 store 的 not supported、force supported by NPU、ConvState GetOutputDesc，最终 SaveKernelBinInfo 记录 executor_linear_attention_convstate_update 和 748 字节 kernel。支持检查警告不能单独判定缺失算子，也不能由后续保存记录反推控制或布局正确。已保留 .symtab，可按当前库符号范围读取关键函数；没有新的设备运行、kernel 字节核验或精度结论。
 
-参数生成函数的 +0x8／+0x10／+0x18 分别写入 x1.shape[1]／x1.shape[2]／x2.shape[2]，维度缺失时各填 1。这些是 TLV 参数结构偏移，不是 llmConfig 下标；该函数没有解析 x3 内容，设备执行仍可能读取控制量。SetFormatAndDataType 对前两个描述符设置 format=2／3、DataType=1，当前未核对安装头文件枚举，不能把 C++ DataType 数值套成 AIR protobuf 的同号类型。GetOutputDesc 两次 SetReuseInput(false) 也仅是描述符行为，不能据此断言运行时无别名或未写状态。
+参数生成函数的 +0x8／+0x10／+0x18 分别写入 x1.shape[1]／x1.shape[2]／x2.shape[2]，维度缺失时各填 1。这些是 TLV 参数结构偏移，不是 llmConfig 下标；该函数没有解析 x3 内容，设备执行仍可能读取控制量。SetFormatAndDataType 对前两个描述符设置 format=2／3、DataType=1，已按所选 DDK 的 GE types.h 确认为 ND／FP16、NC1HWC0／FP16；C++ 枚举与 AIR protobuf 枚举不能混用。该设置仍不足以证明外部 ConvState 的物理序列化。GetOutputDesc 两次 SetReuseInput(false) 也仅是描述符行为，不能据此断言运行时无别名或未写状态。
+
+最新六个 host 函数正文显示：BuildOffChipDataInfo 传递 input0／1／2 和 output0／1 的描述，x3 对应 flowtable +0x58，未解析其字段。executor 只配置调用、设置两个 8 字节参数并 rtLaunch；129 字节 host wrapper 与日志中的 748 字节设备 kernel 是不同记录。rtLaunch 地址的就近符号注释不能证明错调算子。Check／ProduceTiling 返回 0，IsSupport 返回 true，InitAttr 无可见属性解析；这些函数体不能验证控制语义。kernel 库没有普通符号，动态 executor 已存在。设备指令和 llmConfig 运行时读法仍未解码。
+
+图级候选 `--gdn-convstate reference` 用 concat(old_BCK, qkv_BCT) 的末 K／末 T+K−1 分别表达新状态和卷积输入。导出前要求与同次捕获的两项 golden 逐位相同，限定 B=1、effective_length=T、单 token Decode。其余算子、FP16 状态适配和五项门槛保持；Decode 每次调用还要求历史保留区逐位一致。候选默认关闭，原捕获与失败批次保留；裁剪未使用的控制输入后仍按源参数身份绑定。本地参考、Torch 导出、输入不变、绑定及历史门槛检查通过，目标 AIR／OMC／设备验证尚未运行。它不推定安装算子 ABI，也不保证独立 GDN 的 Prefill 误差一并消失。
 
 Prefill recurrent state 与此前独立 GDN 的 44.5964%／26.745%／12.0998% 很接近；Decode 则从独立测试的 0.0683%／0.4292%／0.0648% 增至 20.74%／43.51%／46.27%。这支持先核对整层状态及其上游连接，尚不足以锁定某条内部边。`first_failed_boundary=l00_c00_gdn_layer_all` 指首个失败的整层图，不是已定位的首个内部算子。
 
@@ -75,7 +79,7 @@ L0–L2 × Prefill／Decode 的 48 个独立边界已回传完整五指标：dec
 
 使用显式 --gdn-state-dtype float16，源 AIR 检查算子端口与最终 writeback，编译后核对本次请求的 FP16 ABI。原 float32 选项仍保留严格检查，不会被自动降级。私有 exporter 的 stock FP32 Meta 通过 GE 输出 Cast 桥接，GDN 实际输出和层内 writeback 仍为 FP16；该桥接不恢复精度，也不证明内核内部累加类型。
 
-保留捕获 T256/T1、effective_length、chunk64/1、权重和 golden；六图共 18 输出，见[当前 FP16 测试命令](target-batch-rerun.md#7-整层-gdnfp16-状态测试)。CSV 新增 actual_dtype/golden_dtype，FP16 state 对 FP32 golden 的 dtype_preserved=false 是声明的类型差异，数值和稳定性仍须通过。本地 CPU 与模拟 GE 检查已通过，新批次尚无 CPro 编译／设备结果，也不包含连续 Prefill→Decode 状态反馈。
+保留捕获 T256/T1、effective_length、chunk64/1、权重和 golden；原六图共 18 输出，见[FP16 基线流程](target-batch-rerun.md#7-整层-gdnfp16-状态测试)。CSV 的 actual_dtype/golden_dtype 明确记录 FP16 state 与 FP32 golden；dtype_preserved=false 是声明的类型差异。该批次已回传上文 18 项数值失败，全部重复稳定；下一步为[显式 ConvState 对照](target-batch-rerun.md#77-显式-convstate-对照)，仍不包含连续 Prefill→Decode 状态反馈。
 
 此前六图均 COMPILED，但源 AIR／保留 dump 的 FP32 末态请求在最终 OMC 中变为 FP16。当前安装检查进一步确认：两份注册的 g/initial_state/last_recurrent_state 全为 FP16；C++ 第 1855／1858 行直接使用 half 指针，源码哈希与历史一致。扫描 PARTIAL 只因两个候选目录缺失。完整[接口观测记录](../specs/target-gdn-state-contract-results.json)来自用户回传，原始文件未在本地重新核验；尚未确认精确编译 pass、选中二进制或内部累加 dtype。
 
@@ -235,7 +239,7 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 | CacheUpdate | 最新 Prefill 4/4 PASSED；Decode 4/4 FAILED，L2 99.69%～99.81% | 暂后：检查历史保留与 functional 输出契约 |
 | LinearAttentionConvstateUpdate | 12 项小图编译失败，无数值；原 T64 整图已编译 | 保留失败定位；对照 RefData、双输出和消费者 |
 | RoPE | FP32 旋转后四图零误差，旋转区／未旋转区均数值一致 | 独立边界已对齐；不再复跑，待整图集成验证 |
-| ChunkGatedDeltaRule | 独立 Prefill core 1.56%～7.12%，raw state 12.10%～44.60%；整层六图已编译，末态 ABI 全部 FP16 | 安装接口已确认 FP16；按用户指令重导出 FP16 整层图，精度待回传 |
+| ChunkGatedDeltaRule | 独立边界 43 PASS／5 FAIL；整层 FP16 六图 18 输出全部失败且稳定 | 显式 ConvState 对照已备好；目标编译、设备精度待回传 |
 | AdnFusedInferAttention | 独立参考五项通过：Prefill L2 0.11175%、Decode 0.11438%；10 次输出一致；原 Prefill golden 错误 | 本轮小图退出复跑，继续整层 GDN；完整图参考需恢复可信路径 |
 
 各小图使用独立捕获的 golden 输入，不统一归因于上游 QKV 误差传播。整缓存通过也不证明图内 alias 或连续状态反馈已经通过。MoE、Router、共享专家、LM head 与完整 40 层仍待覆盖。[旧静态 SVG](assets/target-architecture-accuracy.svg)为历史快照。

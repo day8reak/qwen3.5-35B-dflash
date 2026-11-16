@@ -90,7 +90,8 @@ def _inspect_case(case, meta, fixture, native):
             or any(s['dtype'] not in ('float16', 'float32') for s in outputs)):
         raise ValueError('whole-GDN tuple binding differs from hidden/conv/state contract')
     inputs = {s['fixture_index']: s for s in case['inputs']}
-    if len(inputs) != len(case['inputs']) or not {1, 2, 3, 4} <= inputs.keys():
+    required_inputs = {1, 2, 4} if case.get('convstate_mode') == 'reference' else {1, 2, 3, 4}
+    if len(inputs) != len(case['inputs']) or not required_inputs <= inputs.keys():
         raise ValueError('old conv/state and controls must bind to distinct source arguments')
     sizes = [math.prod(s['shape'])*np.dtype(DTYPES[s['dtype']]).itemsize for s in outputs]
     if any(s['bytes'] != size for s, size in zip(outputs, sizes)) or not 0 < sum(sizes) <= 32 << 20:
@@ -102,6 +103,9 @@ def _inspect_case(case, meta, fixture, native):
     old = {1: _array(fixture, name, inputs[1]), 2: _array(fixture, name, inputs[2])}
     controls = []
     for source_index, semantic in ((3, 'linear_update_tensor'), (4, 'effective_length')):
+        if source_index not in inputs:
+            controls.append(dict(name=semantic, source_argument=source_index, status='NOT_USED_BY_REFERENCE_GRAPH'))
+            continue
         spec = inputs[source_index]
         if spec['dtype'] not in ('int16', 'int32', 'int64') or math.prod(spec['shape']) > 256:
             raise ValueError('unexpected GDN control tensor')
