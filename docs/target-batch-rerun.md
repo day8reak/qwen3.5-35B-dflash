@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。三种 ConvState 输出布局候选均未恢复 Decode 历史；L0 Prefill／Decode 编译日志均记录 executor_linear_attention_convstate_update、kernelSize=748。下一步执行[第 7.6 节 E](#76-整层-gdn-数值失败后的只读检查)的限定函数反汇编，核对 llmConfig[128] 和状态布局。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
+**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。host 反汇编已确认参数生成读取 x1/x2 的 shape，两个描述符设置的 format 编号不同；llmConfig 字段仍未知。下一步执行[第 7.6 节 F](#76-整层-gdn-数值失败后的只读检查)，读取已生成的 executor 等文件并核对当前 DDK 枚举，不重跑提取。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -820,7 +820,7 @@ fi
 
 回传 `ddk-convstate-details.txt` 和非空的 `ddk-convstate-details-errors.txt`。如果能获取对应版本源码，优先查 `linear_attention_convstate_update_desc.h`、`linear_attention_convstate_update_graph_builder.cc`、`linear_attention_convstate_update_generator.cc`、`linear_attention_convstate_update_kernel.cce` 及其引用的 LLMConfig 结构定义。需要确认的是 x3 各字段读法、初态／末态物理布局和两个输出的语义；目前仍不能猜填控制值或认定数值失败已解决。
 
-**E. 普通符号和编译路径已回传：提取限定函数反汇编（当前步骤）。**
+**E. 普通符号和编译路径已回传：提取限定函数反汇编（已提取，下一步看 F）。**
 
 L0 Prefill／Decode 日志依次出现多个 store 的 not supported、compatibility check 的 force supported by NPU、ConvState GetOutputDesc，以及 SaveKernelBinInfo 的 executor_linear_attention_convstate_update／kernelSize=748。这证明本次编译流程保存了该 kernel 的二进制信息；前段警告不能单独证明缺失或跳过算子。它仍不证明运行时读写语义正确。kernelSize 小也不能证明为空实现。
 
@@ -842,3 +842,63 @@ cat "$CONV_DISASM/set_format.txt" \
 ```
 
 先回传 report.json 和这三个函数的文本；其余 Check／InitAttr／IsSupport／ProduceTiling／BuildOffChipDataInfo／executor 文件留在同一目录，供需要时继续分析。已有该目录时直接读取报告，不覆盖；工具缺失、符号缺失或反汇编未解码起始指令会明确失败／PARTIAL，不把空输出当成成功。本地用生成的 host ELF 验证了普通／动态符号提取、剥离符号后的 PARTIAL 和输出目录保护；未在用户 DDK 上执行本步。
+
+**F. 三个函数反汇编已回传：继续读取现有文件和当前 DDK 枚举（当前步骤）。**
+
+用户报告 9 个函数全部 EXTRACTED，并回传了格式设置、输出描述和参数生成函数正文。当前可直接从指令得出：
+
+| 位置 | 观察到的写入／调用 | 限制 |
+| --- | --- | --- |
+| BuildLinearAttentionConvstateUpdateParam 的参数对象 +0x8 | x1.shape[1]，维度不存在时填 1 | 是 TLV 编译参数偏移，不是 x3 下标 |
+| 参数对象 +0x10 | x1.shape[2]，维度不存在时填 1 | 未回传实际生成的 TLV 字节 |
+| 参数对象 +0x18 | x2.shape[2]，维度不存在时填 1 | 该函数没有读取 x3 张量内容 |
+| SetFormatAndDataType 的前两个描述符 | format 分别为 2、3，DataType 都为 1 | 须核对该 DDK 的 ge::Format／ge::DataType；不能套用 AIR protobuf 枚举 |
+| GetOutputDesc | 两个描述符都调用 SetReuseInput(false) | 这是描述符设置，不证明运行时无别名或没有写入 |
+
+若参数生成时输入描述保持日志中的 x1=[1,T,8192]、x2=[1,8192,4]，上述三个值应为 T、8192、4；Prefill T=256、Decode T=1。这是按形状推得的期望，不是对最终 flowtable 的实测。运行时仍可能读取 x3，所以不能因 host 参数来自 shape 就认定全零 llmConfig 合法，也不能据结构偏移猜填控制量。
+
+先读取已生成的其余六个文件：
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export CONV_DISASM="$BATCH_ROOT/convstate-disassembly"
+cat "$CONV_DISASM/executor.txt" \
+    "$CONV_DISASM/offchip_data.txt" \
+    "$CONV_DISASM/desc_init.txt" \
+    "$CONV_DISASM/desc_check.txt" \
+    "$CONV_DISASM/check_support.txt" \
+    "$CONV_DISASM/produce_tiling.txt"
+```
+
+同时读取 executor 的普通符号（包括可能的 blob／end placeholder），并在所选 DDK 头文件中寻找格式／类型枚举。后者列出候选声明及上下文；若命中多个 namespace 或版本，须继续核对，不能任取一个数值解释当前库：
+
+```bash
+(
+set -e
+: "${CPRO_DDK_ROOT:?沿用编译这六图的 DDK 根目录}"
+: "${BATCH_ROOT:?请先执行上一个命令块}"
+ddk_kernel="$CPRO_DDK_ROOT/tools/tools_omg/master/lib64/libai_npucore_elementary_kernel.so"
+test -f "$ddk_kernel"
+nm -S --defined-only "$ddk_kernel" 2> "$BATCH_ROOT/ddk-convstate-symbol-errors.txt" |
+  grep -i -E 'executor_linear_attention_convstate_update' \
+  > "$BATCH_ROOT/ddk-convstate-kernel-symbols.txt" || true
+cat "$BATCH_ROOT/ddk-convstate-kernel-symbols.txt"
+cat "$BATCH_ROOT/ddk-convstate-symbol-errors.txt"
+ddk_enum_rc=0
+grep -r -n -I -E -C 5 --include='*.h' --include='*.hpp' \
+  '^[[:space:]]*(FORMAT_ND|FORMAT_NC1HWC0|DT_FLOAT16)([[:space:]]|,|=)' \
+  "$CPRO_DDK_ROOT" > "$BATCH_ROOT/ddk-convstate-enums.txt" \
+  2> "$BATCH_ROOT/ddk-convstate-enum-errors.txt" || ddk_enum_rc=$?
+if test "$ddk_enum_rc" -eq 1; then
+  echo '未找到匹配的枚举声明；仍保留数值编号，不推定其含义。'
+elif test "$ddk_enum_rc" -ne 0; then
+  cat "$BATCH_ROOT/ddk-convstate-enum-errors.txt"
+  exit "$ddk_enum_rc"
+fi
+cat "$BATCH_ROOT/ddk-convstate-enums.txt"
+)
+```
+
+回传六个已有文件的文本、executor 普通符号和枚举搜索结果。host executor 也可能只是封装／登记设备 kernel 的入口，须读完其指令后再判断；它的 129 字节大小与编译日志中的 748 字节 kernel 属于不同记录，不能混为同一段代码。本步没有模型或算子改动。
