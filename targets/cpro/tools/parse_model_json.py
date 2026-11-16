@@ -27,7 +27,7 @@ TOOL_TYPES = set(WIDTHS) - {"UINT16", "UINT64", "BF16"}
 ALIASES = {"FLOAT": "FP32", "FLOAT32": "FP32", "FLOAT16": "FP16",
            "HALF": "FP16", "FLOAT64": "DOUBLE", "BFLOAT16": "BF16"}
 NAME = re.compile(r"[A-Za-z_0-9./-]+\Z")
-FIELDS = ("slot", "name", "node", "edge", "node_type", "serialized_index",
+FIELDS = ("slot", "name", "name_source", "node", "edge", "node_type", "serialized_index", "graph_input_slot",
           "shape", "dtype", "dtype_raw", "layout", "logical_bytes", "issues")
 
 
@@ -126,40 +126,92 @@ def edge_parts(edge):
     return name, integer(port)
 
 
-def input_order(graph, rows, explicit, notes):
+def input_order(graph, rows, explicit, source, notes):
     names = {row["node"] for row in rows}
+    candidates = {"json-order": [row["node"] for row in rows]}
+    indices = [row["serialized_index"] for row in rows]
+    if all(i is not None for i in indices) and set(indices) == set(range(len(rows))):
+        candidates["data-index"] = [row["node"] for row in sorted(rows, key=lambda row: row["serialized_index"])]
+    graph_inputs = graph.get("input", [])
+    ordered = []
+    if isinstance(graph_inputs, list):
+        for edge in graph_inputs:
+            if not isinstance(edge, str):
+                break
+            node, port = edge_parts(edge)
+            if port != 0 or node not in names:
+                break
+            ordered.append(node)
+        if len(ordered) == len(graph_inputs) == len(names) and set(ordered) == names:
+            candidates["graph-input"] = ordered
+    graph_slots = {name: i for i, name in enumerate(candidates.get("graph-input", []))}
+    for row in rows:
+        row["graph_input_slot"] = graph_slots.get(row["node"])
+    conflict = ("data-index" in candidates and "graph-input" in candidates
+                and candidates["data-index"] != candidates["graph-input"])
+    if conflict:
+        notes.append("Data.index differs from GraphDef.input; Data.index may retain source-graph numbering. "
+                     "Both orders are retained in input_order_candidates; selected order is shown below")
     if explicit is not None:
+        if source != "auto":
+            raise ValueError("choose --input-order or --input-order-source, not both")
         order = explicit
         basis = "USER_SUPPLIED_NAMES"
     else:
-        indices = [row["serialized_index"] for row in rows]
-        indexed = (sorted(rows, key=lambda row: row["serialized_index"])
-                   if all(i is not None for i in indices) and set(indices) == set(range(len(rows))) else None)
-        graph_inputs = graph.get("input", [])
-        ordered = []
-        if isinstance(graph_inputs, list):
-            for edge in graph_inputs:
-                node, port = edge_parts(edge)
-                if port != 0 or node not in names:
-                    ordered = []
-                    break
-                ordered.append(node)
-        valid = len(ordered) == len(names) and set(ordered) == names
-        if indexed and valid and [row["node"] for row in indexed] != ordered:
-            notes.append("Data.index conflicts with GraphDef.input; specify --input-order after checking runtime")
-            return rows, "UNRESOLVED"
-        if indexed:
-            order, basis = [row["node"] for row in indexed], "CONTIGUOUS_DATA_INDEX"
-        elif valid:
-            order, basis = ordered, "GRAPH_INPUT_LIST"
-        else:
+        if source == "auto":
+            source = next((key for key in ("graph-input", "data-index") if key in candidates), None)
+        if source is None:
             notes.append("input order unresolved; rows retain JSON order, and input_type is not emitted. "
                          "Use --input-order with actual ordered node names")
-            return rows, "UNRESOLVED"
+            return rows, "UNRESOLVED", candidates, conflict
+        if source not in candidates:
+            raise ValueError("--input-order-source " + source + " requires a complete unique input mapping")
+        order = candidates[source]
+        basis = {"graph-input": "GRAPH_INPUT_LIST", "data-index": "CONTIGUOUS_DATA_INDEX",
+                 "json-order": "USER_SELECTED_JSON_ORDER"}[source]
     if len(order) != len(names) or set(order) != names:
         raise ValueError("--input-order must contain every root Data/RefData name exactly once")
     by_name = {row["node"]: row for row in rows}
-    return [by_name[name] for name in order], basis
+    return [by_name[name] for name in order], basis, candidates, conflict
+
+
+def output_labels(document, graph, net, descs, count, explicit, notes):
+    """Read labels independently of output connectivity; never invent output0."""
+    if explicit is not None:
+        return explicit, "USER_SUPPLIED_NAMES"
+    declared = [desc.get("name") for desc in descs]
+    if len(declared) == count and all(isinstance(name, str) and name for name in declared):
+        return declared, "NETOUTPUT_INPUT_DESC_NAME"
+    attrs = attributes(net)
+    keys = attrs.get("_input_name_key", {}).get("list", {}).get("s", [])
+    values = attrs.get("_input_name_value", {}).get("list", {}).get("i", [])
+    if keys or values:
+        values = [integer(value) for value in values]
+        if (len(keys) == len(values) == count and set(values) == set(range(count))
+                and all(isinstance(name, str) and name for name in keys) and len(set(keys)) == count):
+            return [name for _, name in sorted(zip(values, keys))], "NETOUTPUT_INPUT_NAME_MAP"
+        notes.append("incomplete/invalid NetOutput input-name map; not used as output labels")
+    # Reference GE GetOutputDescInfo label convention, not a HIAI runtime query:
+    # https://github.com/Ascend/graphengine/blob/d2ab1c2819c90e61d98b5f88699bcd6b6de4423c/src/ge/graph/load/new_model_manager/davinci_model.cc
+    src_names, src_ports = net.get("src_name", []), net.get("src_index", [])
+    model_attrs = attributes(document) if isinstance(document, dict) else {}
+    override = model_attrs.get("attr_model_out_nodes_name", attributes(graph).get("attr_model_out_nodes_name", {}))
+    override = override.get("list", {}).get("s", [])
+    ports_valid = isinstance(src_ports, list) and len(src_ports) == count
+    ports = [integer(port) for port in src_ports] if ports_valid else []
+    ports_valid = ports_valid and all(port >= 0 for port in ports)
+    if ports_valid and len(override) == count and all(isinstance(name, str) and name for name in override):
+        labels = [name if ":" in name else name + ":" + str(port) for name, port in zip(override, ports)]
+        basis = "GE_MODEL_OUT_NODES_NAME_CANDIDATE"
+    elif (ports_valid and isinstance(src_names, list) and len(src_names) == count
+          and all(isinstance(name, str) and name for name in src_names)):
+        labels = [f"output_{i}_{name}_{port}" for i, (name, port) in enumerate(zip(src_names, ports))]
+        basis = "GE_LEGACY_SRC_LABEL_CANDIDATE"
+    else:
+        return [None] * count, "NOT_DECLARED"
+    notes.append("Output labels follow the reference GE GetOutputDescInfo convention using serialized src metadata; "
+                 "verify names against this DDK runtime before using --output_shape")
+    return labels, basis
 
 
 def named_shapes(rows):
@@ -175,7 +227,7 @@ def type_list(rows):
     return ",".join(row["dtype"] for row in rows) if all(row["dtype"] in TOOL_TYPES for row in rows) else None
 
 
-def inspect(document, *, enum=None, graph_name=None, ordered_inputs=None, output_names=None):
+def inspect(document, *, enum=None, graph_name=None, ordered_inputs=None, input_order_source="auto", output_names=None):
     enum = enum or {}
     choices = list(graphs(document))
     if graph_name:
@@ -200,7 +252,7 @@ def inspect(document, *, enum=None, graph_name=None, ordered_inputs=None, output
                            edge=node["name"] + ":0", **descriptor(descs[0], enum)))
     if not inputs:
         raise ValueError("no root Data/RefData inputs")
-    inputs, basis = input_order(graph, inputs, ordered_inputs, notes)
+    inputs, basis, candidates, conflict = input_order(graph, inputs, ordered_inputs, input_order_source, notes)
     for i, row in enumerate(inputs):
         row["slot"] = i if basis != "UNRESOLVED" else None
     netoutputs = [node for node in nodes if node.get("type") == "NetOutput"]
@@ -214,6 +266,7 @@ def inspect(document, *, enum=None, graph_name=None, ordered_inputs=None, output
         raise ValueError("NetOutput data edges are missing or do not match input_desc count")
     if output_names is not None and len(output_names) != len(edges):
         raise ValueError("--output-names must contain one actual output tensor name per NetOutput port")
+    resolved_descs = []
     for i, edge in enumerate(edges):
         if descs:
             desc, source = descs[i], "NETOUTPUT_INPUT_DESC"
@@ -223,21 +276,28 @@ def inspect(document, *, enum=None, graph_name=None, ordered_inputs=None, output
             if not 0 <= port < len(producer_descs):
                 raise ValueError("NetOutput descriptor and producer descriptor unavailable: " + edge)
             desc, source = producer_descs[port], "PRODUCER_OUTPUT_DESC"
-        name = output_names[i] if output_names is not None else desc.get("name")
-        outputs.append(dict(slot=i, name=name, node=net["name"], node_type="NetOutput",
+        resolved_descs.append(desc)
+        outputs.append(dict(slot=i, node=net["name"], node_type="NetOutput",
                             edge=edge, descriptor_source=source, **descriptor(desc, enum)))
+    labels, label_basis = output_labels(document, graph, net, resolved_descs, len(edges), output_names, notes)
+    for row, label in zip(outputs, labels):
+        row.update(name=label, name_source=label_basis)
     flags = dict(input_shape=named_shapes(inputs),
                  input_type=type_list(inputs) if basis != "UNRESOLVED" else None,
                  output_shape=named_shapes(outputs), output_type=type_list(outputs))
     if flags["output_shape"] is None:
-        notes.append("output_shape unavailable: missing/duplicate/CLI-unsafe tensor names or shapes. "
-                     "Shapes remain in output rows; --output-names accepts actual runtime names")
+        notes.append("Named --output_shape unavailable: missing/duplicate/CLI-unsafe labels or missing shapes. "
+                     "output_shapes contains parsed shapes by NetOutput slot; --output-names accepts actual runtime names")
     notes.append("Graph input order and NetOutput port order are candidate CLI order, not queried HIAI runtime order. "
                  "Align input files with actual runtime slots before running")
     notes.append("logical_bytes excludes format padding, alignment and runtime buffer allocation")
-    return dict(status="PARSED" if all(value is not None for value in flags.values()) else "PARTIAL",
+    complete = basis != "UNRESOLVED" and all(row["shape"] is not None and row["dtype"] is not None for row in inputs + outputs)
+    return dict(status="PARSED" if complete else "PARTIAL",
+                cli_status="READY" if all(value is not None for value in flags.values()) else "PARTIAL",
                 graph=graph.get("name"), graph_path=path, input_count=len(inputs), output_count=len(outputs),
                 input_order_basis=basis, output_order_basis="NETOUTPUT_DATA_PORTS",
+                input_order_candidates=candidates, input_order_conflict=conflict, output_name_basis=label_basis,
+                input_shapes=[row["shape"] for row in inputs], output_shapes=[row["shape"] for row in outputs],
                 runtime_order_verified=False, inputs=inputs, outputs=outputs, **flags, notes=notes)
 
 
@@ -253,18 +313,25 @@ def write_csv(path, rows):
 def render(report):
     lines = ["status=" + report["status"], f"graph={report['graph']} path={report['graph_path']}",
              "input_order_basis=" + report["input_order_basis"],
+             "input_order_conflict=" + str(report["input_order_conflict"]).lower(),
+             "output_name_basis=" + report["output_name_basis"], "cli_status=" + report["cli_status"],
+             f"input_count={report['input_count']} output_count={report['output_count']}",
              "runtime_order_verified=false", ""]
     for kind in ("inputs", "outputs"):
         lines.append(kind.upper() + " (slot is a graph-derived candidate):")
-        lines.append("slot\tname / edge\tdtype\tshape\tlogical_bytes\tData.index")
+        lines.append("slot\tname / edge\tdtype\tshape\tlogical_bytes\tData.index\tGraph.input slot")
         for row in report[kind]:
             lines.append("\t".join(map(str, [row.get("slot"), row["name"] or row["edge"],
                           row["dtype"] or "UNRESOLVED(" + str(row["dtype_raw"]) + ")",
-                          row["shape"], row["logical_bytes"], row.get("serialized_index")])))
+                          row["shape"], row["logical_bytes"], row.get("serialized_index"), row.get("graph_input_slot")])))
             lines.extend("  " + issue for issue in row["issues"])
         lines.append("")
     for key in ("input_shape", "input_type", "output_shape", "output_type"):
-        lines.append("--" + key + "=" + shlex.quote(report[key]) if report[key] is not None else key + "=UNRESOLVED")
+        if key == "output_shape" and report[key] is None:
+            lines.append("output_shapes_by_slot=" + json.dumps(report["output_shapes"]))
+            lines.append("output_shape_cli=UNAVAILABLE (see output labels and shapes above)")
+        else:
+            lines.append("--" + key + "=" + shlex.quote(report[key]) if report[key] is not None else key + "=UNRESOLVED")
     lines.extend("NOTE: " + note for note in report["notes"])
     return "\n".join(lines) + "\n"
 
@@ -273,13 +340,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model_json", help="OMG --mode=1 JSON file")
     parser.add_argument("--output-dir", help="write io.json, inputs.csv, outputs.csv, summary.txt and args.sh")
+    parser.add_argument("--overwrite", action="store_true", help="replace those five report files in an existing --output-dir")
     parser.add_argument("--graph", help="root graph name or printed JSON path when multiple graphs exist")
     parser.add_argument("--dtype-enum", choices=["ge-proto"], help="explicitly decode numeric TensorDescriptor dtype using ge_ir.proto")
     parser.add_argument("--dtype-map", help='explicit numeric dtype JSON map, e.g. {"1":"FP32","2":"FP16"}')
     parser.add_argument("--input-order", help="comma-separated actual ordered Data/RefData node names; no sorting")
+    parser.add_argument("--input-order-source", choices=["auto", "graph-input", "data-index", "json-order"], default="auto",
+                        help="auto prefers complete GraphDef.input, then contiguous Data.index; json-order must be explicit")
     parser.add_argument("--output-names", help="comma-separated actual output tensor names in NetOutput port order")
     args = parser.parse_args()
     try:
+        if args.overwrite and not args.output_dir:
+            raise ValueError("--overwrite requires --output-dir")
         if args.dtype_enum and args.dtype_map:
             raise ValueError("choose --dtype-enum or --dtype-map, not both")
         enum = dict(GE_PROTO) if args.dtype_enum else {}
@@ -291,13 +363,19 @@ def main():
                 enum[number] = kind
         report = inspect(read_json(args.model_json), enum=enum, graph_name=args.graph,
                          ordered_inputs=args.input_order.split(",") if args.input_order else None,
+                         input_order_source=args.input_order_source,
                          output_names=args.output_names.split(",") if args.output_names else None)
         report["source_json"] = str(Path(args.model_json).resolve())
         report["numeric_dtype_mapping"] = args.dtype_map or args.dtype_enum or "UNSELECTED"
         summary = render(report)
         if args.output_dir:
             dest = Path(args.output_dir)
-            dest.mkdir(parents=True, exist_ok=False)
+            dest.mkdir(parents=True, exist_ok=args.overwrite)
+            sources = {Path(path).resolve() for path in (args.model_json, args.dtype_map) if path}
+            for filename in ("io.json", "inputs.csv", "outputs.csv", "summary.txt", "args.sh"):
+                target = dest / filename
+                if target.is_symlink() or target.resolve() in sources or (target.exists() and not target.is_file()):
+                    raise ValueError("refusing to replace source, symlink or non-file: " + str(target))
             (dest / "io.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             for key in ("inputs", "outputs"):
                 write_csv(dest / (key + ".csv"), report[key])
