@@ -142,7 +142,7 @@
     "failed_outputs": 18,
     "stable_outputs": 18,
     "first_failed_graph": "l00_c00_gdn_layer_all",
-    "next_diagnostic": "NPUCL_LOCAL_SYMBOL_TABLE_AND_EXISTING_COMPILE_LOGS; CONTROL_FIELDS_AND_LAYOUT_UNVERIFIED",
+    "next_diagnostic": "BOUNDED_NPUCL_HOST_FUNCTION_DISASSEMBLY; CONTROL_FIELDS_AND_LAYOUT_UNVERIFIED",
     "cause": "UNDETERMINED"
   },
   "latest_convstate_inspection": {
@@ -262,5 +262,42 @@
       "V300_FUSION_PASS_STRING_DOES_NOT_ESTABLISH_WHOLE_OPERATOR_SUPPORT_MATRIX",
       "EMPTY_DYNAMIC_SYMBOL_MATCHES_DO_NOT_PROVE_ABSENT_LOCAL_CODE"
     ]
+  },
+  "latest_convstate_compile_and_symbol_inspection": {
+    "date": "2026-11-16",
+    "evidence_source": "USER_PASTED_ORDINARY_NM_SECTION_LIST_AND_COMPILE_LOG_EXCERPTS",
+    "local_artifact_binding": "NOT_REVERIFIED",
+    "ordinary_symbol_table": "PRESENT",
+    "debug_info_and_debug_line": "NO_MATCH_IN_REPORTED_SECTION_FILTER",
+    "key_functions": {
+      "SetFormatAndDataType": {"start": "0x53d018", "bytes": 111},
+      "GetOutputDesc": {"start": "0x53d458", "bytes": 1050},
+      "BuildLinearAttentionConvstateUpdateParam": {"start": "0x53c98c", "bytes": 400}
+    },
+    "inspected_cases": ["l00_c00_gdn_layer_all", "l00_c01_gdn_layer_all"],
+    "compiler_sequence_observed_both_cases": [
+      "AIR_PARSER_CONVERTFUNC_NOT_EXIST_WARNING",
+      "VERIFY_AND_INFER_SUCCESS",
+      "MULTIPLE_STORES_NOT_SUPPORTED_WARNINGS",
+      "FORCE_SUPPORTED_BY_NPU",
+      "CONVSTATE_GRAPH_BUILDER_GET_OUTPUT_DESC",
+      "SAVE_KERNEL_BIN_INFO"
+    ],
+    "recorded_kernel": {
+      "stub_name": "executor_linear_attention_convstate_update",
+      "bytes": 748,
+      "scope": "COMPILER_LOG_RECORD; NOT_EXTRACTED_OR_VERIFIED_DEVICE_CODE"
+    },
+    "rejected_inferences": [
+      "EARLY_SUPPORT_WARNINGS_ALONE_PROVE_MISSING_OR_SKIPPED_KERNEL",
+      "SMALL_FUNCTION_OR_KERNEL_SIZE_ALONE_PROVES_EMPTY_IMPLEMENTATION",
+      "KERNEL_BIN_SAVE_PROVES_CORRECT_CONTROL_LAYOUT_OR_RUNTIME_WRITES"
+    ],
+    "next_tool": "targets/cpro/tools/inspect_convstate_binary.py",
+    "control_fields": "UNKNOWN",
+    "state_layout": "UNKNOWN",
+    "new_model_compilation": "NOT_RUN",
+    "new_device_execution": "NOT_RUN",
+    "new_numerical_validation": "NOT_RUN"
   }
 }

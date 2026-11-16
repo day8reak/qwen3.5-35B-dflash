@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。三种 ConvState 输出布局候选均未恢复 Decode 历史；当前 DDK 已找到 NPUCL 图构建／选核及执行入口。下一步执行[第 7.6 节 D](#76-整层-gdn-数值失败后的只读检查)的普通符号表与已有编译日志检查，继续核对 llmConfig[128] 和状态布局。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
+**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。三种 ConvState 输出布局候选均未恢复 Decode 历史；L0 Prefill／Decode 编译日志均记录 executor_linear_attention_convstate_update、kernelSize=748。下一步执行[第 7.6 节 E](#76-整层-gdn-数值失败后的只读检查)的限定函数反汇编，核对 llmConfig[128] 和状态布局。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -763,7 +763,7 @@ nm -D -C --defined-only "$DDK_OP_LIB" 2>&1 | grep -i -E \
 
 回传 `ddk-convstate-binaries.txt`、非空的 `ddk-binary-search-errors.txt` 以及命中库的字符串／符号结果。接下来依据实际命中位置继续查注册或转换路径。
 
-**D. 已定位 NPUCL 路径：读取普通符号表与当前编译记录（当前步骤）。**
+**D. 已定位 NPUCL 路径：读取普通符号表与当前编译记录（已回传，下一步看 E）。**
 
 用户回传提供了以下证据；来源为远端粘贴结果，本地未读取或核验这些库的字节：
 
@@ -819,3 +819,26 @@ fi
 ```
 
 回传 `ddk-convstate-details.txt` 和非空的 `ddk-convstate-details-errors.txt`。如果能获取对应版本源码，优先查 `linear_attention_convstate_update_desc.h`、`linear_attention_convstate_update_graph_builder.cc`、`linear_attention_convstate_update_generator.cc`、`linear_attention_convstate_update_kernel.cce` 及其引用的 LLMConfig 结构定义。需要确认的是 x3 各字段读法、初态／末态物理布局和两个输出的语义；目前仍不能猜填控制值或认定数值失败已解决。
+
+**E. 普通符号和编译路径已回传：提取限定函数反汇编（当前步骤）。**
+
+L0 Prefill／Decode 日志依次出现多个 store 的 not supported、compatibility check 的 force supported by NPU、ConvState GetOutputDesc，以及 SaveKernelBinInfo 的 executor_linear_attention_convstate_update／kernelSize=748。这证明本次编译流程保存了该 kernel 的二进制信息；前段警告不能单独证明缺失或跳过算子。它仍不证明运行时读写语义正确。kernelSize 小也不能证明为空实现。
+
+普通符号表保留了 SetFormatAndDataType、GetOutputDesc、BuildLinearAttentionConvstateUpdateParam 等函数地址和大小；本次段检查只返回 .symtab，未显示 .debug_info／.debug_line。Check、IsSupport 和 ProduceTiling 的 3 字节大小不足以判断返回语义，需看指令。本步读取 8 个相关 host 函数和 executor；地址从当前库重新解析，不沿用回传地址。只执行 binutils 的读取命令，不加载库，不修改 DDK。输出是主机 ELF 反汇编，不能直接称为已解码的 NPU kernel。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export CONV_DISASM="$BATCH_ROOT/convstate-disassembly"
+: "${CPRO_DDK_ROOT:?沿用编译这六图的 DDK 根目录}"
+python "$REPO_DIR/targets/cpro/tools/inspect_convstate_binary.py" \
+  --ddk-root "$CPRO_DDK_ROOT" --output "$CONV_DISASM"
+cat "$CONV_DISASM/report.json"
+cat "$CONV_DISASM/set_format.txt" \
+    "$CONV_DISASM/output_desc.txt" \
+    "$CONV_DISASM/build_params.txt"
+```
+
+先回传 report.json 和这三个函数的文本；其余 Check／InitAttr／IsSupport／ProduceTiling／BuildOffChipDataInfo／executor 文件留在同一目录，供需要时继续分析。已有该目录时直接读取报告，不覆盖；工具缺失、符号缺失或反汇编未解码起始指令会明确失败／PARTIAL，不把空输出当成成功。本地用生成的 host ELF 验证了普通／动态符号提取、剥离符号后的 PARTIAL 和输出目录保护；未在用户 DDK 上执行本步。
