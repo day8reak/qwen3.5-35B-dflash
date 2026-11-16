@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN FP16 基线仍为 18 项 FAILED。显式 ConvState 候选六图在 golden_padded 校验处停止；已复现并修正参考卷积输入 FP32、候选 FP16 的校验差异。下一步执行[第 7.8 节重试](#78-golden_padded-类型校验失败后的重试)，先检查原捕获，再重新导出；目标精度尚未验证。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
+**当前整层 GDN FP16 基线仍为 18 项 FAILED。显式 ConvState 候选六图已越过 golden_padded 校验，最新失败为 Dynamo 找不到注入的 helper；已本地复现并修正函数绑定。下一步执行[第 7.8 节重试](#78-reference-convstate-导出失败后的重试)，复用原捕获重新导出；目标精度尚未验证。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -1022,13 +1022,13 @@ cat "$COMPARISON/summary.csv"
 
 本地已检查标量参考、signed zero、捕获拒绝条件、Torch 图导出、输入不变、裁剪控制输入后的身份绑定，以及五项数值通过但历史位损坏仍失败。目标 AIR／OMC 与设备结果待执行；此候选没有宣称解决独立 GDN 的五项 Prefill 失败，也未测试跨调用连续状态反馈。
 
-### 7.8 golden_padded 类型校验失败后的重试
+### 7.8 reference ConvState 导出失败后的重试
 
-六个候选均在校验阶段报 captured golden_padded does not match，尚未进入 TorchAir 导出。已找到与回传 SHA256 完全一致的 NZ 源码：参考更新把拼接结果转为卷积权重 dtype，再写回原 FP16 状态；捕获工具保存的是实际卷积输入的有效后缀。因此 padded 可以是 FP32，而状态仍是 FP16。用户贴出的 CPro 融合注释与当前拼接／截取表达式在值和位置上相符。
+最新六项失败为 InternalTorchDynamoError：原 CPro 模块没有 _probe_convstate_reference 属性。补丁此前把 helper 只放进复制的 globals，Dynamo 的 guard 却按原模块名查找。现在在改写后的 forward 内局部导入真实 helper，原模块不增加属性。用本地原 CPro forward、合成小权重和 NPU 占位实现复现旧错误后，reference/kernel、FP16/FP32 状态、T1/T256 的 Dynamo ATen 导出及 fullgraph 捕获均已检查；这不替代实际 TorchAir/GE 导出或目标精度验证。
 
-旧校验错误地要求两项捕获都为 FP16。本地直接执行哈希匹配的参考 helper，并通过实际 Capture 钩子，复现了该失败。修正只允许 padded 的 FP16→FP32 无损比较；原 FP32 中任何不一致的位仍失败，未降低精度门槛，未改 captured 数据、目标图或 kernel。远端六项是否仅此原因，由下面第一步逐项确认；仍失败时错误会给出两端 shape/dtype 和比较转换方式。
+此前 golden_padded 类型校验已修正：哈希匹配的 NZ 参考将拼接值转为卷积权重 dtype，padded 可为 FP32，状态仍为 FP16。只允许 FP16 候选无损扩大后逐位比较，原 FP32 中任何不同位仍失败，captured 数据不改。最新错误发生在该校验之后；下面命令同时支持这两种已知失败，仍使用原捕获。
 
-在刚才导出失败的主机执行以下命令。它先校验全部六项，再确认旧 air 中只有本次失败的日志及 export.json，保存失败摘要后释放同一 air 槽位。已导出的 AIR、有其他产物或仍有活动进程时拒绝清理；原 gdn-layer 批次和 golden-capture 保留。
+在刚才导出失败的主机执行以下命令。它先校验全部六项，再确认旧 air 中只有本次失败的日志、export.json、schema 和 QLinear 临时源码，保存失败摘要后释放同一 air 槽位。已导出的 AIR、有其他产物或仍有活动进程时拒绝清理；原 gdn-layer 批次和 golden-capture 保留。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
@@ -1068,19 +1068,37 @@ with (root/'.omc.lock').open('a') as lock:
     if air.is_symlink() or any(p.is_symlink() for p in air.rglob('*')):
         raise SystemExit('不清理符号链接')
     m = json.loads((air/'manifest.json').read_text())
+    def known_failure(row):
+        error = row.get('error', '')
+        return row.get('status') == 'FAILED' and (
+            'captured golden_padded does not match' in error or (
+            'InternalTorchDynamoError' in error and
+            "module 'models.modeling_qwen3_5_moe_hiai_cpro' has no attribute '_probe_convstate_reference'" in error))
     if (m.get('status') != 'PARTIAL' or len(m.get('cases', [])) != 6
             or {r['id'] for r in m['cases']} != expected
             or m.get('candidate_options', {}).get('gdn_convstate') != 'reference'
             or m.get('capture_sha256') != sha(capture/'manifest.json')
-            or any(r['status'] != 'FAILED' or 'captured golden_padded does not match' not in r.get('error','')
-                   for r in m['cases'])):
-        raise SystemExit('不是本次全部六项 padded 校验失败的批次')
+            or not all(known_failure(r) for r in m['cases'])):
+        raise SystemExit('不是本组六项已知 reference 导出失败的批次')
     allowed = {'manifest.json'} | {n+'.log' for n in expected} | {'models/'+n+'/export.json' for n in expected}
     allowed_dirs = {'models'} | {'models/'+n for n in expected}
+    for row in m['cases']:
+        prefix = 'models/'+row['id']
+        receipt = json.loads((air/prefix/'export.json').read_text())
+        if not known_failure(receipt) or receipt.get('error') != row['error']:
+            raise SystemExit('逐图失败记录与批次不一致，保留 air')
+        if 'InternalTorchDynamoError' in row['error']:
+            if receipt.get('convstate_reference_check', {}).get('status') != 'PASSED':
+                raise SystemExit('缺少已通过的捕获校验，保留 air')
+            allowed.add(prefix+'/air-schema.pb')
+            allowed_dirs.add(prefix+'/weight')  # 仅允许空目录；有文件则保留
+            for member in ('in_proj_qkv','in_proj_z','in_proj_b','in_proj_a','out_proj'):
+                allowed_dirs.add(prefix+'/'+member)
+                allowed.add(prefix+'/'+member+'/candidate-qlinear-forward.py')
     if any(p.relative_to(air).as_posix() not in (allowed_dirs if p.is_dir() else allowed)
            for p in air.rglob('*')):
         raise SystemExit('air 内还有其他产物，保留原目录')
-    (root/'padded-validation-failure.json').write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n')
+    (root/'reference-export-failure.json').write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n')
     shutil.rmtree(air)
 print('六项捕获校验通过；仅本次失败 air 已释放，可以按第 7.7 节 B 重新导出')
 PY_RETRY

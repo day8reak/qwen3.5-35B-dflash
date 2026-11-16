@@ -80,6 +80,12 @@ def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel'):
             raise ValueError('review changed ConvState update arguments')
         update.func = ast.Name(id='_probe_convstate_reference', ctx=ast.Load())
         update.args = update.args[:2]
+        # A name injected only into copied globals cannot be resolved through
+        # the original source module by Dynamo's guards. Bind the real helper
+        # with a function-local import; leave the source module untouched.
+        tree.body.insert(0, ast.ImportFrom(
+            module='qwen35_moe_dflash.target.layer_probe.convstate_reference',
+            names=[ast.alias(name='tensor_update', asname='_probe_convstate_reference')], level=0))
     # Keep the original FP16 writeback for the installed-kernel candidate.
     state = assignment(tree, 'last_recurrent_state')
     if ast.unparse(state.value) != 'last_recurrent_state.to(torch.float16)':
@@ -104,9 +110,6 @@ def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel'):
     returns[0].value = ast.parse('(output, conv_state, recurrent_state)', mode='eval').body
     module = ast.fix_missing_locations(ast.Module(body=[tree], type_ignores=[]))
     namespace = dict(owner.__globals__)
-    if convstate_mode == 'reference':
-        from .convstate_reference import tensor_update
-        namespace['_probe_convstate_reference'] = tensor_update
     exec(compile(module, evidence['file'], 'exec'), namespace)
     evidence.update(adaptations=[('FP16' if state_dtype == 'float16' else 'FP32') + '_RECURRENT_INPUT_AND_WRITEBACK',
                                  'EXPLICIT_CONV2D_SINGLETON_HEIGHT',
@@ -118,6 +121,7 @@ def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel'):
     evidence['convstate_mode'] = convstate_mode
     if convstate_mode == 'reference':
         evidence['adaptations'].append('REFERENCE_CONVSTATE_CONCAT_TAIL; FULL_CAPTURE_LENGTH_ONLY')
+        evidence['convstate_binding'] = 'FORWARD_LOCAL_IMPORT; ORIGINAL_SOURCE_MODULE_UNCHANGED'
     return namespace[tree.name], evidence
 
 

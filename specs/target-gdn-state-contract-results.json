@@ -360,7 +360,7 @@
   },
   "reference_convstate_candidate": {
     "date": "2026-11-16",
-    "status": "FIRST_EXPORT_6_FAILED_AT_CAPTURE_GUARD; PADDED_DTYPE_FIX_LOCALLY_VERIFIED; RETRY_PENDING",
+    "status": "CAPTURE_GUARD_PASSED; 6_FAILED_AT_DYNAMO_HELPER_BINDING; LOCAL_BINDING_FIX_VERIFIED; TORCHAIR_RETRY_PENDING",
     "option": "--gdn-convstate reference",
     "default": "kernel",
     "implementation": "model/qwen35_moe_dflash/target/layer_probe/convstate_reference.py",
@@ -410,8 +410,37 @@
       "FP32_ONE_BIT_CHANGE_BELOW_FP16_RESOLUTION_REJECTED",
       "PADDED_TO_CONV_INPUT_BINDING_MISMATCH_REJECTED"
     ],
-    "remote_capture_values_and_dtypes": "AWAIT_RETRY_PRECHECK; NOT_READ_LOCALLY",
+    "remote_capture_values_and_dtypes": "SIX_EXPORTS_REACHED_DYNAMO_AFTER_CAPTURE_GATE; RAW_CAPTURE_NOT_READ_LOCALLY",
     "target_graph_change_in_this_fix": false,
+    "model_compilation": "NOT_RUN",
+    "device_execution": "NOT_RUN",
+    "numerical_validation": "NOT_RUN_ON_TARGET"
+  },
+  "reference_convstate_dynamo_binding_failure": {
+    "date": "2026-11-16",
+    "evidence_source": "USER_PASTED_SIX_EXPORT_FAILURES_AND_LOCAL_CPU_DYNAMO_REPRODUCTION",
+    "export_status": "PARTIAL; 6_FAILED",
+    "error": "InternalTorchDynamoError: AttributeError: module 'models.modeling_qwen3_5_moe_hiai_cpro' has no attribute '_probe_convstate_reference'",
+    "stage": "DYNAMO_GUARD_CONSTRUCTION; CAPTURE_GATE_ALREADY_PASSED",
+    "cause": "HELPER_ONLY_IN_COPIED_GLOBALS; DYNAMO_RESOLVES_ORIGINAL_MODULE_ATTRIBUTES",
+    "fix": "FORWARD_LOCAL_IMPORT_FROM_REAL_HELPER_MODULE; ORIGINAL_MODULE_UNCHANGED",
+    "local_validation": {
+      "torch_version": "2.12.1+cpu",
+      "source_sha256": "bd716718818b6b152ece5a2e345a5b674f091f53ba82059c86cd37060511f07d",
+      "scope": "EXTRACTED_ORIGINAL_CPRO_FORWARD; SYNTHETIC_SMALL_WEIGHTS; NPU_STUB; NOT_TORCHAIR_OR_GE",
+      "old_error_reproduced": true,
+      "cases": "REFERENCE_AND_KERNEL; FP16_AND_FP32_STATE; T1_AND_T256; 8_CASES",
+      "checks": [
+        "DYNAMO_ATEN_EXPORT",
+        "FULLGRAPH_COMPILE_TWO_CALLS_ONE_GRAPH",
+        "THREE_OUTPUTS_EXACT_VS_EAGER",
+        "INPUT_IMMUTABILITY",
+        "SOURCE_FILE_AND_MODULE_UNCHANGED",
+        "REFERENCE_GRAPH_HAS_NO_CONVSTATE_CUSTOM_OP",
+        "KERNEL_GRAPH_RETAINS_CONVSTATE_CUSTOM_OP"
+      ]
+    },
+    "golden": "UNCHANGED",
     "model_compilation": "NOT_RUN",
     "device_execution": "NOT_RUN",
     "numerical_validation": "NOT_RUN_ON_TARGET"
