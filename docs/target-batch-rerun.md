@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。已确认 Prefill ConvState 等于全零旧输入，Decode 与旧输入不同；六图 linear_update_tensor 都是全零。下一步执行[第 7.6 节](#76-整层-gdn-数值失败后的只读检查)的布局及控制来源检查，复用已有 dump。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
+**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。三种 ConvState 输出布局候选均未恢复 Decode 历史；当前 DDK 已找到 NPUCL 图构建／选核及执行入口。下一步执行[第 7.6 节 D](#76-整层-gdn-数值失败后的只读检查)的普通符号表与已有编译日志检查，继续核对 llmConfig[128] 和状态布局。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -696,7 +696,7 @@ cat "$ddk_search_output"
 
 当前 AIR／OMC、execution、recovery 和 comparison 均继续使用。A 的目录若已存在，直接读取已生成的报告。A、B 可独立执行；跨主机时分别回传各自结果。B 的结果为 BATCH_ROOT/ddk-convstate.txt 和 BATCH_ROOT/ddk-search-errors.txt，没有新增导出、编译或上板任务。
 
-**C. 文本无匹配时，查 DDK 二进制里的算子名。** 用户提供的 `torch.library.define` 和 `ge.custom_op` 代码证明这是自定义前端接口及 GE 节点映射；`register_fake` 只描述输出，不提供实际计算。当前能确认 DDK 识别了该 GE 名称，尚未确认实现来自内置库还是另行加载的算子包。
+**C. 文本无匹配时，查 DDK 二进制里的算子名（已回传，下一步看 D）。** 用户提供的 `torch.library.define` 和 `ge.custom_op` 代码证明这是自定义前端接口及 GE 节点映射；`register_fake` 只描述输出，不提供实际计算。最新二进制回传已定位 DDK 随包 NPUCL 图构建和执行入口，见 D。
 
 下面扫描当前 DDK 中的共享库、静态库、对象文件与 omg，不加载或执行它们。沿用原编译主机；不用 Torch、NPU 环境或重新编译。命中结果只是“该文件包含名称”，可能属于注册、形状推导、转换或计算实现。
 
@@ -748,10 +748,11 @@ fi
 )
 ```
 
-命中后，将下列 `DDK_OP_LIB` 设成结果中的一个真实文件路径，再看名称附近的字符串和已定义符号：
+命中后，下面直接给已找到的 kernel 库赋值，再看名称附近的字符串和已定义符号；变量检查本身不会赋值：
 
 ```bash
-: "${DDK_OP_LIB:?请设置刚才命中的一个库文件路径}"
+: "${CPRO_DDK_ROOT:?沿用编译这六图的 DDK 根目录}"
+export DDK_OP_LIB="$CPRO_DDK_ROOT/tools/tools_omg/master/lib64/libai_npucore_elementary_kernel.so"
 strings -a "$DDK_OP_LIB" | grep -i -E \
   'LinearAttentionConvstateUpdate|linear_attention_convstate_update|convstate|llmconfig' | sed -n '1,120p'
 nm -D -C --defined-only "$DDK_OP_LIB" 2>&1 | grep -i -E \
@@ -761,3 +762,60 @@ nm -D -C --defined-only "$DDK_OP_LIB" 2>&1 | grep -i -E \
 `strings`／`nm` 来自 binutils；若命令不存在，先回传第一段的命中路径即可。动态符号表可能被裁剪；静态库／对象文件改用 `nm -C --defined-only`。例如命中 `LinearAttentionConvstateUpdateInfer`／`Verify` 仅说明包含形状推导／校验代码；需要具体计算、转换实现或控制字段读法才能解释 x3。没有符号、没有源码均不等于没有实现。不要仅据名称修改 `llmConfig[128]`。
 
 回传 `ddk-convstate-binaries.txt`、非空的 `ddk-binary-search-errors.txt` 以及命中库的字符串／符号结果。接下来依据实际命中位置继续查注册或转换路径。
+
+**D. 已定位 NPUCL 路径：读取普通符号表与当前编译记录（当前步骤）。**
+
+用户回传提供了以下证据；来源为远端粘贴结果，本地未读取或核验这些库的字节：
+
+| DDK 库 | 已观察到的证据 |
+| --- | --- |
+| libgraph_host.so | GE 注册、Verify／Infer；x1/x2 要求 FP16，x3 在校验中称 llmConfig，shape 要求一维 [128] |
+| libai_npucore_elementary.so | Desc、GraphBuilder、Strategy、Generator、KernelBuilder、Flowtable 名称及源文件路径 |
+| libai_npucore_elementary_kernel.so | 已定义动态文本符号 run_executor_linear_attention_convstate_update，以及 kernel.cce 名称 |
+| libomg_internal.so | ConvState 的 NPU 支持处理字符串 |
+
+这已将定位范围推进到 DDK 随包提供的 NPUCL 算子路径；不能再用“自定义算子目录搜不到”解释为缺少实现。执行入口存在仍不证明本次 OMC 选用了哪段代码，或当前控制量／布局符合接口。融合 pass 中的 V300 限制不等于整个算子的支持范围；库中的 /srv/workspace/... 路径也不表示安装了源码。
+
+前一条 nm -D 只查动态符号。本次普通符号表优先检查参数生成、格式设置和描述构造；剥离过的库可能仍没有符号。编译日志则用于核对实际选核路径。命令只读，不重新导出或上板。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+(
+set -e
+: "${CPRO_DDK_ROOT:?沿用编译这六图的 DDK 根目录}"
+command -v nm >/dev/null
+command -v readelf >/dev/null
+ddk_lib="$CPRO_DDK_ROOT/tools/tools_omg/master/lib64/libai_npucore_elementary.so"
+test -f "$ddk_lib"
+mkdir -p "$BATCH_ROOT"
+ddk_report="$BATCH_ROOT/ddk-convstate-details.txt"
+ddk_errors="$BATCH_ROOT/ddk-convstate-details-errors.txt"
+: > "$ddk_errors"
+{
+  printf 'LIB=%s\n普通符号：\n' "$ddk_lib"
+  nm -S -C --defined-only "$ddk_lib" 2>> "$ddk_errors" |
+    grep -E 'BuildLinearAttentionConvstateUpdateParam|LinearAttentionConvstateUpdate.*(InitAttr|Check|SetFormatAndDataType|GetOutputDesc|Build|Fill|DumpFlowtable|ProduceTiling)|ProcLinearAttentionConvstateUpdateFlowtableParams|CheckLinearAttentionConvstateUpdateFlowtable' || true
+  printf '\n符号／调试信息段：\n'
+  readelf -W -S "$ddk_lib" 2>> "$ddk_errors" |
+    grep -E '\.symtab|\.debug_info|\.debug_line|\.gnu_debuglink' || true
+  for ddk_case in l00_c00_gdn_layer_all l00_c01_gdn_layer_all; do
+    ddk_log="$BATCH_ROOT/omc/models/$ddk_case/omc/compile.log"
+    printf '\nCOMPILE_LOG=%s\n' "$ddk_log"
+    if test -f "$ddk_log"; then
+      grep -n -i -E 'LinearAttentionConvstateUpdate|linear_attention_convstate_update|linear_attention_conv_state' \
+        "$ddk_log" | tail -n 120 || true
+    else
+      printf '日志不存在；没有重跑编译。\n'
+    fi
+  done
+} > "$ddk_report"
+cat "$ddk_report"
+if test -s "$ddk_errors"; then
+  cat "$ddk_errors"
+fi
+)
+```
+
+回传 `ddk-convstate-details.txt` 和非空的 `ddk-convstate-details-errors.txt`。如果能获取对应版本源码，优先查 `linear_attention_convstate_update_desc.h`、`linear_attention_convstate_update_graph_builder.cc`、`linear_attention_convstate_update_generator.cc`、`linear_attention_convstate_update_kernel.cce` 及其引用的 LLMConfig 结构定义。需要确认的是 x3 各字段读法、初态／末态物理布局和两个输出的语义；目前仍不能猜填控制值或认定数值失败已解决。
