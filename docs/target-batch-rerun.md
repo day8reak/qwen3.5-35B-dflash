@@ -695,3 +695,69 @@ cat "$ddk_search_output"
 回传 conv-layout-summary.txt 和 ddk-convstate.txt。如果 DDK 只有接口／shape 声明，还需要 LinearAttentionConvstateUpdate 的实现或 llmConfig[128] 字段定义；不能把零占位直接猜改为某个长度。源码中的候选声明也不单独证明编译后采用的实现。
 
 当前 AIR／OMC、execution、recovery 和 comparison 均继续使用。A 的目录若已存在，直接读取已生成的报告。A、B 可独立执行；跨主机时分别回传各自结果。B 的结果为 BATCH_ROOT/ddk-convstate.txt 和 BATCH_ROOT/ddk-search-errors.txt，没有新增导出、编译或上板任务。
+
+**C. 文本无匹配时，查 DDK 二进制里的算子名。** 用户提供的 `torch.library.define` 和 `ge.custom_op` 代码证明这是自定义前端接口及 GE 节点映射；`register_fake` 只描述输出，不提供实际计算。当前能确认 DDK 识别了该 GE 名称，尚未确认实现来自内置库还是另行加载的算子包。
+
+下面扫描当前 DDK 中的共享库、静态库、对象文件与 omg，不加载或执行它们。沿用原编译主机；不用 Torch、NPU 环境或重新编译。命中结果只是“该文件包含名称”，可能属于注册、形状推导、转换或计算实现。
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+(
+set -e
+: "${CPRO_DDK_ROOT:?沿用编译这六图的 DDK 根目录}"
+ddk_scan_root="$(cd -- "$CPRO_DDK_ROOT" && pwd -P)"
+mkdir -p "$BATCH_ROOT"
+ddk_hits="$BATCH_ROOT/ddk-convstate-binaries.txt"
+ddk_errors="$BATCH_ROOT/ddk-binary-search-errors.txt"
+ddk_candidates="$BATCH_ROOT/ddk-binary-candidates.nul"
+ddk_pattern='LinearAttentionConvstateUpdate|linear_attention_convstate_update'
+if command -v rg >/dev/null 2>&1; then
+  ddk_search=(rg --no-config --color never -a -i -l)
+else
+  command -v grep >/dev/null || { echo '需要 rg 或 grep 才能搜索'; exit 2; }
+  ddk_search=(grep -a -i -l -E)
+fi
+: > "$ddk_hits"
+: > "$ddk_errors"
+printf '搜索 DDK 二进制：%s\n' "$ddk_scan_root"
+if ! find "$ddk_scan_root" \( -type f -o -type l \) \
+  \( -name '*.so*' -o -name '*.a' -o -name '*.o' -o -name omg \) \
+  -print0 > "$ddk_candidates" 2>> "$ddk_errors"; then
+  cat "$ddk_errors"
+  exit 2
+fi
+while IFS= read -r -d '' ddk_file; do
+  ddk_rc=0
+  "${ddk_search[@]}" -- "$ddk_pattern" "$ddk_file" \
+    >> "$ddk_hits" 2>> "$ddk_errors" || ddk_rc=$?
+  if test "$ddk_rc" -gt 1; then
+    printf '搜索失败（%s）：%s\n' "$ddk_rc" "$ddk_file" >> "$ddk_errors"
+  fi
+done < "$ddk_candidates"
+if test -s "$ddk_hits"; then
+  cat "$ddk_hits"
+else
+  echo '当前扫描范围内没有找到算子名；不能据此断言缺少实现。'
+fi
+if test -s "$ddk_errors"; then
+  echo '部分文件未能完成扫描：'
+  cat "$ddk_errors"
+fi
+)
+```
+
+命中后，将下列 `DDK_OP_LIB` 设成结果中的一个真实文件路径，再看名称附近的字符串和已定义符号：
+
+```bash
+: "${DDK_OP_LIB:?请设置刚才命中的一个库文件路径}"
+strings -a "$DDK_OP_LIB" | grep -i -E \
+  'LinearAttentionConvstateUpdate|linear_attention_convstate_update|convstate|llmconfig' | sed -n '1,120p'
+nm -D -C --defined-only "$DDK_OP_LIB" 2>&1 | grep -i -E \
+  'LinearAttentionConvstateUpdate|linear_attention_convstate_update|convstate|no symbols|file format'
+```
+
+`strings`／`nm` 来自 binutils；若命令不存在，先回传第一段的命中路径即可。动态符号表可能被裁剪；静态库／对象文件改用 `nm -C --defined-only`。例如命中 `LinearAttentionConvstateUpdateInfer`／`Verify` 仅说明包含形状推导／校验代码；需要具体计算、转换实现或控制字段读法才能解释 x3。没有符号、没有源码均不等于没有实现。不要仅据名称修改 `llmConfig[128]`。
+
+回传 `ddk-convstate-binaries.txt`、非空的 `ddk-binary-search-errors.txt` 以及命中库的字符串／符号结果。接下来依据实际命中位置继续查注册或转换路径。
