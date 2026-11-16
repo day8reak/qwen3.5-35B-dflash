@@ -72,3 +72,33 @@ done
 这里不传 `--dynamic_dims`：两个 AIR 分别走自己的静态导出分支。编译后一起保留 OMC 及其外置权重，再读取新 OMC 的输入输出 ABI；源 AIR 输入检查和 OMG 返回成功都不代表整网精度或性能已验证。
 
 本地已用合成 ModelDef／GraphDef 检查常量排除、输入改名、81 输入图、动态／缺失形状拒绝、报告覆盖保护及无第三方包 CLI。实际 40 层 AIR／DDK 编译由目标环境执行。
+
+## 解析 OMG 导出的 model.json
+
+OMC 可通过 OMG 的 `--mode=1` 导出 JSON。若 `--json` 的绝对路径被 DDK 拒绝，从 OMC 目录执行并传相对文件名，例如 `--om=实际模型名.omc --json=model_io.json`。外置权重保持在原位置。
+
+`targets/cpro/tools/parse_model_json.py` 是独立标准库脚本，单文件复制到服务器也能运行，不需要安装项目包、Torch 或 NPU 扩展。对当前已核对的 GE protobuf dtype 数值，执行：
+
+```bash
+export OMC_JSON="$(dirname "$OMC")/model_io.json"
+python "$REPO_DIR/targets/cpro/tools/parse_model_json.py" "$OMC_JSON" \
+  --dtype-enum ge-proto \
+  --output-dir "$AI_RUN_DIR/target/omc-inspection/io"
+```
+
+输出目录需是新目录；省略 `--output-dir` 时只打印结果。生成：
+
+- `io.json`：完整输入输出描述和 `input_shape`、`input_type`、`output_shape`、`output_type`。
+- `inputs.csv`、`outputs.csv`：名称、图中索引、shape、dtype、格式、逻辑字节数。
+- `summary.txt`：可读表格和候选参数。
+- `args.sh`：`INPUT_SHAPE`、`INPUT_TYPE`、`OUTPUT_SHAPE`、`OUTPUT_TYPE` 四个 shell 变量；未确定的项目为空。
+
+字符串类型如 `DT_FLOAT16` 可直接解析；数字 dtype 默认不猜。`--dtype-enum ge-proto` 使用 TensorDescriptor 的 protobuf 枚举（1=FP32、2=FP16、7=INT32、8=INT64），不是 C++ GE/HIAI 的枚举。不同 schema 可通过 `--dtype-map /path/dtypes.json` 提供显式数值映射，例如 `{"1":"FP32","2":"FP16","8":"INT64"}`。
+
+脚本只选择一个根图，排除常量和内部子图。输入优先按完整、连续且唯一的 `Data/RefData.attr.index` 排列，否则检查完整的 `GraphDef.input` 列表；两者冲突或均不足时，不生成 `input_type`。可用 `--input-order '节点A,节点B,...'` 指定已核对的全部输入节点顺序。多个根图需加 `--graph graph_1` 或报告中的 JSON 路径。
+
+输出按单个 NetOutput 的数据端口排列，忽略控制边。若描述没有输出张量名称，保留逐槽 shape/type，但不编造 `output0` 作为 `--output_shape` 名称；可用 `--output-names '实际名称A,实际名称B,...'` 补充。静态模型通常不需要传运行工具的 shape 覆盖参数；工具帮助中的 shape 参数用于 flexible enum shape 场景。
+
+这些是编译图给出的候选参数，`runtime_order_verified=false`，不能自动证明 HIAI 的实际槽位顺序。输入文件列表必须与实际运行槽位对应；逻辑字节数不包含布局 padding 或分配对齐。动态维度的字节数保留为空，不替换成 1。
+
+本地已检查标准库独立执行、图索引排序、数值 dtype 映射、主图边界、缺失与动态 shape、多图选择、控制边、输出名称缺失和 shell 转义。真实 DDK JSON 与设备输入绑定仍需目标环境核对。
