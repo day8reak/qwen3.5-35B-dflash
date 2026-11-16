@@ -4,8 +4,6 @@ import functools
 import importlib
 import inspect
 
-import torch
-
 from .source_regions import definition
 from .attention_inspect import attention_length_constant
 
@@ -17,6 +15,10 @@ def gdn_state_contract(enabled, state_dtype='float32'):
         return
     if state_dtype not in ('float16', 'float32'):
         raise ValueError('GDN state dtype must be float16 or float32')
+    # Only source export needs Torch; compiled ABI checks also run on board hosts
+    # where importing it may auto-load an unavailable torch_npu extension.
+    import torch
+
     module = importlib.import_module('torchair._ge_concrete_graph.fx2ge_converter')
     ge = importlib.import_module('torchair._ge_concrete_graph.ge_apis')
     from torchair.ge import DataType

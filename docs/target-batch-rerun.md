@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前按用户确认的 FP16 算子接口测试整层 GDN。执行[第 7 节](#7-整层-gdnfp16-状态测试)：复用现有 golden，重新导出六图，再编译、上板、回收和比较。原 FP32 请求批次虽 6/6 编译成功，但因实际 FP16 ABI 在准备阶段被拦截，设备未执行。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
+**当前整层 GDN 按 FP16 接口测试。最新上板请求在 prepare 阶段因 torch_npu 自动加载失败，设备未执行；已移除准备路径对 Torch 的不必要依赖。已有 FP16 AIR／OMC 时执行[第 7.5 节](#75-准备阶段-torch_npu-加载失败后重试)，复用现有产物重试上板。尚未切换 FP16 的旧批次才从[第 7 节](#7-整层-gdnfp16-状态测试)开始。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md#attention-独立参考验证)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -519,3 +519,87 @@ cat "$COMPARISON/summary.csv"
 当前安装 DDK 100.520.020.010 的两份 ChunkGatedDeltaRule 注册都声明 g、initial_state、last_recurrent_state 为 FP16。C++ 源码 SHA256 01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a 与历史相同，第 1855／1858 行均直接用 half 指针绑定状态缓冲区。扫描 PARTIAL 仅来自两个候选目录不存在，未否定这些已读取的声明和源码。编译二进制选择与内核内部累加 dtype 仍未独立核验。
 
 用户已确认按 FP16 跑，当前执行第 7 节。状态 shape [1,32,128,128] 的实际 FP16 输出为 1,048,576 bytes，原 FP32 golden 为 2,097,152 bytes；读取时分别使用各自 dtype/bytes，保持五项比较门槛。无需使用 OMG --output_type 补 FP32 输出。整层新批次编译和设备数值尚待回传。
+
+### 7.5 准备阶段 torch_npu 加载失败后重试
+
+适用于本次 `stage=prepare`、`device_execution=NOT_RUN`、`Failed to load the backend extension: torch_npu`。原因是 compiled_state_contract 所在模块曾在导入时加载 Torch；现在只有源 AIR 导出的 converter 适配才导入 Torch。准备和 ABI 检查不再触发该后端。整层六图的 `_gdn_layer_all` 用例名也已纳入启动、回收共用的校验。
+
+保留现有 FP16 AIR、OMC 和原始 golden，不需要重新采集、导出或编译，也不需要更换上板环境。下面只清理已确认未上板的失败 execution，并保存其 result.json；有设备请求或其他文件时停止清理。
+
+**A. 更新代码与路径（原上板主机）**
+
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+git -C "$REPO_DIR" pull --ff-only origin main
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+export OMC_BATCH="$BATCH_ROOT/omc"
+export EXECUTION="$BATCH_ROOT/execution"
+export RECOVERY="$BATCH_ROOT/recovery"
+export COMPARISON="$BATCH_ROOT/comparison"
+export RUNTIME_CONFIG="${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+export PYTHONDONTWRITEBYTECODE=1
+```
+
+**B. 清理这次准备失败的 execution**
+
+原命令已经退出后执行。它保留 `prepare-failure.json`，AIR／OMC 不变；不能用第 7 节 A 的旧 FP32 批次清理命令代替。
+
+```bash
+PYTHONPATH="$REPO_DIR/model${PYTHONPATH:+:$PYTHONPATH}" python - <<'PY_RETRY'
+import fcntl, json, os, shutil
+from pathlib import Path
+from qwen35_moe_dflash.execution.run_layout import _active_processes
+
+run = Path(os.environ['AI_RUN_DIR']).resolve()
+root = Path(os.environ['BATCH_ROOT']).absolute()
+if root.is_symlink() or root.resolve() != run/'target/tests/gdn-layer':
+    raise SystemExit('BATCH_ROOT 不是本轮整层 GDN 测试目录')
+with (root/'.omc.lock').open('a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if _active_processes(root):
+        raise SystemExit('本组测试仍有本地进程，保留 execution')
+    manifest = json.loads((root/'air/manifest.json').read_text())
+    if manifest.get('candidate_options', {}).get('gdn_state_dtype') != 'float16':
+        raise SystemExit('需要已导出的 FP16 批次；旧 FP32 批次按第 7 节处理')
+    folder, saved = root/'execution', root/'prepare-failure.json'
+    if folder.is_symlink() or saved.is_symlink():
+        raise SystemExit('不处理符号链接')
+    if folder.exists():
+        if any(p.name not in {'result.json', 'fixture'} for p in folder.iterdir()):
+            raise SystemExit('发现准备阶段之外的文件，保留 execution')
+        if any(p.is_symlink() for p in folder.rglob('*')):
+            raise SystemExit('execution 内有符号链接，保留原目录')
+        result = json.loads((folder/'result.json').read_text())
+        if (result.get('artifact_kind') != 'qwen35-draft-vector-validation'
+                or result.get('status') != 'FAILED' or result.get('stage') != 'prepare'
+                or result.get('device_execution') != 'NOT_RUN'
+                or result.get('lock_state') != 'NO_KNOWN_OWNED_LOCK'
+                or result.get('launch_requested') or result.get('board_attempt')
+                or result.get('uncertain') or result.get('active_child_count')
+                or 'Failed to load the backend extension: torch_npu' not in result.get('error', '')):
+            raise SystemExit('不是本次已结束的 Torch 导入失败，保留 execution')
+        saved.write_text(json.dumps(result, ensure_ascii=False, indent=2)+'\n')
+        shutil.rmtree(folder)
+print('execution 可重试，现有 AIR／OMC 保留')
+PY_RETRY
+```
+
+**C. 重试上板**
+
+```bash
+(
+set -e
+: "${BIP:?沿用原 HDC 服务端 IP:端口}" "${SN:?沿用原设备序列号}"
+: "${CPRO_DDK_ROOT:?沿用本机实际 DDK 根目录}"
+test -f "$RUNTIME_CONFIG"
+test -f "$OMC_BATCH/compile.json"
+test -f "$BATCH_ROOT/air/manifest.json"
+test ! -e "$EXECUTION"
+python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
+  --compiled "$OMC_BATCH" --config "$RUNTIME_CONFIG" \
+  --ddk-root "$CPRO_DDK_ROOT" --output "$EXECUTION" --apply
+)
+```
+
+启动成功后按第 7.1 节 D／E 回收和比较同一个请求。准备阶段修复仅通过本地模拟 OMC 描述的六用例检查（禁止导入 Torch），不代表设备执行或整层精度已通过；仍需回传 18 个输出的 summary.csv。

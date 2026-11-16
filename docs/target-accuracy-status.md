@@ -2,6 +2,8 @@
 
 阶段与标准更新：2026-11-13；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求批次 **6/6 编译成功，但末态 ABI 为 FP16**，准备阶段拦截，设备未执行。安装注册及源码确认使用 FP16 状态接口；用户已选择按 FP16 重新导出六图，精度结果待回传；GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
+2026-11-16 进展：最新整层 GDN 请求停在 prepare 的 torch_npu 后端导入，设备及数值验证均 NOT_RUN。已将 Torch 依赖移到源图导出路径，并修复启动／回收对整层 `_all` 用例名的校验。本地模拟六用例可在禁止加载 Torch 时完成准备；现有 FP16 AIR／OMC 按[第 7.5 节](target-batch-rerun.md#75-准备阶段-torch_npu-加载失败后重试)复用重试，精度状态仍待设备结果。
+
 **当前浮点标准（CPro / CHS 共用）**：按用户 2026-11-13 指定的下表，五项全部满足才通过；严格比较未四舍五入的值。此标准替换此前 cosine ≥0.9999 和量化 out_proj 单独 L2<2% 的判定。Cache 继续要求整缓存逐位一致，整数／索引／控制量继续精确比较。
 
 | 误差对比算法 | 精度正常的参考标准 | JSON / CSV 字段 |
