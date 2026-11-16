@@ -40,6 +40,36 @@ def difference(actual, reference):
         relative_l2=delta/norm if norm else (0.0 if delta == 0 else None))
 
 
+def conv_layout_hypotheses(actual, previous, golden, phase):
+    """Bounded serialization hypotheses, never applied to fixtures or verdicts.
+
+    Decode's shift comparison tests the source BCK history convention. Matching
+    a permutation alone cannot establish the installed operator's ABI.
+    """
+    if actual.shape != previous.shape or actual.shape != golden.shape or actual.ndim != 3:
+        raise ValueError('ConvState layout diagnostic requires identical [B,C,K] extents')
+    b, c, k = actual.shape
+    candidates = [('SOURCE_BCK', actual),
+                  ('SERIALIZED_BKC', actual.reshape(b, k, c).transpose(0, 2, 1))]
+    if c % 16 == 0:
+        candidates.append(('SERIALIZED_BC1KC0_16',
+            actual.reshape(b, c//16, k, 16).transpose(0, 1, 3, 2).reshape(b, c, k)))
+    rows = []
+    for name, value in candidates:
+        lanes = [dict(actual_history_slot=i,
+            vs_old=[difference(value[..., i], previous[..., j]) for j in range(k)],
+            vs_golden=[difference(value[..., i], golden[..., j]) for j in range(k)]) for i in range(k)]
+        row = dict(hypothesis=name, actual_vs_golden=difference(value, golden), history_slots=lanes)
+        if phase == 'decode' and k > 1:
+            row['source_shift_left_history'] = difference(value[..., :-1], previous[..., 1:])
+            row['golden_shift_left_history'] = difference(golden[..., :-1], previous[..., 1:])
+        rows.append(row)
+    return dict(status='HYPOTHESES_ONLY', invocation=0,
+        scope='OUTPUT_BYTES_ONLY; SOURCE_INPUT_AND_GOLDEN_BCK_UNCHANGED; NOT_AN_ABI_OR_ACCURACY_VERDICT',
+        serialized_axes=dict(SOURCE_BCK='B,C,K', SERIALIZED_BKC='B,K,C',
+                             SERIALIZED_BC1KC0_16='B,C/16,K,16'), candidates=rows)
+
+
 def _array(fixture, name, spec, output=False):
     dtype = spec['golden_dtype'] if output else spec['dtype']
     path = checked(fixture, dict(path=f'{name}/{"golden" if output else "input"}_{spec["index"]}.bin',
@@ -121,6 +151,7 @@ def _inspect_case(case, meta, fixture, native):
         for i in range(conv.shape[-1])]
     return dict(case=name, layer=case['layer'], call=case['call'], phase=case['phase'], status='INSPECTED',
         controls=controls, outputs=rows, conv_history_slots=lanes,
+        conv_layout_hypotheses=conv_layout_hypotheses(conv, previous, expected, case['phase']),
         conv_history_scope='CAPTURED_SOURCE_BCK_COORDINATES; NO_LAYOUT_REPAIR_OR_SLOT_REBINDING',
         observation=('CONV_OUTPUT_EQUALS_OLD_INPUT_BITS' if all(old_matches[1])
                      else 'CONV_OUTPUT_DIFFERS_FROM_OLD_INPUT_BITS'),
@@ -145,6 +176,11 @@ def inspect_gdn_outputs(fixture, native, output):
     lines = ['Read-only whole-GDN state-output inspection; no export, compilation or device execution.',
              'No values, layouts, output order, golden or accuracy thresholds changed.',
              'Equality to old input is an observation; kernel writes and storage aliases remain unverified.', '']
+    layout_lines = ['Read-only ConvState output serialization hypotheses; invocation 0 only.',
+        'BCK source inputs and golden unchanged; all candidates reported, none selected as an ABI fix.',
+        'Each lane matrix entry counts equal values across B*C elements; rows=actual K, columns=reference K.',
+        'Full bit-equality and nonfinite handling are retained in report.json; no new accuracy verdict.',
+        'Current capture.py synthesizes zero linear_update_tensor; this policy is not an installed control-field contract.', '']
     for case in selected:
         try:
             row = _inspect_case(case, meta, fixture, native)
@@ -161,7 +197,22 @@ def inspect_gdn_outputs(fixture, native, output):
         else:
             lines.append(row['error'])
         lines.append('')
+        layout_lines.append(f'{row["case"]}: {row["status"]}')
+        if row['status'] == 'INSPECTED':
+            for candidate in row['conv_layout_hypotheses']['candidates']:
+                compact = {key: value for key, value in candidate.items() if key != 'history_slots'}
+                compact['lane_elements'] = candidate['history_slots'][0]['vs_old'][0]['elements']
+                for reference in ('old', 'golden'):
+                    compact[f'equal_values_vs_{reference}_lanes'] = [
+                        [d['elements']-d['mismatched_elements'] for d in lane[f'vs_{reference}']]
+                        for lane in candidate['history_slots']]
+                layout_lines.append(json.dumps(compact))
+        else:
+            layout_lines.append(row['error'])
+        layout_lines.append('')
     save_json(out/'report.json', report)
     (out/'summary.txt').write_text('\n'.join(lines)+'\n')
+    (out/'conv-layout-summary.txt').write_text('\n'.join(layout_lines)+'\n')
     return dict(status=report['status'], cases=len(selected), report=str(out/'report.json'),
-        summary=str(out/'summary.txt'), numerical_validation='NOT_RUN', model_compilation='NOT_RUN', device_execution='NOT_RUN')
+        summary=str(out/'summary.txt'), conv_layout_summary=str(out/'conv-layout-summary.txt'),
+        numerical_validation='NOT_RUN', model_compilation='NOT_RUN', device_execution='NOT_RUN')

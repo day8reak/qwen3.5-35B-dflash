@@ -142,7 +142,79 @@
     "failed_outputs": 18,
     "stable_outputs": 18,
     "first_failed_graph": "l00_c00_gdn_layer_all",
-    "next_diagnostic": "COMPARE_CONV_STATE_OUTPUT_WITH_OLD_INPUT; NO_NEW_DEVICE_EXECUTION",
+    "next_diagnostic": "CONV_STATE_SERIALIZATION_HYPOTHESES_AND_INSTALLED_CONTROL_CONTRACT; NO_NEW_DEVICE_EXECUTION",
     "cause": "UNDETERMINED"
+  },
+  "latest_convstate_inspection": {
+    "date": "2026-11-16",
+    "evidence_source": "USER_PASTED_OUTPUT_INSPECTION_SUMMARY",
+    "local_artifact_binding": "NOT_REVERIFIED",
+    "cases": 6,
+    "invocations_per_case": 10,
+    "all_outputs_repeated_bitwise_stable": true,
+    "controls": {
+      "linear_update_tensor": {
+        "dtype": "int32",
+        "shape": [
+          128
+        ],
+        "all_zero_all_cases": true
+      },
+      "effective_length": {
+        "dtype": "int16",
+        "prefill": [
+          256
+        ],
+        "decode": [
+          1
+        ]
+      }
+    },
+    "prefill": {
+      "layers": [
+        0,
+        1,
+        2
+      ],
+      "conv_output_all_zero": true,
+      "conv_output_equals_old_bits_all_invocations": true,
+      "golden_nonzero_by_layer": [
+        32311,
+        31938,
+        32307
+      ]
+    },
+    "decode": {
+      "layers": [
+        0,
+        1,
+        2
+      ],
+      "conv_output_equals_old_bits_all_invocations": false,
+      "conv_elements": 32768,
+      "actual_vs_old_mismatched_elements_by_layer": [
+        32539,
+        32350,
+        32536
+      ],
+      "actual_vs_old_relative_l2_by_layer": [
+        1.4363206061146627,
+        1.4537085249337285,
+        1.4575543692806017
+      ]
+    },
+    "recurrent_output_differs_from_old_all_cases": true,
+    "rejected_hypothesis": "ALL_SIX_CONV_OUTPUTS_RETURN_UNCHANGED_OLD_STATE",
+    "cause": "UNDETERMINED; CONTROL_SEMANTICS_AND_PHYSICAL_LAYOUT_NOT_CONFIRMED"
+  },
+  "convstate_control_provenance_review": {
+    "evidence_source": "LOCAL_CAPTURE_IMPLEMENTATION_AND_HISTORICAL_PRIVATE_SOURCE_REVIEW",
+    "capture_tool": "model/qwen35_moe_dflash/target/layer_probe/capture.py",
+    "auxiliary_policy": "ORIGINAL_CPRO_EXPORT_ZERO_INT32_128",
+    "control_origin": "SYNTHESIZED_ZERO_PLACEHOLDER; NOT_OBSERVED_REFERENCE_CONTROL",
+    "historical_nz_update": "CONCAT_OLD_STATE_AND_PROJECTED_QKV; COPY_LAST_K; NO_LINEAR_UPDATE_TENSOR",
+    "remote_private_source_match": "NOT_REVERIFIED",
+    "installed_control_fields": "UNKNOWN",
+    "installed_state_layout": "UNKNOWN"
   }
 }

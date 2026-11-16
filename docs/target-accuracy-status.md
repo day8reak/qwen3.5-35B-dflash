@@ -1,8 +1,8 @@
 # Target 精度状态
 
-阶段与标准更新：2026-11-13；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求批次 **6/6 编译成功，但末态 ABI 为 FP16**，准备阶段拦截，设备未执行。安装注册及源码确认使用 FP16 状态接口；用户已选择按 FP16 重新导出六图，精度结果待回传；GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
+阶段与标准更新：2026-11-16；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求因末态 ABI 为 FP16 在准备阶段拦截；用户选择 FP16 后六图已执行，18 个输出均未通过精度门槛。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
-2026-11-16 最新结果：准备阶段的 Torch 导入问题已修复，用户回传整层 GDN 六图、18 个输出的比较结果：**0 PASSED / 18 FAILED，全部 stable=True**。本次已进入设备输出比较，FP16 接口可跑；数值尚未对齐。下一步先对已有 dump 检查 ConvState 是否返回旧输入，执行[只读状态检查](target-batch-rerun.md#76-整层-gdn-数值失败后的只读检查)，复用现有 AIR／OMC 和输出。
+2026-11-16 最新结果：整层 GDN 六图、18 个输出为 **0 PASSED / 18 FAILED，全部 stable=True**。用户回传只读检查确认：Prefill 三图 ConvState 全零、10 次均与旧输入逐位相等；Decode 三图均与旧输入不同。六图控制张量 linear_update_tensor 全零。下一步执行[状态布局及控制来源检查](target-batch-rerun.md#76-整层-gdn-数值失败后的只读检查)，复用现有 AIR／OMC 和输出。
 
 ## 整层 GDN FP16 最新结果
 
@@ -17,7 +17,11 @@
 | L1 Decode | 110.6568% | 142.8510% | 43.5084% |
 | L2 Decode | 78.2154% | 142.5070% | 46.2725% |
 
-Prefill ConvState 的三项 L2=1、cosine=0 提示零输出，但仅凭汇总不能证明全部元素为零。结合 Decode ConvState 的 L2 接近 sqrt(2)、cosine 接近 0，优先检验“输出仍是旧状态”假设：直接按源参数到 runtime 槽位映射读取旧输入，与全部 10 次输出逐位比较，再检查四个历史位置的对应关系。不根据 shape 猜槽位，也不据此断言内核未写入或存在别名错误。
+只读检查已确认 Prefill 三图 ConvState 的 32768 个元素全部为零，与零旧输入在 10 次调用中逐位相等；对应 golden 分别有 32311／31938／32307 个非零元素。Decode 三图实际输出与旧输入分别有 32539／32350／32536 个元素不同，排除了“六图都直接返回旧状态”的假设。所有 recurrent state 也均与旧输入不同。输出相等仍不能证明内核没有写入或存在存储别名。
+
+六图 linear_update_tensor 均为 INT32[128] 全零，effective_length 分别为 Prefill 256、Decode 1。检查当前 [capture.py](../model/qwen35_moe_dflash/target/layer_probe/capture.py) 发现前者由探针合成，policy 为 ORIGINAL_CPRO_EXPORT_ZERO_INT32_128，并非原参考路径执行时读取的控制量。历史私有 CPro exporter 确实使用这个零占位；NZ 参考更新使用 concat／尾部截取，没有此控制输入。当前 DDK 的字段含义和实际状态物理布局尚未确认，不能据此把某个元素猜填为 1 或 256。旧源码快照不证明当前远端私有文件相同。
+
+新增只读诊断对同一份输出分别列出 BCK、BKC、16 通道分块三种序列化假设，并检查 Decode 的前三个历史位置是否等于旧状态的后三个位置。每种都报告，不自动挑选最小误差或修改输出／golden；还需实现契约证明才能作为适配修复。仅更改 state dtype 无法解释 FP16 ConvState 的全零输出。
 
 Prefill recurrent state 与此前独立 GDN 的 44.5964%／26.745%／12.0998% 很接近；Decode 则从独立测试的 0.0683%／0.4292%／0.0648% 增至 20.74%／43.51%／46.27%。这支持先核对整层状态及其上游连接，尚不足以锁定某条内部边。`first_failed_boundary=l00_c00_gdn_layer_all` 指首个失败的整层图，不是已定位的首个内部算子。
 

@@ -1,6 +1,6 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**当前整层 GDN FP16 六图已回传数值：18 个输出全部 FAILED，全部重复稳定。下一步执行[第 7.6 节](#76-整层-gdn-数值失败后的只读检查)，直接检查已有 dump 的 ConvState／recurrent state 与旧输入的关系，不重导出、重编译或重新上板。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
+**当前整层 GDN FP16 六图：18 个输出全部 FAILED，全部重复稳定。已确认 Prefill ConvState 等于全零旧输入，Decode 与旧输入不同；六图 linear_update_tensor 都是全零。下一步执行[第 7.6 节](#76-整层-gdn-数值失败后的只读检查)的布局及控制来源检查，复用已有 dump。** Attention 两图已对独立数学参考五项通过：Prefill L2=0.11175%，Decode L2=0.11438%，各自 10 次输出一致；原 Prefill captured golden 错误已确认。Attention、RoPE、Prefill Cache 不重复编译。完整结论见[精度状态](target-accuracy-status.md)。
 
 采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
 
@@ -11,7 +11,7 @@
 
 GDN 包含五个 QLinear、ConvState、卷积、SiLU、g/beta、Q/K 重复、ChunkGatedDeltaRule、gated norm 和 out_proj，层内真实串联。它不是把 core/state 再分成小图，也不包含 Decoder 的外部残差或 MoE。QLinear 沿用已验证的 FP16 scale 适配；卷积沿用显式单高度 Conv2d。
 
-输入和三个 golden 从同一 CAPTURED layer/call/phase 的已有边界组合，检查四个输入投影的 hidden 一致。使用显式选项 --gdn-state-dtype float16：初态、GDN 末态和层内 writeback 为 FP16；g 沿用原计算，在 GE 算子入口数值 Cast 为 FP16。原始 raw-state FP32 golden 字节保留，实际 FP16 输出提升到比较精度后计算误差，五项门槛保持。CSV 的 actual_dtype/golden_dtype 分别记录两端类型，state 的 dtype_preserved=false 是已选择的接口差异，不单独判数值失败；输出仍须满足本次 FP16 ABI 和重复稳定性。
+输入和三个 golden 从同一 CAPTURED layer/call/phase 的已有边界组合，检查四个输入投影的 hidden 一致。其中 linear_update_tensor 是捕获工具按原 exporter 合成的 INT32[128] 全零占位，并非参考执行时观测的控制量，当前需核对其运行契约。使用显式选项 --gdn-state-dtype float16：初态、GDN 末态和层内 writeback 为 FP16；g 沿用原计算，在 GE 算子入口数值 Cast 为 FP16。原始 raw-state FP32 golden 字节保留，实际 FP16 输出提升到比较精度后计算误差，五项门槛保持。CSV 的 actual_dtype/golden_dtype 分别记录两端类型，state 的 dtype_preserved=false 是已选择的接口差异，不单独判数值失败；输出仍须满足本次 FP16 ABI 和重复稳定性。
 
 Attention 沿用捕获 Q/K/V、mask、block_table 和长度参数，新增 Q 轴、Q 长度常量字节与 allQLen 传递检查。当前范围为 B=1 静态图。Q 为 `[B, heads×D/16, S, 16]`，序列轴是 2；旧捕获 Prefill S256、Decode S1。源码全图 S64 对应 `[1,256,64,16]`，旧捕获小图对应 `[1,256,256,16]`；两者均没有把 Prefill Q 变成 1。新采集的 S 以实际 manifest 为准，不为了复现旧长度补齐或截断输入。`allQLen` 单独记录，不能强制等于当前 Q 长度；它在用户提供的内核中控制 KV 块循环。实际 tiling 和完整生产图仍需编译产物核对。
 
@@ -518,7 +518,7 @@ cat "$COMPARISON/summary.csv"
 
 当前安装 DDK 100.520.020.010 的两份 ChunkGatedDeltaRule 注册都声明 g、initial_state、last_recurrent_state 为 FP16。C++ 源码 SHA256 01634d23da746856c1119a9743d7f6db5f66aef9560d745423556a9c3162125a 与历史相同，第 1855／1858 行均直接用 half 指针绑定状态缓冲区。扫描 PARTIAL 仅来自两个候选目录不存在，未否定这些已读取的声明和源码。编译二进制选择与内核内部累加 dtype 仍未独立核验。
 
-用户已确认按 FP16 跑，当前执行第 7 节。状态 shape [1,32,128,128] 的实际 FP16 输出为 1,048,576 bytes，原 FP32 golden 为 2,097,152 bytes；读取时分别使用各自 dtype/bytes，保持五项比较门槛。无需使用 OMG --output_type 补 FP32 输出。整层新批次编译和设备数值尚待回传。
+用户已确认按 FP16 跑，状态 shape [1,32,128,128] 的实际 FP16 输出为 1,048,576 bytes，原 FP32 golden 为 2,097,152 bytes；读取时分别使用各自 dtype/bytes，保持五项比较门槛。无需使用 OMG --output_type 补 FP32 输出。整层新批次已回传 18 项数值失败，当前继续第 7.6 节。
 
 ### 7.5 准备阶段 torch_npu 加载失败后重试
 
@@ -606,9 +606,11 @@ python "$REPO_DIR/targets/cpro/tools/validate_draft_vector.py" \
 
 ### 7.6 整层 GDN 数值失败后的只读检查
 
-最新 18 行结果已记录在[精度状态](target-accuracy-status.md#整层-gdn-fp16-最新结果)。先检查异常最明显的 ConvState：Prefill 三项 L2 恰为 1，Decode 三项约为 1.43–1.46。当前假设是输出仍等于旧输入，须用原始张量验证，不能从这两个数字直接定因。
+最新只读检查已确认 Prefill 三图 ConvState 全零且 10 次均等于旧输入；Decode 三图与旧输入不同，不能继续按“六图都返回旧状态”定位。六图 linear_update_tensor 全零来自 capture.py 的 ORIGINAL_CPRO_EXPORT_ZERO_INT32_128 占位策略；effective_length=256／1 是另一个输入，不能视为 ConvState 已收到更新长度。
 
-在保存 execution／recovery 的主机执行下面命令。它读取现有 fixture 与 10 次 native dump，检查完整输出字节范围，记录零值／非有限值、实际输出与旧输入／golden 的差异、四个历史位置的对应关系及两个控制张量。源参数编号通过 fixture_index 映射到实际 runtime 槽位，不按 shape 猜测。无 Torch、DDK 或设备依赖。
+**A. 在保存 execution／recovery 的主机检查布局假设。** 更新后的原命令额外生成 conv-layout-summary.txt，列出源 BCK、按 BKC 序列化、按 [B,C/16,K,16] 序列化三种解读。它同时比较四个历史位置、Decode 左移历史与原输入的关系。矩阵每项是 B*C 个元素中的相等数量，行是输出历史位置，列是旧输入或 golden 的历史位置；完整逐位结果保存在 report.json。所有候选都报告，未选定任何布局，不修改真实输入、输出或 golden，不生成新精度通过结论。
+
+下面使用本次固定目录 convstate-inspection；已完成的 output-inspection 保留。本步只需 NumPy，不需要 Torch、DDK 或设备。
 
 ```bash
 export REPO_DIR="$(git rev-parse --show-toplevel)"
@@ -617,7 +619,7 @@ export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
 export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
 export EXECUTION="$BATCH_ROOT/execution"
 export RECOVERY="$BATCH_ROOT/recovery"
-export INSPECTION="$BATCH_ROOT/output-inspection"
+export INSPECTION="$BATCH_ROOT/convstate-inspection"
 export PYTHONDONTWRITEBYTECODE=1
 (
 set -e
@@ -628,9 +630,44 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-gdn-output \
   --fixture "$EXECUTION/fixture" --native "$RECOVERY/native" \
   --output "$INSPECTION"
 )
-cat "$INSPECTION/summary.txt"
+cat "$INSPECTION/conv-layout-summary.txt"
 ```
 
-回传 summary.txt；详细的历史位置对照在 report.json 的 conv_history_slots。重点看 ConvState 的 `actual.all_zero`、`actual_vs_old_input.equal_bits`、`all_invocations_equal_old_input_bits` 与 `golden_vs_old_input`。如果全部旧状态匹配且 golden 已改变，便确认返回值保留了旧状态；仍需后续图／实现检查区分返回连接、状态更新控制和存储别名。未匹配时依据历史位置对照继续查布局或更新范围。检查仅报告观测，不修补输出、不替换 golden，也不重新判定精度通过。
+**B. 在编译主机读取当前 DDK 的 ConvState 文本定义。** 这是状态更新算子的控制／布局检查，区别于已完成的 GDN FP16 注册检查。只搜索所选 DDK 的 ddk、tools、include 文本目录，不执行编译器或修改安装。需要 rg；可与 A 在同一主机顺序执行。
 
-当前 AIR／OMC、execution、recovery 和 comparison 均继续使用。output-inspection 若已存在，先读取现有报告，不覆盖正在检查的目录。
+```bash
+export REPO_DIR="$(git rev-parse --show-toplevel)"
+export AI_RUN_DIR="${AI_RUN_DIR:-${REPO_DIR}-run}"
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/gdn-layer"
+(
+set -e
+: "${CPRO_DDK_ROOT:?沿用编译这六图的 DDK 根目录}"
+command -v rg >/dev/null
+mkdir -p "$BATCH_ROOT/convstate-inspection"
+ddk_text_roots=()
+for part in ddk tools include; do
+  if test -d "$CPRO_DDK_ROOT/$part"; then
+    ddk_text_roots+=("$CPRO_DDK_ROOT/$part")
+  fi
+done
+test "${#ddk_text_roots[@]}" -gt 0
+search_rc=0
+rg -n -i -C 12 --max-filesize 4M --max-columns 400 --max-columns-preview \
+  --glob '*.{cpp,c,cc,h,hpp,py,json,ini}' \
+  'LinearAttentionConvstateUpdate|linear_attention_convstate_update' \
+  "${ddk_text_roots[@]}" \
+  > "$BATCH_ROOT/convstate-inspection/ddk-convstate.txt" \
+  2> "$BATCH_ROOT/convstate-inspection/ddk-search-errors.txt" || search_rc=$?
+if test "$search_rc" -eq 1; then
+  echo '未找到匹配文本；不能据此断言算子不存在。' > "$BATCH_ROOT/convstate-inspection/ddk-convstate.txt"
+elif test "$search_rc" -ne 0; then
+  cat "$BATCH_ROOT/convstate-inspection/ddk-search-errors.txt"
+  exit "$search_rc"
+fi
+)
+cat "$BATCH_ROOT/convstate-inspection/ddk-convstate.txt"
+```
+
+回传 conv-layout-summary.txt 和 ddk-convstate.txt。如果 DDK 只有接口／shape 声明，还需要 LinearAttentionConvstateUpdate 的实现或 llmConfig[128] 字段定义；不能把零占位直接猜改为某个长度。源码中的候选声明也不单独证明编译后采用的实现。
+
+当前 AIR／OMC、execution、recovery 和 comparison 均继续使用。A 的目录若已存在，直接读取已生成的报告。跨主机时先完成 A，再把 B 的两个文本结果放在对应诊断目录；没有新增导出、编译或上板任务。
