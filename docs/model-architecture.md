@@ -21,6 +21,21 @@ Prefill 处理输入序列，Decode 逐 token 生成。GDN 层维护卷积状态
 
 当前归档版本每次最多接收 16 行新增 context，缓存容量为 192 行。候选块由 1 个 anchor 和 15 个 MASK 组成，经过完整词表输出头产生 15 个候选，实际接受数量由 Target 验证决定。缓存只提交已确认的 context，候选块 K/V 仅供本次计算。
 
+## Draft 实际代码
+
+阅读部署模型从 `IncrementalDraft.forward()` 开始；当前配置为 `packed-spatial-host-embedding`＋`StableArgMax`，编译时应用 RoPE 系数表和 CPU feature pack。
+
+| 部分 | 代码入口 | 主要内容 |
+|---|---|---|
+| 部署主网络 | [torch_model.py](../model/qwen35_moe_dflash/draft/incremental/torch_model.py) | `load_prepared()` 加载权重；`project_features()` 做特征投影；`forward()` 串联六层、更新 KV，最后用 `self.head(hidden)` 计算词表输出 |
+| 基础模型与层 | [model.py](../model/qwen35_moe_dflash/model.py) | `DFlashDraftModel`、`DFlashDecoderLayer`、`DFlashAttention`、`DFlashMLP` 定义基础结构与参数 |
+| AIR 导出与 OMC 编译 | [torch_export.py](../model/qwen35_moe_dflash/draft/incremental/torch_export.py) | `export_pytorch()` 调用 TorchAir；`compile_pytorch()` 准备编译图并调用 OMG |
+| 编译图适配 | [air_feature_pack.py](../model/qwen35_moe_dflash/draft/incremental/air_feature_pack.py) · [air_rope.py](../model/qwen35_moe_dflash/draft/incremental/air_rope.py) | 将特征重排移到 CPU，并将 RoPE 转为预计算系数表 |
+| Top1 算子 | [stable_arg_max.cpp](../targets/cpro/ops/draft-top1/op_kernel/stable_arg_max.cpp) | 从完整词表 logits 取最大值索引，并列时取最小索引 |
+| CPU 精度参考 | [draft/reference.py](../model/qwen35_moe_dflash/draft/reference.py) | `load_draft_reference()` 加载相同 FP16 权重，提供独立参考计算 |
+
+命令入口：[导出 Draft](../targets/cpro/scripts/export_incremental_draft.py) · [编译 Draft](../targets/cpro/scripts/compile_incremental_draft.py)；执行命令见[完整模型执行](run-end-to-end.md)。
+
 ## 核心参数
 
 | 项目 | Target | Draft |
