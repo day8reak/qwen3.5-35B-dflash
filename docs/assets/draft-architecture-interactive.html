@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DFlash Draft · 六层连接与层内计算</title>
+<style>
+:root{color-scheme:light;--bg:#f4f7fb;--ink:#182c46;--muted:#61738b;--blue:#235d9a;--teal:#176f64;--purple:#7541a6;--amber:#9c651c;--border:#dbe4ee}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:90px}body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans CJK SC","Microsoft YaHei","PingFang SC",system-ui,sans-serif}main{max-width:1540px;margin:auto;padding:30px 26px 70px}h1{font-size:32px;margin:8px 0 12px}h2{font-size:23px;margin:0 0 12px}h3{font-size:18px}p{line-height:1.75;margin:8px 0}a{color:var(--blue)}button,select{font:inherit;color:var(--ink);border:1px solid #bccbdc;border-radius:8px;background:white;padding:8px 12px;cursor:pointer}button:hover{background:#eaf2fc}button:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #4282bf;outline-offset:3px}.hint,.muted{color:var(--muted)}.hint{font-size:13px}.eyebrow{letter-spacing:.1em;font-size:13px;color:var(--blue)}.toolbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#f4f7fbf5;backdrop-filter:blur(12px);padding:12px 0;border-bottom:1px solid var(--border)}.toolbar a{font-size:14px;margin-left:auto}.card{background:white;border:1px solid var(--border);border-radius:15px;padding:22px;margin:20px 0}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}.stat{border:1px solid var(--border);border-radius:12px;background:white;padding:15px 20px}.stat strong{font-size:25px;display:block}.stat span{font-size:13px;color:var(--muted)}.legend{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.pill{font-size:13px;border-radius:20px;padding:5px 10px;background:#eff3f8;color:var(--muted)}.blue{background:#eaf2fc;color:var(--blue)}.teal{background:#edf8f5;color:var(--teal)}.purple{background:#f4edfb;color:var(--purple)}.amber{background:#fff5e6;color:var(--amber)}.formula{padding:14px 18px;background:#f5f0fc;border-left:4px solid var(--purple);border-radius:7px;line-height:1.9;overflow:auto;font-family:ui-monospace,monospace;font-size:15px}.svg-scroll,.table-scroll{overflow-x:auto}.diagram{display:block;width:100%;height:auto}.diagram [data-info],.diagram [data-layer]{cursor:pointer;outline:none}.diagram [data-info]:hover rect,.diagram [data-info]:focus-visible rect,.diagram [data-layer]:hover rect,.diagram [data-layer]:focus-visible rect{stroke-width:3;filter:brightness(.97)}.navigator{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.nav-layer{text-align:left;line-height:1.5}.nav-layer small{display:block;color:var(--muted);font-size:12px}.nav-layer[aria-expanded=true]{border-color:var(--blue);background:#eaf2fc}.layer-card{background:white;border:1px solid var(--border);border-radius:13px;margin:0;scroll-margin-top:90px}.layer-card>summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;cursor:pointer;list-style:none;padding:17px 20px;font-size:19px}.layer-card>summary:before{content:"＋";color:var(--blue);font-weight:700}.layer-card[open]>summary:before{content:"−"}.layer-card[open]>summary{border-bottom:1px solid var(--border)}.layer-card summary .hint{margin-left:auto}.layer-body{padding:20px}.interlayer{text-align:center;font-size:14px;color:var(--blue);padding:12px}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:12px 0}.detail-grid>div{border:1px solid var(--border);padding:14px 18px;border-radius:10px}.detail-grid h3{margin:0 0 8px}.region{margin-top:16px;border:1px solid var(--border);border-radius:10px;overflow:hidden}.region>summary{cursor:pointer;padding:13px 16px;background:#f8fafd;font-weight:600}.region-body{padding:14px}.connection{color:var(--blue);background:#edf4fc;padding:12px 16px;border-radius:8px;line-height:1.7}.note{background:#fff8eb;border-left:4px solid #c8943e;border-radius:5px;padding:12px 16px;font-size:14px}.controls{display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin:16px 0}.controls label{font-size:14px}.tabs{display:inline-flex;border:1px solid #bccbdc;border-radius:9px;overflow:hidden}.tabs button{border:0;border-radius:0}.tabs button[aria-pressed=true]{background:var(--blue);color:white}.mask-wrap{display:grid;grid-template-columns:minmax(500px,650px) 1fr;gap:24px;align-items:start}.mask-grid{display:grid;grid-template-columns:65px 82px repeat(16,minmax(18px,1fr));gap:3px;min-width:500px;font-size:11px;text-align:center}.cell{height:25px;border-radius:3px;background:#eef1f5;display:flex;align-items:center;justify-content:center;color:#56687d}.cell.visible{background:#d4e9fb;color:#184e80}.cell.context{background:#cfeee3;color:#145f53}.cell.witness{background:#ffe5b3;color:#855510}.cell.label{background:transparent;font-size:11px}.cell.inactive{opacity:.65}.matrix-key{font-size:13px;display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.source-list{line-height:1.9;font-size:14px}.source-list code{font-size:12px}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--border);vertical-align:top;line-height:1.6}th{background:#f2f5fa}code{font-family:ui-monospace,monospace;font-size:.92em}.nowrap{white-space:nowrap}dialog{border:1px solid var(--border);border-radius:14px;width:min(820px,94vw);max-height:85vh;padding:24px;box-shadow:0 20px 90px #182c4640;overflow:auto}dialog::backdrop{background:#172b4680}.dialog-header{display:flex;align-items:center;justify-content:space-between;gap:18px}.dialog-header h2{margin:0}.dialog-header button{white-space:nowrap}#toast{color:var(--teal);font-size:13px;min-height:20px}footer{font-size:13px;color:var(--muted);line-height:1.8;margin-top:25px}.source-link{margin-top:12px;font-size:13px}.screen-only{display:block}
+@media(max-width:900px){main{padding:18px 12px 50px}h1{font-size:25px}.card{padding:15px}.toolbar{position:static}.toolbar a{margin-left:0}.stats{grid-template-columns:repeat(2,1fr)}.navigator{grid-template-columns:repeat(3,1fr)}.detail-grid,.mask-wrap{grid-template-columns:1fr}.layer-body{padding:10px}.layer-card summary .hint{margin-left:0}.diagram{min-width:980px}.mask-grid{min-width:530px}.layer-card{scroll-margin-top:12px}}
+@media print{body{background:white}main{max-width:none;padding:0}.toolbar,.navigator,button,.screen-only,#toast{display:none}.card,.region{break-inside:avoid}.layer-card>summary{font-weight:bold}.diagram{min-width:0!important}.interlayer{padding:4px}.stats{margin:10px 0}.layer-card{break-before:page}.mask-wrap{grid-template-columns:1fr}.region{break-inside:avoid}}
+</style>
+</head>
+<body><main>
+<header>
+<p class="eyebrow">QWEN3.5 · DFLASH DRAFT · X90 / kirinx90</p>
+<h1>六层 Draft，怎么逐层生成一块候选</h1>
+<p class="muted">对应当前归档的 packed Draft：C16 / cap192 / K15。蓝色主干逐层传递候选 hidden；绿色 context 分别送入六层；每层保存自己的 K/V。</p>
+</header>
+<div class="toolbar" aria-label="图表控制">
+<button id="expand-all">展开全部 6 层</button><button id="collapse-all">收起全部层</button><button id="export-svg">导出当前展开图 SVG</button><button id="print">打印 / 保存 PDF</button>
+<a href="target-architecture-interactive.html">查看 Target 结构图 ↗</a>
+</div><div id="toast" role="status" aria-live="polite"></div>
+<div class="stats"><div class="stat"><strong>6 层</strong><span>5 层滑窗因果 + 1 层全注意力</span></div><div class="stat"><strong>16 → 15</strong><span>anchor + MASK 块 → 候选 token</span></div><div class="stat"><strong>32 Q / 8 KV</strong><span>head_dim 128 · GQA 每组 4 个 Q</span></div><div class="stat"><strong>12 份 KV</strong><span>每层 K / V 各一份，容量 192</span></div></div>
+<div class="legend"><span class="pill blue">蓝色实线：hidden 主干</span><span class="pill teal">绿色实线：共享 context</span><span class="pill purple">紫色实线：层内残差</span><span class="pill amber">橙色虚线：按层 KV 读写</span><span class="pill">节点可点击查看公式 / shape</span></div>
+<section class="card" aria-labelledby="overview-title">
+<h2 id="overview-title">一眼看全：六层串联 + 两条独立输入流</h2>
+<p>Target 的 8 个取样层先拼接、投影为同一份 <code>context [1,16,2048]</code>。候选块从 <code>h₀</code> 走到 <code>h₆</code>；每层用自己的权重，从 context 和本层归一化 hidden 生成 K/V。</p>
+<div class="svg-scroll" id="overview"></div>
+<div class="connection"><strong>层间只有 hidden 串联：</strong> L0 的第二次 Add → L1 输入 → … → L5 的第二次 Add → 最终 Norm。<strong>没有第三次层间 Add。</strong> context 不随层更新；<code>present_k_i / present_v_i</code> 在下一次调用回到同一个 <code>i</code> 层，不传给相邻层。</div>
+</section>
+<section class="card">
+<h2>逐层展开：主干、Attention 和 MLP</h2>
+<p class="muted">六层拓扑相同、权重各自独立。点击层号或总览图中的层；L5 的可见性与前五层不同。</p>
+<div class="navigator" id="navigator" aria-label="选择 Draft 层"></div>
+<p class="formula">xᵢ = InputNormᵢ(hᵢ)<br>uᵢ = hᵢ + Oᵢ(Attentionᵢ(Qᵢ(xᵢ), K/Vᵢ(context, xᵢ), pastᵢ))<br>hᵢ₊₁ = uᵢ + Downᵢ(SiLU(Gateᵢ(PostNormᵢ(uᵢ))) × Upᵢ(PostNormᵢ(uᵢ)))</p>
+</section>
+<div id="layers"></div>
+<section class="card" id="visibility" aria-labelledby="visibility-title">
+<h2 id="visibility-title">为什么最后一层不一样：候选块可见性</h2>
+<p>行是 Query，列是 Key。左侧将有效的 committed context 合成一列；右侧是 anchor + 15 个候选槽。L0–L4 的候选只能看自己和前面的有效槽；L5 可以看整个有效候选块。</p>
+<div class="controls"><div class="tabs" aria-label="Attention 类型"><button data-mask="sliding" aria-pressed="true">L0–L4 · 因果滑窗</button><button data-mask="full" aria-pressed="false">L5 · 全注意力</button></div>
+<label>调用场景 <select id="case-select"><option value="full">case 18：满缓存，不追加</option><option value="partial">追加 2 行：start=16</option><option value="empty">空缓存：start=0</option></select></label>
+<label>proposal_count <select id="proposal-select"><option>0</option><option>1</option><option>3</option><option>7</option><option selected>15</option></select></label></div>
+<div class="mask-wrap"><div class="table-scroll"><div id="mask-grid" class="mask-grid" role="img" aria-label="候选块可见性矩阵"></div><div class="matrix-key"><span class="pill blue">蓝：候选 Key 可见</span><span class="pill teal">绿：有效 context 可见</span><span class="pill amber">橙：无效 Query 的 anchor 兜底</span><span class="pill">灰：被 mask</span></div></div>
+<div><h3 id="mask-title"></h3><p id="mask-explanation"></p><p id="mask-controls" class="formula"></p><p class="hint">这是源码 mask 的可视化，不执行模型。滑窗为 4096，当前最多 208 个位置，不触发窗口下界裁剪；前五层仍保留因果约束。</p><p class="hint">无效 Query 行仍保留计算，源码为其开放 anchor，避免整行 −∞。只有前 proposal_count 个候选输出被调用方消费。减小 proposal_count 不会缩小这个 K15 静态图。</p></div></div>
+</section>
+<section class="card" id="io">
+<h2>输入、输出和下一次调用</h2>
+<div class="table-scroll"><table><thead><tr><th>方向 / 名称</th><th>dtype · shape</th><th>连接位置</th></tr></thead><tbody>
+<tr><td>target_features</td><td class="nowrap">FP16 · [1,1024,16,16]</td><td>逻辑 [1,16,16384] 在 CPU 重排 → feature Conv → hidden_norm → 共享 context。</td></tr>
+<tr><td>block_embeddings</td><td class="nowrap">FP16 · [1,16,2048]</td><td>CPU 查表复制 anchor + 15 个 MASK 的 embedding → L0 的 h₀。</td></tr>
+<tr><td>start_position / valid_rows / proposal_count</td><td>各 INT32 · [1]</td><td>控制新增 context 的位置与写区、RoPE 和可见性。</td></tr>
+<tr><td>past_k_i / past_v_i × 6</td><td class="nowrap">各 FP16 · [1,8,192,128]</td><td>各层已提交 context 的 K/V；K 已旋转，不再次做 RoPE。</td></tr>
+<tr><td>draft_top1</td><td>INT32 · [1,15]</td><td>六层 → 最终 Norm → 去掉 anchor → 全词表 head → StableArgMax。</td></tr>
+<tr><td>draft_hidden</td><td>FP16 · [1,15,2048]</td><td>最终 Norm 后的候选行，同时送入 LM head。</td></tr>
+<tr><td>present_k_i / present_v_i × 6</td><td class="nowrap">各 FP16 · [1,8,192,128]</td><td>只将新增的已提交 context 写入 [start, end)；其余位置保留原值。临时候选 K/V 不写入。</td></tr>
+</tbody></table></div>
+<p class="hint">共 17 输入、14 输出。表格按语义分组；执行时的真实槽位以当前 OMC 的 pytorch-abi.json 为准。</p>
+<div class="detail-grid"><div><h3>本次 Draft 调用</h3><p>12 份 past → 6 层各自更新 → 12 份 present。候选块的 K/V 仅参与本次 attention；输出的 15 个 token 是并行 proposal。</p></div><div><h3>跨调用与 Target 验证</h3><p>Target 验证 proposal 并决定接受前缀。后续从已提交位置的 Target 特征生成新增 context，更新对应 Draft KV；拒绝的候选不能直接成为 committed KV。</p></div></div>
+</section>
+<section class="card" id="source">
+<h2>范围与源码</h2>
+<p>本页画的是 <strong>packed-spatial-host-embedding + CPU feature pack + StableArgMax</strong> 的六层逻辑数据流。算子内部融合、分区和精度以实际 AIR / OMC 为准。</p>
+<p class="note">归档 Draft 已有独立设备执行和约 60 ms 性能观测，原 CPU 数值门槛仍未通过。该 packed ABI 尚未替换旧 token-ID 常驻接口。本页不把结构节点着色为“精度通过”，也不把一次 profiling 当作完整 DFlash 验收。</p>
+<ul class="source-list"><li><a href="../../specs/draft-config.json">Draft 配置</a>：六层类型、hidden 2048、MLP 6144、32/8 heads、Target 特征层。</li><li><a href="../../model/qwen35_moe_dflash/draft/incremental/torch_model.py">IncrementalDraft</a>：<code>project_features()</code>、<code>forward()</code>、<code>attention_contract()</code>。</li><li><a href="../../model/qwen35_moe_dflash/draft/incremental/air_feature_pack.py">feature pack</a> 与 <a href="../../model/qwen35_moe_dflash/draft/incremental/air_rope.py">RoPE 编译准备</a>：物理输入重排、系数表。</li><li><a href="../model-architecture.md">模型结构</a> · <a href="../results.md">实际结果与计时口径</a> · <a href="../run-end-to-end.md">导出 / 编译 / 执行流程</a></li></ul>
+</section>
+<footer>更新：2026-11-17 · 0 起始层号 L0–L5 · 所有 shape 默认 B=1、C=16、capacity=192、K=15。单文件 HTML 离线可用；相对源码链接在完整仓库目录中可用。</footer>
+</main>
+<dialog id="inspector" aria-labelledby="inspector-title"><div class="dialog-header"><h2 id="inspector-title"></h2><button id="close-dialog" autofocus>关闭</button></div><div id="inspector-body"></div></dialog>
+<noscript><p>请启用浏览器 JavaScript 查看六层结构图。输入输出表和源码链接仍可阅读。</p></noscript>
+<script>
+'use strict';
+const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const palette={main:['#edf4fc','#235d9a'],context:['#edf8f5','#176f64'],residual:['#f4edfb','#7541a6'],cache:['#fff5e6','#9c651c'],neutral:['#f5f7fa','#61738b']};
+let serial=0;
+function diagram(w,h,label,draw){
+ const uid='d'+serial++; const edges=[],nodes=[];
+ const text=(x,y,s,size=17,color='#61738b',anchor='start')=>`<text x="${x}" y="${y}" font-size="${size}" fill="${color}" text-anchor="${anchor}">${esc(s)}</text>`;
+ const edge=(pts,kind='main',label='',lx=0,ly=0)=>{const col=palette[kind][1];edges.push(`<path d="M${pts.map(p=>p.join(',')).join(' L')}" fill="none" stroke="${col}" stroke-width="2.3" ${kind==='cache'?'stroke-dasharray="7 5"':''} marker-end="url(#${uid}-${kind})"/>`);if(label)nodes.push(text(lx,ly,label,15,col));};
+ const box=(x,y,bw,bh,title,lines=[],kind='main',info='',layer=null)=>{const [fill,stroke]=palette[kind];const key=info?`data-info="${info}"`:layer!==null?`data-layer="${layer}"`:'';nodes.push(`<g ${key} ${key?'tabindex="0" role="button"':''} aria-label="${esc(title+'；'+lines.join('；'))}"><rect x="${x}" y="${y}" width="${bw}" height="${bh}" rx="11" fill="${fill}" stroke="${stroke}" stroke-width="1.4"/>${text(x+bw/2,y+29,title,19,stroke,'middle')}${lines.map((s,i)=>text(x+bw/2,y+55+i*23,s,15,'#435a73','middle')).join('')}</g>`);};
+ const labelText=(...a)=>nodes.push(text(...a));
+ const plus=(x,y)=>nodes.push(`<circle cx="${x}" cy="${y}" r="24" fill="#f4edfb" stroke="#7541a6" stroke-width="2"/><text x="${x}" y="${y+8}" font-size="27" text-anchor="middle" fill="#7541a6">+</text>`);
+ draw({box,edge,text:labelText,plus});
+ return `<svg class="diagram" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)}" data-title="${esc(label)}" font-family="Noto Sans CJK SC,Microsoft YaHei,PingFang SC,system-ui,sans-serif"><title>${esc(label)}</title><defs>${Object.entries(palette).map(([k,v])=>`<marker id="${uid}-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="${v[1]}"/></marker>`).join('')}</defs>${edges.join('')}${nodes.join('')}</svg>`;
+}
+function overview(){return diagram(1300,1120,'Draft 六层总览：hidden 串联、context 共享、KV 按层独立',({box,edge,text})=>{
+ box(25,20,330,95,'Target 8 层特征',['L1 / 6 / 11 / 16 / 22 / 27 / 32 / 37','按通道拼接 → [1,16,16384]'],'context','context');
+ box(25,160,330,125,'CPU pack → Conv → Norm',['物理输入 [1,1024,16,16]','Conv 4×4 / stride 4 → hidden_norm','context [1,16,2048]，只计算一次'],'context','context');
+ edge([[190,115],[190,160]],'context');
+ box(470,20,410,95,'anchor + 15 个 MASK',['CPU FP16 embedding 查表','h₀ [1,16,2048]'],'main','embedding');
+ box(990,20,285,95,'3 个 INT32 控制量',['start / valid / proposal_count','共享位置、mask 与写区'],'neutral','controls');
+ edge([[675,115],[675,320]],'main','h₀',690,290);
+ text(697,186,'候选 hidden 主干',19,'#235d9a');
+ text(697,218,'[1,16,2048]',17,'#61738b');
+ for(let i=0;i<6;i++){
+  const y=320+i*100;
+  box(470,y,410,72,`L${i} · ${i===5?'全注意力':'滑窗因果注意力'}`,['Attention + R1 → MLP + R2'],'main','',i);
+  edge([[190,285],[190,y+36],[470,y+36]],'context',i===0?'同一 context':'',215,y+25);
+  box(990,y,285,72,`第 ${i} 层 KV bank`,[`past_k_${i} / past_v_${i} → present`],'cache','cache');
+  edge([[990,y+23],[880,y+23]],'cache');edge([[880,y+52],[990,y+52]],'cache');
+  if(i<5)edge([[675,y+72],[675,y+100]],'main',`h${i+1} [1,16,2048]`,695,y+92);
+ }
+ text(25,942,'绿色支路不串行经过六层',17,'#176f64');
+ text(990,942,'每份 present 回到下一调用的同层',16,'#9c651c');
+ edge([[675,892],[675,970]],'main','h₆',690,934);
+ box(470,970,410,100,'最终 Norm → 去掉 anchor',['draft_hidden [1,15,2048]','全词表 head → StableArgMax'],'main','head');
+ edge([[880,1020],[990,1020]],'main');
+ box(990,970,285,100,'15 个候选 token',['draft_top1 [1,15] INT32','后续由 Target 验证接受前缀'],'main','head');
+});}
+function shell(i){return diagram(1300,330,`L${i} 主干：两次残差 → ${i===5?'最终 Norm':'L'+(i+1)}`,({box,edge,text,plus})=>{
+ box(20,118,145,80,`h${i}`,['[1,16,2048]']);
+ box(205,118,150,80,'Input Norm',['→ xᵢ'],'main','norm');
+ box(395,118,160,80,'Attention',['Q / KV / GQA'],'main','attention');
+ plus(620,158);
+ box(690,118,150,80,'Post Norm',['→ MLP input'],'main','norm');
+ box(880,118,145,80,'SwiGLU MLP',['6144 中间维'],'main','mlp');
+ plus(1090,158);box(1150,118,130,80,`h${i+1}`,['[1,16,2048]']);
+ [[165,205],[355,395],[555,596],[644,690],[840,880],[1025,1066],[1114,1150]].forEach(([x1,x2])=>edge([[x1,158],[x2,158]]));
+ edge([[90,118],[90,45],[620,45],[620,134]],'residual','R1：保留 hᵢ，绕过 Input Norm / Attention',130,33);
+ edge([[620,182],[620,263],[1090,263],[1090,182]],'residual','R2：保留 uᵢ，绕过 Post Norm / MLP',656,294);
+ text(612,219,'uᵢ',17,'#7541a6');text(20,257,'两次 Add：源码显式 FP32 相加，再转回 FP16。',17,'#61738b');
+});}
+function attention(i){return diagram(1300,1145,`L${i} Attention / KV 细分：${i===5?'全注意力':'滑窗因果'}`,({box,edge,text})=>{
+ box(40,20,300,85,`x${i} = InputNorm(h${i})`,['[1,16,2048]'],'main','norm');
+ box(490,20,300,85,'共享 context',['[1,16,2048]'],'context','context');
+ box(940,20,300,85,`past K/V · 第 ${i} 层`,['各 [1,8,192,128]'],'cache','cache');
+ box(40,155,300,85,'01 · Q 投影',['2048 → 4096；32 heads'],'main','q');
+ box(420,155,400,85,'02 · Concat(context, xᵢ)',['沿 token 轴 → [1,32,2048]'],'context','kv');
+ edge([[190,105],[190,155]]);edge([[340,62],[370,62],[370,197],[420,197]]);edge([[640,105],[640,155]],'context');
+ box(40,285,300,105,'03 · Q Norm + RoPE',['Q [1,32,16,128]','位置 end + [0…15]'],'main','q');
+ box(420,285,400,105,'04 · 合并 KV 投影 → Split',['2048 → 2048 = K1024 + V1024','各自再拆 context 16 行 / block 16 行'],'context','kv');
+ edge([[190,240],[190,285]]);edge([[620,240],[620,285]],'context');
+ box(40,435,300,85,'07 · GQA reshape',['Q → [1,8,64,128]'],'main','attention');
+ box(420,435,385,110,'05 · 新 context K/V',['K：8 heads → K Norm → RoPE','V：8 heads，保留投影值','各 [1,8,16,128]'],'context','key');
+ box(850,435,390,110,'06 · 临时 block K/V',['K：K Norm → RoPE；V：reshape','位置 end + [0…15]','各 [1,8,16,128]'],'main','key');
+ edge([[190,390],[190,435]]);edge([[620,390],[620,435]],'context');edge([[820,335],[1045,335],[1045,435]]);
+ box(420,585,385,100,'08 · 更新 committed KV',['Gather(new) + Select(write, new, past)','输出 present K/V；写区仅 [start,end)'],'cache','cache');
+ box(850,585,390,100,'block K/V 仅本次使用',['anchor + MASK，不写入 committed KV','与本层 present K/V 拼接参与 attention'],'main','cache');
+ edge([[620,545],[620,585]],'context');edge([[1045,545],[1045,585]]);
+ edge([[1090,105],[1260,105],[1260,711],[825,711],[825,635],[805,635]],'cache');
+ box(40,585,300,170,'共享 mask / RoPE 控制',[i===5?'L5：有效块内双向可见':'L0–L4：因果 + 滑窗 4096','end = start + valid','无效 Query：anchor 兜底','有效性 / 位置跨层共享'],'neutral','controls');
+ box(420,755,570,85,'09 · Concat(present KV, block KV)',['K / V 各 [1,8,208,128] = 192 + 16'],'main','attention');
+ edge([[610,685],[610,755]],'cache');edge([[1045,685],[1045,735],[900,735],[900,755]]);
+ box(40,900,385,100,'10 · Q × Kᵀ',['scores [1,8,64,208]','GQA：每个 KV head 对应 4 个 Q'],'main','attention');
+ box(470,900,370,100,'11 · Scale → Mask → Softmax',['× 1/√128；不可见位置设为 −∞','源码 FP32 softmax → FP16 概率'],'main','attention');
+ box(890,900,350,100,'12 · P × V → 恢复 Q heads',['[1,32,16,128]','Transpose / reshape → [1,16,4096]'],'main','attention');
+ edge([[40,475],[20,475],[20,950],[40,950]],'main','Q',25,872);
+ edge([[570,840],[570,869],[230,869],[230,900]],'main','K',300,858);
+ edge([[990,798],[1080,798],[1080,900]],'main','V',1093,860);
+ edge([[425,950],[470,950]]);edge([[840,950],[890,950]]);
+ edge([[190,755],[190,805],[375,805],[375,885],[655,885],[655,900]],'neutral');
+ box(890,1040,350,85,'13 · O 投影 → Add 1',['4096 → 2048；与原 hᵢ 相加'],'main','residual');edge([[1065,1000],[1065,1040]]);
+ text(40,1075,'present_k_i / present_v_i 是本层独立输出；',18,'#9c651c');text(40,1105,'它们不等于本次 Attention 使用的 208 行临时拼接张量。',18,'#9c651c');
+});}
+function mlp(i){return diagram(1300,390,`L${i} MLP：合并 Gate / Up、SiLU、乘法与 Down`,({box,edge,text})=>{
+ box(20,150,205,85,'PostNorm(uᵢ)',['[1,16,2048]'],'main','norm');
+ box(270,150,250,85,'合并 Gate / Up',['2048 → 12288 → Split'],'main','mlp');
+ box(565,35,270,85,'Gate：SiLU',['[1,16,6144]'],'main','mlp');
+ box(565,260,270,85,'Up：线性投影',['[1,16,6144]'],'main','mlp');
+ box(880,150,150,85,'逐元素 ×',['[1,16,6144]'],'main','mlp');
+ box(1070,150,210,85,'Down → Add 2',['6144 → 2048'],'main','residual');
+ edge([[225,192],[270,192]]);edge([[520,175],[540,175],[540,77],[565,77]]);edge([[520,210],[540,210],[540,302],[565,302]]);
+ edge([[835,77],[955,77],[955,150]]);edge([[835,302],[955,302],[955,235]]);edge([[1030,192],[1070,192]]);
+ text(30,370,'六层均为稠密 SwiGLU MLP；每层自己的 Gate / Up / Down 权重。',18,'#61738b');
+});}
+const info={
+ context:['Target 特征 → 六层共享 context','Target 取样层为 1、6、11、16、22、27、32、37（0 起始），按通道拼成 16384 维。当前调用承载最多 16 个新增 context 行。CPU 只重排 FP16 存储字，把 [1,16,16384] 变为 [1,1024,16,16]。4×4、stride=4 的 Conv 承载完整的 16384→2048 线性投影，输出重排后做 hidden_norm。','context = hidden_norm(FC(target_features))','context [1,16,2048] 只算一次，六层各自用自己的 KV 权重读取它；context 不作为 hᵢ 逐层传递。','torch_model.py:127–147, 195'],
+ embedding:['候选块输入 h₀','CPU 使用原 FP16 embedding 表，复制 1 个 anchor 和 15 个 MASK（ID 248077）的 embedding 行。当前 packed 模型直接接收 block_embeddings，OMC 内不再查整张 embedding 表。','h₀ = Embedding([anchor, MASK × 15])','h₀ [1,16,2048]；input_embedding_scale = 1。','torch_model.py:186–195'],
+ norm:['RMSNorm','InputNorm 处理候选 hidden，PostNorm 处理第一次残差之后的 uᵢ；Q/K Norm 按每头最后 128 维归一化。Draft 的 norm 权重直接是 gamma，不使用 Target 的 1+w 约定。','Norm(x) = x · rsqrt(mean(x²) + 1e−6) · gamma','前端请求 FP32 输入、gamma 与统计，再恢复输入 dtype。源码精度要求不能代替实际内核累加精度验证。','torch_model.py:22–26, 99–102'],
+ q:['Q 投影、Q Norm 与 RoPE','每层只从归一化后的候选块 xᵢ 生成 Query；共享 context 不生成 Query。Q 投影输出宽 32×128=4096，再做每头 Norm 和 RoPE。','Qᵢ = RoPE(QNormᵢ(Wqᵢ · xᵢ), end + block_offset)','[1,16,2048] → [1,16,4096] → [1,32,16,128]。已编译基线使用准备好的 RoPE 系数表；theta=10000000。','torch_model.py:212–216'],
+ kv:['合并 KV 投影与四路拆分','Concat(context, xᵢ) 沿 token 轴得到 32 行。K 和 V 的权重按输出通道拼接，因此一次 KV 投影输出 2048 维，前 1024 是 K，后 1024 是 V。每部分再按 token 轴拆成 16 行 context 和 16 行 block。','[Kcontext, Kblock], [Vcontext, Vblock] = Split(KVᵢ(Concat(context, xᵢ)))','权重每层独立。合并投影保留每个输出的完整 2048 项点积，不把 K 与 V 做加法。','torch_model.py:218–224'],
+ key:['两类 K/V 的处理','新增 context K 与 block K 都经过本层相同 K Norm gamma 和 RoPE。二者使用各自位置；V 只 reshape，不做 K Norm 或 RoPE。past K 已在先前调用旋转，不再旋转。','context_pos = start + [0…15]\nblock_pos = end + [0…15]','new K/V 与 block K/V 各 [1,8,16,128]。仅 new context 部分可写入 committed KV。','torch_model.py:225–235'],
+ cache:['每层独立的 committed KV','每个 cache bank 包含 192 行。有效新增 context 写入 [start,start+valid)，其他位置选择原 past 值。实现通过受控 Gather 获得新增行，再 Select 写区。候选块 K/V 单独拼接用于 attention，不写回这份 bank。','presentᵢ = where(write_mask, Gather(new_contextᵢ), pastᵢ)','每层 K、V 各 [1,8,192,128]；六层合计 12 份 FP16 bank。valid_rows=0 时逻辑写区为空，但当前静态图仍计算投影。','torch_model.py:173–185, 228–236'],
+ attention:['GQA Attention','32 个 Q heads 对应 8 个 KV heads，每组 4 个 Q。packed 表达将 Q reshape 为 [1,8,64,128]，不显式重复 4 份 K/V。QK 后乘缩放、设 mask、Softmax，随后 PV 并恢复原 Q 头结构。','P = softmax(where(visible, QKᵀ / √128, −∞))\nA = reshape(PV) → [1,16,4096]','K/V 是 192 行 present + 16 行 block，共 208 行。源码 QK 结果 FP16，scale / mask / softmax 请求 FP32，概率转回 FP16。','torch_model.py:234–260'],
+ residual:['两次层内残差','R1 从层输入 hᵢ 直接绕过 InputNorm 与 attention 分支，接入 O 投影后的 Add。R2 从第一次 Add 的 uᵢ 绕过 PostNorm 与 MLP，接入第二次 Add。','uᵢ = FP16(FP32(hᵢ) + FP32(Oᵢ(Aᵢ)))\nhᵢ₊₁ = FP16(FP32(uᵢ) + FP32(MLPᵢ(PostNormᵢ(uᵢ))))','hᵢ、uᵢ、hᵢ₊₁ 都是 [1,16,2048]。第二次 Add 的结果就是下一层输入，没有第三次 Add。','torch_model.py:261–268'],
+ mlp:['稠密 SwiGLU MLP','归一化后的 uᵢ 经过合并 Gate/Up 投影，输出宽度 12288；拆成两份 6144，Gate 做 SiLU 后与 Up 逐元素相乘，最后 Down 回到 2048。','MLP(z) = Down(SiLU(Gate(z)) × Up(z))','每层 Gate/Up 权重 [12288,2048]，Down [2048,6144]（输出×输入）。六层都采用相同拓扑，权重不共享。','torch_model.py:262–268'],
+ controls:['位置、可见性与写区','start_position 指向新增已提交 context 的首行；valid_rows 是此次有效新增行数；proposal_count 决定可见的候选槽与调用方消费数。end=start+valid。前五层使用因果滑窗，末层只有有效性 mask，对有效候选块双向可见。','0 ≤ valid ≤ 16；0 ≤ start ≤ end ≤ 192\n0 ≤ proposal_count ≤ 15','两个 mask 跨层复用：sliding_visible 与 full_visible。无效 Query 增加 anchor witness，避免空 Softmax。三个控制输入均为 INT32 [1]。','torch_model.py:160–185, 199–209'],
+ head:['六层之后：完整词表与候选','L5 第二次 Add 产生 h₆。最终 RMSNorm 后移除 anchor 行，只保留 15 个 MASK 位置的 hidden。完整 LM head 计算词表 logits，StableArgMax 输出 Top1 ID。','h = FinalNorm(h₆)[:,1:,:]\nlogits = LMHead(h)；top1 = StableArgMax(logits)','hidden [1,15,2048] FP16；logits [1,15,248320]；top1 [1,15] INT32。词表未裁剪；只消费前 proposal_count 项。候选是否接受由后续 Target 验证决定。','torch_model.py:269–273']
+};
+function showInfo(key){const d=info[key];if(!d)return;$('#inspector-title').textContent=d[0];$('#inspector-body').innerHTML=`<p>${esc(d[1])}</p><div class="formula">${esc(d[2]).replace(/\n/g,'<br>')}</div><p>${esc(d[3])}</p><p class="source-link">源码：${esc(d[4])} · <a href="../../model/qwen35_moe_dflash/draft/incremental/torch_model.py">打开文件</a></p>`;$('#inspector').showModal();}
+$('#overview').innerHTML=overview();
+$('#navigator').innerHTML=Array.from({length:6},(_,i)=>`<button class="nav-layer" data-layer="${i}" aria-controls="layer-${i}" aria-expanded="${i===0}"><strong>L${i}</strong><small>${i===5?'Full attention · 双向块':'Sliding attention · 因果'}</small></button>`).join('');
+$('#layers').innerHTML=Array.from({length:6},(_,i)=>`${i?`<div class="interlayer">↓ L${i-1} 第二次 Add 的 h${i} → L${i} 输入 · [1,16,2048]</div>`:''}<details class="layer-card" id="layer-${i}" ${i===0?'open':''}><summary><strong>L${i} · 第 ${i+1} 层</strong><span class="pill ${i===5?'purple':'blue'}">${i===5?'Full attention':'Sliding causal attention'}</span><span class="hint">h${i} → h${i+1} · 独立 past / present K${i}, V${i}</span></summary><div class="layer-body"><div class="svg-scroll">${shell(i)}</div><div class="detail-grid"><div><h3>输入 / 输出</h3><p>候选 hidden：<code>h${i} → h${i+1}</code>，均为 [1,16,2048]。共享 context 读取同一份 [1,16,2048]；本层权重与其余层独立。</p></div><div><h3>${i===5?'末层可见性':'前五层可见性'}</h3><p>${i===5?'有效候选 Query 可以读取全部有效 context 与整个有效候选块；不加因果下三角。':'有效候选 Query 读取有效 context，以及位置不晚于自己的有效候选 Key；滑窗下界为 4096。'} <a href="#visibility" data-mask-jump="${i===5?'full':'sliding'}">查看可见性矩阵 ↓</a></p></div></div><details class="region" open><summary>Attention 细分：Q / K / V、RoPE、缓存与 GQA</summary><div class="region-body"><div class="svg-scroll">${attention(i)}</div></div></details><details class="region" open><summary>MLP 细分：合并 Gate/Up → SiLU × Up → Down</summary><div class="region-body"><div class="svg-scroll">${mlp(i)}</div></div></details><p class="connection">${i<5?`本层 h${i+1} 直接接入 <strong>L${i+1} InputNorm 与 R1 旁路</strong>。`:'本层 h₆ 接入 <strong>最终 RMSNorm → 去掉 anchor → 全词表 LM head → StableArgMax</strong>。'} 本层 present K/V 是独立输出，下一次调用回到 L${i}。</p></div></details>`).join('');
+const layerCards=$$('.layer-card');
+function syncNav(){layerCards.forEach((d,i)=>$(`#navigator [data-layer="${i}"]`).setAttribute('aria-expanded',d.open));}
+layerCards.forEach(d=>d.addEventListener('toggle',syncNav));
+function openLayer(i){const d=$('#layer-'+i);d.open=true;syncNav();d.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'start'});}
+document.addEventListener('click',e=>{const inf=e.target.closest('[data-info]'),layer=e.target.closest('[data-layer]');if(inf)showInfo(inf.dataset.info);else if(layer)openLayer(Number(layer.dataset.layer));const jump=e.target.closest('[data-mask-jump]');if(jump){maskType=jump.dataset.maskJump;renderMask();}});
+document.addEventListener('keydown',e=>{const g=e.target.closest('svg [role="button"]');if(g&&(e.key==='Enter'||e.key===' ')){e.preventDefault();g.dispatchEvent(new MouseEvent('click',{bubbles:true}));}});
+$('#close-dialog').onclick=()=>$('#inspector').close();$('#inspector').addEventListener('click',e=>{if(e.target===$('#inspector')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)e.target.close();}});
+$('#expand-all').onclick=()=>{layerCards.forEach(d=>d.open=true);syncNav();};$('#collapse-all').onclick=()=>{layerCards.forEach(d=>d.open=false);syncNav();};
+let maskType='sliding';
+function renderMask(){
+ const p=Number($('#proposal-select').value),scene=$('#case-select').value,start=scene==='full'?192:scene==='partial'?16:0,valid=scene==='partial'?2:0,end=start+valid;
+ $$('[data-mask]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.mask===maskType));
+ const cell=(s,cls,title='')=>`<div class="cell ${cls}" title="${esc(title)}">${esc(s)}</div>`;
+ let h=cell('Q ↓ / K →','label')+cell(`context ${end}`,'label');for(let k=0;k<16;k++)h+=cell(k===0?'A':'M'+k,'label');
+ for(let q=0;q<16;q++){
+  const active=q<=p;h+=cell(q===0?'anchor':'M'+q,'label'+(active?'':' inactive'));
+  h+=cell(end?String(end):'—',end?'context':'',`Q${q} 可见 ${end} 个有效 context；其余 cache 槽被 mask`);
+  for(let k=0;k<16;k++){
+   const normal=k<=p&&(maskType==='full'||q>=k),witness=!active&&k===0,visible=normal||witness;
+   h+=cell(visible?(witness?'A':'•'):'',witness?'witness':visible?'visible':'',`Q${q} → K${k}：${witness?'anchor witness':visible?'可见':'屏蔽'}${active?'':'；Query 输出不消费'}`);
+  }
+ }
+ $('#mask-grid').innerHTML=h;$('#mask-grid').setAttribute('aria-label',`${maskType==='full'?'全注意力':'因果滑窗'}可见性，${end}个context，${p}个候选`);
+ $('#mask-title').textContent=maskType==='full'?'L5：有效候选块双向可见':'L0–L4：有效候选块因果可见';
+ $('#mask-explanation').textContent=`本次 ${valid} 行新 context 写入 [${start}, ${end})；${end} 行 committed context 有效。anchor 与 ${p} 个 MASK 位置有效。${maskType==='full'?'有效候选 Query 可以看到后面的有效 MASK 槽。':'有效候选 Query 只能看到自己及前面的有效块槽。'} 无效 Query 仍执行，输出不消费。`;
+ $('#mask-controls').innerHTML=`start = ${start}；valid = ${valid}；end = ${end}<br>block positions = ${end} … ${end+15}<br>有效 top1 输出：${p} / 15`;
+}
+$$('[data-mask]').forEach(b=>b.onclick=()=>{maskType=b.dataset.mask;renderMask();});$('#case-select').onchange=renderMask;$('#proposal-select').onchange=renderMask;renderMask();
+let beforePrint=[];addEventListener('beforeprint',()=>{beforePrint=$$('details').map(d=>[d,d.open]);beforePrint.forEach(([d])=>d.open=true);});addEventListener('afterprint',()=>beforePrint.forEach(([d,open])=>d.open=open));$('#print').onclick=()=>print();
+$('#export-svg').onclick=()=>{
+ const svgs=$$('.diagram').filter(s=>s.getClientRects().length),W=1380;let y=85;
+ const parts=[`<text x="40" y="40" fill="#182c46" font-size="25">DFlash Draft · 当前展开的六层结构图</text>`];
+ for(const s of svgs){const v=s.viewBox.baseVal,scale=1300/v.width;parts.push(`<text x="40" y="${y}" font-size="19" fill="#235d9a">${esc(s.dataset.title)}</text>`);y+=20;parts.push(`<g transform="translate(40 ${y}) scale(${scale})">${s.innerHTML}</g>`);y+=v.height*scale+55;}
+ const data=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${y}" viewBox="0 0 ${W} ${y}" font-family="Noto Sans CJK SC,Microsoft YaHei,PingFang SC,system-ui,sans-serif"><rect width="100%" height="100%" fill="white"/>${parts.join('')}</svg>`;
+ const url=URL.createObjectURL(new Blob([data],{type:'image/svg+xml;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download='draft-six-layer-flow.svg';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('#toast').textContent=`已导出 ${svgs.length} 张当前可见结构图；需要全部层时先点“展开全部 6 层”。`;
+};
+</script>
+</body>
+</html>

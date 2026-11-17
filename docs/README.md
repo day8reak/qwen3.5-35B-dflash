@@ -2,7 +2,7 @@
 
 40 层量化 Target＋6 层 Draft，面向 X90／kirinx90。端侧文字输入输出与 DFlash 调度已接通；当前定位 Target 精度，完整模型精度与端到端加速尚未通过。
 
-- [模型结构与 Target 交互图](model-architecture.md)
+- [模型结构与 Target / Draft 交互图](model-architecture.md)
 - [端到端流程](end-to-end-flow.md)
 - [当前结果](results.md)
 - [环境配置](environment-setup.md)

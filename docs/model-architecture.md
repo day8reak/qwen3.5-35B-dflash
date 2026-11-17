@@ -40,6 +40,8 @@ Prefill 与 Decode 共用这套 40 层结构。Prefill 处理整段 token，首�
 
 ## 当前 Draft
 
+[交互式 Draft 六层结构图 HTML](assets/draft-architecture-interactive.html)：下载后用浏览器离线打开。总览展示 L0–L5 的 hidden 串联、共享 context 与按层独立的 KV；逐层展开可查看两次残差、Q/K/V 投影、Norm、RoPE、GQA Attention 和 SwiGLU MLP。可切换可见性矩阵，对比前五层因果滑窗与末层双向块注意力；支持导出展开图 SVG、打印为 PDF。
+
 | 项目 | 归档版本 |
 |---|---|
 | 前端／目标 | PyTorch → TorchAir → CPro OMG；kirinx90，DDK 100.520.020.010 |

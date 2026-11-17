@@ -13,7 +13,7 @@
 </style>
 </head>
 <body><main>
-<header><p class="hint">QWEN3.5-35B-A3B · TARGET · X90 / kirinx90</p><h1>层间连接、层内残差与 Prefill / Decode</h1><p class="muted">40 层文本主干；每四层为 3 × GDN + 1 × 全注意力，每层都有 MoE。点击层号展开，切换阶段查看独立的状态流和误差。</p></header>
+<header><p class="hint">QWEN3.5-35B-A3B · TARGET · X90 / kirinx90</p><h1>层间连接、层内残差与 Prefill / Decode</h1><p class="muted">40 层文本主干；每四层为 3 × GDN + 1 × 全注意力，每层都有 MoE。点击层号展开，切换阶段查看独立的状态流和误差。</p><p class="hint"><a href="draft-architecture-interactive.html">查看 Draft 六层连接与层内计算 ↗</a></p></header>
 <div class="toolbar" aria-label="图表控制">
 <div class="tabs" aria-label="阶段"><button data-mode="compare" aria-pressed="true">Prefill / Decode 对比</button><button data-mode="prefill" aria-pressed="false">仅 Prefill</button><button data-mode="decode" aria-pressed="false">仅 Decode</button></div>
 <button id="expand-tested">展开已测 4 层</button><button id="collapse-all">收起全部层</button><button id="export-svg" class="tools-right">导出当前展开图 SVG</button>
