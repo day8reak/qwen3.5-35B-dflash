@@ -113,10 +113,8 @@
     "on_board": "scripts/run_on_board.sh",
     "prepare": "scripts/prepare_allops.py",
     "torch_export": "scripts/export_probe.py",
-    "source_validation": "scripts/validate_source.py",
     "optional_msopgen_prepare": "scripts/prepare_project.py",
     "ge_probe": "scripts/stable_arg_max_ge.py",
-    "ddk_workflow_validation": "tests/test_ddk_workflow.py",
     "installation_inspection": "scripts/stable_arg_max_ge.py --inspect-installation"
   },
   "documentation": {
