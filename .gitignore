@@ -1,6 +1,14 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+# Local regression tests and mocks stay outside the published repository.
+test/
+tests/
+conftest.py
+pytest.ini
+.coverage
+.coverage.*
+htmlcov/
 *.onnx
 *.air
 *.omc
