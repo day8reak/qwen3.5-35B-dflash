@@ -1,20 +1,6 @@
 # 当前结果
 
-更新：2026-11-11。设备数据来自用户回传；本地主机未重跑服务器编译或设备任务。流程接通、精度通过和性能收益分别记录。
-
-## Target 精度
-
-范围为 L0–L3 的 Prefill T256／Decode T1 独立边界小图，共 158 个输出 case。
-
-| 项目 | 当前结果 |
-|---|---|
-| OMC 编译 | 累计 146 成功；12 个 ConvState 小图失败 |
-| 数值回传 | 142 项：2 PASSED、2 FAILED、138 METRICS_RECORDED；另 4 项待回传 |
-| relative-L2 >1% | 51 项：量化投影 38、RoPE 4、Prefill GDN 6、Prefill Attention 1、Decode Cache 2 |
-| 新增 Norm／Conv1d | 22 项已回传，relative-L2 分别为 0.039795%～0.189404%、0.021476%～0.027210%，dtype 保持、重复稳定 |
-| 覆盖限制 | 尚未证明整图、MoE 内部、LM head 或连续状态反馈精度通过 |
-
-四个自定义算子重点为 QuantBatchMatmulV4444 所在链路、CacheUpdate、ChunkGatedDeltaRule、AdnFusedInferAttention；逐项证据见[Target 精度表](target-accuracy-status.md)。大误差是定位线索，尚未全部定责到内核。
+更新：2026-11-17。设备数据来自用户回传；本地主机未重跑服务器编译或设备任务。流程接通、精度通过和性能收益分别记录。
 
 ## Draft 保留基线
 
@@ -50,4 +36,4 @@
 
 同步 API、加载和请求墙钟范围不同，不能直接相加。完整语言质量与普通 Decode 对 DFlash 的配对加速尚未通过。
 
-当前执行入口见[完整模型流程](run-end-to-end.md)和[Target 批量验证](target-batch-rerun.md)。逐次实验／失败记录保留在 [Git 历史](https://github.com/day8reak/qwen3.5-35B-dflash/blob/459060e/docs/results.md)。
+当前执行入口见[完整模型流程](run-end-to-end.md)。逐次实验／失败记录保留在 [Git 历史](https://github.com/day8reak/qwen3.5-35B-dflash/blob/459060e/docs/results.md)。
