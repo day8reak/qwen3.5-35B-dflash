@@ -11,12 +11,19 @@ export REPO_DIR='/实际路径/qwen3.5-35B-dflash'
 export AI_RUN_DIR="${REPO_DIR}-run"
 export TARGET_SOURCE='/实际路径/qwen35_moe'
 export TARGET_CONFIG="$TARGET_SOURCE/config/qwen3_5_moe.yaml"
-export INPUT_IDS='/实际路径/input_ids.bin'
-export SEQ_LEN=64
 export PREFILL_FIXTURE="$AI_RUN_DIR/target/tests/prefill-fixture"
 ```
 
-`INPUT_IDS` 必须是本次要比较的 **batch=1、恰好 SEQ_LEN 个、无 padding 的小端 INT32 token**；脚本不重复 prompt、不截断、不补齐。长度至少为 2，且不超过配置缓存容量。YAML 的相对资产路径沿原程序规则，相对于 `TARGET_SOURCE`；使用绝对权重路径最直接。脚本构造四层后量化并搬到 NPU，原 loader 仍可能读取完整 checkpoint。
+脚本默认从 YAML 的 `prompts` 列表取第 1 条，也支持单个 `prompt` 字符串，用 `model_file` 对应的 tokenizer 编码。`input_ids` 就是编码后的 token 编号，长度自动计算；无需自己准备 bin。YAML 例如：
+
+```yaml
+prompts:
+  - "南京著名的景点有哪些，请列出五个。"
+```
+
+默认使用原文一次；不补齐、不截断，实际 token 数必须在 2 到配置缓存容量之间。原 inference.py 会用 `prompt * 32` 覆盖聊天模板结果；本入口同样不套聊天模板，保留原 tokenizer 的特殊 token 默认设置，但只有显式传 `--prompt-repeat 32` 才重复原文。选择其他条目用 `--prompt-index 1`（从 0 开始）。
+
+YAML 的相对资产路径沿原程序规则，相对于 `TARGET_SOURCE`；使用绝对权重路径最直接。脚本构造四层后量化并搬到 NPU，原 loader 仍可能读取完整 checkpoint。
 
 ## 2. 一次生成
 
@@ -26,12 +33,13 @@ export PREFILL_FIXTURE="$AI_RUN_DIR/target/tests/prefill-fixture"
 python "$REPO_DIR/targets/cpro/tools/generate_target_prefill.py" \
   --source-root "$TARGET_SOURCE" \
   --config "$TARGET_CONFIG" \
-  --input-ids "$INPUT_IDS" --sequence-length "$SEQ_LEN" \
   --device npu:0 --intermediates --capture-boundaries \
   --output "$PREFILL_FIXTURE"
 ```
 
-成功显示 `status=CAPTURED`、16 个语义输入、9 个输出。`--intermediates` 额外保存各层输入、Norm、GDN／Attention、MoE 和层输出；`--capture-boundaries` 同时记录已有 probe 所需的边界与投影权重，供随后导出整层 GDN／完整 Attention 对照。整网 Prefill 只执行一次，不执行 Decode。所有缓存初态为零，实际 causal mask、position、`allQLen`、`effective_length`、`output_pos` 都在调用前核对。
+成功显示 `status=CAPTURED`、实际 `sequence_length`、16 个语义输入、9 个输出，并保存 `input_ids.bin`。对应整网 OMC 的 Prefill 档位须匹配这个实际长度；指定 `--sequence-length 64` 只检查 token 数恰好为 64，不会改 prompt。已有 token 文件时，仍可添加 `--input-ids /实际路径/input_ids.bin`，文件必须为无 padding 的小端 INT32，长度从字节数自动计算。
+
+`--intermediates` 额外保存各层输入、Norm、GDN／Attention、MoE 和层输出；`--capture-boundaries` 同时记录已有 probe 所需的边界与投影权重，供随后导出整层 GDN／完整 Attention 对照。整网 Prefill 只执行一次，不执行 Decode。所有缓存初态为零，实际 causal mask、position、`allQLen`、`effective_length`、`output_pos` 都在调用前核对。
 
 启用 `--capture-boundaries` 时，采集结束后还会用独立复制的输入／旧缓存重放一次 L3 完整 Attention 模块，仅将 Attention core 换为已审查的独立数学公式，另存三路模块参考。原整网输出及原模块观测不覆盖；这份对照用于区分原 310P Attention core 的偏差与 CPro 整模块偏差，不包括 MoE。
 
@@ -40,6 +48,7 @@ python "$REPO_DIR/targets/cpro/tools/generate_target_prefill.py" \
 | 文件 | 用途 |
 |---|---|
 | `manifest.json` | 实际 shape/dtype/字节数、源文件身份、输入转换、审计结论 |
+| `input_ids.bin` | 本次实际 token 编号，小端 INT32；来源、prompt 选项与实际长度记录在 manifest |
 | `inputs/*.bin` | 同次 Prefill 的 16 路具名输入，用于绑定 CPro 实际输入槽位 |
 | `source_inputs/*.bin` | 原 310P wrapper 实际参数快照，保留源 dtype |
 | `golden/*.bin` | 同次原 wrapper 返回的 9 个输出，立即独立复制 |

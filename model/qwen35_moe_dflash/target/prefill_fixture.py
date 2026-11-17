@@ -38,6 +38,46 @@ def load_tokens(path, sequence_length, max_len, vocab):
     return torch.from_numpy(tokens.astype(np.int64)).unsqueeze(0)
 
 
+def prompt_tokens(config, tokenizer_factory, max_len, *, prompt_index=0, prompt_repeat=1,
+                  sequence_length=None):
+    """Encode one YAML prompt with the original tokenizer call, without padding."""
+    fields = [name for name in ('prompts', 'prompt') if name in config]
+    if len(fields) != 1:
+        raise ValueError('YAML must contain exactly one of prompts (list) or prompt (string)')
+    field = fields[0]
+    prompts = config[field]
+    if isinstance(prompts, str):
+        prompts = [prompts]
+    if (not isinstance(prompts, list) or not prompts
+            or any(not isinstance(p, str) or not p.strip() for p in prompts)):
+        raise ValueError('YAML prompts must contain nonempty strings')
+    if type(prompt_index) is not int or not 0 <= prompt_index < len(prompts):
+        raise ValueError(f'prompt-index must be between 0 and {len(prompts)-1}')
+    if type(prompt_repeat) is not int or prompt_repeat < 1:
+        raise ValueError('prompt-repeat must be a positive integer')
+    tokenizer = tokenizer_factory.from_pretrained(config['model_file'])
+    text = prompts[prompt_index] * prompt_repeat
+    # Original inference.py overwrites its chat-template text before this call.
+    # Keep tokenizer defaults, but make the old debug repetition explicit.
+    encoded = tokenizer([text], return_tensors='pt')
+    tokens, mask = encoded['input_ids'], encoded['attention_mask']
+    if (not isinstance(tokens, torch.Tensor) or tokens.dtype != torch.int64
+            or tokens.ndim != 2 or tokens.shape[0] != 1
+            or not isinstance(mask, torch.Tensor) or mask.shape != tokens.shape
+            or not torch.all(mask == 1)):
+        raise ValueError('tokenizer must return unpadded INT64 input_ids and all-one attention_mask for batch=1')
+    length = tokens.shape[1]
+    if not 2 <= length <= min(max_len, 32767):
+        raise ValueError(f'prompt produced {length} tokens; Prefill requires 2..{min(max_len, 32767)}; no padding/truncation')
+    if sequence_length is not None and sequence_length != length:
+        raise ValueError(f'prompt produced {length} tokens, differs from --sequence-length {sequence_length}; no padding/truncation')
+    return cpu(tokens), dict(source='YAML_PROMPT', yaml_field=field, prompt_index=prompt_index,
+        prompt=prompts[prompt_index], prompt_repeat=prompt_repeat,
+        tokenizer_path=config['model_file'], tokenizer_class=type(tokenizer).__name__,
+        text_policy='RAW_PROMPT; NO_CHAT_TEMPLATE; EXPLICIT_REPEAT',
+        special_tokens='TOKENIZER_DEFAULT_AS_ORIGINAL_INFERENCE', sequence_length=length)
+
+
 class PrefillCapture:
     """Hooks save independent CPU snapshots before the caller can mutate state."""
 
@@ -329,7 +369,7 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
 
 
 def generate(source_root, config_path, input_ids, sequence_length, output, *, device='npu:0',
-             intermediates=False, capture_boundaries=False):
+             intermediates=False, capture_boundaries=False, prompt_index=0, prompt_repeat=1):
     root = new_output(output)
     source_root = Path(source_root).resolve(strict=True)
     config_path = Path(config_path)
@@ -360,11 +400,19 @@ def generate(source_root, config_path, input_ids, sequence_length, output, *, de
         max_len = cfg['kv_cache_max_len']
         if type(max_len) is not int or max_len <= 0 or max_len % 32:
             raise ValueError('kv_cache_max_len must be a positive multiple of 32')
-        if not 2 <= sequence_length <= min(max_len, 32767):
+        if sequence_length is not None and not 2 <= sequence_length <= min(max_len, 32767):
             raise ValueError('invalid Prefill sequence-length for this cache/int16 length input')
-        path = Path(input_ids).resolve(strict=True)
-        if path.stat().st_size != sequence_length * 4:
-            raise ValueError('input-ids byte size differs from sequence-length * sizeof(INT32)')
+        path = None
+        if input_ids is not None:
+            if prompt_index != 0 or prompt_repeat != 1:
+                raise ValueError('prompt options cannot be combined with --input-ids')
+            path = Path(input_ids).resolve(strict=True)
+            size = path.stat().st_size
+            if size % 4 or not 2 <= size // 4 <= min(max_len, 32767):
+                raise ValueError('input-ids must contain 2..cache-capacity little-endian INT32 tokens')
+            if sequence_length is not None and size != sequence_length * 4:
+                raise ValueError('input-ids byte size differs from sequence-length * sizeof(INT32)')
+            sequence_length = size // 4
         stage('IMPORT_ORIGINAL_SOURCE')
         source = import_source(source_root)
         import torch_npu as npu
@@ -377,14 +425,34 @@ def generate(source_root, config_path, input_ids, sequence_length, output, *, de
         record['resources'] = {name: cfg[name] for name in ('model_file', 'quanted_pth', 'embedding_weight_path', 'embedding_scale_path')}
         source.device, source.quant, source.penalty = device, 'enable', 1.0
         source.config_data = cfg
+        tokens = None
+        if path is None:
+            stage('TOKENIZE_YAML_PROMPT')
+            with hf_config_prefix(cfg['model_file'], 4, record), working_directory(source_root):
+                tokens, token_source = prompt_tokens(cfg, source.AutoTokenizer, max_len,
+                    prompt_index=prompt_index, prompt_repeat=prompt_repeat, sequence_length=sequence_length)
+            sequence_length = tokens.shape[1]
+        else:
+            token_source = dict(source='INPUT_IDS_FILE', original_path=str(path), original_sha256=sha(path),
+                                sequence_length=sequence_length)
+        record['token_source'] = token_source
+        record['sequence_length'] = sequence_length
+        print(f'[target-prefill] sequence_length={sequence_length} source={token_source["source"]}', flush=True)
         stage('LOAD_FOUR_LAYERS_ON_CPU')
         with hf_config_prefix(cfg['model_file'], 4, record), working_directory(source_root):
             wrapper = build_four_layers(source, cfg['model_file'], record)
         model_config = wrapper.model.config
         if model_config.kv_cache_max_len != max_len:
             raise ValueError('YAML cache capacity differs from the constructed model/block table')
-        tokens = load_tokens(path, sequence_length, max_len, model_config.vocab_size)
-        record['tokens'] = dict(path=str(path), sha256=sha(path), dtype='int32', ids=tokens[0].tolist())
+        if tokens is None:
+            tokens = load_tokens(path, sequence_length, max_len, model_config.vocab_size)
+        if torch.any(tokens < 0) or torch.any(tokens >= min(model_config.vocab_size, 2**31)):
+            raise ValueError('input token is outside the model vocabulary/INT32 serialization range')
+        token_path = root/'input_ids.bin'
+        with token_path.open('xb') as stream:
+            tokens.numpy().astype('<i4').tofile(stream)
+        record['tokens'] = dict(**identity(token_path, root), dtype='int32',
+                               shape=list(tokens.shape), ids=tokens[0].tolist())
         stage('ORIGINAL_W4_QUANTIZATION')
         source.quant_model_inplace(wrapper, cfg['quanted_pth'], model_config.num_experts,
             start_layer_idx=0, device='cpu', pseudo_quant=False, quant_bits=4)
