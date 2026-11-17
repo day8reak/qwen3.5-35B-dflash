@@ -2,7 +2,7 @@
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 
-先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。需要 `capture/manifest.json` 为 `CAPTURED`，且 `attention_math_replays` 中 L3 为 `COMPUTED`。无需再次执行整网 Prefill。
+先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。以下流程要求 `capture/manifest.json` 为 `CAPTURED`，同次 `attention_audit` 为 `PASSED`。保留完整 `PREFILL_FIXTURE`（含父 manifest 和 `attention-audit/`），无需再次执行整网 Prefill。
 
 ## 1. 导出两组 AIR
 
@@ -29,12 +29,15 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
   --converter-script "$CPRO_EXPORT_SCRIPT" \
   --points full_attention_layer --phases prefill \
   --qlinear-scales fp16 --rope-precision fp32 \
+  --full-attention-reference captured-audited \
   --output "$PAIR_ROOT/full/air"
 ```
 
 预期 Linear 为 3 张图、每图 hidden／ConvState／recurrent state；Full 为 1 张图，内部串联 QKV、Q/K Norm、RoPE、CacheUpdate、Attention、gate、o_proj，输出 hidden／K cache／V cache。Full 使用已验证的 FP16 QLinear scale 和 FP32 RoPE 旋转，并保留原输出 dtype。
 
-Full 的主参考是**原完整 NZ Attention 模块，仅将 Attention core 换为独立 FP64 数学公式后转 FP16**。其余投影、Norm、RoPE 等仍使用原参考实现；这不是全模块独立 CPU 实现。原 captured 三路输出另外保留，报告同时比较两份参考，避免已知异常的原 Attention golden 导致误判。两份参考必须来自相同输入，且重放前后 K/V 位相同。
+这里显式选用 `captured-audited`：Full 的主参考是**同次原 NZ 模块的 hidden／K／V**。导出前会核验原文件、CacheUpdate→core→模块返回的 K/V 链路，并重新计算独立 FP64 Attention core 参考、转 FP16 后按原精度门槛比较；失败则停止。该审计只验证核心，同次模块输出仍是原实现参考，不代表全模块独立数学验证或整网精度通过。
+
+若辅助模块重放因 K/V 不一致而显示 `UNAVAILABLE`，上述入口仍可使用通过审计的同次捕获，失败记录不会被改写。CLI 默认仍是 `math-replay`，要求辅助重放 `COMPUTED` 且 K/V 逐位一致；两个模式不自动切换。
 
 ## 2. 编译
 
@@ -79,6 +82,6 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
 cat "$BATCH_ROOT/comparison/summary.csv"
 ```
 
-`PENDING` 时仅重复 recover；已有 native 输出后，即使精度失败也继续 compare。每图预热 3 次、采样 10 次，每次恢复同一输入。Linear 应有 9 行，Full 应有 3 行。Full CSV 的常规指标采用数学 core 重放参考，`captured_*` 列保留对原 captured 的误差；K/V 另外要求本次有效写入区域满足相同精度门槛，未写区域逐位等于旧输入。
+`PENDING` 时仅重复 recover；已有 native 输出后，即使精度失败也继续 compare。每图预热 3 次、采样 10 次，每次恢复同一输入。Linear 应有 9 行，Full 应有 3 行。Full CSV 的 `reference_basis` 标明参考来源；上述模式中常规指标与 `captured_*` 都对比同次原输出。K/V 另外要求本次有效写入区域满足相同精度门槛，未写区域逐位等于旧输入。
 
 回传两组 `summary.csv` 和 `report.json`。只有两组各自完成执行和比较后，才能判断是 GDN、FullAttention 或两者存在偏差；模块通过也不代表 MoE、整网 logits 或连续状态反馈已经通过。

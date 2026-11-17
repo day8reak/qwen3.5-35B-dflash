@@ -279,14 +279,15 @@ def check_adjusted_graph(kind, graph):
 
 def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None,
                *, qlinear_scales='source', cache_indexing='kernel', rope_precision='source', gdn_state_dtype='source',
-               gdn_convstate='kernel'):
+               gdn_convstate='kernel', full_attention_reference='math-replay'):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
     try:
         if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer')
                 or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')
-                or gdn_convstate not in ('kernel', 'reference')):
+                or gdn_convstate not in ('kernel', 'reference')
+                or full_attention_reference not in ('math-replay', 'captured-audited')):
             raise ValueError('unknown module candidate')
         capture = Path(capture).resolve()
         manifest = json.loads((capture/'manifest.json').read_text())
@@ -298,13 +299,15 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             regions = assemble(manifest)
         if region_id.endswith('_full_attention_layer'):
             from .whole_attention import assemble
-            regions = assemble(manifest)
+            regions = assemble(manifest, capture=capture, reference=full_attention_reference)
         matches = [r for r in regions if r['id'] == region_id]
         if len(matches) != 1:
             raise ValueError('region must identify one captured invocation')
         record = matches[0]
         whole_gdn = record['kind'] == 'gdn_layer'
         whole_attention = record['kind'] == 'full_attention_layer'
+        if full_attention_reference != 'math-replay' and not whole_attention:
+            raise ValueError('--full-attention-reference requires full_attention_layer')
         whole = whole_gdn or whole_attention
         if gdn_convstate != 'kernel' and not whole_gdn:
             raise ValueError('--gdn-convstate reference requires a whole gdn_layer region')
@@ -318,6 +321,8 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             result['model_scope'] = 'ONE_COMPLETE_FULL_ATTENTION_MODULE; THREE_OUTPUTS; NO_RESIDUAL_MOE_OR_DECODER_LAYER'
             result['reference_basis'] = record['reference_basis']
             result['reference_evidence'] = record['reference_evidence']
+            from .whole_attention import reference_scope
+            result['reference_scope'] = reference_scope(record['reference_basis'])
         elif output_index is None or not 0 <= output_index < len(record['outputs']):
             raise ValueError('single boundary requires a valid --output-index')
         goldens = record['outputs'] if whole else [record['outputs'][output_index]]

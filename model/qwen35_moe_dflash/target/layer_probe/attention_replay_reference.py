@@ -54,6 +54,53 @@ def _length(value):
     return value[0]
 
 
+def _comparison(captured, replayed):
+    """Diagnostics only: numerical metrics never replace the K/V bitwise gate."""
+    def stats(value):
+        finite = np.isfinite(value)
+        return dict(shape=list(value.shape), dtype=str(value.dtype), elements=value.size,
+            nonzero=int(np.count_nonzero(value)), nonfinite=int(np.count_nonzero(~finite)),
+            finite_abs_max=float(np.abs(value[finite].astype(np.float64)).max()) if finite.any() else None)
+
+    result = dict(captured=stats(captured), replayed=stats(replayed))
+    if captured.shape != replayed.shape:
+        return dict(result, metric_issue='SHAPE_MISMATCH', bitwise_equal=False)
+    try:
+        result.update(metrics(captured, replayed))
+    except Exception as exc:
+        result.update(metric_issue='COMPARISON_UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
+    if captured.dtype == replayed.dtype:
+        a = np.ascontiguousarray(captured).reshape(-1).view(np.uint8).reshape(-1, captured.dtype.itemsize)
+        b = np.ascontiguousarray(replayed).reshape(-1).view(np.uint8).reshape(-1, replayed.dtype.itemsize)
+        different = np.any(a != b, axis=1)
+        result.update(bitwise_equal=not bool(different.any()),
+            bitwise_mismatched_elements=int(np.count_nonzero(different)))
+    else:
+        result['bitwise_equal'] = False
+    return result
+
+
+def _cache_partitions(captured, replayed, layout):
+    """Select physical page/slot positions for the captured fresh Prefill."""
+    table, block_size, length = layout['table'], layout['block_size'], layout['length']
+    if (captured.shape != replayed.shape or captured.ndim != 4 or captured.shape[2:] != (block_size, 16)
+            or table.ndim != 2 or table.shape[0] != 1 or table.dtype.kind not in 'iu'
+            or length < 1 or block_size < 1 or length > table.shape[1]*block_size):
+        raise ValueError('cache partition requires the source packed page/table/length contract')
+    pages = table[0, :(length+block_size-1)//block_size]
+    if np.any(pages < 0) or np.any(pages >= captured.shape[0]) or np.unique(pages).size != pages.size:
+        raise ValueError('active cache pages must be distinct and in range')
+    active = np.zeros((captured.shape[0], block_size), dtype=bool)
+    positions = np.arange(length)
+    active[pages[positions//block_size], positions % block_size] = True
+    a, b = captured.transpose(0, 2, 1, 3), replayed.transpose(0, 2, 1, 3)
+    return dict(status='RECORDED', basis='CORE_BLOCK_TABLE; FRESH_PREFILL_POSITIONS_0_TO_T_MINUS_1',
+        length=length, block_size=block_size, active_pages=pages.tolist(),
+        selection_order='PHYSICAL_PAGE_THEN_SLOT; CHANNEL; C0',
+        active=_comparison(a[active], b[active]), untouched=_comparison(a[~active], b[~active]),
+        untouched_expected_initial_value=0)
+
+
 class FullAttentionReplay:
     def __init__(self, root, record, npu, layer=3):
         self.root, self.record, self.npu, self.layer = Path(root), record, npu, layer
@@ -144,6 +191,39 @@ class FullAttentionReplay:
             raise ValueError('requires two independent snapshots of zero FP16 initial paged caches')
         return length
 
+    def _diagnose(self, row, result, layout):
+        row['diagnostic_scope'] = 'CAPTURED_VS_REPLAY_OBSERVATIONS_ONLY; NOT_REFERENCE_QUALIFICATION'
+        row['captured_vs_reference'] = comparisons = {}
+        for name, captured, replayed in zip(OUTPUTS, self.actual, result):
+            try:
+                a, b = captured.numpy(), replayed.numpy()
+                comparisons[name] = _comparison(a, b)
+                if name != OUTPUTS[0]:
+                    try:
+                        comparisons[name]['cache_partitions'] = _cache_partitions(a, b, layout)
+                    except Exception as exc:
+                        comparisons[name]['cache_partitions'] = dict(status='UNAVAILABLE',
+                            error=f'{type(exc).__name__}: {exc}')
+            except Exception as exc:
+                comparisons[name] = dict(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
+
+    def _save_diagnostic_outputs(self, row, result):
+        """Rejected replay bytes must not appear in the qualified outputs list."""
+        row['diagnostic_outputs'] = []
+        try:
+            folder = self.root/'attention-math-replay-diagnostic'/f'l{self.layer:02d}_c00'
+            folder.mkdir(parents=True, exist_ok=False)
+            for name, replayed in zip(OUTPUTS, result):
+                diagnostic_name = name.replace('golden_', 'replay_', 1)
+                path = folder/(diagnostic_name+'.bin')
+                with path.open('xb') as stream:
+                    stream.write(replayed.contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
+                row['diagnostic_outputs'].append(dict(name=diagnostic_name, compared_to=name,
+                    usage='DIAGNOSTIC_ONLY; NOT_GOLDEN', shape=list(replayed.shape),
+                    dtype=str(replayed.dtype).removeprefix('torch.'), **identity(path, self.root)))
+        except Exception as exc:
+            row['diagnostic_output_error'] = f'{type(exc).__name__}: {exc}'
+
     def replay(self):
         if self.done:
             raise ValueError('FullAttention replay may only run once')
@@ -165,6 +245,7 @@ class FullAttentionReplay:
             if not callable(original):
                 raise ValueError('original attention namespace is unavailable')
             calls = []
+            cache_layout = {}
 
             def independent(*args, **kwargs):
                 if args or calls:
@@ -185,6 +266,8 @@ class FullAttentionReplay:
                 for name in ('key', 'value'):
                     if not isinstance(values[name], (tuple, list)) or len(values[name]) != 1:
                         raise ValueError(f'{name} must contain one paged cache tensor')
+                cache_layout.update(table=values['block_table'].numpy(),
+                    block_size=values['block_size'], length=length)
                 prepared = reference_math(query.numpy(), values['key'][0].numpy(), values['value'][0].numpy(),
                     mask.numpy(), values['block_table'].numpy(), length, heads=values['num_heads'],
                     kv_heads=values['num_key_value_heads'], block_size=values['block_size'], scale=values['scale_value'])
@@ -205,13 +288,16 @@ class FullAttentionReplay:
                 self.npu.adn_fused_infer_attention = original
             if len(calls) != 1:
                 raise ValueError('source module did not invoke exactly one independent attention core')
+            self._diagnose(row, result, cache_layout)
             for name, actual, reference in zip(OUTPUTS, self.actual, result):
                 if reference.shape != actual.shape or reference.dtype != actual.dtype or not torch.isfinite(reference).all():
+                    self._save_diagnostic_outputs(row, result)
                     raise ValueError(f'independent module result shape/dtype/nonfinite mismatch: {name}')
             row['cache_replay_bitwise_equal'] = {
                 name: actual.numpy().tobytes() == reference.numpy().tobytes()
                 for name, actual, reference in zip(OUTPUTS[1:], self.actual[1:], result[1:])}
             if not all(row['cache_replay_bitwise_equal'].values()):
+                self._save_diagnostic_outputs(row, result)
                 raise ValueError('replayed K/V differ from original K/V; attention-only substitution is not isolated')
             folder = self.root/'attention-math-replay'/f'l{self.layer:02d}_c00'
             folder.mkdir(parents=True, exist_ok=False)
@@ -221,7 +307,6 @@ class FullAttentionReplay:
                     stream.write(reference.numpy().tobytes())
                 row['outputs'].append(dict(name=name, shape=list(reference.shape),
                     dtype=str(reference.dtype).removeprefix('torch.'), **identity(path, self.root)))
-                row.setdefault('captured_vs_reference', {})[name] = metrics(actual.numpy(), reference.numpy())
             row['status'] = 'COMPUTED'
         except Exception as exc:
             row['error'] = f'{type(exc).__name__}: {exc}'

@@ -20,7 +20,17 @@ INPUTS = ('hidden_states', 'attention_mask', 'position_ids', 'old_key_cache',
           'old_value_cache', 'new_kv_cache_pos', 'allQLen')
 
 
-def assemble(manifest):
+def reference_scope(basis):
+    if basis == 'ORIGINAL_FULL_ATTENTION_MODULE_WITH_INDEPENDENT_ATTENTION_MATH':
+        return 'SOURCE_MODULE_WITH_MATH_ATTENTION_CORE; OTHER_SOURCE_OPS_RETAINED'
+    if basis == 'ORIGINAL_FULL_ATTENTION_CAPTURE_WITH_AUDITED_CORE':
+        return 'SAME_CALL_SOURCE_MODULE_OUTPUTS; CORE_MATH_AUDITED; WHOLE_MODULE_MATH_UNVERIFIED'
+    raise ValueError('unknown whole FullAttention reference basis')
+
+
+def assemble(manifest, *, capture=None, reference='math-replay'):
+    if reference not in ('math-replay', 'captured-audited'):
+        raise ValueError('unknown whole FullAttention reference selection')
     records = []
     for original in manifest['regions']:
         if original['point'] != 'full_attention_layer':
@@ -48,6 +58,16 @@ def assemble(manifest):
             raise ValueError('FullAttention module hidden differs from captured o_proj output')
         if any(r['sequence_length'] != original['sequence_length'] for r in components):
             raise ValueError('FullAttention boundary sequence lengths differ')
+        if reference == 'captured-audited':
+            if capture is None:
+                raise ValueError('captured-audited requires the original capture directory')
+            validate_capture(original, capture)
+            from .captured_attention_reference import audited_capture_reference
+            evidence = audited_capture_reference(Path(capture), manifest, original, components)
+            records.append(dict(original, captured_outputs=original['outputs'], components=components,
+                reference_basis='ORIGINAL_FULL_ATTENTION_CAPTURE_WITH_AUDITED_CORE',
+                reference_evidence=evidence, provenance='SAME_CALL_ORIGINAL_MODULE; CORE_MATH_AUDITED'))
+            continue
         refs = [r for r in manifest.get('attention_math_replays', []) if all(
             r[k] == original[k] for k in ('layer', 'call', 'phase'))]
         if len(refs) != 1 or refs[0].get('status') != 'COMPUTED':
@@ -246,7 +266,7 @@ def build(record, capture, target, converters, factory, config_path, source_root
         output_scope='FULL_ATTENTION_HIDDEN_KEY_VALUE; NO_RESIDUAL_MOE_OR_DECODER_LAYER',
         weight_scope='ORIGINAL_CHECKPOINT_BOUND', weights=weights, qlinear_candidates=quant,
         reference_basis=record['reference_basis'],
-        reference_scope='ORIGINAL_NZ_MODULE_WITH_MATH_ATTENTION_CORE; OTHER_SOURCE_OPS_RETAINED',
+        reference_scope=reference_scope(record['reference_basis']),
         position_serialization='VALUE_PRESERVING_INT32_CAST; FRESH_PREFILL_BOUNDS_CHECKED',
         rope_coefficients='SOURCE_CONFIG_BUFFERS_BIT_EQUAL_TO_CAPTURED_COS_SIN',
         state_feedback='NOT_TESTED')

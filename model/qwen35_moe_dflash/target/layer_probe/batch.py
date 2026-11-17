@@ -41,10 +41,12 @@ def export_variants(region, cache_indexing):
 
 def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None, phases=None,
                  timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel',
-                 rope_precision='source', gdn_state_dtype='source', gdn_convstate='kernel'):
+                 rope_precision='source', gdn_state_dtype='source', gdn_convstate='kernel',
+                 full_attention_reference='math-replay'):
     if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both')
             or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')
-            or gdn_convstate not in ('kernel', 'reference')):
+            or gdn_convstate not in ('kernel', 'reference')
+            or full_attention_reference not in ('math-replay', 'captured-audited')):
         raise ValueError('unknown module candidate')
     if phases is not None and (not phases or set(phases) - {'prefill', 'decode'}):
         raise ValueError('select prefill and/or decode phases')
@@ -52,7 +54,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     source = json.loads((capture/'manifest.json').read_text())
     if source.get('artifact_kind') != KIND or source.get('status') != 'CAPTURED':
         raise ValueError('requires completed 310P capture')
-    # Whole Attention needs its separate replay reference and explicit selection;
+    # Whole Attention needs a qualified reference and explicit selection;
     # ordinary boundary batches remain compatible with captures that include it.
     available_regions = [r for r in source['regions'] if r['kind'] != 'full_attention_layer']
     if points and 'gdn_layer' in points or kinds and 'gdn_layer' in kinds:
@@ -60,12 +62,14 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         available_regions += assemble(source)
     if points and 'full_attention_layer' in points or kinds and 'full_attention_layer' in kinds:
         from .whole_attention import assemble
-        available_regions = [r for r in available_regions if r['kind'] != 'full_attention_layer'] + assemble(source)
+        available_regions += assemble(source, capture=capture, reference=full_attention_reference)
     regions = [r for r in available_regions if (not points or r['point'] in points)
                and (not kinds or r['kind'] in kinds)
                and (phases is None or r['phase'] in phases)]
     if not regions:
         raise ValueError('no matching captured regions')
+    if full_attention_reference != 'math-replay' and not any(r['kind'] == 'full_attention_layer' for r in regions):
+        raise ValueError('--full-attention-reference requires full_attention_layer selection')
     if gdn_convstate != 'kernel' and any(r['kind'] != 'gdn_layer' for r in regions):
         raise ValueError('--gdn-convstate reference requires only whole gdn_layer regions')
     if points and set(points) - {r['point'] for r in regions}:
@@ -92,6 +96,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     report['candidate_options'] = dict(qlinear_scales=qlinear_scales, cache_indexing=cache_indexing,
         rope_precision=rope_precision, gdn_state_dtype=gdn_state_dtype, gdn_convstate=gdn_convstate,
         reference='ORIGINAL_CAPTURE_UNCHANGED')
+    if any(r['kind'] == 'full_attention_layer' for r in regions):
+        report['candidate_options']['full_attention_reference'] = full_attention_reference
     report['selected_phases'] = sorted({r['phase'] for r in regions})
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
@@ -125,6 +131,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 argv += ['--cache-indexing', mode]
             if region['kind'] in ('rope', 'full_attention_layer') and rope_precision != 'source':
                 argv += ['--rope-precision', rope_precision]
+            if region['kind'] == 'full_attention_layer':
+                argv += ['--full-attention-reference', full_attention_reference]
             if torchair_pb2:
                 argv += ['--torchair-pb2', str(Path(torchair_pb2).resolve())]
             if target_config:
@@ -365,9 +373,10 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         if 'attention_contract' in exported:
             cases[-1]['attention_contract'] = exported['attention_contract']
         if case['kind'] == 'full_attention_layer':
+            from .whole_attention import reference_scope
             captured = exported.get('captured_goldens', [])
             if len(captured) != 3 or len(io['outputs']) != 3:
-                raise ValueError('FullAttention requires original and math-core three-output references')
+                raise ValueError('FullAttention requires primary and original three-output references')
             copied = []
             for i, spec in enumerate(captured):
                 destination = fixture/f'captured_golden_{i}.bin'
@@ -375,7 +384,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
                 copied.append(dict(spec, **identity(destination, out/'fixture')))
             cases[-1].update(captured_goldens=copied,
                 reference_basis=exported['reference_basis'],
-                reference_scope='SOURCE_MODULE_WITH_MATH_ATTENTION_CORE; OTHER_SOURCE_OPS_RETAINED',
+                reference_scope=reference_scope(exported['reference_basis']),
                 full_attention_contract=exported['full_attention_contract'])
         if case['kind'] == 'rope' and 'rope_contract' in exported:
             contract = exported['rope_contract']
@@ -405,6 +414,8 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
             continue
         row = {k: case[k] for k in ('case', 'layer', 'call', 'point', 'phase', 'ordinal', 'output_name')}
         row['reference_basis'] = case.get('reference_basis', 'ORIGINAL_CAPTURE_UNCHANGED')
+        if 'reference_scope' in case:
+            row['reference_scope'] = case['reference_scope']
         try:
             folder = native/case['case']
             receipt = json.loads((folder/'result.json').read_text())
@@ -435,7 +446,10 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     metric = metrics(actual, golden, atol=atol, rtol=rtol)
                     if captured_golden is not None:
                         metric['original_capture_comparison'] = metrics(actual, captured_golden, atol=atol, rtol=rtol)
-                        metric['original_capture_role'] = 'OBSERVATION_ONLY; DOES_NOT_CONTROL_PRIMARY_VERDICT'
+                        metric['original_capture_role'] = (
+                            'SAME_AS_PRIMARY_AUDITED_CAPTURE'
+                            if case['reference_basis'] == 'ORIGINAL_FULL_ATTENTION_CAPTURE_WITH_AUDITED_CORE'
+                            else 'OBSERVATION_ONLY; DOES_NOT_CONTROL_PRIMARY_VERDICT')
                         if spec['index'] in (1, 2):
                             from .full_attention_compare import cache_partitions
                             contract = case['full_attention_contract']

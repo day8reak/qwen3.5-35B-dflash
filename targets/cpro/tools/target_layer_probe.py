@@ -29,6 +29,8 @@ def main():
                        help='opt-in candidate: numeric FP16 weight scale and per-token scale, original golden')
         s.add_argument('--rope-precision', choices=('source', 'fp32'), default='source',
                        help='opt-in FP32 rotation arithmetic; captured cos/sin and golden unchanged, output dtype preserved')
+        s.add_argument('--full-attention-reference', choices=('math-replay', 'captured-audited'), default='math-replay',
+                       help='whole FullAttention reference: separate math-core replay (default), or same-call original outputs after rechecking the captured core math audit')
         s.add_argument('--cache-indexing', choices=('kernel', 'float', 'integer', 'both') if command == 'export' else ('kernel', 'float', 'integer'),
                        default='kernel', help='expand cache boundary to position/table indexing; both exports float control and integer candidate')
         if command == 'export':
@@ -102,12 +104,14 @@ def main():
         result = batch.export_batch(a.capture, a.output, a.source_root, a.converter_script,
             points=a.points, kinds=a.kinds, phases=a.phases, timeout=a.timeout, torchair_pb2=a.torchair_pb2, target_config=a.target_config,
             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
-            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate)
+            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate,
+            full_attention_reference=a.full_attention_reference)
     elif a.command == 'export-one':
         from qwen35_moe_dflash.target.layer_probe.replay import export_one
         result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2, a.target_config,
                             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
-                            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate)
+                            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate,
+                            full_attention_reference=a.full_attention_reference)
     elif a.command == 'compile':
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format,

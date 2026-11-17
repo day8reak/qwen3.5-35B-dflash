@@ -45,6 +45,8 @@ python "$REPO_DIR/targets/cpro/tools/generate_target_prefill.py" \
 
 采集与独立参考计算的耗时不作为模型性能数据。若边界采集或模块参考不完整，命令显示 `PARTIAL` 并保留已完成的整网快照与具体原因。
 
+若仅辅助模块重放报 K/V 不一致，而 `attention_audit=PASSED`、边界为 `CAPTURED`，可复用本次数据按[模块分组对比](target-attention-pair.md)的 `captured-audited` 模式继续，无需重跑整网。重放失败不会覆盖原输出；新采集还会在 `attention_math_replays` 中保存差异指标、有效／未写缓存区统计及 `diagnostic_outputs`，这些诊断文件不作为 golden。
+
 | 文件 | 用途 |
 |---|---|
 | `manifest.json` | 实际 shape/dtype/字节数、源文件身份、输入转换、审计结论 |

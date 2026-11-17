@@ -26,7 +26,7 @@ def cache_partitions(actual, golden, before, contract, *, atol=None, rtol=None):
     active = np.broadcast_to(active_rows[:, None, :, None], shape)
     reference_preserved = before[~active].tobytes() == golden[~active].tobytes()
     if not reference_preserved:
-        raise ValueError('math-core reference modified cache outside declared Prefill write rows')
+        raise ValueError('module reference modified cache outside declared Prefill write rows')
     preserved = before[~active].tobytes() == actual[~active].tobytes()
     active_metrics = metrics(actual[active], golden[active], atol=atol, rtol=rtol)
     return dict(active_elements=int(active.sum()), untouched_elements=int((~active).sum()),
