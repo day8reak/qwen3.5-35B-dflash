@@ -7,3 +7,4 @@
 - [当前结果](results.md)
 - [环境配置](environment-setup.md)
 - [完整模型执行](run-end-to-end.md)
+- [Draft 完整精度验证与 Profiling](draft-validation-profiling.md)
