@@ -179,7 +179,7 @@ J Record(const File& f,const fs::path& root){J j=J::Obj();j["path"]=fs::relative
 struct Tensor {std::uint32_t index;std::string name,type;std::uint64_t bytes;};
 struct State {std::string ref;std::uint32_t in,out;std::uint64_t bytes;};
 struct PrefillState {std::string decode_ref,ref;std::uint32_t in,out;std::uint64_t bytes;};
-struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs,prefill_inputs,prefill_outputs;std::vector<State> states;std::vector<PrefillState> prefill_states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;bool dump=true,prefill=false,fast=false,draft_preread=false,incremental=false,size_only=false;Clock::time_point started=Clock::now();File config;
+struct Config {std::map<std::string,File> files;std::map<std::string,std::string> strings;std::vector<Tensor> inputs,outputs,prefill_inputs,prefill_outputs;std::vector<State> states;std::vector<PrefillState> prefill_states;std::vector<std::uint32_t> prompt;std::uint32_t maxnew=0,k=0,minrounds=0,timeout=0;std::uint64_t startup_hash_ms=0;bool dump=true,prefill=false,fast=false,draft_preread=false,incremental=false,packed=false,size_only=false;Clock::time_point started=Clock::now();File config;
 #ifdef QWEN35_TEXT_TOKENIZER
   std::shared_ptr<qwen35::dflash::TextTokenizer> tokenizer;
   std::uint64_t text_setup_us=0;
@@ -233,6 +233,8 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
 #endif
   strkeys.insert("execution_mode");strkeys.insert("target_lifecycle_policy");
 #endif
+  c.packed=std::find(lines.begin(),lines.end(),"draft_variant\tpacked-context-kv-v1")!=lines.end();
+  if(c.packed)filekeys.insert("draft_embedding");
   const bool text_mode=std::find(lines.begin(),lines.end(),"text_io\tqwen35-text-v1")!=lines.end();
   if(text_mode){
 #ifdef QWEN35_TEXT_TOKENIZER
@@ -244,7 +246,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
   for(std::size_t n=1;n<lines.size();++n){auto f=Split(lines[n],'\t');Require(!f[0].empty(),"empty config row");
     if(f[0]=="draft_variant") {
 #ifdef QWEN35_RESIDENT_MIXED
-      Require(f.size()==2&&f[1]=="incremental-context-kv-v1"&&!c.incremental,"invalid/duplicate Draft variant");c.incremental=true;continue;
+      Require(f.size()==2&&(f[1]=="incremental-context-kv-v1"||f[1]=="packed-context-kv-v1")&&!c.incremental,"invalid/duplicate Draft variant");c.incremental=true;continue;
 #else
       Fail("incremental Draft requires resident-mixed binary");
 #endif
@@ -260,6 +262,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
     if(f[0]=="file_validation"){Require(n==2&&c.size_only&&f.size()==2,"file validation must follow runtime profile");continue;}
     if(filekeys.count(f[0])){Require(f.size()==4&&!c.files.count(f[0]),"file row malformed/duplicate");HashSyntax(f[2]);auto bytes=Integer(f[3],32ULL<<30,false);auto p=Absolute(f[1]);
       if(f[0]=="weight_table")Require(bytes==kVocab*2048ULL,"weight table extent mismatch");
+      else if(f[0]=="draft_embedding")Require(bytes==kVocab*4096ULL,"Draft FP16 table extent mismatch");
       else if(f[0]=="scale_table")Require(bytes==kVocab*4ULL,"scale table extent mismatch");
       else if(f[0]=="prompt_text")Require(bytes<=16384,"text prompt exceeds16KiB");
       else if(f[0]=="tokenizer_bundle")Require(bytes<=16ULL<<20,"tokenizer bundle exceeds16MiB");
@@ -341,7 +344,7 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
   if(c.incremental) {
     Require(c.fast&&!c.dump,"incremental Draft requires compact-memory mode");
     const auto raw=Text(c.files.at("draft_abi").path);const auto abi=Parser{raw}.parse();
-    Require(abi.at("schema_version").num()==1&&abi.at("variant").str()=="incremental-context-kv-v1"&&
+    Require(abi.at("schema_version").num()==1&&abi.at("variant").str()==(c.packed?"packed-context-kv-v1":"incremental-context-kv-v1")&&
       abi.at("model_sha256").str()==c.files.at("draft_model").hash,"incremental Draft ABI/model binding differs");
     auto& spec=c.incremental_abi;
     spec.context_rows=abi.at("context_rows").num(64);spec.capacity=abi.at("cache_capacity").num(4096);spec.candidates=abi.at("max_draft_tokens").num(15);
@@ -354,6 +357,14 @@ Config Load(const fs::path& path){Config c;auto configsize=Stat(path).size;Requi
         Require(qwen35::dflash::HiaiTensorBytes(tensor)==row.at("bytes").num(),"incremental ABI bytes differ");dest.push_back(tensor);
       }
     };
+    if(c.packed) {
+      const auto& prep=abi.at("preparation");
+      Require(prep.at("host_embedding").str()=="prepared-fp16-block-row-lookup-v1"&&
+        prep.at("feature_pack").str()=="cpu-feature-pack-c16-v1"&&
+        prep.at("embedding_sha256").str()==c.files.at("draft_embedding").hash&&
+        spec.context_rows==16&&spec.capacity==192&&spec.candidates==15,"packed Draft preparation contract differs");
+      spec.host_embedding=true;spec.feature_pack=true;spec.mask_token_id=prep.at("mask_token_id").num(kVocab-1);
+    }
     parse(abi.at("inputs"),spec.inputs);parse(abi.at("outputs"),spec.outputs);spec.Validate();
     Require(c.k<=spec.candidates&&c.prompt.size()+c.maxnew-1<=spec.capacity,"incremental Draft gear/cache cannot cover request");
   }
@@ -400,7 +411,9 @@ class MappedTable {
   }
 };
 class Supervisor {
-  std::unique_ptr<MappedTable> weight_mapping,scale_mapping;
+  std::unique_ptr<MappedTable> weight_mapping,scale_mapping,draft_embedding_mapping;
+  Bytes draft_mask_row;
+  std::uint64_t draft_context_embedding_us=0, draft_cycle_us=0;
   std::vector<Bytes> memory_states; // indexed by the pinned decode runtime input slot
   std::uint64_t prefill_api_us=0;
   Bytes EmbeddingRow(bool scale,std::uint32_t token){
@@ -548,6 +561,10 @@ class Supervisor {
     if(c.draft_preread)loop["draft_preread"]="sequential-1m-v1";
     J api=J::Obj();api["timing_scope"]="SYNCHRONOUS_API_WALL_NOT_NPU_ONLY";
     auto api_phase=[](std::uint64_t calls,std::uint64_t us,const char* name){J p=J::Obj();p["calls"]=calls;p["total_us"]=us;p["mean_ms"]=calls?Ratio(us,calls*1000):J();p["native_api"]=name;return p;};
+    if(c.packed) {
+      phases["draft_cycle"]=api_phase(drafts,draft_cycle_us,"Process");
+      phases["draft_cycle"]["timing_scope"]="CONTEXT_COPY_EMBEDDING_LOOKUP_PACK_SETINPUT_SYNC_TOP1_AND_KV_COMMIT_EXCLUDES_LOAD";
+    }
     api["prefill"]=api_phase(prefills,prefill_api_us,"Run");api["decode"]=api_phase(e.target_runs,e.target_api_us,"Run");api["draft"]=api_phase(e.draft_runs,e.draft_api_us,"Process");loop["native_api_latency"]=api;
 #endif
     J life=J::Obj();for(auto key:{"launched_child_count","completed_child_count","active_child_count","last_child_pid","last_child_exitcode","child_status"})life[key]=progress.at(key);life["children"]=children;loop["child_lifecycle"]=life;
@@ -593,7 +610,7 @@ class Supervisor {
   void KvCounts(){
 #if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     if(c.incremental) {
-      J kv=J::Obj();kv["variant"]="incremental-context-kv-v1";kv["context_rows"]=c.incremental_abi.context_rows;
+      J kv=J::Obj();kv["variant"]=c.packed?"packed-context-kv-v1":"incremental-context-kv-v1";kv["context_rows"]=c.incremental_abi.context_rows;
       kv["cache_capacity"]=c.incremental_abi.capacity;kv["max_draft_tokens"]=c.incremental_abi.candidates;
       kv["cached_context_rows"]=draft_cache?draft_cache->cursor():0;
       kv["cache_updates"]=draft_cache?draft_cache->calls():0;
@@ -604,6 +621,16 @@ class Supervisor {
       const auto& evidence=session.evidence();
       kv["cache_commit_bytes"]=evidence.draft_kv_commit_bytes;kv["cache_commit_us"]=evidence.draft_kv_commit_us;
       kv["cache_commits"]=evidence.draft_kv_commits;kv["committed_rows"]=evidence.draft_kv_rows;
+      if(c.packed) {
+        kv["host_embedding"]="prepared-fp16-block-row-lookup-v1";
+        kv["feature_pack"]="cpu-feature-pack-c16-v1";
+        kv["mask_token_id"]=c.incremental_abi.mask_token_id;
+        kv["embedding_cache_key"]=c.files.at("draft_embedding").hash;
+        kv["context_and_embedding_prepare_us"]=draft_context_embedding_us;
+        kv["pack_and_bind_prepare_us"]=evidence.draft_input_prepare_us;
+        kv["cycle_us"]=draft_cycle_us;
+        kv["cycle_scope"]="CONTEXT_COPY_EMBEDDING_LOOKUP_PACK_SETINPUT_SYNC_TOP1_AND_KV_COMMIT";
+      }
       kv["cache_host_staging_bytes"]=0;kv["hidden_readback_bytes"]=0;
       kv["numerical_validation"]="NOT_EVALUATED";loop["draft_kv"]=kv;
     }
@@ -843,10 +870,20 @@ class Supervisor {
     Require(c.fast&&draft_cache,"incremental cache unavailable");stage="incremental-draft-inputs";Pins();
     std::vector<std::uint32_t> proposals;
     do {
+      const auto begin=Clock::now();
       auto inputs=draft_cache->Prepare(features,prefix.size(),prefix.back());
+      if(c.packed) {
+        auto anchor=draft_embedding_mapping->Row(inputs.anchor,4096);FiniteHalf(anchor);
+        inputs.block_embeddings.resize(std::size_t(c.incremental_abi.candidates+1)*4096);
+        std::copy(anchor.begin(),anchor.end(),inputs.block_embeddings.begin());
+        for(unsigned i=1;i<=c.incremental_abi.candidates;++i)
+          std::copy(draft_mask_row.begin(),draft_mask_row.end(),inputs.block_embeddings.begin()+i*4096);
+      }
+      draft_context_embedding_us+=std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-begin).count();
       const auto index=BeginResidentCall("draft");auto actual=session.RunIncrementalDraft(inputs);
       EndResidentCall("draft",index,actual.wall_ms);++drafts;
       proposals=draft_cache->Complete(actual.outputs.at(0),[&]{session.CommitIncrementalDraft();});
+      draft_cycle_us+=std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-begin).count();
     } while(proposals.empty());
     return proposals;
   }
@@ -927,7 +964,11 @@ class Supervisor {
   }
   void Commit(std::uint32_t token,const std::string& role){Target(token,role);generated.push_back(token);if(c.dump){J event=J::Obj();event["token_id"]=token;event["position"]=prefix.size()-1;event["role"]=role;event["target_step_index"]=targets-1;loop["commits"].a.push_back(event);}Progress();}
  public:
-  Supervisor(Config config,fs::path directory):c(std::move(config)),out(std::move(directory)){Safe(out,true);if(c.fast){weight_mapping=std::make_unique<MappedTable>(c.files.at("weight_table"));scale_mapping=std::make_unique<MappedTable>(c.files.at("scale_table"));memory_states.resize(89);features.reserve(64*kFeatureBytes);}else{NewDir(out/"target");NewDir(out/"draft");if(c.prefill)NewDir(out/"prefill");}loop["schema_version"]=1;loop["artifact_kind"]="qwen35-board-local-serial-dflash";loop["evidence_kind"]=kEvidence;loop["status"]="RUNNING";loop["device_execution"]="ATTEMPTED";loop["model_compilation"]="NOT_RUN";loop["numerical_validation"]="NOT_RUN";loop["performance"]="NOT_EVALUATED";loop["state_policy"]="ADVANCE_ONLY_COMMITTED_TOKENS_NO_SPECULATIVE_STATE";loop["control_semantics"]="EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION";loop["target_steps"]=J::Arr();loop["draft_steps"]=J::Arr();loop["rounds"]=J::Arr();loop["commits"]=J::Arr();loop["models"]=J::Obj();loop["models"]["target_sha256"]=c.files.at("target_model").hash;loop["models"]["draft_sha256"]=c.files.at("draft_model").hash;loop["config_sha256"]=c.config.hash;loop["target_model_sha256"]=c.files.at("target_model").hash;loop["draft_model_sha256"]=c.files.at("draft_model").hash;loop["draft_abi_sha256"]=c.files.at("draft_abi").hash;loop["runtime_version"]=c.strings.at("runtime_version");loop["ddk_id"]=c.strings.at("ddk_id");loop["firmware_id"]=c.strings.at("firmware_id");loop["process_id"]=static_cast<std::uint64_t>(::getpid());progress["status"]="RUNNING";progress["supervisor_pid"]=static_cast<std::uint64_t>(::getpid());progress["launched_child_count"]=0;progress["completed_child_count"]=0;progress["active_child_count"]=0;progress["last_child_pid"]=J();progress["last_child_exitcode"]=J();progress["child_status"]="NOT_STARTED";if(!c.dump){loop["schema_version"]=2;loop["dump"]=false;loop["retrieval_mode"]="FINAL_TOKENS_ONLY";for(auto key:{"target_steps","draft_steps","rounds","commits"})loop.o.erase(key);}if(c.prefill){loop["prompt_ingestion"]="PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL";loop["prefill_model_sha256"]=c.files.at("prefill_model").hash;loop["models"]["prefill_sha256"]=c.files.at("prefill_model").hash;loop["control_semantics"]="EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED";if(c.dump)loop["prefill_steps"]=J::Arr();}
+  Supervisor(Config config,fs::path directory):c(std::move(config)),out(std::move(directory)){Safe(out,true);if(c.fast){weight_mapping=std::make_unique<MappedTable>(c.files.at("weight_table"));scale_mapping=std::make_unique<MappedTable>(c.files.at("scale_table"));memory_states.resize(89);features.reserve(64*kFeatureBytes);
+#ifdef QWEN35_RESIDENT_MIXED
+      if(c.packed){draft_embedding_mapping=std::make_unique<MappedTable>(c.files.at("draft_embedding"));draft_mask_row=draft_embedding_mapping->Row(c.incremental_abi.mask_token_id,4096);FiniteHalf(draft_mask_row);}
+#endif
+}else{NewDir(out/"target");NewDir(out/"draft");if(c.prefill)NewDir(out/"prefill");}loop["schema_version"]=1;loop["artifact_kind"]="qwen35-board-local-serial-dflash";loop["evidence_kind"]=kEvidence;loop["status"]="RUNNING";loop["device_execution"]="ATTEMPTED";loop["model_compilation"]="NOT_RUN";loop["numerical_validation"]="NOT_RUN";loop["performance"]="NOT_EVALUATED";loop["state_policy"]="ADVANCE_ONLY_COMMITTED_TOKENS_NO_SPECULATIVE_STATE";loop["control_semantics"]="EXPERIMENTAL_SINGLE_QUERY_ABSOLUTE_POSITION";loop["target_steps"]=J::Arr();loop["draft_steps"]=J::Arr();loop["rounds"]=J::Arr();loop["commits"]=J::Arr();loop["models"]=J::Obj();loop["models"]["target_sha256"]=c.files.at("target_model").hash;loop["models"]["draft_sha256"]=c.files.at("draft_model").hash;loop["config_sha256"]=c.config.hash;loop["target_model_sha256"]=c.files.at("target_model").hash;loop["draft_model_sha256"]=c.files.at("draft_model").hash;loop["draft_abi_sha256"]=c.files.at("draft_abi").hash;loop["runtime_version"]=c.strings.at("runtime_version");loop["ddk_id"]=c.strings.at("ddk_id");loop["firmware_id"]=c.strings.at("firmware_id");loop["process_id"]=static_cast<std::uint64_t>(::getpid());progress["status"]="RUNNING";progress["supervisor_pid"]=static_cast<std::uint64_t>(::getpid());progress["launched_child_count"]=0;progress["completed_child_count"]=0;progress["active_child_count"]=0;progress["last_child_pid"]=J();progress["last_child_exitcode"]=J();progress["child_status"]="NOT_STARTED";if(!c.dump){loop["schema_version"]=2;loop["dump"]=false;loop["retrieval_mode"]="FINAL_TOKENS_ONLY";for(auto key:{"target_steps","draft_steps","rounds","commits"})loop.o.erase(key);}if(c.prefill){loop["prompt_ingestion"]="PREFILL64_PADDED_SHORT_PROMPT_EXPERIMENTAL";loop["prefill_model_sha256"]=c.files.at("prefill_model").hash;loop["models"]["prefill_sha256"]=c.files.at("prefill_model").hash;loop["control_semantics"]="EXPERIMENTAL_PADDED_PREFILL_VALID_LENGTH_NOT_NUMERICALLY_VALIDATED";if(c.dump)loop["prefill_steps"]=J::Arr();}
 #if defined(QWEN35_RESIDENT_V2) || defined(QWEN35_RESIDENT_V1) || defined(QWEN35_RESIDENT_MIXED)
     const auto seed=c.config.hash+":"+std::to_string(::getpid());session_id=Sha256(seed);progress["resident_call_status"]="NOT_STARTED";
 #ifdef QWEN35_RESIDENT_MIXED

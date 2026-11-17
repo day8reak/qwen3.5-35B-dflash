@@ -2,7 +2,7 @@
 
 从源权重生成Draft、Prefill和Decode，再准备配置并运行板端文字闭环。原始Target Cpro导出工程、量化权重与源模型权重由用户提供，不在GitHub中。当前首次生成运行ABI配置的入口尚未补齐，具体边界见第5步；已有成功闭环的配置可由当前阶段整理命令保留。
 
-当前阶段为[归档约60ms Draft并转向Target精度](current-status.md)。已有模型直接归档，不重新编译。以下是当前packed基线的从零生成配方；其独立设备调用已执行，原数值门槛仍FAILED，旧token-ID常驻接口尚未接入该host embedding模型。
+当前阶段为[归档约60ms Draft并转向Target精度](current-status.md)。已有模型直接引用，不重新编译。以下是当前packed基线的从零生成配方；其独立设备调用已执行，原数值门槛仍FAILED。完整常驻流程已接入host embedding和feature pack，按第5节生成配置；接入后的板端精度和时延尚待验证。
 
 ## 1. 公共目录和源权重
 
@@ -66,7 +66,7 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/tests/accuracy-result"
 ```
 
-PENDING只回收同一请求；不得重复启动。上述公开位置是模型存放与独立诊断入口，后面的旧常驻循环仍需其兼容的token-ID Draft，不应直接指向这份packed OMC。
+PENDING只回收同一请求；不得重复启动。接入完整闭环使用第5节的packed配置入口，模型无需重新编译。
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 
@@ -150,19 +150,33 @@ embedding大小分别为508559360、993280字节。所有测试共用runtime/nat
 
 **当前尚缺从全新编译产物自动生成runtime-assets.json的生产入口。** 首次部署需要获取两个模型的实际SDK命名描述，并完成源图状态所有者、编译图和运行时槽位的对应，不能按大小或序号猜测。上面的生成/编译从源权重开始；下面的启动要求该配置已就绪，不代表当前能从空目录自动完成全流程。
 
-已有成功闭环的runtime.json继续绑定其兼容模型；归档若替换了公共目录，会重定向原配置中对应模型的路径。重新编译Target后须核对新ABI与状态映射，并更新cache_key。新生成的packed Draft尚需常驻接口适配，不能把它直接填入旧配置。
+已有成功闭环的runtime.json可作为Target绑定来源。按第4节重编`runtime/native`后，生成使用归档packed Draft的新配置：
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/export_runtime_config.py" \
+  --config "$AI_RUN_DIR/runtime/runtime.json" \
+  --packed-draft "$AI_RUN_DIR/draft/omc" \
+  --draft-source "$AI_RUN_DIR/draft/source/prepared" \
+  --output "$AI_RUN_DIR/runtime/runtime-packed.json"
+```
+
+新配置保留原Target模型、80路状态映射和词表，直接引用C16／cap192／K15的packed OMC。运行器一次映射原始FP16 embedding表（1,017,118,720字节），每次复制anchor＋15个MASK行；板端将Target特征从`[1,16,16384]`打包成`[1,1024,16,16]`。12路KV只提交新增的已确认context，anchor／候选KV不写入持久缓存。该表独立于Target的INT8 embedding＋FP32 scale；首次部署需额外传输此表。
+
+此入口仍要求原闭环的Target **89输入／82输出**，第82个输出是8层拼接特征。新ConvState版本裁剪`linear_update_tensor`后通常为88输入；仅有logits＋80状态的81输出图也缺少Draft特征。新版Target必须重新绑定实际槽位、控制量与状态所有者并提供特征输出，不能直接复用旧runtime-assets.json。这里仅替换Draft，不放宽Target的请求总长≤64限制。
+
+本次接入保留数值未验收状态。独立packed Draft仍有hidden／KV误差，闭环精度和时延需重新上板验证，不能将独立约60ms视为完整DFlash时延。
 
 ## 6. 文字输入、板端闭环、结果回收
 
-以下仅适用于已有、兼容token-ID Draft的成功runtime配置；运行器从该配置识别原增量模型，不使用本页新生成的packed OMC。配置就绪后，板端自主执行文字编码→Prefill一次→常驻Draft/Decode循环→文字解码。服务器只准备、下发、启动和最终回收。当前模板后的prompt＋生成预算须≤64。
+配置就绪后，板端自主执行文字编码→Prefill一次→常驻packed Draft/Decode循环→文字解码。服务器只准备、下发、启动和最终回收。当前模板后的prompt＋生成预算须≤64。保留旧runtime.json可继续运行原token-ID Draft。
 
 ```bash
 export RUN_DIR="$AI_RUN_DIR/fused/run"
 export RECOVERY_DIR="$AI_RUN_DIR/fused/result"
 
 python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
-  --config "$AI_RUN_DIR/runtime/runtime.json" \
-  --max-draft-tokens "$MAX_DRAFT_TOKENS" \
+  --config "$AI_RUN_DIR/runtime/runtime-packed.json" \
+  --max-draft-tokens 15 \
   --text '你好，请介绍一下自己。' \
   --max-new-tokens 8 --max-proposals-per-round 2 \
   --apply --detach --output "$RUN_DIR"
@@ -172,4 +186,4 @@ python3 "$REPO_DIR/targets/cpro/scripts/run_board_serial_dflash.py" \
   --recover "$RUN_DIR" --output "$RECOVERY_DIR"
 ```
 
-输出包含文字、tokens、接受率、各阶段和加载时延。复测使用相同run/result目录，已结束的旧临时文件自动清理；未知退出状态先回收。Target精度仍待闭合，流程接通不代表文本正确或获得加速。
+输出包含文字、tokens、接受率、各阶段和加载时延。`native_api_latency.draft`统计同步Process；`phase_latency.draft_cycle`还包含context复制、embedding查表、feature pack、输入设置、Top1读取和KV提交，均排除模型加载。`draft_kv`另列准备与提交耗时；catch-up调用也计入Draft调用数。复测使用相同run/result目录，已结束的旧临时文件自动清理；未知退出状态先回收。流程接通不代表文本正确或获得加速。

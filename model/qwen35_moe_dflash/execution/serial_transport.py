@@ -814,6 +814,10 @@ def _static_rows(manifest, target_cache, draft_cache, table_cache, prefill_cache
     model = manifest['draft']['model_source']
     rows.append({'local': model['path'], 'remote': str(draft_cache / 'model/model.omc'),
         'bytes': model['bytes'], 'sha256': model['sha256'], 'identity': model.get('identity'), 'kind': 'draft'})
+    if 'embedding_table' in manifest['draft']:
+        table = manifest['draft']['embedding_table']
+        rows.append({'local': table['path'], 'remote': str(draft_cache / 'embedding' / (table['sha256'] + '.bin')),
+            'bytes': table['bytes'], 'sha256': table['sha256'], 'identity': table.get('identity'), 'kind': 'draft-embedding'})
     for name in ('weight', 'scale'):
         source = manifest['tables'][name]
         rows.append({'local': source['path'], 'remote': str(table_cache / (name + '.bin')),
@@ -1438,10 +1442,10 @@ def _incremental_counts(manifest, loop, counts, prefix, *, success):
         if 'draft_kv' in loop:
             raise ValueError('S64 request cannot inherit incremental KV evidence')
         return counts['draft_native_calls']
-    from qwen35_moe_dflash.draft.incremental.runtime import VARIANT, GEOMETRY
+    from qwen35_moe_dflash.draft.incremental.runtime import GEOMETRY
     kv = loop.get('draft_kv', {})
     names = ('cached_context_rows', 'cache_updates', 'catchup_calls', 'proposal_calls')
-    if (kv.get('variant') != VARIANT or any(kv.get(k) != spec[k] for k in GEOMETRY)
+    if (kv.get('variant') != spec['variant'] or any(kv.get(k) != spec[k] for k in GEOMETRY)
             or any(type(kv.get(k)) is not int or kv[k] < 0 for k in names)
             or kv.get('cache_policy') != 'COMMITTED_CONTEXT_ONLY_ANCHOR_AND_PROPOSALS_EXCLUDED'
             or kv.get('state_storage') not in ('TWELVE_BOARD_MEMORY_BANKS', 'SDK_INPUT_TENSORS_DELTA_WRITEBACK')
@@ -1452,6 +1456,14 @@ def _incremental_counts(manifest, loop, counts, prefix, *, success):
             or kv['cached_context_rows'] > min(spec['cache_capacity'], max(0, len(prefix)-1))
             or kv['cached_context_rows'] > kv['cache_updates'] * spec['context_rows']):
         raise ValueError('incremental KV geometry/call/cursor accounting differs')
+    if spec['variant'] == 'packed-context-kv-v1':
+        if (kv.get('host_embedding') != 'prepared-fp16-block-row-lookup-v1'
+                or kv.get('feature_pack') != 'cpu-feature-pack-c16-v1'
+                or kv.get('embedding_cache_key') != spec['embedding_table']['sha256']
+                or kv.get('mask_token_id') != spec['host_embedding']['mask_token_id']
+                or any(type(kv.get(k)) is not int or kv[k] < 0 for k in (
+                    'context_and_embedding_prepare_us', 'pack_and_bind_prepare_us', 'cycle_us'))):
+            raise ValueError('packed Draft input preparation evidence differs')
     if kv.get('state_storage') == 'SDK_INPUT_TENSORS_DELTA_WRITEBACK':
         if (kv.get('cache_commits') != kv['cache_updates']
                 or kv.get('committed_rows') != kv['cached_context_rows']
@@ -1978,6 +1990,8 @@ def execute_board_serial(prepared_dir, output_dir, *, timeout_seconds=7200, lock
             'config': str(board / 'config.tsv'), 'results': str(board / 'results'),
             'target_library_path': ':'.join(library_paths) if _inline_prefill(manifest) else str(tool.parent),
             'draft_library_path': ':'.join(library_paths)}
+        if 'embedding_table' in manifest['draft']:
+            remote_paths['draft_embedding'] = next(row['remote'] for row in rows if row['kind'] == 'draft-embedding')
         if not _inline_prefill(manifest):
             remote_paths.update(target_tool=str(tool), draft_runner=str(board / 'draft-runner'),
                 draft_runner_record={key: uploads[0][key] for key in ('bytes', 'sha256')},

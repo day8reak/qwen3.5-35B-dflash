@@ -1,7 +1,7 @@
 """Compact shared PyTorch Draft artifacts, independent of disposable tests.
 
-Binding is imported once while compiler snapshots exist. Publication does not
-promote this diagnostic ABI into the older token-ID resident runtime.
+Binding is imported once while compiler snapshots exist. Packed residency uses
+an explicit runtime configuration; publication alone does not promote accuracy.
 """
 from pathlib import Path
 import os
@@ -83,7 +83,7 @@ def _package(compiled, air, prepared, ddk_root, output):
     compact = {k: meta[k] for k in keep if k in meta}
     compact.update(omc='model.omc', model_compilation='PASSED', compiled_abi='BOUND_DIAGNOSTIC',
         compiled_precision='NOT_VALIDATED', numerical_validation='NOT_RUN',
-        device_execution='NOT_RUN', runtime_integration='PACKED_DIAGNOSTIC_ONLY',
+        device_execution='NOT_RUN', runtime_integration='PACKED_RESIDENT_ADAPTER_AVAILABLE_UNVALIDATED',
         production_promotion='NOT_PERFORMED', publication=dict(policy=POLICY,
             abi='pytorch-abi.json', compiler_air='compiler.air',
             air_weight_verification='COMPILER_INPUT_SNAPSHOT_HASHES_CHECKED_AT_PUBLICATION',

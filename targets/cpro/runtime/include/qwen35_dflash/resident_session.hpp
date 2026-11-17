@@ -27,6 +27,7 @@ struct ResidentSessionEvidence {
   std::uint64_t target_close_calls = 0, draft_close_calls = 0;
   std::uint64_t target_load_ms = 0, draft_load_ms = 0, target_run_ms = 0, draft_run_ms = 0, close_ms = 0;
   std::uint64_t target_api_us = 0, draft_api_us = 0;
+  std::uint64_t draft_input_prepare_us = 0;
   std::uint64_t draft_kv_commit_bytes=0, draft_kv_commit_us=0, draft_kv_commits=0, draft_kv_rows=0;
   bool closed = false, poisoned = false;
   HiaiOriginalTargetLifecycle target_lifecycle;

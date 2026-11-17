@@ -9,10 +9,13 @@ namespace qwen35::dflash {
 // the graph, so rejecting proposals never needs to roll back these banks.
 struct IncrementalDraftAbi {
   std::uint32_t context_rows=0, capacity=0, candidates=0;
+  bool host_embedding=false, feature_pack=false;
+  std::uint32_t mask_token_id=0;
   std::vector<HiaiTensorSpec> inputs, outputs;
   bool enabled() const { return context_rows!=0; }
   std::size_t bank_bytes() const { return std::size_t(8)*capacity*128*2; }
-  void Validate(bool block_embeddings=false,bool cpu_feature_pack=false) const {
+  void Validate() const { Validate(host_embedding,feature_pack); }
+  void Validate(bool block_embeddings,bool cpu_feature_pack=false) const {
     if((context_rows!=16&&context_rows!=64)||capacity<context_rows||capacity>4096||
        (candidates!=1&&candidates!=3&&candidates!=7&&candidates!=15))
       throw std::invalid_argument("unsupported incremental Draft geometry");
@@ -20,8 +23,7 @@ struct IncrementalDraftAbi {
       {"target_features","float16",{1,context_rows,16384}},
       {"start_position","int32",{1}},{"valid_rows","int32",{1}},
       {"anchor","int32",{1}},{"proposal_count","int32",{1}}};
-    // Only the version-2 standalone accuracy plan opts into this ABI.
-    // Existing resident token-ID callers retain strict default validation.
+    // Packed residency and standalone accuracy use the same physical ABI.
     if(block_embeddings) expected_in[3]={"block_embeddings","float16",{1,candidates+1,2048}};
     if(cpu_feature_pack) {
       if(!block_embeddings||context_rows!=16)throw std::invalid_argument("feature packing requires C16 host embedding");
@@ -52,6 +54,7 @@ struct IncrementalDraftAbi {
 struct IncrementalDraftStep {
   std::vector<std::uint8_t> features;
   std::uint32_t start=0, valid=0, anchor=0, proposals=0;
+  std::vector<std::uint8_t> block_embeddings;
 };
 
 // Scheduling only: the resident executor owns all twelve persistent KV inputs.
@@ -71,7 +74,7 @@ class IncrementalDraftCache {
     std::copy_n(features.begin()+cursor_*32768,valid_*32768,context.begin());
     pending_=true;
     return {std::move(context),static_cast<std::uint32_t>(cursor_),static_cast<std::uint32_t>(valid_),
-            anchor,final_?abi_.candidates:0};
+            anchor,final_?abi_.candidates:0,{}};
   }
   // Validate tokens first, commit the SDK cache slices, then advance the cursor.
   // A failed call or malformed token never changes either persistent state.

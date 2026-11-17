@@ -104,6 +104,8 @@ def export_config(prepared, output):
     model = file_record(draft['model_source']['path'], size=draft['model_source']['bytes'],
                         cache_key=draft['model_source']['sha256'])
     models['draft'] = dict(path=_relative(model['path'], parent), cache_key=model['sha256'])
+    if draft.get('prepared_source'):
+        models['draft']['prepared_directory'] = _relative(draft['prepared_source'], parent)
     assets['draft'] = {k: deepcopy(draft[k]) for k in ('outputs', 'direct_spec', 'variant',
         'inputs', 'context_rows', 'cache_capacity', 'max_draft_tokens') if k in draft}
     assets['draft']['abi'] = read_json(draft['abi']['path'], 1 << 20)
@@ -122,6 +124,34 @@ def export_config(prepared, output):
         config['tokenizer'] = dict(directory=_relative(source['text_io']['source_directory'], parent))
     validate_assets(assets)
     write_json(assets_path, assets)
+    write_json(destination, config)
+    return config
+
+
+def configure_packed_draft(config_file, directory, prepared, output):
+    """Write a new config using the packed bundle; retain the existing Target ABI."""
+    from qwen35_moe_dflash.draft.incremental.packed_runtime import inspect_bundle
+    path, destination = Path(config_file).resolve(), Path(output).resolve()
+    config = read_json(path)
+    if config.get('schema_version') != 1 or config.get('adapter') != ADAPTER:
+        raise ValueError('unsupported runtime configuration')
+    assets = read_json(path.parent / config['assets'])
+    validate_assets(assets)
+    _, model, _ = inspect_bundle(directory, prepared, ddk_id=assets['environment']['ddk_id'])
+    # Relocate every config path, so the new file can live in another directory.
+    def relocate(value):
+        return _relative(path.parent / value, destination.parent)
+    config['assets'] = relocate(config['assets'])
+    for role in ('prefill', 'decode'):
+        config['models'][role]['directory'] = relocate(config['models'][role]['directory'])
+    for row in config['embedding'].values():
+        row['path'] = relocate(row['path'])
+    if config.get('tokenizer'):
+        config['tokenizer']['directory'] = relocate(config['tokenizer']['directory'])
+    if config.get('native_directory'):
+        config['native_directory'] = relocate(config['native_directory'])
+    config['models']['draft'] = dict(path=_relative(model['path'], destination.parent),
+        cache_key=model['sha256'], prepared_directory=_relative(prepared, destination.parent))
     write_json(destination, config)
     return config
 
@@ -192,8 +222,18 @@ def validate_prepared_config(root, manifest):
     _options(len(prompt), *[manifest[k] for k in ('max_new_tokens', 'max_proposals_per_round',
         'minimum_draft_rounds', 'timeout_seconds', 'lock_wait_seconds')])
     if manifest['draft'].get('variant'):
-        from qwen35_moe_dflash.draft.incremental.runtime import validate_abi
-        validate_abi(manifest['draft'])
+        from qwen35_moe_dflash.draft.incremental.runtime import VARIANT, validate_abi
+        from qwen35_moe_dflash.draft.incremental.packed_runtime import VARIANT as PACKED
+        draft = manifest['draft']
+        validate_abi(draft)
+        if draft['variant'] not in (VARIANT, PACKED):
+            raise ValueError('unknown resident Draft variant')
+        if draft['variant'] == PACKED:
+            weight = draft['host_embedding']['weight']
+            table = draft['embedding_table']
+            if (weight['shape'] != [248320, 2048] or table['bytes'] != 1017118720
+                    or table['sha256'] != weight['sha256']):
+                raise ValueError('packed Draft embedding table binding differs')
         if (manifest['max_proposals_per_round'] > manifest['draft']['max_draft_tokens']
                 or len(prompt) + manifest['max_new_tokens'] - 1 > manifest['draft']['cache_capacity']):
             raise ValueError('incremental gear/capacity cannot cover this request')
@@ -294,17 +334,26 @@ def prepare_config(config_file, output, *, text=None, text_file=None, prompt_inp
     adjacent = configured_model.parent / 'manifest.json'
     if incremental_draft is None and adjacent.is_file():
         meta = read_json(adjacent)
-        if meta.get('artifact_kind') == 'qwen35-incremental-draft-compiled':
+        if meta.get('artifact_kind') in ('qwen35-incremental-draft-compiled',
+                                        'qwen35-incremental-draft-pytorch-omc'):
             if (adjacent.parent / meta['model']['path']).resolve() != configured_model:
                 raise ValueError('configured Draft path differs from its compiled manifest')
             incremental_draft = adjacent.parent
     if incremental_draft is not None:
         from qwen35_moe_dflash.draft.incremental.runtime import bind_compiled
+        meta = read_json(Path(incremental_draft) / 'manifest.json')
         if max_draft_tokens is None:
-            max_draft_tokens = read_json(Path(incremental_draft) / 'manifest.json')['max_draft_tokens']
-        draft, _ = bind_compiled(incremental_draft, out, ddk_id=assets['environment']['ddk_id'],
+            max_draft_tokens = meta['max_draft_tokens']
+        request = dict(ddk_id=assets['environment']['ddk_id'],
             max_draft_tokens=max_draft_tokens, max_proposals=options['max_proposals_per_round'],
-            total_tokens=len(prompt) + options['max_new_tokens'], verify_sources=False)
+            total_tokens=len(prompt) + options['max_new_tokens'])
+        from qwen35_moe_dflash.draft.incremental import packed_runtime
+        if meta.get('artifact_kind') == packed_runtime.KIND:
+            if not draft_model.get('prepared_directory'):
+                raise ValueError('packed Draft requires models.draft.prepared_directory; use export_runtime_config.py --config --packed-draft --draft-source')
+            draft = packed_runtime.bind(incremental_draft, parent / draft_model['prepared_directory'], out, **request)
+        else:
+            draft, _ = bind_compiled(incremental_draft, out, verify_sources=False, **request)
     else:
         draft = deepcopy(assets['draft'])
         draft['model_source'] = file_record(configured_model, cache_key=draft_model['cache_key'])

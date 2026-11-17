@@ -426,6 +426,8 @@ def make_config(manifest, remote_paths):
     files = {'target_model': manifest['target_model'], 'draft_model': manifest['draft']['model_source'],
         'draft_abi': manifest['draft']['abi'],
         'weight_table': manifest['tables']['weight'], 'scale_table': manifest['tables']['scale']}
+    if 'embedding_table' in manifest['draft']:
+        files['draft_embedding'] = manifest['draft']['embedding_table']
     if 'text_io' in manifest:
         files.update(tokenizer_bundle=manifest['text_io']['bundle'], prompt_text=manifest['text_io']['prompt'])
     if manifest.get('execution_mode') not in {'resident-v1', 'resident-mixed'}:

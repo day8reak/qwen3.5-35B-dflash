@@ -1,4 +1,5 @@
 #include "qwen35_dflash/resident_session.hpp"
+#include "qwen35_dflash/feature_pack.hpp"
 #include <algorithm>
 #include <chrono>
 #include <exception>
@@ -251,12 +252,24 @@ ResidentRunResult ResidentSession::RunTarget(const std::vector<std::vector<std::
 ResidentRunResult ResidentSession::RunDraft(const std::vector<std::vector<std::uint8_t>>& inputs){return impl_->Run(inputs,false);}
 ResidentRunResult ResidentSession::RunIncrementalDraft(const IncrementalDraftStep& step) {
   using Bytes=std::vector<std::uint8_t>;
+  const auto begin=Clock::now();
+  const auto& abi=impl_->incremental_abi;
+  if(!impl_->incremental || step.features.size()!=std::size_t(abi.context_rows)*32768 ||
+      (abi.host_embedding ? step.block_embeddings.size()!=std::size_t(abi.candidates+1)*4096
+                          : !step.block_embeddings.empty()))
+    throw std::invalid_argument("incremental Draft preparation extent differs");
   auto scalar=[](std::uint32_t v){Bytes bytes(4);for(unsigned b=0;b<4;++b)bytes[b]=(v>>(8*b))&255;return bytes;};
-  std::map<std::string,Bytes> controls={{"target_features",step.features},{"start_position",scalar(step.start)},
+  Bytes features;
+  if(abi.feature_pack) {
+    features.resize(step.features.size());PackDraftFeaturesC16(step.features,features);
+  } else features=step.features;
+  std::map<std::string,Bytes> controls={{"target_features",std::move(features)},{"start_position",scalar(step.start)},
     {"valid_rows",scalar(step.valid)},{"anchor",scalar(step.anchor)},{"proposal_count",scalar(step.proposals)}};
+  if(abi.host_embedding)controls.emplace("block_embeddings",step.block_embeddings);
   std::vector<Bytes> inputs;
   for(const auto& spec:impl_->draft_inputs)
     inputs.push_back(spec.name.rfind("past_",0)==0?Bytes{}:std::move(controls.at(spec.name)));
+  impl_->record.draft_input_prepare_us+=std::chrono::duration_cast<std::chrono::microseconds>(Clock::now()-begin).count();
   return impl_->Run(inputs,false,&step);
 }
 void ResidentSession::CommitIncrementalDraft(){impl_->CommitIncremental();}
