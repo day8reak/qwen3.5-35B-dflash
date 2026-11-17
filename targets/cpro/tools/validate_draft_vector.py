@@ -67,7 +67,7 @@ def selected_cases(names, available=VALIDATION_CASES):
 
 def target_case_name(name):
     return (isinstance(name, str) and len(name) <= 256
-            and re.fullmatch(r'l[0-9]{2,}_c[0-9]{2,}_(?:[a-z][a-z0-9_]*_o[0-9]+|gdn_layer_all)', name) is not None)
+            and re.fullmatch(r'l[0-9]{2,}_c[0-9]{2,}_(?:[a-z][a-z0-9_]*_o[0-9]+|gdn_layer_all|full_attention_layer_all)', name) is not None)
 
 
 def fixture_cases(meta):
