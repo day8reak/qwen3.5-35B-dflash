@@ -1,17 +1,119 @@
 #!/usr/bin/env python3
-"""Inspect OMG model JSON and print candidate I/O flags. Standard library only.
+"""Inspect an OMC or OMG model JSON and print I/O flags. Standard library only.
 
 Graph descriptors/index attributes are not a query of HIAI runtime slots.
-Numeric dtype values require an explicitly selected enum; no GE/HIAI guessing.
+OMC conversion uses the selected CPro DDK and its GE protobuf dtype enum.
+Existing JSON input still requires --dtype-enum or --dtype-map for numbers.
 """
 import argparse
 import csv
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
+
+
+def omg_environment(ddk_root=None, omg_path=None):
+    """Resolve the real OMG executable without importing the model package."""
+    root = ddk_root
+    if not root and not omg_path:
+        root = next((os.environ[key] for key in ("CPRO_DDK_ROOT", "DDK_PATH", "TOOLCHAIN_HOME")
+                     if os.environ.get(key)), None)
+    binary = omg_path or (str(Path(root) / "tools/tools_omg/master/omg") if root else shutil.which("omg"))
+    if not binary:
+        raise ValueError("OMG not found; set CPRO_DDK_ROOT, pass --ddk-root, or pass --omg")
+    binary = Path(binary).expanduser().resolve(strict=True)
+    if not root:
+        # A PATH entry may be the vendor wrapper; invoke master/omg directly.
+        if binary.parent.name == "tools_omg" and (binary.parent / "master/omg").is_file():
+            binary = (binary.parent / "master/omg").resolve()
+        if binary.parent.name == "master" and binary.parent.parent.name == "tools_omg":
+            root = binary.parents[3]
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ValueError("OMG is not an executable file: " + str(binary))
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if root:
+        root = Path(root).expanduser().resolve(strict=True)
+        master = root / "tools/tools_omg/master"
+        # Do not let an explicitly declared server CANN override the CPro DDK.
+        foreign_roots = [Path(env[key]).resolve() for key in
+                         ("CANN_ROOT", "ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME") if env.get(key)]
+        def foreign(value):
+            path = Path(value).resolve()
+            return not path.is_relative_to(root) and any(path.is_relative_to(p) for p in foreign_roots)
+        for key in ("LD_LIBRARY_PATH", "PYTHONPATH", "PATH"):
+            if key in env:
+                env[key] = os.pathsep.join(p for p in env[key].split(os.pathsep) if p and not foreign(p))
+        for key in ("CANN_ROOT", "ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME", "ASCEND_OPP_PATH", "ASCEND_AICPU_PATH"):
+            if env.get(key) and foreign(env[key]):
+                env.pop(key)
+        def prepend(key, paths):
+            entries = [str(p) for p in paths if p.is_dir()] + env.get(key, "").split(os.pathsep)
+            env[key] = os.pathsep.join(dict.fromkeys(p for p in entries if p))
+        plugin = root / "tools/platform/kirinx90"
+        prepend("LD_LIBRARY_PATH", [master / "lib64", plugin / "lib64", root / "ddk/tbe/lib64", root / "ddk/ascendcpp/lib64"])
+        prepend("PYTHONPATH", [root / "ddk/ascendc/ops/impl", root / "tools/tools_ascendc/package/python",
+                               root / "ddk/tbe/ops", plugin / "ops/impl"])
+        prepend("PATH", [root / "ddk/ccec_compiler/bin", root / "tools/tools_ascendc/bisheng/bin"])
+        env.update(DDK_PATH=str(root), TOOLCHAIN_HOME=str(root), HIAI_VERSION=str(master),
+                   CCE_LIB_DIR=str(master / "lib64"), SOC_VERSION="kirinx90")
+        if (root / "ddk/ascendcpp/conf").is_dir():
+            env["KIRIN_CONF_JSON_PATH"] = str(root / "ddk/ascendcpp/conf")
+    return binary, env
+
+
+def read_omc(model, *, ddk_root=None, omg_path=None, timeout=120):
+    """Convert in a disposable directory; link sidecars without copying weights."""
+    model = Path(model).expanduser().resolve(strict=True)
+    if not model.is_file():
+        raise ValueError("OMC must be a file: " + str(model))
+    omg, env = omg_environment(ddk_root, omg_path)
+    temp_root = None
+    if os.environ.get("AI_RUN_DIR"):
+        temp_root = Path(os.environ["AI_RUN_DIR"]).expanduser() / "target/omc-inspection"
+        temp_root.mkdir(parents=True, exist_ok=True)
+    print("Converting OMC metadata with " + str(omg), file=sys.stderr, flush=True)
+    with tempfile.TemporaryDirectory(prefix="omcio_", dir=temp_root) as directory:
+        work = Path(directory).resolve()
+        # Preserve names referenced by separated-weight bundles. Reserved names
+        # belong to this conversion, so stale JSON/logs cannot become results.
+        for entry in model.parent.iterdir():
+            if entry.name in {"input.omc", "model.json", "omg.log"}:
+                continue
+            source = entry.resolve()
+            if source == work or source in work.parents:
+                continue
+            (work / entry.name).symlink_to(source)
+        (work / "input.omc").symlink_to(model)
+        command = [str(omg), "--mode=1", "--om=input.omc", "--json=model.json"]
+        log = work / "omg.log"
+        problem = None
+        with log.open("wb") as stream:
+            try:
+                result = subprocess.run(command, cwd=work, env=env, stdout=stream,
+                                        stderr=subprocess.STDOUT, timeout=timeout, check=False)
+                if result.returncode:
+                    problem = f"OMG exited with code {result.returncode}"
+            except subprocess.TimeoutExpired:
+                problem = f"OMG metadata conversion timed out after {timeout}s"
+        converted = work / "model.json"
+        if not problem and (converted.is_symlink() or not converted.is_file()):
+            problem = "OMG succeeded but did not produce model.json"
+        if problem:
+            with log.open("rb") as stream:
+                stream.seek(max(0, log.stat().st_size - 12000))
+                tail = stream.read().decode("utf-8", errors="replace")
+            raise ValueError(problem + "\n" + tail)
+        document = read_json(converted)
+    return document, dict(source_omc=str(model), source_kind="OMC",
+                          conversion_omg=str(omg), temporary_json_removed=True)
 
 
 # ge_ir.proto TensorDescriptor.dtype enum; NOT ge::DataType or hiai::DataType.
@@ -338,7 +440,10 @@ def render(report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("model_json", help="OMG --mode=1 JSON file")
+    parser.add_argument("model_json", metavar="MODEL", help=".omc/.om model, or an existing OMG --mode=1 JSON file")
+    parser.add_argument("--ddk-root", help="CPro DDK root; defaults to CPRO_DDK_ROOT, DDK_PATH or TOOLCHAIN_HOME")
+    parser.add_argument("--omg", help="OMG executable; otherwise use the DDK master/omg or find omg on PATH")
+    parser.add_argument("--timeout", type=int, default=120, help="OMC conversion timeout in seconds (default: 120)")
     parser.add_argument("--output-dir", help="write io.json, inputs.csv, outputs.csv, summary.txt and args.sh")
     parser.add_argument("--overwrite", action="store_true", help="replace those five report files in an existing --output-dir")
     parser.add_argument("--graph", help="root graph name or printed JSON path when multiple graphs exist")
@@ -354,19 +459,29 @@ def main():
             raise ValueError("--overwrite requires --output-dir")
         if args.dtype_enum and args.dtype_map:
             raise ValueError("choose --dtype-enum or --dtype-map, not both")
-        enum = dict(GE_PROTO) if args.dtype_enum else {}
+        if args.timeout <= 0:
+            raise ValueError("--timeout must be positive")
+        is_omc = Path(args.model_json).suffix.lower() in {".omc", ".om"}
+        selected_enum = args.dtype_enum or ("ge-proto" if is_omc and not args.dtype_map else None)
+        enum = dict(GE_PROTO) if selected_enum else {}
         if args.dtype_map:
             for raw, name in read_json(args.dtype_map).items():
                 number, kind = integer(raw), dtype(name, {})
                 if number in enum or kind is None:
                     raise ValueError("invalid/duplicate entry in dtype map: " + repr(raw))
                 enum[number] = kind
-        report = inspect(read_json(args.model_json), enum=enum, graph_name=args.graph,
+        if is_omc:
+            document, source = read_omc(args.model_json, ddk_root=args.ddk_root,
+                                        omg_path=args.omg, timeout=args.timeout)
+        else:
+            document = read_json(args.model_json)
+            source = dict(source_json=str(Path(args.model_json).resolve()), source_kind="JSON")
+        report = inspect(document, enum=enum, graph_name=args.graph,
                          ordered_inputs=args.input_order.split(",") if args.input_order else None,
                          input_order_source=args.input_order_source,
                          output_names=args.output_names.split(",") if args.output_names else None)
-        report["source_json"] = str(Path(args.model_json).resolve())
-        report["numeric_dtype_mapping"] = args.dtype_map or args.dtype_enum or "UNSELECTED"
+        report.update(source)
+        report["numeric_dtype_mapping"] = args.dtype_map or selected_enum or "UNSELECTED"
         summary = render(report)
         if args.output_dir:
             dest = Path(args.output_dir)
