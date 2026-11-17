@@ -19,6 +19,65 @@ SCOPE = 'SAME_CALL_SOURCE_MODULE_OUTPUTS; CORE_MATH_AUDITED; WHOLE_MODULE_MATH_U
 _IDENTITY = ('shape', 'dtype', 'bytes', 'sha256')
 
 
+def _mask_binding(module_mask, core_mask):
+    """Classify observed mask representations; never rewrite either capture."""
+    def stats(value):
+        finite = value[np.isfinite(value)]
+        return dict(shape=list(value.shape), dtype=str(value.dtype),
+            zero=int(np.count_nonzero(value == 0)),
+            negative_zero=int(np.count_nonzero((value == 0) & np.signbit(value))),
+            negative_infinity=int(np.isneginf(value).sum()),
+            positive_infinity=int(np.isposinf(value).sum()), nan=int(np.isnan(value).sum()),
+            finite_min=float(finite.min()) if finite.size else None,
+            finite_max=float(finite.max()) if finite.size else None)
+
+    diagnostic = dict(module=stats(module_mask), core=stats(core_mask))
+
+    def reject(reason):
+        raise ValueError('module/core mask binding failed: ' + reason + '; mask_diagnostics=' +
+                         json.dumps(diagnostic, allow_nan=False))
+
+    if module_mask.dtype not in (np.dtype('float16'), np.dtype('float32')) or core_mask.dtype != np.float16:
+        reject('expected module FP16/FP32 and core FP16')
+    if module_mask.shape != core_mask.shape:
+        reject('shape mismatch')
+    with np.errstate(over='ignore', invalid='ignore'):
+        converted = module_mask.astype(np.float16)
+    diagnostic['cpu_fp16'] = stats(converted)
+    value_diff = converted != core_mask
+    bit_diff = converted.view(np.uint16) != core_mask.view(np.uint16)
+    diagnostic.update(value_mismatches=int(value_diff.sum()), bit_mismatches=int(bit_diff.sum()),
+        negative_inf_to_min_finite=int(np.count_nonzero(np.isneginf(converted) & (core_mask == -65504))),
+        zero_to_nonzero=int(np.count_nonzero((converted == 0) & (core_mask != 0))))
+    def item(value):
+        number = float(value)
+        return dict(value=number if np.isfinite(number) else str(number), bits=value.tobytes().hex())
+    diagnostic['first_differences'] = [dict(coordinate=list(map(int, coord)),
+        module=item(module_mask[tuple(coord)]), cpu_fp16=item(converted[tuple(coord)]),
+        core=item(core_mask[tuple(coord)])) for coord in np.argwhere(bit_diff)[:8]]
+    if any(np.isnan(v).any() or np.isposinf(v).any() for v in (module_mask, core_mask, converted)):
+        reject('NaN/+Inf mask is unsupported')
+    if not bit_diff.any():
+        mode = 'SOURCE_CAST_TO_FLOAT16'
+    elif not value_diff.any():
+        mode = 'EQUAL_CAST_VALUES_WITH_SIGNED_ZERO_DIFFERENCE'
+    else:
+        # A bounded representation alternative for this fresh causal capture.
+        # It is accepted only after an additional same-QKV math check below.
+        if (module_mask.ndim != 4 or module_mask.shape[:2] != (1, 1)
+                or module_mask.shape[2] <= 1 or module_mask.shape[3] < module_mask.shape[2]):
+            reject('sentinel alternative requires fresh B1 causal Prefill')
+        causal = np.arange(module_mask.shape[3])[None, :] <= np.arange(module_mask.shape[2])[:, None]
+        source, observed = module_mask[0, 0], core_mask[0, 0]
+        if (not np.all(source[causal] == 0) or not np.all(np.isneginf(source[~causal]))
+                or not np.all(observed[causal] == 0)
+                or not np.all(np.isneginf(observed[~causal]) | (observed[~causal] == -65504))):
+            reject('changed mask positions/values outside the reviewed 0/-Inf/-65504 representation')
+        mode = 'OBSERVED_CAUSAL_NEG_INF_TO_FP16_MIN_FINITE'
+    return converted, dict(transformation=mode, diagnostics=diagnostic,
+        extra_reference_check_required=bool(bit_diff.any()))
+
+
 def audited_capture_reference(capture, manifest, original, components):
     """Read and revalidate the parent Prefill audit; return evidence, not outputs.
 
@@ -125,17 +184,13 @@ def audited_capture_reference(capture, manifest, original, components):
     actual_spec = audited['actual']
     bind('audit_actual_to_core_output', actual_spec,
          named(core['outputs'], 'golden_attention_nz'), left_root=parent)
-    # The original NZ forward casts its entry mask to FP16 before the core call.
-    # Bind that declared conversion, rather than equating FP32 and FP16 hashes.
+    # Bind the observed conversion; CPU and device cast bytes are not assumed identical.
     module_mask_spec, core_mask_spec = module_inputs['attention_mask'], core_inputs['atten_mask']
     module_mask = array(capture, module_mask_spec)
     core_mask = array(capture, core_mask_spec)
-    if (module_mask.dtype not in (np.dtype('float16'), np.dtype('float32'))
-            or core_mask.dtype != np.float16 or module_mask.shape != core_mask.shape
-            or module_mask.astype(np.float16).tobytes() != core_mask.tobytes()):
-        raise ValueError('module mask differs from core mask after the original FP16 cast')
-    bindings.append(dict(binding='module_mask_to_core', transformation='SOURCE_CAST_TO_FLOAT16',
-        left=module_mask_spec, right=core_mask_spec))
+    source_mask, mask_binding = _mask_binding(module_mask, core_mask)
+    mask_binding.update(binding='module_mask_to_core', left=module_mask_spec, right=core_mask_spec)
+    bindings.append(mask_binding)
     bind('module_length_to_core', module_inputs['allQLen'], core_inputs['all_seq_lengths_q'])
     for role, suffix in (('key', 'k'), ('value', 'v')):
         cache = by_point['cache_' + suffix]
@@ -170,6 +225,20 @@ def audited_capture_reference(capture, manifest, original, components):
         block_size=attrs['block_size'], scale=attrs['scale_value'])
     if prepared['output'] is None:
         raise ValueError('independent core reference is undefined for this capture')
+    if mask_binding['extra_reference_check_required']:
+        source_prepared = reference_math(values['query'], values['key'], values['value'],
+            source_mask, values['block_table'], int(length[0]),
+            heads=attrs['num_heads'], kv_heads=attrs['num_key_value_heads'],
+            block_size=attrs['block_size'], scale=attrs['scale_value'])
+        source_output, core_output = source_prepared['output'], prepared['output']
+        if (source_output is None or not np.isfinite(source_output).all()
+                or not np.isfinite(core_output).all() or source_output.shape != core_output.shape
+                or source_output.dtype != core_output.dtype or source_output.tobytes() != core_output.tobytes()):
+            raise ValueError('module/core mask representations change the same-QKV reference output; mask_diagnostics=' +
+                             json.dumps(mask_binding['diagnostics'], allow_nan=False))
+        mask_binding.update(reference_outputs_equal_bits=True,
+            equivalence_scope='THIS_CAPTURE_QKV_ONLY; NUMPY_FP64_THEN_FP16; NOT_GENERAL_DEVICE_CAST_EQUIVALENCE',
+            source_mask_reference=source_prepared['evidence'])
     recorded_reference = array(parent, audited['independent_reference'])
     fresh_reference = prepared['output']
     if (recorded_reference.shape != fresh_reference.shape

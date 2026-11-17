@@ -37,6 +37,8 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 
 这里显式选用 `captured-audited`：Full 的主参考是**同次原 NZ 模块的 hidden／K／V**。导出前会核验原文件、CacheUpdate→core→模块返回的 K/V 链路，并重新计算独立 FP64 Attention core 参考、转 FP16 后按原精度门槛比较；失败则停止。该审计只验证核心，同次模块输出仍是原实现参考，不代表全模块独立数学验证或整网精度通过。
 
+Mask 核验保留模块入口和核心入口的实际数据。零符号或因果屏蔽值 `-inf → -65504` 的表示差异，还要求同一组 Q/K/V 下两份独立参考的最终 FP16 输出逐位一致；屏蔽位置改变或其它内容差异仍拒绝，并输出 `mask_diagnostics`。原输入和 golden 不改写。
+
 若辅助模块重放因 K/V 不一致而显示 `UNAVAILABLE`，上述入口仍可使用通过审计的同次捕获，失败记录不会被改写。CLI 默认仍是 `math-replay`，要求辅助重放 `COMPUTED` 且 K/V 逐位一致；两个模式不自动切换。
 
 ## 2. 编译
