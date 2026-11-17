@@ -1,6 +1,6 @@
 # Target 精度状态
 
-阶段与标准更新：2026-11-16；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。原整层 GDN FP32 请求因末态 ABI 为 FP16 在准备阶段拦截；用户选择 FP16 后的旧基线 18 项均失败；显式 ConvState 候选最新为 11 通过、7 失败。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
+阶段与标准更新：2026-11-17；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。显式 transpose + concat + slice 的 ConvState 六项输出通过；整层 GDN 为 11 通过、7 失败。原内置 LinearAttentionConvstateUpdate 路径已编译执行，但数值未通过。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 
 ## 显式 ConvState 最新结果
 
@@ -19,7 +19,7 @@
 
 六个 recurrent state 的 dtype_preserved=False 对应已选 FP16 输出与原 FP32 golden；三项 Decode state 的五指标均通过。相同误差指标不证明 Prefill 输出字节相同。此批只做捕获输入重放，没有连续 CPro Prefill→Decode 状态反馈，也没有性能数据。
 
-下一阶段按用户确认执行**原模型 40 层** Prefill／Decode，包含 MoE 和输出头。将已验证的 ConvState 表达、单高度 Conv2d、FP32 RoPE 和 QLinear／GDN 的导出 dtype 适配迁入私有项目；patch 本地交付，不上传私有源码。完整模型精度与性能分别记录，现有 4 层捕获不能作为 40 层 golden。Prefill GDN、L1 Decode hidden 和 Decode CacheUpdate 的未解决项继续保留。
+当前继续核对 **4 层 Prefill 的真实输入和 golden**，定位首个偏差边界；完整 40 层精度与性能另行验证。已保留显式 ConvState、单高度 Conv2d、FP32 RoPE 和 QLinear／GDN dtype 适配。Prefill GDN、L1 Decode hidden 和 Decode CacheUpdate 仍未解决。
 
 ## 整层 GDN FP16 旧基线
 
@@ -175,9 +175,9 @@ Q 长度常量与 source AIR 合同已核对，源码 step=16 下 T256 应为 mA
 
 | 范围 | 尚需处理或验证 |
 | --- | --- |
-| L0–L2 GDN | 独立边界 43 PASS / 5 FAIL；按已确认的 FP16 接口重导出六张整层图，比较 hidden、conv state、recurrent state |
+| L0–L2 GDN | 独立边界 43 PASS / 5 FAIL；显式 ConvState 整层 11/18 通过，Prefill hidden/state 与 L1 Decode hidden 仍失败 |
 | 整图参考 | 原 Prefill L3 Attention 错误会影响依赖它的后续 reference 输出；修复参考路径或建立可信整图参考后重采 hidden／logits，不能直接沿用这些下游 golden |
-| ConvState、MoE、Router、LM head | 仍需整层／整图数值覆盖；独立 residual 的 golden 输入比较不能证明内部正确 |
+| ConvState、MoE、Router、LM head | 显式 ConvState 的 6 个整层输出通过；原内置路径未通过。MoE、Router、LM head 仍需覆盖 |
 | Decode 状态反馈 | Cache 历史保留错误仍未解决；Attention 独立输入通过不代表连续 Prefill→Decode 状态正确 |
 
 L0–L2 位于 L3 之前，可继续用现有捕获做独立 GDN 层函数测试；这种通过不自动保证由错误参考 logits 选出的 Decode token 或整网生成正确。已通过的 Attention、RoPE、Prefill Cache 不为本次 GDN 测试重复编译。
@@ -254,16 +254,16 @@ Prefill 与 Decode 调用同一个 CacheUpdate，契约都是更新指定位置�
 
 ## 高危算子重点定位表
 
-当前执行整层 GDN；Attention 两图对独立参考通过，RoPE 数值已对齐，Cache 恢复后仅复测 4 个失败的 Decode 图。下表与[风险 CSV](../specs/target-operator-accuracy-risk.csv)同步各模块最新结果，不把已通过模块加入复跑；新标准缺项不补造。
+当前继续 4 层 Prefill 输入／golden 核对；Attention 两图对独立参考通过，RoPE 数值已对齐，Cache 恢复后仅复测 4 个失败的 Decode 图。下表列当前结论，缺项不判通过。
 
 | 区域 | 已观察结果 | 当前处理 |
 |---|---|---|
 | CacheUpdate | 最新 Prefill 4/4 PASSED；Decode 4/4 FAILED，L2 99.69%～99.81% | 暂后：检查历史保留与 functional 输出契约 |
-| LinearAttentionConvstateUpdate | 12 项小图编译失败，无数值；原 T64 整图已编译 | 保留失败定位；对照 RefData、双输出和消费者 |
+| ConvState | 显式 transpose + concat + slice 的整层 state 输出 6/6 通过；原内置算子路径已执行但数值未通过 | 保留显式展开版本；不将其通过归给原内置算子 |
 | RoPE | FP32 旋转后四图零误差，旋转区／未旋转区均数值一致 | 独立边界已对齐；不再复跑，待整图集成验证 |
-| ChunkGatedDeltaRule | 独立边界 43 PASS／5 FAIL；整层 FP16 六图 18 输出全部失败且稳定 | 显式 ConvState 对照已备好；目标编译、设备精度待回传 |
+| ChunkGatedDeltaRule | 独立边界 43 PASS／5 FAIL；显式 ConvState 整层 11 PASS／7 FAIL，全部稳定 | 定位 Prefill hidden/state 与 L1 Decode hidden 的剩余偏差 |
 | AdnFusedInferAttention | 独立参考五项通过：Prefill L2 0.11175%、Decode 0.11438%；10 次输出一致；原 Prefill golden 错误 | 本轮小图退出复跑，继续整层 GDN；完整图参考需恢复可信路径 |
 
-各小图使用独立捕获的 golden 输入，不统一归因于上游 QKV 误差传播。整缓存通过也不证明图内 alias 或连续状态反馈已经通过。MoE、Router、共享专家、LM head 与完整 40 层仍待覆盖。[旧静态 SVG](assets/target-architecture-accuracy.svg)为历史快照。
+各小图使用独立捕获的 golden 输入，不统一归因于上游 QKV 误差传播。整缓存通过也不证明图内 alias 或连续状态反馈已经通过。MoE、Router、共享专家、LM head 与完整 40 层仍待覆盖。[静态 SVG](assets/target-architecture-accuracy.svg)与[交互 HTML](assets/target-architecture-interactive.html)同步当前模块结果。
 
 [单模块复测命令与结果](target-batch-rerun.md) · [ConvState 编译对照](target-compile-triage.md) · [Attention 输出范围检查](target-batch-rerun.md#51-attention-输出检查)
