@@ -73,7 +73,23 @@ done
 
 本地已用合成 ModelDef／GraphDef 检查常量排除、输入改名、81 输入图、动态／缺失形状拒绝、报告覆盖保护及无第三方包 CLI。实际 40 层 AIR／DDK 编译由目标环境执行。
 
-## 解析 OMG 导出的 model.json
+## 直接查看 OMC 的输入输出
+
+使用已初始化的 CPro DDK 环境，设置 `CPRO_DDK_ROOT` 后只需传入 OMC 路径：
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/parse_model_json.py" "$OMC"
+```
+
+脚本自动调用 OMG 转换元数据，打印逐槽位名称、dtype、shape、逻辑字节数，以及 `--input_shape`、`--input_type`、`--output_shape`、`--output_type`。OMC 输入默认使用本项目已核对的 `ge-proto` dtype 枚举；其他 schema 可用 `--dtype-map` 覆盖。
+
+这是独立的单文件标准库脚本，可以单独复制运行，不需要 `PYTHONPATH`、Torch 或项目 Python 包。DDK 依次从 `--ddk-root`、`CPRO_DDK_ROOT`、`DDK_PATH`、`TOOLCHAIN_HOME` 获取，未配置时在 PATH 查找 OMG；也可传 `--omg /实际路径/master/omg`。沿用该 DDK 的环境初始化方式。默认转换超时为 120 秒，可用 `--timeout` 调整。
+
+转换在临时目录使用相对的 `input.omc`、`model.json`，避免 DDK 的绝对 JSON 路径校验问题。模型和相邻外置权重通过符号链接读取，不复制大权重；临时目录在结束后自动清理。有 `AI_RUN_DIR` 时使用其 `target/omc-inspection`，否则使用系统临时目录。需要保留解析结果时加 `--output-dir /新的报告目录`，生成下述五个报告文件。
+
+动态模型显示 JSON 中的描述，不自动选择 Prefill／Decode 档位；缺失输出名称时仍打印按槽位排列的 shape，不编造运行时名称。图输入顺序与 NetOutput 输出顺序仍需与实际运行槽位核对。
+
+## 已有 model.json 的解析方式
 
 OMC 可通过 OMG 的 `--mode=1` 导出 JSON。若 `--json` 的绝对路径被 DDK 拒绝，从 OMC 目录执行并传相对文件名，例如 `--om=实际模型名.omc --json=model_io.json`。外置权重保持在原位置。
 
