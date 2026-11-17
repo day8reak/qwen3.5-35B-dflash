@@ -11,7 +11,7 @@ from types import MethodType, SimpleNamespace
 import numpy as np
 import torch
 
-from .common import checked, read_array, sha
+from .common import checked, identity, read_array, sha
 from .source_regions import call, definition
 
 PROJECTIONS = ('q_proj', 'k_proj', 'v_proj', 'o_proj')
@@ -107,6 +107,19 @@ def adapt_forward(owner):
     tree, evidence = definition(owner)
     tree = copy.deepcopy(tree)
     tree.decorator_list = []
+    # The host FP32 carrier is valid only while both uses go directly to the
+    # source update(), whose first operation casts cache_position to FP32.
+    updates = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+               and ast.unparse(n.func) == 'self.update']
+    position_uses = [n for n in ast.walk(tree) if isinstance(n, ast.Name)
+                     and n.id == 'new_kv_cache_pos']
+    expected_updates = [
+        ['key_states', 'new_kv_cache_pos', 'past_key_values[0]'],
+        ['value_states', 'new_kv_cache_pos', 'past_key_values[1]']]
+    if (len(position_uses) != 2 or len(updates) != 2 or
+            [[ast.unparse(a) for a in n.args] for n in updates] != expected_updates
+            or any(n.keywords for n in updates)):
+        raise ValueError('review changed FullAttention cache-position consumers')
     rotation = call(tree, 'apply_rotary_pos_emb')
     names = ('query_states', 'key_states', 'cos', 'sin')
     allowed = [(name, name + '.float()') for name in names]
@@ -173,11 +186,50 @@ def validate_capture(record, capture):
     return x
 
 
+def prepare_cache_position_input(record, capture, root):
+    """Move the source's first FP32 cast to an exact, recorded host carrier.
+
+    Keep the captured record and file immutable. This is input serialization,
+    not a replacement of the source's floating block/offset computations.
+    """
+    spec = record['inputs'][INPUTS.index('new_kv_cache_pos')]
+    if spec['name'] != 'new_kv_cache_pos':
+        raise ValueError('FullAttention cache-position input order changed')
+    position = read_array(capture, spec)
+    length = record['sequence_length']
+    if (record['phase'] != 'prefill' or position.dtype.kind not in 'iu'
+            or position.shape != (length, 1) or length < 2
+            or not np.array_equal(position[:, 0], np.arange(length))):
+        raise ValueError('FP32 cache-position carrier requires fresh Prefill positions 0..T-1')
+    carrier = position.astype('<f4')
+    if not np.isfinite(carrier).all() or not np.array_equal(carrier.astype(position.dtype), position):
+        raise ValueError('cache positions are not exactly representable in FP32')
+    folder = Path(root)/'candidate-inputs'
+    folder.mkdir(exist_ok=True)
+    path = folder/'new_kv_cache_pos_fp32.bin'
+    with path.open('xb') as stream:
+        stream.write(carrier.tobytes())
+    serialized = dict(spec, dtype='float32', **identity(path, root))
+    evidence = dict(status='EXACT_HOST_CAST', original=dict(spec), serialized=serialized,
+        values_preserved=True, shape_preserved=True,
+        source_operation='cache_position.to(torch.float32); BEFORE_ROW_SELECTION',
+        scope='FRESH_PREFILL_ONLY; SOURCE_INDEX_FORMULA_AND_GOLDENS_UNCHANGED')
+    return serialized, torch.from_numpy(carrier), path, evidence
+
+
 def build(record, capture, target, converters, factory, config_path, source_root, root):
     import yaml
-    from .candidates import adapt_qlinear
+    from .candidates import adapt_qlinear, validate_cache_source
     from .target_weights import load_weights
     values = validate_capture(record, capture)
+    cache_source = validate_cache_source(target)
+    update_tree, _ = definition(target.Qwen3_5MoeAttention.update)
+    # validate_cache_source checks the formulas. Also require the cast to be
+    # the first use, so moving it across the model input cannot change a use.
+    uses = [n for n in update_tree.body if any(isinstance(x, ast.Name)
+            and x.id == 'cache_position' for x in ast.walk(n))]
+    if not uses or ast.unparse(uses[0]) != 'cache_position = cache_position.to(torch.float32)':
+        raise ValueError('source update uses cache_position before its FP32 cast')
     config_path = Path(config_path).resolve()
     config = yaml.safe_load(config_path.read_text())
     model_path = Path(config['model_file']).expanduser()
@@ -259,10 +311,11 @@ def build(record, capture, target, converters, factory, config_path, source_root
     forward, source = adapt_forward(target.Qwen3_5MoeAttention.forward)
     op.forward = MethodType(forward, op)
     evidence = dict(status='BOUND_TO_SOURCE', kind='full_attention_layer', source=source,
+        cache_index_source=cache_source,
         config_loader=loader, config_sha256=sha(model_path/'config.json'),
         constructor=dict(constructor_evidence, adaptation='META_WEIGHTS_WITH_ORIGINAL_CPU_ROTARY_BUFFERS',
                          temporary_rotary_factory_restored=namespace['Qwen3_5MoeRotaryEmbedding'] is rotary_class),
-        input_scope='CAPTURED_MODULE_ENTRY_AND_PRE_CALL_STATES; SAME_PREFILL',
+        input_scope='CAPTURED_MODULE_ENTRY_AND_PRE_CALL_STATES; EXACT_HOST_FP32_CACHE_POSITION; SAME_PREFILL',
         output_scope='FULL_ATTENTION_HIDDEN_KEY_VALUE; NO_RESIDUAL_MOE_OR_DECODER_LAYER',
         weight_scope='ORIGINAL_CHECKPOINT_BOUND', weights=weights, qlinear_candidates=quant,
         reference_basis=record['reference_basis'],
@@ -296,12 +349,28 @@ def check_graph(graph, schema, record, bindings):
             raise ValueError('FullAttention source port unresolved: ' + name)
         return edges[slots[0]]
     enums = schema.enums[schema.package + '.DataType']
+    cache_binding = [b for b in bindings if b['fixture_index'] == INPUTS.index('new_kv_cache_pos')]
+    if (len(cache_binding) != 1 or cache_binding[0]['dtype'] != 'float32'
+            or cache_binding[0]['shape'] != [record['sequence_length'], 1]):
+        raise ValueError('FullAttention cache-position fixture must use the exact FP32 carrier')
+    carrier_node = nodes[cache_binding[0]['name']]
+    descs = carrier_node.get('output_desc', [])
+    fp32 = {enums[n] for n in ('DT_FLOAT', 'DT_FLOAT32') if n in enums}
+    if (carrier_node['type'] != 'Data' or len(descs) != 1 or descs[0].get('dtype') not in fp32):
+        raise ValueError('FullAttention AIR cache-position Data is not FP32')
+    dims = descs[0].get('shape', {}).get('dim', [])
+    if dims and dims != cache_binding[0]['shape']:
+        raise ValueError('FullAttention AIR cache-position shape differs from the fixture')
     length = attention_length_constant(edge('actual_seq_lengths_q'), nodes, enums, [record['sequence_length']])
     all_length = trace_input(edge('all_seq_lengths_q'), nodes, enums)
     binding = [b for b in bindings if b['fixture_index'] == INPUTS.index('allQLen')]
     if len(binding) != 1 or not all_length['chain'] or all_length['chain'][-1]['name'] != binding[0]['name']:
         raise ValueError('whole FullAttention lost its captured allQLen carrier')
+    if binding[0]['dtype'] != 'int64':
+        raise ValueError('FullAttention allQLen must retain its captured INT64 dtype')
     return dict(status='PASSED', scope='SOURCE_AIR_ONLY; COMPILED_PRECISION_UNVERIFIED',
         quantized_projections=4, cache_updates=2, attention=1, outputs=3,
         query_length_constant=length, allQLen_trace=all_length,
+        cache_position_input=dict(name=carrier_node['name'], dtype='float32',
+            shape=cache_binding[0]['shape'], fixture_index=INPUTS.index('new_kv_cache_pos')),
         rope='SOURCE_FORWARD_EXPLICIT_FP32_ROTATION; NOT_COMPILED_PRECISION_PROOF')

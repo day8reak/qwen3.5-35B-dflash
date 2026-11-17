@@ -1,4 +1,4 @@
-"""Read retained small AIR/IR metadata after compilation; never execute a toolchain."""
+"""Read bounded AIR/IR metadata after compilation; never execute a toolchain."""
 from __future__ import annotations
 
 from collections import Counter
@@ -15,13 +15,25 @@ from qwen35_moe_dflash.toolchain.omc_wire import Schema, load_schema
 from .common import KIND, checked, identity, new_output, save_json, sha
 
 
+# Full attention source AIR may embed weights. The strict decoder hashes tensor
+# bytes without exposing their values; retained compiler IR keeps its 64 MiB cap.
+SOURCE_AIR_READ_LIMIT = 256 << 20
+
+
 def bounded_bytes(path, limit):
-    if not path.is_file() or not 0 < path.stat().st_size <= limit:
-        raise ValueError(f'missing or excessive metadata file: {path}')
+    if not path.exists():
+        raise ValueError(f'missing metadata file: {path}')
+    if not path.is_file():
+        raise ValueError(f'metadata path is not a regular file: {path}')
+    size = path.stat().st_size
+    if size == 0:
+        raise ValueError(f'empty metadata file: {path}')
+    if size > limit:
+        raise ValueError(f'metadata exceeds read budget: {path} (bytes={size}, limit={limit})')
     with path.open('rb') as stream:
         value = stream.read(limit + 1)
     if len(value) > limit:
-        raise ValueError(f'metadata exceeds read budget: {path}')
+        raise ValueError(f'metadata exceeds read budget while reading: {path} (limit={limit})')
     return value
 
 
@@ -281,7 +293,9 @@ def inspect_compilation(batch, output, cases=None, *, ddk_root=None, compiler_en
                 expected_file=exported['schema']['schema_file'], expected_package=exported['schema']['schema_package'])
             row.update(source_inputs=exported['source_inputs'], golden=exported['golden'],
                 source_air=identity(air, folder), source_schema=identity(schema_path, folder),
-                source_graph=graph_metadata(air, schema))
+                source_air_read_limit_bytes=SOURCE_AIR_READ_LIMIT)
+            row['source_graph'] = graph_metadata(air, schema,
+                raw=bounded_bytes(air, SOURCE_AIR_READ_LIMIT))
             row['export_evidence'] = {k: exported.get(k) for k in
                 ('export_adjustments', 'export_graph_check', 'source_files', 'torch_version', 'torchair_version',
                  'source_contract', 'qlinear_factory', 'qlinear_resolution', 'target_weights',

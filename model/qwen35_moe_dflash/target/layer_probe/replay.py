@@ -331,6 +331,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         weights = torch.load(checked(capture, record['weights']), map_location='cpu', weights_only=True) if 'weights' in record else {}
         inputs = [torch.from_numpy(read_array(capture, spec).copy()) for spec in record['inputs']]
         input_paths = [checked(capture, spec) for spec in record['inputs']]
+        fixture_specs = record['inputs']
         if whole_gdn and gdn_convstate == 'reference':
             from .convstate_reference import validate_capture
             result['convstate_reference_check'] = validate_capture(record, capture)
@@ -358,6 +359,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if cache_mode != 'kernel':
             source = validate_cache_source(target)
             record, inputs, input_paths, candidate = prepare_cache_inputs(capture, manifest, record, root, cache_mode)
+            fixture_specs = record['inputs']
             candidate['source'] = source
             result['candidate'] = candidate
         if whole_gdn:
@@ -369,12 +371,18 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
                 state_dtype=gdn_state_dtype, golden_state_dtype='float32', convstate_mode=gdn_convstate,
                 qlinear_scales='fp16', reference='ORIGINAL_CAPTURE_UNCHANGED')
         elif whole_attention:
-            from .whole_attention import build
+            from .whole_attention import build, prepare_cache_position_input, INPUTS
             model, result['source_contract'] = build(record, capture, target, converters, factory,
                 target_config, source_root, root)
+            spec, tensor, path, carrier = prepare_cache_position_input(record, capture, root)
+            slot = INPUTS.index('new_kv_cache_pos')
+            fixture_specs = list(record['inputs'])
+            fixture_specs[slot], inputs[slot], input_paths[slot] = spec, tensor, path
+            result['source_contract']['cache_position_carrier'] = carrier
             result['target_weights'] = dict(status='ORIGINAL_CHECKPOINT_BOUND')
             result['candidate'] = dict(kind='WHOLE_FULL_ATTENTION', qlinear_scales='fp16',
-                rope_precision='fp32', reference=record['reference_basis'])
+                rope_precision='fp32', reference=record['reference_basis'],
+                cache_position_input='EXACT_FP32_HOST_CARRIER')
         else:
             model = Region(record, weights, target, torch_npu, output_index, factory)
             result['source_contract'] = bind_region(model, target, record)
@@ -442,7 +450,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         fixture = root/'fixture'
         fixture.mkdir()
         specs = []
-        for i, spec in enumerate(record['inputs']):
+        for i, spec in enumerate(fixture_specs):
             path = fixture/f'input_{i}.bin'
             shutil.copyfile(input_paths[i], path)
             specs.append(dict(spec, **identity(path, root)))
