@@ -143,6 +143,8 @@ class Capture:
                     self.active['seen'][name] = dict(args=cpu(args), kwargs=cpu(kwargs))
                     if name in ('linear_attn', 'self_attn'):
                         self.active['mixer'] = name
+                    if name == 'self_attn':
+                        self.active['full_attention_input'] = cpu(bound(m, args, kwargs))
                 def post(m, args, kwargs, output, name=name, wrapper=wrapper, index=index, start=start):
                     ctx = self.active
                     if ctx is None:
@@ -177,6 +179,24 @@ class Capture:
                             {'before_o_proj': record['args'][0]},
                             attrs={'num_heads': attn.num_heads, 'head_dim': attn.head_dim})
                     if name in ('linear_attn', 'self_attn'):
+                        if name == 'self_attn':
+                            values = ctx['full_attention_input']
+                            if (not isinstance(output, (tuple, list)) or len(output) != 3
+                                    or output[1] is not None or len(output[2]) != 2):
+                                raise ValueError('FullAttention must return hidden, None, (key_cache, value_cache)')
+                            self.emit('full_attention_layer', 'full_attention_layer', {
+                                'hidden_states': values['hidden_states'],
+                                'attention_mask': values['attention_mask'],
+                                'position_ids': values['position_ids'],
+                                'old_key_cache': values['past_key_values'][0],
+                                'old_value_cache': values['past_key_values'][1],
+                                'new_kv_cache_pos': values['new_kv_cache_pos'],
+                                'allQLen': torch.as_tensor(values['allQLen'], dtype=torch.int64),
+                            }, {'hidden': output[0], 'key_cache': output[2][0], 'value_cache': output[2][1]},
+                                attrs={'num_heads': m.num_heads, 'num_key_value_heads': m.num_key_value_heads,
+                                       'head_dim': m.head_dim, 'block_size': m.block_size,
+                                       'kv_max_len': m.kv_max_len, 'scale_value': m.scaling},
+                                provenance='DIRECT_MODULE_ENTRY_AND_RETURN; PRE_CALL_STATE_SNAPSHOTS')
                         if name == 'linear_attn' and 'gdn_state' in ctx:
                             self.emit('recurrent_writeback', 'state_cast', {'state': ctx['gdn_state']},
                                 {'written_state': ctx['cache_live'][1]}, attrs={'dtype': str(ctx['cache_live'][1].dtype).removeprefix('torch.')})

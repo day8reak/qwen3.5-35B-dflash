@@ -39,7 +39,7 @@ def main():
             s.add_argument('--timeout', type=int, default=900)
         else:
             s.add_argument('--region', required=True)
-            s.add_argument('--output-index', type=int, help='required except for gdn_layer, which returns all three outputs')
+            s.add_argument('--output-index', type=int, help='required except for gdn_layer/full_attention_layer, which return all three outputs')
     s = sub.add_parser('compile')
     s.add_argument('--batch', required=True, help='existing AIR batch (read-only)')
     s.add_argument('--output', required=True, help='fresh OMC batch below AI_RUN_DIR, outside the AIR batch and DDK')
@@ -144,14 +144,20 @@ def main():
             writer = csv.writer(f)
             metric_keys = ['max_abs', 'relative_l2', 'cosine', 'kl_divergence', 'rmse', 'mean_relative_error']
             writer.writerow(['layer', 'call', 'phase', 'point', 'output', 'status'] + metric_keys
-                            + ['failed_metrics', 'dtype_preserved', 'stable', 'error', 'actual_dtype', 'golden_dtype'])
+                            + ['failed_metrics', 'dtype_preserved', 'stable', 'error', 'actual_dtype', 'golden_dtype',
+                               'reference_basis', 'captured_relative_l2', 'captured_cosine',
+                               'active_cache_relative_l2', 'untouched_cache_equal_bits'])
             for row in result['cases']:
                 metric = row.get('invocations', [{}])[0]
                 writer.writerow([row.get(k) for k in ('layer', 'call', 'phase', 'point', 'output_name', 'status')]
                     + [metric.get(k) for k in metric_keys]
                     + [';'.join(sorted({k for m in row.get('invocations', []) for k in m.get('failed_metrics', [])})),
                        row.get('source_dtype_preserved'), row.get('stable'), row.get('error'),
-                       row.get('actual_dtype'), row.get('golden_dtype')])
+                       row.get('actual_dtype'), row.get('golden_dtype'), row.get('reference_basis'),
+                       metric.get('original_capture_comparison', {}).get('relative_l2'),
+                       metric.get('original_capture_comparison', {}).get('cosine'),
+                       metric.get('full_attention_cache', {}).get('active_metrics', {}).get('relative_l2'),
+                       metric.get('full_attention_cache', {}).get('untouched_equal_input_bits')])
         result = dict(status=result['status'], first_failed_boundary=result['first_failed_boundary'], report=str(root/'report.json'), csv=str(root/'summary.csv'))
     else:
         manifest = json.loads((Path(a.capture)/'manifest.json').read_text())

@@ -28,7 +28,7 @@
 <tr><td>ConvState 显式展开</td><td><span class="pill low">6/6 通过</span></td><td>transpose + concat + slice；取整层 GDN 的 new_conv_state 输出。原内置 LinearAttentionConvstateUpdate 路径已编译执行，但数值未通过。</td></tr>
 <tr><td>整层 GDN</td><td><span class="pill bad">11/18 通过</span></td><td>Prefill hidden/state 六项失败；Decode 仅 L1 hidden 失败。独立 GDN 相邻边界为 43/48 通过。</td></tr>
 <tr><td>RoPE</td><td><span class="pill low">4 项零误差</span></td><td>Prefill／Decode × Q／K；显式 FP32 旋转，FP16 输出，重复稳定。</td></tr>
-<tr><td>Attention</td><td><span class="pill low">2/2 五项通过</span></td><td>对独立 NumPy FP64 → FP16 参考，L2 为 0.11175% / 0.11438%，各 10 次稳定。原 Prefill captured golden 不可信。</td></tr>
+<tr><td>Attention 核心算子</td><td><span class="pill low">2/2 五项通过</span></td><td>对独立 NumPy FP64 → FP16 参考，L2 为 0.11175% / 0.11438%，各 10 次稳定。原 Prefill captured golden 不可信。</td></tr>
 <tr><td>CacheUpdate</td><td>Prefill <span class="pill low">4/4 逐位通过</span>；Decode <span class="pill bad">4/4 失败</span></td><td>K/V × 两种索引；Decode 历史缓存保留问题未闭环。</td></tr>
 <tr><td>QLinear / 其他边界</td><td>已有数值，五项指标未全部补齐</td><td>38 项 QLinear 的 L2 为 0.05454%–1.76249%；不能据此将未测 MoE、Router、共享专家、LM head 标为通过。</td></tr>
 </tbody></table></div>
@@ -148,8 +148,8 @@ function currentResults(){
   node(555,55,495,115,"整层 GDN：11/18 通过",["Prefill 3/9；Decode 8/9","独立相邻边界：43/48 通过"],"red");
   node(1090,55,495,115,"CacheUpdate",["Prefill 4/4 逐位通过","Decode 4/4 失败：历史保留待修复"],"red");
   node(20,195,495,115,"RoPE：4 项零误差",["Prefill / Decode × Q / K","显式 FP32 旋转；重复稳定"],"teal");
-  node(555,195,495,115,"Attention：2/2 五项通过",["独立参考；L2 0.11175% / 0.11438%","Prefill / Decode 各 10 次稳定"],"teal");
-  node(1090,195,495,115,"尚待验证",["QLinear 等边界五项指标未全部补齐","MoE / LM head / 连续状态 / 整模型"],"gray");
+  node(555,195,495,115,"Attention 核心：2/2 五项通过",["独立参考；L2 0.11175% / 0.11438%","Prefill / Decode 各 10 次稳定"],"teal");
+  node(1090,195,495,115,"尚待验证",["QLinear 等边界五项指标未全部补齐","完整 Attention / MoE / LM head / 整模型"],"gray");
   text(24,345,"显式 ConvState 通过取自整层 new_conv_state；原内置路径的通过与否不能由此替代。",19,"#61738b");
  },"Target 当前模块精度结论","overview-svg");
 }

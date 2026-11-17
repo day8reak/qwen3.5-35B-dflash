@@ -1,8 +1,8 @@
 # Target：整层 GatedDeltaNet 测试与 Attention 验证
 
-**显式 ConvState 整层 GDN 六图：11 PASSED / 7 FAILED，18 项全部重复稳定。ConvState 6/6 通过；Decode 8/9 通过，仅 L1 hidden 的 relative-L2=7.41582% 超限。Prefill 3/9 通过，hidden 与 recurrent state 的六组已报告指标与旧基线相同。 当前进入原模型 40 层 Prefill／Decode 集成准备；第 7.8 节为此前导出修复命令，不需要因这次结果重复执行。** 结果与未解决项见[精度状态](target-accuracy-status.md)，整模准备见[完整流程](run-end-to-end.md)。
+**显式 ConvState 整层 GDN 六图：11 PASSED / 7 FAILED，18 项全部重复稳定。ConvState 6/6 通过；Decode 8/9 通过，仅 L1 hidden 的 relative-L2=7.41582% 超限。Prefill 3/9 通过，hidden 与 recurrent state 的六组已报告指标与旧基线相同。** 当前先用[四层 Prefill 同次输入与 golden 生成流程](target-prefill-fixture.md)核对整图输入和参考；第 7.8 节为此前导出修复命令，不需要因这次结果重复执行。结果与未解决项见[精度状态](target-accuracy-status.md)，整模准备见[完整流程](run-end-to-end.md)。
 
-采集覆盖四层，供 Attention 和整层 GDN 共用。第 2 节为已完成的 Attention 准备流程，第 7 节切换为当前 GDN 测试：
+本次 Prefill 定位使用[完整 Linear Attention／Full Attention 分别比较流程](target-attention-pair.md)，复用同次捕获输入。以下保留 Attention 核心和整层 GDN 的既有执行入口：
 
 | 模块 | 图数 | 每张图输出 |
 | --- | ---: | --- |

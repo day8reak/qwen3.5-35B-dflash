@@ -28,7 +28,7 @@ POINT_ORDER = {name: i for i, name in enumerate((
 
 
 def export_variants(region, cache_indexing):
-    if region['kind'] == 'gdn_layer':
+    if region['kind'] in ('gdn_layer', 'full_attention_layer'):
         yield 'kernel', '', None, dict(name='whole_layer')
         return
     modes = ('float', 'integer') if region['kind'] == 'cache' and cache_indexing == 'both' else (
@@ -52,10 +52,15 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     source = json.loads((capture/'manifest.json').read_text())
     if source.get('artifact_kind') != KIND or source.get('status') != 'CAPTURED':
         raise ValueError('requires completed 310P capture')
-    available_regions = list(source['regions'])
+    # Whole Attention needs its separate replay reference and explicit selection;
+    # ordinary boundary batches remain compatible with captures that include it.
+    available_regions = [r for r in source['regions'] if r['kind'] != 'full_attention_layer']
     if points and 'gdn_layer' in points or kinds and 'gdn_layer' in kinds:
         from .whole_gdn import assemble
         available_regions += assemble(source)
+    if points and 'full_attention_layer' in points or kinds and 'full_attention_layer' in kinds:
+        from .whole_attention import assemble
+        available_regions = [r for r in available_regions if r['kind'] != 'full_attention_layer'] + assemble(source)
     regions = [r for r in available_regions if (not points or r['point'] in points)
                and (not kinds or r['kind'] in kinds)
                and (phases is None or r['phase'] in phases)]
@@ -72,6 +77,9 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     if any(r['kind'] == 'gdn_layer' for r in regions) and (
             gdn_state_dtype == 'source' or qlinear_scales != 'fp16' or not target_config):
         raise ValueError('whole GDN requires --gdn-state-dtype float16|float32 --qlinear-scales fp16 --target-config')
+    if any(r['kind'] == 'full_attention_layer' for r in regions) and (
+            qlinear_scales != 'fp16' or rope_precision != 'fp32' or not target_config):
+        raise ValueError('whole FullAttention requires --qlinear-scales fp16 --rope-precision fp32 --target-config')
     root = new_output(output)
     report = dict(artifact_kind=KIND, status='EXPORTING', cases=[],
         capture_sha256=sha(capture/'manifest.json'), golden_source=source['reference'],
@@ -96,6 +104,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 point=region['point'] + suffix, phase=region['phase'], kind=region['kind'],
                 ordinal=region['ordinal'], output_index=index, output_name=tensor['name'], status='EXPORTING')
             report['cases'].append(row)
+            if region['kind'] == 'full_attention_layer':
+                row['reference_basis'] = region['reference_basis']
             save_json(root/'manifest.json', report)
             argv = [sys.executable, str(tool), 'export-one', '--capture', str(capture),
                 '--region', region['id'], '--output', str(folder),
@@ -113,7 +123,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 argv += ['--qlinear-scales', qlinear_scales]
             if mode != 'kernel':
                 argv += ['--cache-indexing', mode]
-            if region['kind'] == 'rope' and rope_precision != 'source':
+            if region['kind'] in ('rope', 'full_attention_layer') and rope_precision != 'source':
                 argv += ['--rope-precision', rope_precision]
             if torchair_pb2:
                 argv += ['--torchair-pb2', str(Path(torchair_pb2).resolve())]
@@ -133,7 +143,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                     raise ValueError('export receipt differs from captured golden')
                 if receipt.get('source_contract', {}).get('status') != 'BOUND_TO_SOURCE':
                     raise ValueError('export worker did not bind this region to original Target source')
-                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or region['kind'] == 'gdn_layer' or mode != 'kernel'
+                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or region['kind'] in ('gdn_layer', 'full_attention_layer') or mode != 'kernel'
                         or (region['kind'] == 'rope' and rope_precision == 'fp32')):
                     if not receipt.get('candidate') or receipt.get('candidate_graph_check', {}).get('status') != 'PASSED':
                         raise ValueError('candidate export is missing its source AIR checks')
@@ -354,6 +364,19 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
             cases[-1]['convstate_mode'] = exported.get('candidate', {}).get('convstate_mode', 'kernel')
         if 'attention_contract' in exported:
             cases[-1]['attention_contract'] = exported['attention_contract']
+        if case['kind'] == 'full_attention_layer':
+            captured = exported.get('captured_goldens', [])
+            if len(captured) != 3 or len(io['outputs']) != 3:
+                raise ValueError('FullAttention requires original and math-core three-output references')
+            copied = []
+            for i, spec in enumerate(captured):
+                destination = fixture/f'captured_golden_{i}.bin'
+                shutil.copyfile(checked(folder, spec), destination)
+                copied.append(dict(spec, **identity(destination, out/'fixture')))
+            cases[-1].update(captured_goldens=copied,
+                reference_basis=exported['reference_basis'],
+                reference_scope='SOURCE_MODULE_WITH_MATH_ATTENTION_CORE; OTHER_SOURCE_OPS_RETAINED',
+                full_attention_contract=exported['full_attention_contract'])
         if case['kind'] == 'rope' and 'rope_contract' in exported:
             contract = exported['rope_contract']
             cases[-1]['rope_contract'] = {k: contract[k] for k in (
@@ -381,6 +404,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
         if selection is not None and case['case'] not in selection:
             continue
         row = {k: case[k] for k in ('case', 'layer', 'call', 'point', 'phase', 'ordinal', 'output_name')}
+        row['reference_basis'] = case.get('reference_basis', 'ORIGINAL_CAPTURE_UNCHANGED')
         try:
             folder = native/case['case']
             receipt = json.loads((folder/'result.json').read_text())
@@ -399,6 +423,9 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                 if len(case['outputs']) > 1:
                     output_row.update(output_index=spec['index'], output_name=spec['semantic_name'])
                 golden = np.fromfile(fixture/case['case']/f'golden_{spec["index"]}.bin', dtype=DTYPES[spec['golden_dtype']]).reshape(spec['shape'])
+                captured_golden = None
+                if case['kind'] == 'full_attention_layer':
+                    captured_golden = read_array(fixture, case['captured_goldens'][spec['index']])
                 tensors, hashes = [], []
                 for index in range(meta['repetitions']):
                     path = folder/f'{index}.bin'
@@ -406,6 +433,23 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                         raise ValueError('runtime output byte extent differs from compiled ABI')
                     actual = np.fromfile(path, dtype=DTYPES[spec['dtype']], count=math.prod(spec['shape']), offset=offset).reshape(spec['shape'])
                     metric = metrics(actual, golden, atol=atol, rtol=rtol)
+                    if captured_golden is not None:
+                        metric['original_capture_comparison'] = metrics(actual, captured_golden, atol=atol, rtol=rtol)
+                        metric['original_capture_role'] = 'OBSERVATION_ONLY; DOES_NOT_CONTROL_PRIMARY_VERDICT'
+                        if spec['index'] in (1, 2):
+                            from .full_attention_compare import cache_partitions
+                            contract = case['full_attention_contract']
+                            fixture_index = contract['cache_input_fixture_indices'][str(spec['index'])]
+                            previous = next(s for s in case['inputs'] if s['fixture_index'] == fixture_index)
+                            before = np.fromfile(fixture/case['case']/f'input_{previous["index"]}.bin',
+                                                 dtype=DTYPES[previous['dtype']]).reshape(previous['shape'])
+                            partitions = cache_partitions(actual, golden, before, contract, atol=atol, rtol=rtol)
+                            metric['full_attention_cache'] = partitions
+                            metric['passed'] = metric['passed'] and partitions['passed']
+                            if not partitions['active_metrics']['passed']:
+                                metric.setdefault('failed_metrics', []).append('active_cache_metrics')
+                            if not partitions['untouched_equal_input_bits']:
+                                metric.setdefault('failed_metrics', []).append('untouched_cache_bits')
                     if case['kind'] == 'rope' and 'rope_contract' in case:
                         from .rope import partition_metrics
                         metric['rope_partitions'] = partition_metrics(actual, golden, case['rope_contract']['rotary_dim'])
