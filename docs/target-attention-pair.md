@@ -147,6 +147,6 @@ for mode in chunk single-token; do
 done
 ```
 
-核对两组 AIR manifest 的 `capture_sha256` 相同。每份 `export.json` 的 `candidate_graph_check` 应分别显示 `gdr_calls=1, chunk_size=64` 和 `gdr_calls=64, chunk_size=1`。沿用第 2 节的 DDK 编译命令，将循环组名改为 `chunk single-token`。执行第 3 节时分别设置 `GROUP=chunk` 和 `GROUP=single-token`，各自回收 3 层、9 项输出。
+核对两组 AIR manifest 的 `capture_sha256` 相同。每份 `export.json` 的 `candidate_graph_check` 应分别显示 `gdr_calls=1, chunk_size=64` 和 `gdr_calls=64, chunk_size=1`。逐 token 组的 `step_length_const_edges` 记录供 64 步使用的长度常量，导出时校验其 INT16 值为 1。若已有旧版 AIR 在 `OnesLike` 推形处失败，仅需重新导出和编译逐 token 组，使用新的输出路径。沿用第 2 节的 DDK 编译命令，将循环组名改为 `chunk single-token`。执行第 3 节时分别设置 `GROUP=chunk` 和 `GROUP=single-token`，各自回收 3 层、9 项输出。
 
 逐层对比两组板端输出。先确认重复稳定的 `golden_new_conv_state` 对应实际输出哈希在 A/B 间一致，再看 hidden 和 recurrent state 的变化，以及各自对同一捕获的误差。两组都偏离 310P 时，还需结合 CPU 与 310P 的投影对照。仅切换 GDR 无法证明其它模块全部正确。

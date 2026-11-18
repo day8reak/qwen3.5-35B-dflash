@@ -1,6 +1,7 @@
 """Explicit source contracts for whole GDN and the attention query boundary."""
 from contextlib import contextmanager
 import functools
+import hashlib
 import importlib
 import inspect
 
@@ -100,7 +101,8 @@ def gdn_state_contract(enabled, state_dtype='float32', expected_calls=1):
         evidence['restored'] = getter(op) is original
 
 
-def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode='kernel', expected_calls=1):
+def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode='kernel', expected_calls=1,
+                     export_root=None):
     from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype, port_names, _data_edges
     from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
     from .candidates import check_graph
@@ -118,6 +120,7 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
                         beta='float16', effective_length='int16')
     expected_chunk = 1 if phase == 'decode' or expected_calls > 1 else 64
     state_parents = {}
+    step_lengths = set()
     for op in selected:
         attrs = _attributes(op)
         ports = {name: slot for slot, name in port_names(attrs, 'input').items()}
@@ -138,6 +141,9 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
         if attrs.get('chunk_size', {}).get('i') != expected_chunk:
             raise ValueError(f'GDN {op["name"]} must have chunk_size={expected_chunk}')
         if expected_calls > 1:
+            if _dtype(descriptor(op['input_desc'][ports['effective_length']], enums)) != 'int16':
+                raise ValueError('single-token GDR effective_length must be INT16')
+            step_lengths.add(edges[ports['effective_length']])
             edge = edges[ports['initial_state']]
             visited = set()
             while edge.endswith(':0') and by_name[edge[:-2]]['type'] in ('Cast', 'Identity', 'TensorMove'):
@@ -147,6 +153,16 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
                 edge = _data_edges(by_name[edge[:-2]])[0]
             state_parents[op['name']] = edge
     if expected_calls > 1:
+        from .contracts import constants
+        for edge in step_lengths:
+            producer, slot = edge.rsplit(':', 1)
+            if slot != '0' or by_name[producer]['type'] not in ('Const', 'Constant', 'FileConstant'):
+                raise ValueError(f'single-token GDR effective_length must come from a constant, got {edge}')
+            row, = constants({'op': [by_name[producer]]}, schema, export_root, {})
+            one = b'\x01\x00'  # little-endian INT16 [1]
+            if row.get('payload') != dict(bytes=len(one), sha256=hashlib.sha256(one).hexdigest()):
+                reason = row.get('error', 'wrong bytes')
+                raise ValueError(f'single-token GDR effective_length {edge} must contain INT16 [1]: {reason}')
         # Follow the unique tail back to the initial state, independent of serialization order.
         parents = {name: edge.rsplit(':', 1)[0] for name, edge in state_parents.items()
                    if edge.endswith(':1') and edge[:-2] in state_parents}
@@ -181,6 +197,7 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
     return dict(status='PASSED', initial_state=state_dtype, last_recurrent_state=state_dtype,
                 checked_inputs=expected, writeback=state_dtype,
                 quantized_projections=5, chunk_size=expected_chunk, gdr_calls=expected_calls,
+                **({'step_length_const_edges': sorted(step_lengths)} if step_lengths else {}),
                 convstate=convstate, scope='SOURCE_AIR_ONLY')
 
 

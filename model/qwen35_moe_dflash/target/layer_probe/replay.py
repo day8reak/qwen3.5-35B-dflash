@@ -448,7 +448,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             if whole_gdn:
                 from .module_contracts import check_gdn_source
                 result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'], gdn_state_dtype,
-                                                                   gdn_convstate, expected_calls=gdr_calls)
+                                                                   gdn_convstate, expected_calls=gdr_calls, export_root=root)
             elif rope_fp32:
                 from .rope import check_graph as check_rope_graph
                 result['candidate_graph_check'] = check_rope_graph(graph, schema, golden['dtype'])

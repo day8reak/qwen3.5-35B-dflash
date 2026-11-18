@@ -14,7 +14,7 @@ from types import MethodType, SimpleNamespace
 import torch
 
 from .common import checked, sha
-from .source_regions import assignment, call, definition
+from .source_regions import assignment, call, definition, one
 
 PROJECTIONS = ('in_proj_qkv', 'in_proj_z', 'in_proj_b', 'in_proj_a', 'out_proj')
 
@@ -65,21 +65,19 @@ def assemble(manifest):
     return records
 
 
-def single_token_gdr(query, key, value, g, beta, chunk_size, initial_state, effective_length,
+def single_token_gdr(query, key, value, g, beta, chunk_size, initial_state, step_length,
                      output_final_state, use_qk_l2norm_in_kernel):
     import torch_npu
 
     if chunk_size != 64 or not output_final_state:
         raise ValueError('single-token Prefill expects the original chunk_size=64 call with final state')
-    # The exporter validates effective_length=[T] before tracing this static fixture.
-    one = torch.ones_like(effective_length)
     state = initial_state
     blocks = []
     for t in range(query.shape[1]):
         core, next_state = torch_npu.npu_chunk_gated_delta_rule(
             query[:, t:t+1].contiguous(), key[:, t:t+1].contiguous(), value[:, t:t+1].contiguous(),
             g=g[:, t:t+1].contiguous(), beta=beta[:, t:t+1].contiguous(), chunk_size=1,
-            initial_state=state, effective_length=one, output_final_state=output_final_state,
+            initial_state=state, effective_length=step_length, output_final_state=output_final_state,
             use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel)
         blocks.append(core)
         state = next_state.to(initial_state.dtype)
@@ -118,6 +116,9 @@ def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel', gdr_mod
         raise ValueError('review changed GDN initial_state expression')
     if gdr_mode == 'single-token':
         op.func = ast.Name(id='_probe_single_token_gdr', ctx=ast.Load())
+        length = one((kw for kw in op.keywords if kw.arg == 'effective_length'), 'GDR effective_length')
+        length.arg = 'step_length'
+        length.value = ast.parse('self._probe_gdr_step_length', mode='eval').body
         tree.body.insert(0, ast.ImportFrom(
             module=__name__, names=[ast.alias(name='single_token_gdr', asname='_probe_single_token_gdr')], level=0))
     elif gdr_mode != 'chunk':
@@ -214,6 +215,10 @@ def build(record, capture, target, converters, factory, config_path, source_root
     if any(t.is_meta for t in (*op.parameters(), *op.buffers())):
         raise ValueError('whole GDN has unbound meta weights')
     forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward, state_dtype, convstate_mode, gdr_mode)
+    if gdr_mode == 'single-token':
+        # B=1, each unrolled call consumes one valid token. Materialize this
+        # before tracing so the X90 graph never has to execute OnesLike.
+        op.register_buffer('_probe_gdr_step_length', torch.tensor([1], dtype=torch.int16))
     op.forward = MethodType(forward, op)
     model = WholeGDN(op, state_dtype).eval()
     evidence = dict(status='BOUND_TO_SOURCE', kind='gdn_layer', source=source,
