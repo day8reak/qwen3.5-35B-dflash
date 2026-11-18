@@ -1,6 +1,6 @@
 # 先核验 Target golden
 
-T8 Prefill 的四个板端投影在已比较的位置均通过 CPU 对照。310P 的 L0 QKV 显式反量化路径也通过 CPU 对照，原 A8W4 融合调用仍有偏差。[L0 数据和分组参数对照](#step7)
+T8 Prefill 的四个板端投影在已比较的位置均通过 CPU 对照。310P 的 L0 QKV 原 A8W4 融合调用在 M=8 超差；把同一批 A8 行和 token scale 重复到 M=64 或 256，三次调用均对齐 CPU 且输出逐位稳定。[L0 行数对照](#l0-rows)
 
 ## 1. CPU 独立重算
 
@@ -251,6 +251,8 @@ cat "$L0_GROUP/probe/summary.txt"
 
 摘要末尾分别给出两个签名的 `group check`。通过要求同签名三次均对齐 CPU 且输出逐位稳定。调度报错会保留原始错误和已完成次数。该对照只判定固定输入的 L0 QKV，整网 golden 仍待验证。
 
+<a id="l0-rows"></a>
+
 ### 对比融合矩阵乘的 M=8、64、256
 
 L0 两种签名各完成三次，都未通过。原调用对 CPU 的相对 L2 为 1.018–1.184，显式 group256 为 1.012–1.018。后者两次与上一次同签名输出比较的相对 L2 分别为 0.422 和 0.408。
@@ -272,7 +274,9 @@ grep 'original check:' "$L0_ROWS"/m*/summary.txt
 
 `PASSED` 要求每次的整体及每个 8 行块均对齐 CPU，且三次输出逐位一致。若只有较长 M 通过，记录哪些行数能复现偏差。有 profiling 时对照各行数的 `op_summary_*.csv` 和 `task_time_*.csv` 里实际记录的任务名、类型和输入形状（如有）。仅凭张量格式号和已加载的库还无法确定具体内核。工具的采集和导出字段见[华为 msprof 文档](https://www.hiascend.com/document/detail/en/mindstudio/700/TITools/Profiling/atlasprofiling_16_0005.html)。
 
-L0 QKV 实测中，M=8 的首次输出对 CPU 的相对 L2 为 1.01228，余弦为 0.22522，三次调用综合判定失败。M=64 和 M=256 均通过，首次相对 L2 均为 0.00074388，余弦均为 0.99999975。当前能稳定复现行数相关的差异。具体内核、最小可用 M，以及其他投影和整网的精度仍待验证。
+L0 QKV 实测中，M=8 的首次输出对 CPU 的相对 L2 为 1.01228，余弦为 0.22522，三次调用综合判定失败。M=64 和 M=256 均通过，首次相对 L2 均为 0.00074388，余弦均为 0.99999975。
+
+三个 M 各有三条 AI_CORE 任务记录。`op_summary` 的算子名均为 `aclnnQuantMatmulV4_QuantBatchMatmulV4444_QuantBatchMatmulV4444`，`task_time` 的内核名均为 `QuantBatchMatmulV4444_b5528a498525995346b260ca8f9eb8c4_21`。记录的 dtype 和 ND 格式一致；变化的形状为 A8 的 `[M,2048]`、token scale 的 `[M,1]` 和输出的 `[M,8192]`。回传结果未给出 Block Dim 或 Tiling Key，具体分块与尾行处理仍待核对。以上结果只覆盖 L0 独立投影。
 
 直接在同一台 310P 主机读取这次的 profiling：
 
@@ -293,3 +297,5 @@ for layer in 1 2 3; do
 done
 grep -E 'original_vs_cpu:|original check:' "$L0_ROWS"/layer-*-m64/summary.txt
 ```
+
+若 L1、L2 的 QKV 和 L3 的 V 也通过，四个投影便都有独立的 M=64 对照。下一步用[原四层 Prefill 采集 T64](target-attention-pair.md#t64-gdr)，将本页第 1、2 节的 capture 和输出目录指向这份 T64 采集，核对真实前向中四个投影的返回值。随后两组 Attention 使用同一份 T64 capture 对比。
