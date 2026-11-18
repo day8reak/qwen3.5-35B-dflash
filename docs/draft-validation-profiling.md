@@ -18,9 +18,8 @@ source "$REPO_DIR/targets/cpro/scripts/env.sh"
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
 export DRAFT_RUNTIME_CONFIG="${DRAFT_RUNTIME_CONFIG:-${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}}"
+export DRAFT_ACCURACY_RUN="$AI_RUN_DIR/draft/tests/accuracy-run"
 export DRAFT_ACCURACY="$AI_RUN_DIR/draft/tests/accuracy-result"
-export UT_RUN="$AI_RUN_DIR/draft/tests/accuracy-untouched-run"
-export UT_RESULT="$AI_RUN_DIR/draft/tests/accuracy-untouched-result"
 export PROFILE_RUN="$AI_RUN_DIR/draft/tests/profile-run"
 export PROFILE_RESULT="$AI_RUN_DIR/draft/tests/profile-result"
 ```
@@ -54,17 +53,19 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 2. 完整 Draft 精度验证
 
-复用同一 OMC 的已回收结果 `$DRAFT_ACCURACY`、原始输入和 golden。首次使用见[准备验证基线](run-end-to-end.md#draft-accuracy-baseline)。
+一次运行生成参考输入和输出，上板验证后将报告写入 `accuracy-result/result.json`。
 
 ```bash
 (
   set -e
   validate="$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py"
-  python3 "$validate" --config "$DRAFT_RUNTIME_CONFIG" --replay "$DRAFT_ACCURACY" \
-    --output-initialization untouched --output "$UT_RUN" --apply
+  python3 "$validate" --config "$DRAFT_RUNTIME_CONFIG" \
+    --compiled "$AI_RUN_DIR/draft/omc" --air-export "$AI_RUN_DIR/draft/air" \
+    --source "$AI_RUN_DIR/draft/source/prepared" --ddk-root "$CPRO_DDK_ROOT" \
+    --output-initialization untouched --output "$DRAFT_ACCURACY_RUN" --apply
   while :; do
-    python3 "$validate" --recover "$UT_RUN" --output "$UT_RESULT"
-    status=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["status"])' "$UT_RESULT/result.json")
+    python3 "$validate" --recover "$DRAFT_ACCURACY_RUN" --output "$DRAFT_ACCURACY"
+    status=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["status"])' "$DRAFT_ACCURACY/result.json")
     [ "$status" = DRAFT_ACCURACY_PENDING ] || break
     sleep 5
   done
@@ -77,7 +78,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --accuracy "$UT_RESULT" --case-index 18 \
+  --accuracy "$DRAFT_ACCURACY" --case-index 18 \
   --allow-numerical-failure --modelmanager-itf V1 \
   --model-tool /data/local/tmp/tools_sysdbg/model_run_tool_internal \
   --data-proc-tool /data/local/tmp/tools_sysdbg/data_proc_tool_internal \
