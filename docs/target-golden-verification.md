@@ -1,6 +1,6 @@
 # 先核验 Target golden
 
-本次 T8 Prefill，板端可观测的四个投影与独立 CPU group256 参考均通过，原 310P 捕获在这些位置偏离参考。步骤 1–3 已完成。当前从[步骤 4](#step4)检查 310P QuantMatmul。
+本次 T8 Prefill，板端可观测的四个投影与独立 CPU group256 参考均通过，原四层捕获在这些位置偏离参考。独立重放 L3 矩阵乘停在 V5 参数校验和 TransData，当前从[步骤 5](#step5)记录正常吐字进程的同次实参和返回值。
 
 ## 1. CPU 独立重算
 
@@ -98,3 +98,37 @@ cat "$GOLDEN_CHECK/l3-matmul/summary.txt"
 - 先看 `original_vs_capture`，其中 `equal_bits` 表示是否逐位复现。若明显偏离，优先从正常吐字进程的同次 Prefill 取实参作对照，包括 A8、两份 scale、packed W、设备 format 和算子返回值。
 - 若复现原偏差，再比较 `original_vs_cpu` 与 `explicit_group256_vs_cpu`。只改 group 参数就通过时，可把差异定位到这次调用的分组或后端选择。
 - 若 `nd_hypothesis_vs_capture` 很接近，检查加载和后端对 packed W 的解释。该 CPU 实验只检验一种具体排列。全网判定仍需同输入 logits 和后续 decode 对照。
+
+本次 L3 V 的四个参数在四层捕获和独立重放之间 dtype、stride、format 全部一致（format 均为 2）。原参数调用 V5 在 groupSize 检查报 161002，显式 group256 在内部 TransData 查找 binary 时报 561103。两次均无输出。连续输出通道 INT4 的 CPU 假设也与捕获不符（相对 L2 1.3121、余弦 −0.03176）。
+
+<a id="step5"></a>
+
+## 5. 在正常吐字的 310P 进程观察 L3 V
+
+用原来成功的 Python 环境、工作目录、源码、配置和启动参数。下例的 `--` 后是传给原 `inference.py` 的参数，请沿用成功命令。原程序照常写入自身配置的输出位置。探针只在第一次 Prefill 的 L3 V 前向中旁路记录实际 A8、packed W、两份 scale、矩阵乘返回和模块返回。采集包含设备回读，本次耗时仅供调试。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+cd "$TARGET_SOURCE"
+python "$REPO_DIR/targets/cpro/tools/trace_target_prefill_matmul.py" \
+  --source-root "$TARGET_SOURCE" --capture "$GOLDEN_CAPTURE" \
+  --cpu "$GOLDEN_CHECK/with-dynamic-quant" --output "$GOLDEN_CHECK/l3-live" -- \
+  --config "$TARGET_CONFIG" --quant_mode enable --quant_bits 4 --max_token 2
+```
+
+`matmul_vs_same_call_cpu` 用本次观测的 A8 和 token scale 重算，先逐位核对本次权重与 group scale。`hidden_equal_bits` 同时覆盖形状、dtype 和内容，只有它为 true 才比较新旧模块输出以及新 A8 与重放 A8。原入口若把 prompt 重复 32 次，很可能与 T8 捕获长度不同，此时同次矩阵乘对照仍有效。采集细节在 `l3-live/live.json`，比较在 `l3-live/report.json`。
+
+已有独立重放报告也可直接对比进程信息。四层 capture 的快照早于实际投影，库映射清单可提供线索，单凭清单不能确认 V5 由哪个库实现。
+
+```bash
+python - "$GOLDEN_CHECK/l3-matmul/report.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    r = json.load(f)
+for key in ("capture_runtime", "runtime_before", "runtime_after"):
+    v = r.get(key) or {}
+    print(key, v.get("python"), v.get("torch_version"), v.get("torch_npu_version"))
+    print("ASCEND_CUSTOM_OPP_PATH =", v.get("environment", {}).get("ASCEND_CUSTOM_OPP_PATH"))
+    print(*(v.get("loaded_libraries") or []), sep="\n")
+PY
+```

@@ -2,7 +2,7 @@
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 
-T8 两组已执行。板端可观测的四个投影区域与独立 CPU 参考一致，四层整模块输出与原捕获存在偏差。当前在原 310P 环境核对矩阵乘的格式与分组参数。[投影核验结果与执行命令](target-golden-verification.md#step4)
+T8 两组已执行。板端可观测的四个投影区域与独立 CPU 参考一致，四层整模块输出与原捕获存在偏差。当前核对正常 310P 推理进程中的 L3 V。[投影核验结果与执行命令](target-golden-verification.md#step5)
 
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。以下流程要求 `capture/manifest.json` 为 `CAPTURED`，同次 `attention_audit` 为 `PASSED`。保留完整 `PREFILL_FIXTURE`（含父 manifest 和 `attention-audit/`），无需再次执行整网 Prefill。
 

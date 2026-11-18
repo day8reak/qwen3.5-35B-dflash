@@ -1,6 +1,6 @@
 # Target T8 Prefill：定位投影与缓存链路
 
-T8 的完整 Linear／Full Attention 与四层捕获存在偏差。板端 L0–L2 QKV 的末 4 token 和 L3 V 的全部 8 token 均通过独立 CPU 数学对照。当前用冻结输入定位 310P 投影差异。[单投影重放命令](target-golden-verification.md#step4)
+T8 的完整 Linear／Full Attention 与四层捕获存在偏差。板端 L0–L2 QKV 的末 4 token 和 L3 V 的全部 8 token 均通过独立 CPU 数学对照。独立矩阵乘重放未产出数值，当前在成功推理进程记录 L3 V。[同次实参核验](target-golden-verification.md#step5)
 
 环境与变量沿用 [Attention 分层验证](target-attention-pair.md)：`GOLDEN_CAPTURE` 必须指向本次 T8 的 `prefill-fixture/capture`，`CPRO_SOURCE` 仍是保留原调用的私有 CPro 源码。导出适配由工具自动应用，原源码与 golden 不改写。先同步 `main`。
 
