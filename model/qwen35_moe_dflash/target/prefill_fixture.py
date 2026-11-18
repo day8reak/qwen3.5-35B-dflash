@@ -230,7 +230,7 @@ class PrefillCapture:
 
 
 @contextmanager
-def attention_audit(npu, capture):
+def attention_audit(npu, capture, *, live_calls=None):
     """Observe the original call; an independent diagnostic never replaces it."""
     from .layer_probe.attention_reference import reference_math, unpack
     from .layer_probe.common import metrics
@@ -293,6 +293,8 @@ def attention_audit(npu, capture):
             row['independent_reference'] = capture.tensor(folder, 'math_reference_bnsd', torch.from_numpy(prepared['output']))
             row['metrics'] = metrics(unpack(actual.numpy(), values['num_heads']), prepared['output'])
             row['status'] = 'PASSED' if row['metrics']['passed'] else 'FAILED'
+            if live_calls is not None:
+                live_calls.append((kwargs, values))
         except Exception as exc:
             row['reason'] = f'{type(exc).__name__}: {exc}'
         return result
@@ -313,7 +315,7 @@ def attention_audit(npu, capture):
 
 
 def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=False, npu=None,
-                    capture_boundaries=False, l3_repeat=None):
+                    capture_boundaries=False, l3_repeat=None, fused_value_baseline=None):
     """Run the original prefill once. No decoder or second golden evaluation."""
     root = Path(root)
     max_len = source.config_data['kv_cache_max_len']
@@ -326,6 +328,7 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
     original.mkdir()
     source.output_path = str(original) + os.sep
     boundaries, replay, error = None, None, None
+    live_calls = [] if fused_value_baseline is not None else None
     try:
         capture.attach(wrapper, intermediates)
         if capture_boundaries:
@@ -349,7 +352,7 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
             from .layer_probe.attention_replay_reference import FullAttentionReplay
             replay = FullAttentionReplay(boundaries.root, boundaries.report, npu, layer=3)
             replay.attach(wrapper)
-        with torch.no_grad(), working_directory(original), attention_audit(npu, capture):
+        with torch.no_grad(), working_directory(original), attention_audit(npu, capture, live_calls=live_calls):
             source.prefill(wrapper, tokens, mask, caches, max_len)
         if capture.pre_calls != 1 or capture.post_calls != 1 or len(record['outputs']) != 9:
             raise ValueError('original prefill did not produce one complete four-layer wrapper invocation')
@@ -373,11 +376,19 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
         rows = boundaries.report.get('attention_math_replays', [])
         record['attention_module_reference'] = dict(path='capture/manifest.json',
             records=[dict(layer=row.get('layer'), status=row.get('status'), error=row.get('error')) for row in rows])
+    if live_calls is not None:
+        from .layer_probe.fused_value_control import run_control
+        control = record['fused_value_control'] = dict(status='PARTIAL')
+        try:
+            run_control(npu, live_calls, root, record['attention_audit'], fused_value_baseline, control)
+        except Exception as exc:
+            control['error'] = f'{type(exc).__name__}: {exc}'
     return record
 
 
 def generate(source_root, config_path, input_ids, sequence_length, output, *, device='npu:0',
-             intermediates=False, capture_boundaries=False, prompt_index=0, prompt_repeat=1, l3_repeat=None):
+             intermediates=False, capture_boundaries=False, prompt_index=0, prompt_repeat=1, l3_repeat=None,
+             probe_fused_value=None):
     root = new_output(output)
     source_root = Path(source_root).resolve(strict=True)
     config_path = Path(config_path)
@@ -411,6 +422,13 @@ def generate(source_root, config_path, input_ids, sequence_length, output, *, de
         if sequence_length is not None and not 2 <= sequence_length <= min(max_len, 32767):
             raise ValueError('invalid Prefill sequence-length for this cache/int16 length input')
         path = None
+        fused_value_baseline = None
+        if probe_fused_value is not None:
+            from .layer_probe.fused_value_control import previous_call
+            if input_ids is not None:
+                raise ValueError('--probe-fused-value already uses the specified fixture token file')
+            input_ids, fused_value_baseline = previous_call(probe_fused_value)
+            record['fused_value_baseline_fixture'] = str(Path(probe_fused_value).resolve())
         if input_ids is not None:
             if prompt_index != 0 or prompt_repeat != 1:
                 raise ValueError('prompt options cannot be combined with --input-ids')
@@ -475,12 +493,15 @@ def generate(source_root, config_path, input_ids, sequence_length, output, *, de
         source.quant_embedding_scale = torch.from_numpy(np.fromfile(cfg['embedding_scale_path'], dtype='<f4').reshape(vocab, 1)).to(device)
         stage('ORIGINAL_PREFILL_ONCE')
         execute_prefill(source, wrapper, tokens.to(device), root, record, intermediates=intermediates,
-                        npu=npu, capture_boundaries=capture_boundaries, l3_repeat=l3_repeat)
+                        npu=npu, capture_boundaries=capture_boundaries, l3_repeat=l3_repeat,
+                        fused_value_baseline=fused_value_baseline)
         status = 'CAPTURED' if record.get('boundary_capture', {}).get('status', 'CAPTURED') == 'CAPTURED' else 'PARTIAL'
         if capture_boundaries:
             replay_rows = record.get('attention_module_reference', {}).get('records', [])
             if len(replay_rows) != 1 or replay_rows[0]['status'] != 'COMPUTED':
                 status = 'PARTIAL'
+        if probe_fused_value is not None and record['fused_value_control']['status'] != 'INSPECTED':
+            status = 'PARTIAL'
         record.update(status=status, stage='COMPLETE', reference_execution='EXECUTED',
             next_action='Bind inputs by semantic name to the actual OMC runtime ABI, then compare its matching Prefill outputs.')
     except Exception as exc:

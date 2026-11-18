@@ -339,6 +339,16 @@ python "$PROBE" inspect-prefill-audit --fixture "$T64_FIXTURE" --device-math npu
 
 本次 310P 分步计算三次均通过 CPU 参考的五项指标，输出逐位一致。相对 L2 为 0.00025501（0.02550%），余弦为 0.9999999675，最大绝对误差为 0.001953125。这项对照验证了按同一页表和头映射解包后的 Attention 数学计算。
 
-离线报告的 `full_value_cache_check` 将原融合输出与包含闲置页在内的整块 V cache 比较。若原输出的 904 远超整块 cache 的最大绝对值，仅读错一个合法 V 页无法解释该值，需继续检查原融合调用的 packed 地址、归一化和分块写回。该检查复用上面的 `inspect-prefill-audit --fixture "$T64_FIXTURE"`，无需重新采集。
+本次整块 V cache（含闲置页）的绝对值上界为 3.494140625，原融合输出有 23,075 个有限元素越界，峰值为 904。有效 KV 长度为 64，mask 行跨度为 2048，每个 query 至少有一个有限 mask 项。归一化加权求和即使选错合法页也无法解释这个峰值。
+
+在原 310P 的 `qwen3_5_w4` 环境运行常量 V 对照。脚本复用该 fixture 的 token，执行一次新的四层 Prefill，保存原始输出后，沿用刚才融合调用的 Q、K、mask、页表和长度参数。四次额外调用在同一份私有 V 缓冲区依次放入原值、全 +1、全 −1 和恢复的原值。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/generate_target_prefill.py" \
+  --source-root "$TARGET_SOURCE" --config "$TARGET_CONFIG" --device npu:0 \
+  --probe-fused-value "$T64_FIXTURE" --output "${T64_FIXTURE:?}-fused-value"
+```
+
+看输出的 `fused_value_control`。先核对新旧捕获的输入、原融合输出及前后两次原 V 对照的逐位一致性。常量 V 的每个有效输出应接近相应常量。每 16 个 query 报告全零 head 行数、非有限元素数及最大绝对误差。若基线未复现，单独解读本次运行。若正负常量都在相同块出现零行，优先核对这些块的计算与写回覆盖。
 
 对照板端 Full Attention 时选择 `--full-attention-reference math-replay`，用重放输出作主参考，同时保留原模块输出作对照。整网 logits 和 GDN 状态的精度仍需单独验证。[两类 Attention 的验证流程](target-attention-pair.md#t64-full)
