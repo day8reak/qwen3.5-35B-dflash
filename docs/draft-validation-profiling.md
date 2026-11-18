@@ -20,6 +20,8 @@ export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 export DRAFT_RUNTIME_CONFIG="${DRAFT_RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
 export DRAFT_ACCURACY_RUN="$AI_RUN_DIR/draft/tests/accuracy-run"
 export DRAFT_ACCURACY="$AI_RUN_DIR/draft/tests/accuracy-result"
+export UT_RUN="$AI_RUN_DIR/draft/tests/accuracy-untouched-run"
+export UT_RESULT="$AI_RUN_DIR/draft/tests/accuracy-untouched-result"
 export PROFILE_RUN="$AI_RUN_DIR/draft/tests/profile-run"
 export PROFILE_RESULT="$AI_RUN_DIR/draft/tests/profile-result"
 ```
@@ -49,9 +51,13 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --output "$AI_RUN_DIR/draft/omc"
 ```
 
+<a id="draft-accuracy"></a>
+
 ## 2. 完整 Draft 精度验证
 
-C16／cap192／K15 配置运行 19 个用例的独立输入对照与连续 KV 反馈，覆盖空缓存、部分新增、重复调用、候选拒绝和容量边界；输入为确定性合成特征，不代表 Target 端到端或文本质量验证。
+C16／cap192／K15 配置用固定的合成特征运行 19 个用例，比较独立输入和连续 KV 反馈两种模式。已有同一 OMC 的完整精度结果及原始输入、golden 时，直接从 2.2 开始。
+
+### 2.1 首次生成并回收基线
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
@@ -63,14 +69,33 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
   --output "$DRAFT_ACCURACY_RUN" --apply
 ```
 
-启动后回收结果；若为 `DRAFT_ACCURACY_PENDING`，稍后只重复下面的回收命令。
+启动后回收结果。若为 `DRAFT_ACCURACY_PENDING`，稍后重复对应的回收命令。
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
   --recover "$DRAFT_ACCURACY_RUN" --output "$DRAFT_ACCURACY"
 ```
 
-结果在 `$DRAFT_ACCURACY/result.json`：`PASSED` 表示通过，`NUMERICAL_FAILED` 表示已执行并回收但数值未通过。已有同一 OMC 的完整结果、原 fixture 和板端模型缓存时，可跳过本节。
+`$DRAFT_ACCURACY/result.json` 状态为 `PASSED` 或 `NUMERICAL_FAILED` 时均可重放。保留该结果及其引用的输入和 golden。
+
+### 2.2 使用 untouched 重放精度验证
+
+复用同一 OMC、输入和 golden，让 runner 跳过对输出缓冲区的显式清零。两次独立冷启动实测中，第 0 例首次返回的 14 个输出均与老 OMC 基准逐位一致。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --config "$DRAFT_RUNTIME_CONFIG" --replay "$DRAFT_ACCURACY" \
+  --output-initialization untouched --output "$UT_RUN" --apply
+```
+
+重放启动后，从 `$UT_RUN` 回收结果。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$UT_RUN" --output "$UT_RESULT"
+```
+
+精度结果见 `$UT_RESULT/result.json`。当前对 CPU golden 的整套验证仍为 `NUMERICAL_FAILED`，两种模式各有 83/86 个 Top1 匹配。
 
 ## 3. 采集 Profiling
 
@@ -78,7 +103,7 @@ python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/profile_draft.py" \
-  --accuracy "$DRAFT_ACCURACY" --case-index 18 \
+  --accuracy "$UT_RESULT" --case-index 18 \
   --allow-numerical-failure --modelmanager-itf V1 \
   --model-tool /data/local/tmp/tools_sysdbg/model_run_tool_internal \
   --data-proc-tool /data/local/tmp/tools_sysdbg/data_proc_tool_internal \

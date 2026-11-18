@@ -55,20 +55,9 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 编译成功状态为`PYTORCH_DRAFT_OMC_COMPILED`、物理ABI为`BOUND_DIAGNOSTIC`。紧凑bundle保留`pytorch-abi.json`和`compiler.air`，重新准备独立验证不再依赖旧test编译快照或DDK动态库。完整原始prepared权重仍用于CPU参考和host embedding。
 
-仅在需要重新验收时运行以下诊断；模型直接引用公共目录，不复制到tests。
+验证 packed Draft 时，用 `--output-initialization untouched` 重放已回收的同一 OMC 基线。首次准备、重放和采集命令见 [Draft 完整精度验证与 Profiling](draft-validation-profiling.md#draft-accuracy)。
 
-```bash
-export VECTOR_CONFIG="${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --compiled "$AI_RUN_DIR/draft/omc" --air-export "$AI_RUN_DIR/draft/air" \
-  --source "$AI_RUN_DIR/draft/source/prepared" --config "$VECTOR_CONFIG" \
-  --output "$AI_RUN_DIR/draft/tests/accuracy-run" --apply
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$AI_RUN_DIR/draft/tests/accuracy-run" \
-  --output "$AI_RUN_DIR/draft/tests/accuracy-result"
-```
-
-PENDING只回收同一请求；不得重复启动。上述公开位置是模型存放与独立诊断入口，后面的旧常驻循环仍需其兼容的token-ID Draft，不应直接指向这份packed OMC。
+上述公开位置是模型存放与独立诊断入口，后面的旧常驻循环仍需其兼容的token-ID Draft，不应直接指向这份packed OMC。
 
 ## 3. Target源工程 → Prefill64／Decode1 AIR → OMC
 
