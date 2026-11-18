@@ -2,7 +2,7 @@
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 
-T64 Prefill 的四个已测投影均通过 CPU 对照。CPro L3 Full Attention 的 hidden、K、V 对数学重放均通过。L0–L2 Linear Attention 使用同一份捕获比较分块 GDR 和逐 token GDR。[CPU 与 310P 对照](target-golden-verification.md#t64-golden) · [T64 GDR 对照](#t64-gdr)
+T64 Prefill 的四个已测投影均通过 CPU 对照。CPro L3 Full Attention 的 hidden、K、V 对数学重放均通过。L0–L2 Linear Attention 对同一份捕获，分块 GDR 通过 6/9 项，逐 token GDR 通过 8/9 项，剩余超差项为 L1 hidden。[CPU 与 310P 对照](target-golden-verification.md#t64-golden) · [T64 GDR 对照](#t64-gdr)
 
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。保留完整 fixture，确认 `capture/manifest.json` 的状态为 `CAPTURED`。Full 的 `captured-audited` 模式还要求同次 core 审计为 `PASSED`。本次 T64 使用[模块数学重放](#t64-full)。
 
@@ -121,6 +121,16 @@ cat "$BATCH_ROOT/comparison/summary.csv"
 ## T64 Prefill 的 GDR 分块与逐 token 对照
 
 两组均使用同一份 L0–L2 捕获。分块组按原路径运行一次 GDR，逐 token 组在每层的同一张静态图内运行 64 次 S=1、chunk_size=1 的 GDR。每步消费对应 token 的 Q/K/V、g、beta 和上一步的 recurrent state，有效长度为 1。按时间顺序拼接 core 后执行原有 gated norm 和输出投影。两组都使用 FP16 状态接口，逐步回传 FP16 状态会引入与分块计算不同的舍入。
+
+T64 的三项输出分别是当前序列的 `hidden`、下一次卷积使用的 QKV 历史、以及第 64 个 token 更新后的递归状态。原模块返回 `(output, past_key_values)`，整层探针将后者展开为两项。hidden 的计算路径为输入投影、带历史的因果深度卷积与 SiLU、GDR 逐位置读出、按 head 的 RMSNorm 与 SiLU(z) 门控、合并各 head、最后执行 `out_proj`。decoder 的残差加法在本探针之外。
+
+| 层 | 分块 hidden 相对 L2 | 逐 token hidden 相对 L2 | 逐 token recurrent state 相对 L2 |
+| --- | ---: | ---: | ---: |
+| L0 | 26.96% · 失败 | 2.66% · 通过 | 0.96% · 通过 |
+| L1 | 48.66% · 失败 | 21.08% · 失败 | 1.38% · 通过 |
+| L2 | 53.70% · 失败 | 4.80% · 通过 | 0.94% · 通过 |
+
+两组的 ConvState 均为 3/3 通过。逐 token 的三个末态相对 L2 均略有上升，板端输出为 FP16，捕获的 raw state 参考为 FP32。各层单独重放本层捕获输入。L1 hidden 的 cosine 为 0.98031，平均相对误差为 1.05456，两者和相对 L2 均超限。要区分误差从何处进入 hidden，需要在同一 T64 条件下比较 L1 的逐位置 core、gated norm 输出和输出投影。数值来自板端回传的两份 summary.csv。[分块与逐 token 的 18 项结果](../specs/target-gdn-t64-metrics.csv)
 
 **310P 采集。** 已有同次 T64 Prefill 的完整边界捕获时，直接将 `T64_FIXTURE` 指向它。当前 YAML 的单条 prompt 为 8 个 token，下面示例将原文重复 8 次并校验实际分词数为 64。已有 T8 golden 可单独用于 8 步对照。
 

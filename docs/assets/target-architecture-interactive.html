@@ -26,7 +26,8 @@
 <div id="current-results" class="svg-scroll"></div>
 <div class="table-scroll"><table class="focus-table"><thead><tr><th scope="col">模块</th><th scope="col">当前结论</th><th scope="col">范围</th></tr></thead><tbody>
 <tr><td>ConvState 显式展开</td><td><span class="pill low">6/6 通过</span></td><td>transpose + concat + slice；取整层 GDN 的 new_conv_state 输出。原内置 LinearAttentionConvstateUpdate 路径已编译执行，但数值未通过。</td></tr>
-<tr><td>整层 GDN</td><td><span class="pill bad">11/18 通过</span></td><td>Prefill hidden/state 六项失败；Decode 仅 L1 hidden 失败。独立 GDN 相邻边界为 43/48 通过。</td></tr>
+<tr><td>T64 Prefill 整层 GDN</td><td><span class="pill bad">分块 6/9 · 逐 token 8/9</span></td><td>逐 token 的 L0/L1/L2 hidden 相对 L2 为 2.66% / 21.08% / 4.80%，仅 L1 超限。两种状态在三层均通过。<a href="../target-attention-pair.md#t64-gdr">两组对照</a></td></tr>
+<tr><td>T256 Prefill / T1 Decode 整层 GDN</td><td><span class="pill bad">11/18 通过</span></td><td>Prefill hidden/state 六项失败；Decode 仅 L1 hidden 失败。独立 GDN 相邻边界为 43/48 通过。</td></tr>
 <tr><td>RoPE</td><td><span class="pill low">4 项零误差</span></td><td>Prefill／Decode × Q／K；显式 FP32 旋转，FP16 输出，重复稳定。</td></tr>
 <tr><td>L3 Full Attention · T64 Prefill</td><td><span class="pill low">3/3 通过</span></td><td>板端 hidden 对数学重放的相对 L2 为 1.6221%。K/V 有效区为 0.2449% / 0.2245%，未写区逐位保留。<a href="../../specs/target-full-attention-t64-metrics.csv">三项指标</a></td></tr>
 <tr><td>Attention 核心算子</td><td><span class="pill low">2/2 五项通过</span></td><td>对独立 NumPy FP64 → FP16 参考，L2 为 0.11175% / 0.11438%，各 10 次稳定。原 Prefill captured golden 不可信。</td></tr>
@@ -36,7 +37,7 @@
 <p class="hint">当前浮点标准：cosine &gt;0.99、relative-L2 &lt;0.05、KL &lt;0.005、RMSE &lt;1、MeanRE &lt;1，五项全部满足且重复稳定；独立 CacheUpdate 检查整缓存逐位一致，T64 Full Attention 分别检查有效写入区精度和未写区逐位保留。数值来自用户回传，未在本地重跑设备。</p>
 <p class="hint">更新于 2026-11-18。图中数据按模块汇总，不代表一次整图执行。<a href="../target-accuracy-status.md">结果范围与证据</a></p>
 </section>
-<section class="card" id="whole-gdn-results"><h2>整层 GDN：显式 ConvState 版本</h2>
+<section class="card" id="whole-gdn-results"><h2>T256 Prefill / T1 Decode 整层 GDN · 显式 ConvState</h2>
 <p>B=1，L0–L2，Prefill T256／Decode T1；<strong>11 PASSED / 7 FAILED，18 项均重复稳定</strong>。输入使用捕获轨迹，尚未覆盖跨调用状态反馈。state 实际为 FP16、golden 为 FP32，五项数值门槛保持。<a href="../../specs/target-gdn-layer-convstate-metrics.csv">完整 CSV</a></p>
 <div id="whole-gdn-summary"></div>
 <details><summary>展开 18 项完整指标</summary><div id="whole-gdn-metrics"></div></details>
@@ -119,6 +120,7 @@ function shellParts(d,i,y=0){
  node(20,y0,100,65,"h["+i+"]",[],"blue");
  node(170,y0,205,70,"Input RMSNorm");
  if(i===3 && mode!=="decode") node(425,y0,230,70,mix,["Prefill T64 · 3/3 通过"],"teal");
+ else if(i<3 && mode!=="decode") node(425,y0,230,70,mix,["T64 逐 token · "+(i===1?"hidden 超限":"3/3 通过")],i===1?"red":"teal");
  else node(425,y0,230,70,mix);
  node(705,y0,75,65,"Add 1",[],"purple");
  node(830,y0,230,70,"Post-attn RMSNorm");
@@ -147,7 +149,7 @@ function currentResults(){
   const {node,text}=d;
   text(24,30,"当前实测范围 · 模块汇总，不代表整网通过",23,"#182c46","start",600);
   node(20,55,495,115,"ConvState：显式展开",["transpose + concat + slice：6/6 通过","原内置算子路径：数值未通过"],"teal");
-  node(555,55,495,115,"整层 GDN：11/18 通过",["Prefill 3/9；Decode 8/9","独立相邻边界：43/48 通过"],"red");
+  node(555,55,495,115,"T64 Prefill · Linear Attention",["分块 6/9 · 逐 token 8/9","逐 token 仅 L1 hidden 超限"],"red");
   node(1090,55,495,115,"CacheUpdate",["Prefill 4/4 逐位通过","Decode 4/4 失败：历史保留待修复"],"red");
   node(20,195,495,115,"RoPE：4 项零误差",["Prefill / Decode × Q / K","显式 FP32 旋转；重复稳定"],"teal");
   node(555,195,495,115,"Attention 核心：2/2 五项通过",["独立参考；L2 0.11175% / 0.11438%","Prefill / Decode 各 10 次稳定"],"teal");
@@ -296,7 +298,10 @@ function buildLayers(){
  }));
 }
 function setMode(m){
- mode=m;$$(".tabs [data-mode]").forEach(b=>b.setAttribute("aria-pressed",b.dataset.mode===m?"true":"false"));
+ const changed=mode!==m;
+ mode=m;
+ if(changed) $("#overview").innerHTML=overview();
+ $$(".tabs [data-mode]").forEach(b=>b.setAttribute("aria-pressed",b.dataset.mode===m?"true":"false"));
  for(const i of openLayers)renderBody(i);
  $("#phase-counts").innerHTML=phases().map(p=>'<span class="pill bad">'+P(p)+'：'+overCount(null,p)+' 个独立边界输出异常 / 超限</span>').join("")+'<span class="pill blue">当前视图：'+(m==="compare"?"逐层双列对比":P(m))+"</span>";
 }

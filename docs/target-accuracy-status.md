@@ -1,6 +1,8 @@
 # Target 精度状态
 
-**T64 Prefill 的 CPro L3 Full Attention 通过。** 板端 hidden、K、V 对模块数学重放均达到五项门槛且重复稳定。hidden 相对 L2 为 1.6221%，K/V 有效写入区为 0.2449% / 0.2245%，未写区均逐位保留。此项覆盖 L3 注意力模块，L0–L2 整层 GDN 及整网 logits 需分别验证。[参考生成与板端结果](target-attention-pair.md#t64-full)
+**T64 Prefill 的 CPro L3 Full Attention 通过。** 板端 hidden、K、V 对模块数学重放均达到五项门槛且重复稳定。hidden 相对 L2 为 1.6221%，K/V 有效写入区为 0.2449% / 0.2245%，未写区均逐位保留。此项覆盖 L3 注意力模块。[参考生成与板端结果](target-attention-pair.md#t64-full)
+
+**T64 Prefill 的 L0–L2 Linear Attention 分块通过 6/9 项，逐 token 通过 8/9 项。** 逐 token 仅 L1 hidden 超差，相对 L2 为 21.08%。三个卷积状态和三个递归末态均通过，逐位置 core 的误差尚待测量。各层使用本层的捕获输入。[逐层对照](target-attention-pair.md#t64-gdr)
 
 2026-11-18，T8 Prefill 的板端 L0–L2 QKV 末 4 token 和 L3 V 全 8 token 均通过独立 CPU 对照，相对 L2 为 0.0552%–0.0776%。310P 的首个超差捕获点是 L0 QKV。该层全部 8 个 token 的 DynamicQuant 三次逐位一致，显式反量化后普通矩阵乘两次通过 CPU 对照（相对 L2 0.01737%），原 A8W4 融合调用三次均超差。L3 V 的原融合调用也有波动。这两处 T8 历史输出暂缓用于判定 CPro 精度。[复测数据与 L0 分组参数对照](target-golden-verification.md#step7)
 
