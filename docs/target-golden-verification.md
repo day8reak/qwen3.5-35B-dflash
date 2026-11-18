@@ -1,6 +1,6 @@
 # 先核验 Target golden
 
-T8 Prefill 的四个板端投影在已比较的位置均通过 CPU 对照。310P 的 L0 QKV 原 A8W4 融合调用在 M=8 超差；把同一批 A8 行和 token scale 重复到 M=64 或 256，三次调用均对齐 CPU 且输出逐位稳定。[L0 行数对照](#l0-rows)
+310P 的 L0 QKV 原 A8W4 融合调用在 M=8 超差。将各层保存的 8 行 A8 和 token scale 重复至 M=64 后，L0–L2 QKV 与 L3 V 均通过三次 CPU 对照。下一步用真实 T64 Prefill 核验同次前向的四个投影。[行数对照](#l0-rows) · [T64 golden 核验](#t64-golden)
 
 ## 1. CPU 独立重算
 
@@ -298,4 +298,27 @@ done
 grep -E 'original_vs_cpu:|original check:' "$L0_ROWS"/layer-*-m64/summary.txt
 ```
 
-若 L1、L2 的 QKV 和 L3 的 V 也通过，四个投影便都有独立的 M=64 对照。下一步用[原四层 Prefill 采集 T64](target-attention-pair.md#t64-gdr)，将本页第 1、2 节的 capture 和输出目录指向这份 T64 采集，核对真实前向中四个投影的返回值。随后两组 Attention 使用同一份 T64 capture 对比。
+在上述 M=64 对照中，L0、L1、L2 的 QKV 和 L3 的 V 首次对 CPU 的相对 L2 依次为 0.07439%、0.07531%、0.07399%、0.09220%。每个投影的三次调用均通过，且各自三次输出逐位一致。
+
+<a id="t64-golden"></a>
+
+### 核验真实四层 T64 Prefill 的投影
+
+在 310P 的 `qwen3_5_w4` 环境，按[采集命令](target-attention-pair.md#t64-gdr)将 YAML 的 prompt 重复 8 次，执行一次四层 Prefill。已有该次采集时直接复用。确认 `sequence_length=64`、`boundary_capture.status=CAPTURED`。若总状态为 `PARTIAL` 且仅 Full Attention 模块参考重放失败，仍可核验原前向捕获的四个投影。
+
+```bash
+PROBE="$REPO_DIR/targets/cpro/tools/target_layer_probe.py"
+T64_FIXTURE="$AI_RUN_DIR/target/tests/prefill-fixture-t64"
+T64_CHECK="$GOLDEN_CHECK/t64"
+
+python "$PROBE" replay-dynamic-quant \
+  --capture "$T64_FIXTURE/capture" --device npu:0 \
+  --output "$T64_CHECK/dynamic-quant"
+python "$PROBE" verify-qlinear-golden \
+  --capture "$T64_FIXTURE/capture" \
+  --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
+  --quant-replay "$T64_CHECK/dynamic-quant" --output "$T64_CHECK/with-dynamic-quant"
+cat "$T64_CHECK/with-dynamic-quant/summary.csv"
+```
+
+每个投影各有一行 `cpu_reference` 和 `replayed_quant_reference`。八行均为 `AGREES` 后，再用同一份 T64 capture 比较 Linear Attention 与 Full Attention。若有 `DIFFERS`，按层号从小到大检查两种参考首先在哪里出现偏差。
