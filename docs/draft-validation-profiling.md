@@ -17,8 +17,7 @@ export REPO_DIR="$(git rev-parse --show-toplevel)"
 source "$REPO_DIR/targets/cpro/scripts/env.sh"
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
-export DRAFT_RUNTIME_CONFIG="${DRAFT_RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
-export DRAFT_ACCURACY_RUN="$AI_RUN_DIR/draft/tests/accuracy-run"
+export DRAFT_RUNTIME_CONFIG="${DRAFT_RUNTIME_CONFIG:-${VECTOR_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}}"
 export DRAFT_ACCURACY="$AI_RUN_DIR/draft/tests/accuracy-result"
 export UT_RUN="$AI_RUN_DIR/draft/tests/accuracy-untouched-run"
 export UT_RESULT="$AI_RUN_DIR/draft/tests/accuracy-untouched-result"
@@ -55,47 +54,22 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 2. 完整 Draft 精度验证
 
-C16／cap192／K15 配置用固定的合成特征运行 19 个用例，比较独立输入和连续 KV 反馈两种模式。已有同一 OMC 的完整精度结果及原始输入、golden 时，直接从 2.2 开始。
-
-### 2.1 首次生成并回收基线
+复用同一 OMC 的已回收结果 `$DRAFT_ACCURACY`、原始输入和 golden。首次使用见[准备验证基线](run-end-to-end.md#draft-accuracy-baseline)。
 
 ```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --compiled "$AI_RUN_DIR/draft/omc" \
-  --air-export "$AI_RUN_DIR/draft/air" \
-  --source "$AI_RUN_DIR/draft/source/prepared" \
-  --config "$DRAFT_RUNTIME_CONFIG" \
-  --ddk-root "$CPRO_DDK_ROOT" \
-  --output "$DRAFT_ACCURACY_RUN" --apply
+(
+  set -e
+  validate="$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py"
+  python3 "$validate" --config "$DRAFT_RUNTIME_CONFIG" --replay "$DRAFT_ACCURACY" \
+    --output-initialization untouched --output "$UT_RUN" --apply
+  while :; do
+    python3 "$validate" --recover "$UT_RUN" --output "$UT_RESULT"
+    status=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["status"])' "$UT_RESULT/result.json")
+    [ "$status" = DRAFT_ACCURACY_PENDING ] || break
+    sleep 5
+  done
+)
 ```
-
-启动后回收结果。若为 `DRAFT_ACCURACY_PENDING`，稍后重复对应的回收命令。
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$DRAFT_ACCURACY_RUN" --output "$DRAFT_ACCURACY"
-```
-
-`$DRAFT_ACCURACY/result.json` 状态为 `PASSED` 或 `NUMERICAL_FAILED` 时均可重放。保留该结果及其引用的输入和 golden。
-
-### 2.2 使用 untouched 重放精度验证
-
-复用同一 OMC、输入和 golden，让 runner 跳过对输出缓冲区的显式清零。两次独立冷启动实测中，第 0 例首次返回的 14 个输出均与老 OMC 基准逐位一致。
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --config "$DRAFT_RUNTIME_CONFIG" --replay "$DRAFT_ACCURACY" \
-  --output-initialization untouched --output "$UT_RUN" --apply
-```
-
-重放启动后，从 `$UT_RUN` 回收结果。
-
-```bash
-python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
-  --recover "$UT_RUN" --output "$UT_RESULT"
-```
-
-精度结果见 `$UT_RESULT/result.json`。当前对 CPU golden 的整套验证仍为 `NUMERICAL_FAILED`，两种模式各有 83/86 个 Top1 匹配。
 
 ## 3. 采集 Profiling
 

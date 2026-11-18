@@ -55,7 +55,26 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 编译成功状态为`PYTORCH_DRAFT_OMC_COMPILED`、物理ABI为`BOUND_DIAGNOSTIC`。紧凑bundle保留`pytorch-abi.json`和`compiler.air`，重新准备独立验证不再依赖旧test编译快照或DDK动态库。完整原始prepared权重仍用于CPU参考和host embedding。
 
-验证 packed Draft 时，用 `--output-initialization untouched` 重放已回收的同一 OMC 基线。首次准备、重放和采集命令见 [Draft 完整精度验证与 Profiling](draft-validation-profiling.md#draft-accuracy)。
+<a id="draft-accuracy-baseline"></a>
+
+### 首次准备 Draft 验证基线
+
+已有同一 OMC 的完整验证结果和原始输入时，直接运行 [Draft 精度验证与 Profiling](draft-validation-profiling.md#draft-accuracy)。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --compiled "$AI_RUN_DIR/draft/omc" --air-export "$AI_RUN_DIR/draft/air" \
+  --source "$AI_RUN_DIR/draft/source/prepared" --ddk-root "$CPRO_DDK_ROOT" \
+  --config "${DRAFT_RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --output "$AI_RUN_DIR/draft/tests/accuracy-run" --apply
+```
+
+回收至完成。如果状态为 `DRAFT_ACCURACY_PENDING`，稍后重复此命令。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$AI_RUN_DIR/draft/tests/accuracy-run" --output "$AI_RUN_DIR/draft/tests/accuracy-result"
+```
 
 上述公开位置是模型存放与独立诊断入口，后面的旧常驻循环仍需其兼容的token-ID Draft，不应直接指向这份packed OMC。
 
