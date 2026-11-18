@@ -1,6 +1,6 @@
 # 先核验 Target golden
 
-当前 T8 捕获的连接与 QKV→ConvState、V→缓存逐位一致；完整模块 AIR 的 19 对 weight/scale 也与源数据一致。这些检查尚未证明投影计算正确。先独立重算 L0–L2 QKV 和 L3 V，暂缓 CPro 五图重跑。
+本次 T8 Prefill，板端可观测的四个投影与独立 CPU group256 参考均通过，原 310P 捕获在这些位置偏离参考。步骤 1–3 已完成。当前从[步骤 4](#step4)检查 310P QuantMatmul。
 
 ## 1. CPU 独立重算
 
@@ -54,11 +54,11 @@ cat "$GOLDEN_CHECK/with-dynamic-quant/summary.txt"
 | 两套矩阵参考均与原投影明显不符 | 查原 QuantMatmul 的 group、packing、调用环境；暂不把这些 golden 当正确参考 |
 | 所选投影一致 | 再推进 GDN 后续计算、FullAttention 及整网参考核验；四个投影不覆盖全部模型 |
 
-本次 T8 的四个投影均为 `DIFFERS`。L0、L1、L2 的 QKV 相对 L2 误差分别为 1.390、1.155、1.195，L3 V 为 1.217。先执行上面的 DynamicQuant 重放。请保留 `with-dynamic-quant/report.json`，其中 `quantizer_comparison` 给出 A8 的不同元素数所需计数和 token scale 误差。
+本次四个投影的 CPU 对 310P 捕获均为 `DIFFERS`。使用重放 A8/scale 后，相对 L2 在 L0、L1、L3 的显示值完全相同，L2 从 1.194516731 变为 1.194516718。可在 `with-dynamic-quant/report.json` 的 `quantizer_comparison` 查看 A8 与 scale 的逐元素比较。
 
 ## 3. 用已有板端输出直接比 CPU
 
-L3 CPU V 投影与原捕获的最大误差为 4.89306640625，板端 V cache 与原捕获的最大误差也是这个值。要确认板端与 CPU 是否接近，用保存了 `execution/fixture`、`recovery/native`、`omc/manifest.json` 和 `comparison/report.json` 的主机直接比较。如果分布在两台机器，把完整的 `golden-check/cpu/` 目录复制过去。
+在保存了 `execution/fixture`、`recovery/native`、`omc/manifest.json` 和 `comparison/report.json` 的主机比较。如果分布在两台机器，把完整的 `golden-check/cpu/` 目录复制过去。
 
 ```bash
 for group in linear full-fp32-pos; do
@@ -68,3 +68,33 @@ done
 ```
 
 `board_vs_cpu` 直接比较同一 token、同一通道的值。L0–L2 的 ConvState 可观测最后 4 个 token，L3 按实际 block table 取出 8 个有效 token 的 V。另两行分别给出 CPU、板端在相同区域对 310P 的误差。已有第二步结果时，`--cpu "$GOLDEN_CHECK/with-dynamic-quant"` 可一次比较两套参考。
+
+| T8 可观测区域 | 元素数 | 板端对 CPU 相对 L2 | CPU 对 310P 相对 L2 |
+| --- | ---: | ---: | ---: |
+| L0 QKV 末 4 token | 32768 | 0.05520% | 135.64% |
+| L1 QKV 末 4 token | 32768 | 0.06185% | 144.92% |
+| L2 QKV 末 4 token | 32768 | 0.07757% | 135.42% |
+| L3 V 全部 8 token | 4096 | 0.05653% | 121.73% |
+
+<a id="step4"></a>
+
+## 4. 在原 310P 环境检查单次矩阵乘
+
+四层 fixture 在 CPU 上执行 `quant_model_inplace(..., device='cpu')`，再用 `wrapper.to(device)` 搬到 NPU。排查时以能正常生成文本的原 310P 推理入口为基线，核对实际 QLinear 类、权重准备设备、格式转换、checkpoint 和运行库。正常吐字提供端到端证据，四层 fixture 的中间张量还需要在同一输入上逐项对齐。
+
+默认选 L3 V，用重放所得 A8、token scale、捕获的 packed W 和 FP32 group scale 重建一次原矩阵乘。原调用省略分组或传入 None 时，再显式传 `group_sizes=[0,0,256]`。两次调用共用同一组张量。CPU 另外检验一种布局假设，把每个 INT32 按连续 8 个输出通道的有符号 INT4 解释。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" probe-310p-matmul \
+  --capture "$GOLDEN_CAPTURE" --quant-replay "$GOLDEN_CHECK/dynamic-quant" \
+  --cpu "$GOLDEN_CHECK/with-dynamic-quant" --layer 3 --device npu:0 \
+  --output "$GOLDEN_CHECK/l3-matmul"
+cat "$GOLDEN_CHECK/l3-matmul/summary.txt"
+```
+
+摘要逐项列出四层 capture 与单投影重放的 dtype、stride 和 NPU format。`None` 表示缺少记录。格式号相同的两个 INT32 张量仍可能装有排列方式不同的 INT4 权重。
+
+- 先看 `original_vs_capture`，其中 `equal_bits` 表示是否逐位复现。若明显偏离，优先从正常吐字进程的同次 Prefill 取实参作对照，包括 A8、两份 scale、packed W、设备 format 和算子返回值。
+- 若复现原偏差，再比较 `original_vs_cpu` 与 `explicit_group256_vs_cpu`。只改 group 参数就通过时，可把差异定位到这次调用的分组或后端选择。
+- 若 `nd_hypothesis_vs_capture` 很接近，检查加载和后端对 packed W 的解释。该 CPU 实验只检验一种具体排列。全网判定仍需同输入 logits 和后续 decode 对照。

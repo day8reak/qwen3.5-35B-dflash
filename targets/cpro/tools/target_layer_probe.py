@@ -96,6 +96,13 @@ def main():
             s.add_argument('--quant-replay', help='optional replay-dynamic-quant output directory')
         else:
             s.add_argument('--device', default='npu:0')
+    s = sub.add_parser('probe-310p-matmul', help='diagnose one original QLinear call using frozen DynamicQuant results')
+    s.add_argument('--capture', required=True)
+    s.add_argument('--quant-replay', required=True, help='completed replay-dynamic-quant directory')
+    s.add_argument('--cpu', required=True, help='verify-qlinear-golden output obtained with this quant replay')
+    s.add_argument('--layer', type=int, choices=range(4), default=3, help='L3 V by default, or L0-L2 QKV')
+    s.add_argument('--device', default='npu:0')
+    s.add_argument('--output', required=True)
     s = sub.add_parser('compare-projection-values', help='compare retained Prefill state values directly to independent CPU projections')
     s.add_argument('--cpu', required=True, help='completed verify-qlinear-golden directory')
     s.add_argument('--group', required=True, help='linear or full-fp32-pos directory containing omc, execution, recovery and comparison')
@@ -135,6 +142,9 @@ def main():
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format,
                                      cases=a.cases, compiler_profile=a.compiler_profile)
+    elif a.command == 'probe-310p-matmul':
+        from qwen35_moe_dflash.target.layer_probe.qlinear_matmul_probe import run_probe
+        result = run_probe(a.capture, a.quant_replay, a.cpu, a.output, a.layer, a.device)
     elif a.command == 'compare-projection-values':
         import csv
         from qwen35_moe_dflash.target.layer_probe.projection_values import compare_values

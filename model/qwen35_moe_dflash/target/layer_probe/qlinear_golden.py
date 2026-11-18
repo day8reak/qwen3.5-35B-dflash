@@ -89,7 +89,7 @@ def _audit(manifest, region, m, k, n):
                                (kwargs['pertoken_scale'], 'torch.float32', [m, 1])):
         if desc.get('dtype') != dtype or desc.get('shape') != shape:
             raise ValueError('original QuantMatmul audit dtype/shape differs from group256 reference')
-    return dict(module=call['module'], original_kwargs=call['original_kwargs'],
+    return dict(module=call['module'], original_kwargs=call['original_kwargs'], inputs=call['inputs'],
         npu_formats=call.get('npu_formats'), contract=call['contract'],
         group_sizes_argument=kwargs.get('group_sizes'),
         backend_group_interpretation='NOT_VERIFIED', original_a8_values='NOT_CAPTURED')

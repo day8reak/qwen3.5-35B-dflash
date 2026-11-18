@@ -1,6 +1,6 @@
 # Target T8 Prefill：定位投影与缓存链路
 
-当前同次 T8 捕获的完整 Linear／Full Attention 均有数值偏差。现有捕获连接检查已通过，QKV→ConvState 与 V→缓存逐位一致，19 对源 AIR weight/scale 配对一致；投影计算本身仍待核验。**当前先执行 [golden 独立数学核验](target-golden-verification.md)，暂缓下面五张 CPro 小图。** 无需重新生成整网 Prefill。
+T8 的完整 Linear／Full Attention 与四层捕获存在偏差。板端 L0–L2 QKV 的末 4 token 和 L3 V 的全部 8 token 均通过独立 CPU 数学对照。当前用冻结输入定位 310P 投影差异。[单投影重放命令](target-golden-verification.md#step4)
 
 环境与变量沿用 [Attention 分层验证](target-attention-pair.md)：`GOLDEN_CAPTURE` 必须指向本次 T8 的 `prefill-fixture/capture`，`CPRO_SOURCE` 仍是保留原调用的私有 CPro 源码。导出适配由工具自动应用，原源码与 golden 不改写。先同步 `main`。
 
@@ -91,4 +91,4 @@ cat "$DIAG_ROOT/comparison/summary.csv"
 | V 投影通过，独立 CacheUpdate 失败 | 检查 T8 updates、写入行和缓存布局 |
 | 五张小图与离线连接均通过，完整模块仍失败 | 对比整图内部边、输出槽位及存储复用；小图通过不能排除串联问题 |
 
-离线连接和权重配对的当前检查已完成；先回传 [golden 核验](target-golden-verification.md)的 `summary.txt`。参考计算核实后，再执行五图并回传 `projection-t8/comparison/summary.csv`。当前根因未确认，不据这些诊断修改已捕获参考或放宽阈值。
+当投影参考确认后，可用以上五图继续核对各模块边界。
