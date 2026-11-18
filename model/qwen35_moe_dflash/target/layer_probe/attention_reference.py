@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+from pathlib import Path
 import numpy as np
 
 from .common import metrics, read_array
@@ -17,6 +18,60 @@ def unpack(value, heads):
     if b != 1 or lane != 16 or heads < 1 or width % heads:
         raise ValueError('requires B1 source packed [1, heads*D/16, S, 16]')
     return value.reshape(b, heads, width//heads, seq, lane).transpose(0, 1, 3, 2, 4).reshape(b, heads, seq, -1)
+
+
+def inspect_prefill_audit(fixture):
+    """Summarize the original call in its logical layout using the retained CPU reference."""
+    root = Path(fixture).resolve(strict=True)
+    manifest = json.loads((root/'manifest.json').read_text())
+    if manifest.get('artifact_kind') != 'qwen35-target-prefill-fixture-v1':
+        raise ValueError('pass the Prefill fixture directory containing the top-level manifest.json')
+    audit = manifest.get('attention_audit', {})
+    sequence = manifest.get('sequence_length')
+    result = dict(status='INSPECTED', sequence_length=sequence, core_audit=audit.get('status'),
+                  reference_qualification=manifest.get('reference_qualification'))
+    calls = audit.get('calls', [])
+    if len(calls) != 1 or calls[0].get('status') not in ('PASSED', 'FAILED'):
+        reasons = [c.get('reason') for c in calls if c.get('reason')]
+        return dict(result, status='PARTIAL', reason=audit.get('reason') or reasons or 'no completed core audit')
+    call = calls[0]
+    evidence = call['reference']
+    actual = unpack(read_array(root, call['actual']), evidence['num_heads'])
+    reference = read_array(root, call['independent_reference'])
+    if actual.shape != reference.shape or actual.shape[2] != sequence:
+        raise ValueError('original core output and CPU reference must cover the same logical query rows')
+    fields = ('relative_l2', 'cosine', 'rmse', 'mean_relative_error', 'kl_divergence', 'max_abs',
+              'failed_metrics', 'nonfinite_actual', 'max_error_coordinate', 'actual_at_max', 'golden_at_max')
+    result['core_vs_cpu'] = {k: call['metrics'].get(k) for k in fields}
+    result['active_value_bounds'] = evidence['v_bounds']
+    result['query_blocks'] = blocks = []
+    for start in range(0, sequence, 16):
+        stop = min(start + 16, sequence)
+        a, r = actual[:, :, start:stop], reference[:, :, start:stop]
+        diff = metrics(a, r)
+        zero_rows = (a == 0).all(axis=-1) & (r != 0).any(axis=-1)
+        blocks.append(dict(first_query=start, last_query=stop-1, max_abs=diff['max_abs'],
+                           relative_l2=diff['relative_l2'], nonfinite_actual=diff['nonfinite_actual'],
+                           zero_head_query_rows_with_nonzero_reference=int(zero_rows.sum())))
+    boundary = manifest.get('boundary_capture', {})
+    if boundary.get('status') == 'CAPTURED':
+        if boundary.get('path') != 'capture/manifest.json':
+            raise ValueError('unknown boundary manifest path')
+        capture = json.loads((root/boundary['path']).read_text())
+        original = [out for r in capture['regions']
+                    if (r['layer'], r['call'], r['phase'], r['point']) == (3, 0, 'prefill', 'fused_attention')
+                    for out in r['outputs'] if out['name'] == 'golden_attention_nz']
+        if len(original) != 1 or original[0]['sha256'] != call['actual']['sha256']:
+            return dict(result, status='PARTIAL', reason='boundary capture and audit core outputs do not match')
+        rows = [r for r in capture.get('attention_math_replays', [])
+                if (r.get('layer'), r.get('call'), r.get('phase')) == (3, 0, 'prefill')]
+        if len(rows) == 1:
+            replay = rows[0]
+            hidden = replay.get('captured_vs_reference', {}).get('golden_hidden', {})
+            result['module_replay'] = dict(status=replay['status'], error=replay.get('error'),
+                cache_replay_bitwise_equal=replay.get('cache_replay_bitwise_equal'),
+                original_hidden_vs_replay={k: hidden.get(k) for k in ('relative_l2', 'cosine', 'max_abs', 'passed')})
+    return result
 
 
 def paged(cache, table, heads, dim, block_size, length):

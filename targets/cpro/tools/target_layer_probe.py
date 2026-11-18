@@ -93,6 +93,8 @@ def main():
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
     s.add_argument('--output', required=True)
+    s = sub.add_parser('inspect-prefill-audit', help='show 310P attention core errors by query block and the saved module replay comparison')
+    s.add_argument('--fixture', required=True, help='original Prefill fixture containing the top-level manifest.json')
     s = sub.add_parser('inspect-prefill-links', help='check captured QKV/ConvState and V projection/cache links offline; no export, compilation or device execution')
     s.add_argument('--capture', required=True, help='original fresh-Prefill boundary capture directory')
     s.add_argument('--output', required=True, help='fresh read-only inspection report directory')
@@ -218,6 +220,9 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
         return 0
+    elif a.command == 'inspect-prefill-audit':
+        from qwen35_moe_dflash.target.layer_probe.attention_reference import inspect_prefill_audit
+        result = inspect_prefill_audit(a.fixture)
     elif a.command == 'inspect-prefill-links':
         from qwen35_moe_dflash.target.layer_probe.prefill_links import inspect_prefill_links
         result = inspect_prefill_links(a.capture, a.output)

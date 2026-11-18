@@ -1,6 +1,6 @@
 # 先核验 Target golden
 
-310P 的 L0 QKV 原 A8W4 融合调用在 M=8 超差。将各层保存的 8 行 A8 和 token scale 重复至 M=64 后，L0–L2 QKV 与 L3 V 均通过三次 CPU 对照。下一步用真实 T64 Prefill 核验同次前向的四个投影。[行数对照](#l0-rows) · [T64 golden 核验](#t64-golden)
+真实 T64 Prefill 中，310P 的 L0–L2 QKV 和 L3 V 均通过 CPU 对照。L3 Attention core 的原输出与同次输入的独立数学参考超差。T8 下另观察到 L0 QKV 融合调用的行数相关偏差。[T64 golden 核验](#t64-golden) · [行数对照](#l0-rows)
 
 ## 1. CPU 独立重算
 
@@ -321,4 +321,12 @@ python "$PROBE" verify-qlinear-golden \
 cat "$T64_CHECK/with-dynamic-quant/summary.csv"
 ```
 
-每个投影各有一行 `cpu_reference` 和 `replayed_quant_reference`。八行均为 `AGREES` 后，再用同一份 T64 capture 比较 Linear Attention 与 Full Attention。若有 `DIFFERS`，按层号从小到大检查两种参考首先在哪里出现偏差。
+本次两种参考的八行均为 `AGREES`。按纯 CPU 参考的报告口径，L0、L1、L2 的 QKV 和 L3 的 V 相对 L2 依次为 0.07437%、0.09832%、0.11289%、0.22203%。这些数值覆盖每个投影在该次前向的全部 64 行。
+
+L3 的 `attention_audit=FAILED` 表示原 fused Attention core 输出超出同次 Q/K/V、mask、页表与有效长度计算的 CPU 参考门槛。`attention_module_reference=COMPUTED` 表示用独立数学 core 重放整个注意力模块已成功，重放 K/V 与原捕获逐位一致。可直接读取这份 fixture，查看失败指标、最大误差的逻辑坐标（batch、head、query、channel）、每 16 个 query 的误差及原模块 hidden 对重放的偏差。
+
+```bash
+python "$PROBE" inspect-prefill-audit --fixture "$T64_FIXTURE"
+```
+
+对照板端 Full Attention 时选择 `--full-attention-reference math-replay`，用重放输出作主参考，同时保留原模块输出作对照。整网 logits 和 GDN 状态的精度仍需单独验证。[两类 Attention 的验证流程](target-attention-pair.md#t64-full)
