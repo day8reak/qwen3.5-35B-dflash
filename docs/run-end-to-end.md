@@ -24,9 +24,11 @@ export INCREMENTAL_COMPILED="$AI_RUN_DIR/draft/omc"
 
 `TARGET_WEIGHTS`对应原Target YAML的`model_file`目录；Draft只从中读取原始embedding和LM head。`DRAFT_WEIGHTS`指向独立的DFlash原始检查点。Target YAML另含`quanted_pth`、`embedding_weight_path`、`embedding_scale_path`，供后面的Target量化导出使用。导出主机与DDK服务器不同时，传输整个AIR输入目录及引用权重，不能只传AIR。
 
+<a id="draft-build"></a>
+
 ## 2. Draft权重 → 公共AIR → 公共OMC
 
-准备六层Draft的71份FP16权重；Target提供原始embedding和LM head。当前归档档位固定C16／cap192／K15，host FP16 embedding、合并投影、GQA reshape、StableArgMax、FP32 RoPE系数表与CPU feature pack均保留。DDK端需按[算子说明](../targets/cpro/ops/draft-top1/README.md)完成StableArgMax安装及已有TBE兼容诊断。
+准备六层Draft的71份FP16权重；Target提供原始embedding和LM head。当前归档档位固定C16／cap192／K15，host FP16 embedding、合并投影、GQA reshape、StableArgMax、FP32 RoPE系数表与CPU feature pack均保留。DDK 端先安装 StableArgMax，再生成或复用当前 DDK 的 TBE 诊断。[算子安装](../targets/cpro/ops/draft-top1/README.md) · [TBE 诊断生成命令](draft-validation-profiling.md#tbe-diagnosis)
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/scripts/prepare_draft.py" \
@@ -45,7 +47,7 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
   --air-export "$AI_RUN_DIR/draft/air" \
   --source "$AI_RUN_DIR/draft/source/prepared" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
-  --tbe-diagnosis "$AI_RUN_DIR/common/tbe-diagnosis" \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" \
   --rope-fp32-table --cpu-feature-pack --output "$AI_RUN_DIR/draft/omc"
 ```
 

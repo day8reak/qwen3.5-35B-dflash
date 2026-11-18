@@ -6,7 +6,7 @@
 
 先完成[环境配置](environment-setup.md)中的工具链与项目配置，确保 HDC 可连接板端；以下命令在服务器仓库根目录执行。
 
-- 已有 `draft/source/prepared`、`draft/air`、`draft/omc`；缺少时按[完整模型执行](run-end-to-end.md)第 2 节准备。
+- 精度验证使用 `draft/source/prepared`、`draft/air`、`draft/omc`。三者齐全时可跳过 TBE 诊断和编译。首次编译需在 DDK 服务器安装 StableArgMax。[权重与 AIR 生成步骤](run-end-to-end.md#draft-build) · [StableArgMax 安装步骤](../targets/cpro/ops/draft-top1/README.md)
 - 已有 `runtime/runtime.json` 及其引用的 assets 配置、`runtime/native/build/qwen35_draft_accuracy` 运行器；沿用此前运行配置，运行器构建见完整流程第 4 节。
 - 板端已有 `/data/local/tmp/tools_sysdbg/model_run_tool_internal` 和 `data_proc_tool_internal`。
 
@@ -22,6 +22,31 @@ export DRAFT_ACCURACY_RUN="$AI_RUN_DIR/draft/tests/accuracy-run"
 export DRAFT_ACCURACY="$AI_RUN_DIR/draft/tests/accuracy-result"
 export PROFILE_RUN="$AI_RUN_DIR/draft/tests/profile-run"
 export PROFILE_RESULT="$AI_RUN_DIR/draft/tests/profile-result"
+```
+
+<a id="tbe-diagnosis"></a>
+
+### 首次编译 Draft OMC 时生成 TBE 诊断
+
+在 **DDK 服务器**的 `custom_pypto` 环境加载上面的配置。已有当前 DDK 的完整诊断时，将 `TBE_DIAGNOSIS` 指向其原目录即可复用。
+
+```bash
+export TBE_DIAGNOSIS="${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+if [ ! -d "$TBE_DIAGNOSIS" ]; then
+  python3 "$REPO_DIR/targets/cpro/scripts/direct_model_air.py" check-tbe-platform \
+    --ddk-root "$CPRO_DDK_ROOT" --python "$(command -v python3)" \
+    --diagnose --output "$TBE_DIAGNOSIS"
+fi
+```
+
+`$TBE_DIAGNOSIS/report.json` 的 `DIAGNOSIS_COMPLETE` 表示诊断已结束。编译 packed Draft 时，把整个诊断目录传给 `--tbe-diagnosis`。
+
+```bash
+python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
+  --air-export "$AI_RUN_DIR/draft/air" --source "$AI_RUN_DIR/draft/source/prepared" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --tbe-diagnosis "$TBE_DIAGNOSIS" --rope-fp32-table --cpu-feature-pack \
+  --output "$AI_RUN_DIR/draft/omc"
 ```
 
 ## 2. 完整 Draft 精度验证
