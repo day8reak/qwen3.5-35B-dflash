@@ -77,7 +77,7 @@ def dequantized_device_matmul(reference_report, ref_case, region, q, ps, n, devi
 
 
 def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0', *,
-              repeat_original=False, dequant_control=False, compare_group256=False):
+              repeat_original=False, dequant_control=False, compare_group256=False, probe_rows=None):
     import torch
     from .qlinear import describe, explicit_group256
     from .qlinear_backend import runtime, tensor_formats
@@ -109,6 +109,8 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
             or original.dtype != np.float16 or expected.dtype != np.float16):
         raise ValueError('expected FP16 projection [1,T,N]')
     source_call = _audit(manifest, region, m, k, n)
+    if probe_rows is not None and (m != 8 or probe_rows not in (8, 64, 256) or repeat_original or compare_group256):
+        raise ValueError('row comparison requires a T8 capture and a separate M=8, 64 or 256 run')
     if compare_group256 and (repeat_original or source_call['group_sizes_argument'] is not None):
         raise ValueError('group256 comparison requires a separate run and an original call without explicit groups')
     tensors = torch.load(checked(root, region['weights']), weights_only=True, map_location='cpu')
@@ -135,14 +137,24 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
 
     save_json(out/'report.json', report)
     try:
-        references = dict(cpu=expected[0], capture=original[0])
-        try:
-            nd, _ = group_matmul(q, ps, nd_weight_hypothesis(w.numpy()), scale.numpy().T[:, :, None])
-            references['nd_hypothesis'] = nd
-            report['nd_hypothesis_vs_capture'] = record_comparison('nd_hypothesis_vs_capture', nd, original[0])
-        except (ArithmeticError, ValueError) as exc:
-            report['nd_hypothesis_error'] = str(exc)
-            summaries.append(f'nd_hypothesis unavailable: {exc}')
+        if probe_rows is not None:
+            copies = probe_rows // m
+            report.update(scope='ORIGINAL_FUSED_MATMUL_REPEATED_T8_ROWS', captured_rows=m, probe_rows=probe_rows)
+            summaries.append(f'M={probe_rows}: {copies} copies of the same {m} A8 rows and token scales; original signature')
+            q = np.tile(q, (copies, 1))
+            ps = np.tile(ps, (copies, 1))
+            expected = np.tile(expected, (1, copies, 1))
+            references = dict(cpu=expected[0])
+            m = probe_rows
+        else:
+            references = dict(cpu=expected[0], capture=original[0])
+            try:
+                nd, _ = group_matmul(q, ps, nd_weight_hypothesis(w.numpy()), scale.numpy().T[:, :, None])
+                references['nd_hypothesis'] = nd
+                report['nd_hypothesis_vs_capture'] = record_comparison('nd_hypothesis_vs_capture', nd, original[0])
+            except (ArithmeticError, ValueError) as exc:
+                report['nd_hypothesis_error'] = str(exc)
+                summaries.append(f'nd_hypothesis unavailable: {exc}')
         import torch_npu
         report['capture_runtime'] = manifest['quant_matmul'].get('runtime')
         report['runtime_before'] = runtime(torch_npu)
@@ -164,7 +176,7 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
             summaries.append(f"{key} (capture -> replay): dtype {before.get('dtype')} -> {after['dtype']}, "
                              f"stride {before.get('stride')} -> {after['stride']}, "
                              f"NPU format {old_fmt} -> {new_fmt}")
-        repeated = repeat_original or compare_group256
+        repeated = repeat_original or compare_group256 or probe_rows is not None
         if repeat_original:
             report['scope'] = 'REPEATED_DYNAMIC_QUANT_AND_SEPARATE_FROZEN_ORIGINAL_MATMUL'
             quant_calls = report['dynamic_quant_calls'] = []
@@ -177,7 +189,7 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
             for call in quant_calls:
                 summaries.append(f'DynamicQuant {call}')
         schedule = ['original']
-        if repeat_original:
+        if repeat_original or probe_rows is not None:
             schedule *= 3
         elif compare_group256:
             report['scope'] = 'FROZEN_ORIGINAL_VS_EXPLICIT_GROUP256'
@@ -216,6 +228,11 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
                 values = y.numpy()
                 for reference, array in references.items():
                     row['vs_' + reference] = record_comparison(f'{label}_vs_{reference}', values, array)
+                if probe_rows is not None:
+                    block = report['captured_rows']
+                    row['failed_cpu_blocks'] = [i for i, start in enumerate(range(0, m, block))
+                        if not metrics(values[start:start+block], expected[0, :block])['passed']]
+                    summaries.append(f"{label}: failed 8-row CPU blocks (zero-based)={row['failed_cpu_blocks']}")
                 if repeated:
                     row['operands_equal_after'] = compare_operands(snapshot(replay_inputs), saved)
                     if not all(row['operands_equal_after'].values()):
@@ -231,17 +248,20 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
             save_json(out/'report.json', report)
             if repeated and row['status'] == 'FAILED':
                 break
-        if compare_group256:
-            verdicts = report['group_comparison'] = {}
-            for signature in ('original', 'explicit_group256'):
+        if compare_group256 or probe_rows is not None:
+            verdicts = {}
+            signatures = ('original', 'explicit_group256') if compare_group256 else ('original',)
+            for signature in signatures:
                 rows = [r for r in report['variants'] if r['signature'] == signature and r['status'] == 'EXECUTED']
                 verdict = 'INCOMPLETE'
                 if len(rows) == 3:
-                    accurate = all(r['vs_cpu']['passed'] for r in rows)
+                    accurate = all(r['vs_cpu']['passed'] and not r.get('failed_cpu_blocks') for r in rows)
                     stable = all(r['vs_previous']['equal_bits'] for r in rows[1:])
                     verdict = 'PASSED' if accurate and stable else 'FAILED'
                 verdicts[signature] = verdict
-                summaries.append(f'{signature} group check: {verdict} ({len(rows)}/3 completed)')
+                check = f'{signature} group' if compare_group256 else f'M={m} original'
+                summaries.append(f'{check} check: {verdict} ({len(rows)}/3 completed)')
+            report['group_comparison' if compare_group256 else 'row_comparison'] = verdicts
         report['runtime_after'] = runtime(torch_npu)
         executed = all(row['status'] == 'EXECUTED' for row in report['variants']) and 'dynamic_quant_error' not in report
         if dequant_control:

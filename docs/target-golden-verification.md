@@ -250,3 +250,24 @@ cat "$L0_GROUP/probe/summary.txt"
 ```
 
 摘要末尾分别给出两个签名的 `group check`。通过要求同签名三次均对齐 CPU 且输出逐位稳定。调度报错会保留原始错误和已完成次数。该对照只判定固定输入的 L0 QKV，整网 golden 仍待验证。
+
+### 对比融合矩阵乘的 M=8、64、256
+
+L0 两种签名各完成三次，都未通过。原调用对 CPU 的相对 L2 为 1.018–1.184，显式 group256 为 1.012–1.018。后者两次与上一次同签名输出比较的相对 L2 分别为 0.422 和 0.408。
+
+在 310P 的 `qwen3_5_w4` 环境，将捕获的 8 行 A8 和对应 token scale 按原顺序重复到指定行数，沿用同一 packed W、group scale 和原调用签名。每个进程只测一个 M，运行三次。CPU 期望值使用同一批 8 行投影逐块重复。这是独立 QKV 投影对照。
+
+```bash
+L0_ROWS=$(mktemp -d "${GOLDEN_CHECK:?}/l0-rows.XXXXXXXX")
+for m in 8 64 256; do
+  profiler=()
+  if command -v msprof >/dev/null; then profiler=(msprof "--output=$L0_ROWS/profile-$m"); fi
+  "${profiler[@]}" python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" probe-310p-matmul \
+    --capture "$PREFILL_FIXTURE/capture" --quant-replay "$GOLDEN_CHECK/dynamic-quant" \
+    --cpu "$GOLDEN_CHECK/with-dynamic-quant" --layer 0 --device npu:0 \
+    --probe-rows "$m" --output "$L0_ROWS/m$m"
+done
+grep 'original check:' "$L0_ROWS"/m*/summary.txt
+```
+
+`PASSED` 要求每次的整体及每个 8 行块均对齐 CPU，且三次输出逐位一致。若只有较长 M 通过，记录哪些行数能复现偏差。有 profiling 时对照各行数的 `op_summary_*.csv` 和 `task_time_*.csv` 里实际记录的任务名、类型和输入形状（如有）。仅凭张量格式号和已加载的库还无法确定具体内核。工具的采集和导出字段见[华为 msprof 文档](https://www.hiascend.com/document/detail/en/mindstudio/700/TITools/Profiling/atlasprofiling_16_0005.html)。
