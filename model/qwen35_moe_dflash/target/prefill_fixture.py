@@ -312,7 +312,8 @@ def attention_audit(npu, capture):
             else 'ORIGINAL_EXECUTION_ONLY; WHOLE_MODEL_REFERENCE_UNVERIFIED')
 
 
-def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=False, npu=None, capture_boundaries=False):
+def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=False, npu=None,
+                    capture_boundaries=False, l3_repeat=None):
     """Run the original prefill once. No decoder or second golden evaluation."""
     root = Path(root)
     max_len = source.config_data['kv_cache_max_len']
@@ -340,6 +341,11 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
             owner = sys.modules[type(wrapper).__module__]
             nz = sys.modules['models.modeling_qwen3_5_moe_hiai_nz']
             boundaries.install(npu, nz, owner)
+            if l3_repeat is not None:
+                if boundaries.quant_audit is None:
+                    raise ValueError('original QLinear matmul audit is unavailable for L3 V')
+                l3_repeat.module = wrapper.model.model.layers[3].self_attn.v_proj
+                boundaries.quant_audit.l3_repeat = l3_repeat
             from .layer_probe.attention_replay_reference import FullAttentionReplay
             replay = FullAttentionReplay(boundaries.root, boundaries.report, npu, layer=3)
             replay.attach(wrapper)
@@ -357,6 +363,8 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
         if boundaries is not None:
             boundaries.close(error)
             record['boundary_capture'] = dict(path='capture/manifest.json', status=boundaries.report['status'])
+    if l3_repeat is not None:
+        l3_repeat.repeat()
     if replay is not None:
         # The independent module replay has its own cloned states. All original
         # capture hooks are now removed; the same-invocation golden stays intact.
@@ -369,7 +377,7 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
 
 
 def generate(source_root, config_path, input_ids, sequence_length, output, *, device='npu:0',
-             intermediates=False, capture_boundaries=False, prompt_index=0, prompt_repeat=1):
+             intermediates=False, capture_boundaries=False, prompt_index=0, prompt_repeat=1, l3_repeat=None):
     root = new_output(output)
     source_root = Path(source_root).resolve(strict=True)
     config_path = Path(config_path)
@@ -467,7 +475,7 @@ def generate(source_root, config_path, input_ids, sequence_length, output, *, de
         source.quant_embedding_scale = torch.from_numpy(np.fromfile(cfg['embedding_scale_path'], dtype='<f4').reshape(vocab, 1)).to(device)
         stage('ORIGINAL_PREFILL_ONCE')
         execute_prefill(source, wrapper, tokens.to(device), root, record, intermediates=intermediates,
-                        npu=npu, capture_boundaries=capture_boundaries)
+                        npu=npu, capture_boundaries=capture_boundaries, l3_repeat=l3_repeat)
         status = 'CAPTURED' if record.get('boundary_capture', {}).get('status', 'CAPTURED') == 'CAPTURED' else 'PARTIAL'
         if capture_boundaries:
             replay_rows = record.get('attention_module_reference', {}).get('records', [])

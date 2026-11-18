@@ -77,6 +77,7 @@ class QuantMatmulAudit:
             raise ValueError('only explicit group256 is supported; weights are never requantized')
         self.capture, self.npu, self.group_size = capture, npu, group_size
         self.module, self.names, self.calls = None, {}, {}
+        self.l3_repeat = None
         self.record = dict(policy='ORIGINAL_CALL' if group_size is None else 'EXPLICIT_GROUP256',
             runtime=runtime(npu), calls=[], failed_call=None,
             baseline_equivalence='NOT_VERIFIED' if group_size else 'ORIGINAL_CALL_UNCHANGED')
@@ -114,7 +115,11 @@ class QuantMatmulAudit:
                 if self.group_size is not None:
                     effective = explicit_group256(args, kwargs)
                 row['effective_kwargs'] = describe(effective)
-                result = original(*args, **effective)
+                if (self.l3_repeat is not None and retained and count == 0
+                        and self.module is self.l3_repeat.module):
+                    result = self.l3_repeat.first_call(original, args, effective)
+                else:
+                    result = original(*args, **effective)
                 row['status'] = 'EXECUTED'
                 return result
             except Exception as exc:

@@ -107,6 +107,13 @@ def main():
     s.add_argument('--trace', required=True, type=Path, help='completed trace_target_prefill_matmul.py directory')
     s.add_argument('--capture', required=True, type=Path)
     s.add_argument('--cpu', required=True, type=Path, help='matching verify-qlinear-golden directory')
+    s = sub.add_parser('check-prefill-matmul', help='recapture L3 V in original four-layer Prefill and repeat its matmul on the same device tensors')
+    s.add_argument('--fixture', required=True, help='historical generate_target_prefill.py directory containing input_ids.bin and capture/')
+    s.add_argument('--trace', required=True, help='successful trace_target_prefill_matmul.py prefix trace directory')
+    s.add_argument('--source-root', required=True, help='original NZ/310P source directory')
+    s.add_argument('--target-config', required=True, help='original Prefill YAML')
+    s.add_argument('--device', default='npu:0')
+    s.add_argument('--output', required=True, help='new diagnostic directory separate from fixture and trace')
     s = sub.add_parser('compare-projection-values', help='compare retained Prefill state values directly to independent CPU projections')
     s.add_argument('--cpu', required=True, help='completed verify-qlinear-golden directory')
     s.add_argument('--group', required=True, help='linear or full-fp32-pos directory containing omc, execution, recovery and comparison')
@@ -160,6 +167,9 @@ def main():
                 result[key] = value
         if not layout:
             result['error'] = evidence.get('same_call_cpu_skipped') or 'need matching captured hidden and module/matmul output'
+    elif a.command == 'check-prefill-matmul':
+        from qwen35_moe_dflash.target.layer_probe.prefill_matmul_repeat import check_prefill_matmul
+        result = check_prefill_matmul(a.fixture, a.trace, a.source_root, a.target_config, a.output, a.device)
     elif a.command == 'compare-projection-values':
         import csv
         from qwen35_moe_dflash.target.layer_probe.projection_values import compare_values

@@ -152,7 +152,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-live-layout 
 
 `comparisons` 给出两种 CPU 预测。两者使用同一份现场 A8、group scale 和 token scale。`checkpoint_i4zn` 使用与现场 packed W 核对过的 checkpoint 逻辑权重，`nd_output_channel_nibbles` 将每个 INT32 从低到高解成八个连续输出通道。`live_vs_prediction` 的相对 L2 以 CPU 预测为分母，`prediction_vs_capture` 以历史 golden 为分母。`capture` 和 `live` 列出两次调用的 dtype、shape、stride、NPU format 和传参。库路径分别取自历史采集初始化和现场算子返回后的快照；实际选用的 kernel 仍需验证。
 
-如果仅连续通道解释与现场吻合，可在另一份输入上复核该排列。如果两种解释均偏离，下一步在生成历史 golden 的环境记录同一投影成功调用时的四个操作数和返回，并在同进程用相同张量重复调用，区分运行间输入差异和调用本身的可重复性。
+这份 T8 trace 中，现场输出对连续通道预测的相对 L2 为 1.44412，余弦为 −0.00359。两种排列都与现场及历史输出偏离。历史与现场的四个操作数的 dtype、shape、stride、NPU format（均为 2）、记录的 kwargs、软件版本及 opapi 库路径均一致。
 
 **已声明四层的模型**可以用 `--reference-layers 4` 运行自然 Prefill 观察，省略 `--replay-l3-prefix`，另取新的输出目录。对于已声明四层的 Qwen 配置，工具仅在当前进程内取过长层类型列表的前四项。报告记录配置适配和实际观测的模型层数。该结果只覆盖四层路径。
 
@@ -172,3 +172,17 @@ for key in ("capture_runtime", "runtime_before", "runtime_after"):
     print(*(v.get("loaded_libraries") or []), sep="\n")
 PY
 ```
+
+## 6. 在生成 golden 的四层 Prefill 中复测 L3 V
+
+在原 310P 环境运行。工具校验旧 fixture 的 token 文件、历史 L3 hidden 及前缀 trace，沿用旧 token 和中间量采集选项，从 CPU 构造并量化前四层，按原顺序执行一次 Prefill。第一次 L3 V matmul 的实参与返回值保存在新目录。Prefill 返回后，在同一进程把原张量对象及参数再交给同一算子入口一次。如果新 Prefill 到达 L3 的 hidden 已变，工具还会对当前初始化的 V 投影单独送入历史 hidden。
+
+```bash
+CHECK_PARENT=$(mktemp -d "$GOLDEN_CHECK/l3-repeat.XXXXXXXX")
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" check-prefill-matmul \
+  --fixture "$PREFILL_FIXTURE" --trace "$LIVE_PARENT/trace" \
+  --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
+  --device npu:0 --output "$CHECK_PARENT/check"
+```
+
+先看 `observation.operands_equal_before_repeat` 和 `observation.repeat_vs_first.equal_bits`。四个实参逐位一致而输出不同，表示这两次调用的结果有波动。输出一致时，看 `hidden_equal_to_historical`、`operands_equal_to_prefix`、`signature_equal_to_prefix` 以及 `first_vs_historical_golden` 和 `first_vs_prefix`。若 hidden 改变，用 `frozen_hidden_control` 看固定输入对照。这里新采的 A8 只代表本次 Prefill。完整报告位于 `$CHECK_PARENT/check/report.json`，旧 fixture 和前缀 trace 仅读取。
