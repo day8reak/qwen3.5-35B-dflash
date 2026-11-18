@@ -181,17 +181,18 @@ PY
 
 ```bash
 CHECK_PARENT=$(mktemp -d "$GOLDEN_CHECK/l3-repeat.XXXXXXXX")
+CHECK="$CHECK_PARENT/check"
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" check-prefill-matmul \
   --fixture "$PREFILL_FIXTURE" --trace "$LIVE_PARENT/trace" \
   --source-root "$TARGET_SOURCE" --target-config "$TARGET_CONFIG" \
-  --device npu:0 --output "$CHECK_PARENT/check"
+  --device npu:0 --output "$CHECK"
 ```
 
 先看 `observation.operands_equal_before_repeat` 和 `observation.repeat_vs_first.equal_bits`。四个实参逐位一致而输出不同，表示这两次调用的结果有波动。输出一致时，看 `hidden_equal_to_historical`、`operands_equal_to_prefix`、`signature_equal_to_prefix` 以及 `first_vs_historical_golden` 和 `first_vs_prefix`。若 hidden 改变，用 `frozen_hidden_control` 看固定输入对照。这里新采的 A8 只代表本次 Prefill。完整报告位于 `$CHECK_PARENT/check/report.json`，旧 fixture 和前缀 trace 仅读取。
 
-**T8 实测。** 四个操作数在首次调用与 Prefill 结束后复跑前逐位相同，两次返回的相对 L2 为 1.16503，余弦为 0.22432，最大绝对误差为 6.67578。自然 Prefill 的 L3 hidden 已与历史捕获不同。送入历史 hidden 后，四个实参均与之前的前缀实验逐位一致，两次输出相对 L2 仍为 0.86869。此 L3 V golden 暂停用于判定 CPro 精度。
+**T8 实测。** 两轮都复现了同一现象。每轮在首次调用和 Prefill 结束后复跑前，四个操作数均逐位相同。两轮各自的输出相对 L2 分别为 1.16503 和 1.07370，余弦分别为 0.22432 和 0.29921。两轮自然 Prefill 的 L3 hidden 均与历史捕获不同。固定历史 hidden 后，四个实参均与前缀实验逐位相同，输出相对前缀的 L2 仍分别为 0.86869 和 0.86347。此 L3 V golden 暂停用于判定 CPro 精度。
 
-复用上一步生成的 `CHECK="$CHECK_PARENT/check"`，在保存这两份 fixture 的主机定位最早的偏差。该命令只读取文件。
+在保存两份 fixture 的主机上，复用同一终端的 `CHECK` 定位最早发生变化的捕获点。如果换了终端，或上一步在子 shell 中运行，把报告中 `report` 的完整路径赋给 `CHECK`。下面两条命令都接受 `report.json` 路径或其所在目录。
 
 ```bash
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-prefill-drift \

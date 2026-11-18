@@ -10,6 +10,17 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]/'model'))
 
 
+def check_directory(value):
+    if not value.strip():
+        raise argparse.ArgumentTypeError('empty path: pass the report path printed by check-prefill-matmul or its directory')
+    path = Path(value).expanduser()
+    if path.name == 'report.json' and path.is_file():
+        return path.parent
+    if (path / 'report.json').is_file():
+        return path
+    raise argparse.ArgumentTypeError(f'no check-prefill-matmul report at {path}; pass report.json or its directory')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='command', required=True)
@@ -109,9 +120,9 @@ def main():
     s.add_argument('--cpu', required=True, type=Path, help='matching verify-qlinear-golden directory')
     s = sub.add_parser('inspect-prefill-drift', help='find the first changed recorded boundary in the existing historical and repeat Prefills')
     s.add_argument('--fixture', required=True, help='historical Prefill fixture with capture/')
-    s.add_argument('--check', required=True, help='completed check-prefill-matmul directory with fixture/')
+    s.add_argument('--check', required=True, type=check_directory, help='check-prefill-matmul report.json or its directory')
     s = sub.add_parser('replay-saved-matmul', help='run three consecutive L3 V matmuls on the restored operands from first_call.pt')
-    s.add_argument('--check', required=True, help='completed check-prefill-matmul directory')
+    s.add_argument('--check', required=True, type=check_directory, help='check-prefill-matmul report.json or its directory')
     s.add_argument('--device', default='npu:0')
     s = sub.add_parser('check-prefill-matmul', help='recapture L3 V in original four-layer Prefill and repeat its matmul on the same device tensors')
     s.add_argument('--fixture', required=True, help='historical generate_target_prefill.py directory containing input_ids.bin and capture/')
