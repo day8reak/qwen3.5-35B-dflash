@@ -107,6 +107,12 @@ def main():
     s.add_argument('--trace', required=True, type=Path, help='completed trace_target_prefill_matmul.py directory')
     s.add_argument('--capture', required=True, type=Path)
     s.add_argument('--cpu', required=True, type=Path, help='matching verify-qlinear-golden directory')
+    s = sub.add_parser('inspect-prefill-drift', help='find the first changed recorded boundary in the existing historical and repeat Prefills')
+    s.add_argument('--fixture', required=True, help='historical Prefill fixture with capture/')
+    s.add_argument('--check', required=True, help='completed check-prefill-matmul directory with fixture/')
+    s = sub.add_parser('replay-saved-matmul', help='run three consecutive L3 V matmuls on the restored operands from first_call.pt')
+    s.add_argument('--check', required=True, help='completed check-prefill-matmul directory')
+    s.add_argument('--device', default='npu:0')
     s = sub.add_parser('check-prefill-matmul', help='recapture L3 V in original four-layer Prefill and repeat its matmul on the same device tensors')
     s.add_argument('--fixture', required=True, help='historical generate_target_prefill.py directory containing input_ids.bin and capture/')
     s.add_argument('--trace', required=True, help='successful trace_target_prefill_matmul.py prefix trace directory')
@@ -167,6 +173,12 @@ def main():
                 result[key] = value
         if not layout:
             result['error'] = evidence.get('same_call_cpu_skipped') or 'need matching captured hidden and module/matmul output'
+    elif a.command == 'inspect-prefill-drift':
+        from qwen35_moe_dflash.target.layer_probe.prefill_drift import inspect_drift
+        result = inspect_drift(a.fixture, a.check)
+    elif a.command == 'replay-saved-matmul':
+        from qwen35_moe_dflash.target.layer_probe.prefill_matmul_repeat import replay_saved_matmul
+        result = replay_saved_matmul(a.check, a.device)
     elif a.command == 'check-prefill-matmul':
         from qwen35_moe_dflash.target.layer_probe.prefill_matmul_repeat import check_prefill_matmul
         result = check_prefill_matmul(a.fixture, a.trace, a.source_root, a.target_config, a.output, a.device)

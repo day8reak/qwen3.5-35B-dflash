@@ -1,6 +1,6 @@
 # Target 精度状态
 
-2026-11-18，T8 Prefill 的板端 L0–L2 QKV 末 4 token 和 L3 V 全 8 token 均通过独立 CPU 对照，相对 L2 为 0.0552%–0.0776%。在同一区域，四层 310P 捕获与 CPU 的相对 L2 为 121.7%–144.9%。独立 310P 矩阵乘重放未产出数值，当前核对正常推理进程的同次实参。[L3 V 核验](target-golden-verification.md#step5)
+2026-11-18，T8 Prefill 的板端 L0–L2 QKV 末 4 token 和 L3 V 全 8 token 均通过独立 CPU 对照，相对 L2 为 0.0552%–0.0776%。310P 的 L3 V 在同一进程、四个操作数逐位一致时，两次矩阵乘返回的相对 L2 为 1.16503；第二次调用在 Prefill 结束后。此 L3 V golden 暂停用于判定 CPro 精度。[L3 V 同进程复测](target-golden-verification.md#step6)
 
 阶段与标准更新：2026-11-17；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。显式 transpose + concat + slice 的 ConvState 六项输出通过；整层 GDN 为 11 通过、7 失败。原内置 LinearAttentionConvstateUpdate 路径已编译执行，但数值未通过。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 

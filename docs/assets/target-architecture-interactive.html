@@ -30,7 +30,7 @@
 <tr><td>RoPE</td><td><span class="pill low">4 项零误差</span></td><td>Prefill／Decode × Q／K；显式 FP32 旋转，FP16 输出，重复稳定。</td></tr>
 <tr><td>Attention 核心算子</td><td><span class="pill low">2/2 五项通过</span></td><td>对独立 NumPy FP64 → FP16 参考，L2 为 0.11175% / 0.11438%，各 10 次稳定。原 Prefill captured golden 不可信。</td></tr>
 <tr><td>CacheUpdate</td><td>Prefill <span class="pill low">4/4 逐位通过</span>；Decode <span class="pill bad">4/4 失败</span></td><td>K/V × 两种索引；Decode 历史缓存保留问题未闭环。</td></tr>
-<tr><td>T8 QKV / V 投影</td><td><span class="pill low">4/4 可观测区域通过</span></td><td>L0–L2 QKV 末 4 token、L3 V 全 8 token。板端对独立 CPU 相对 L2 为 0.0552%–0.0776%，同区域 CPU 对 310P 捕获为 121.7%–144.9%。<a href="../target-golden-verification.md#step5">310P 同次投影核验</a></td></tr>
+<tr><td>T8 QKV / V 投影</td><td><span class="pill low">板端对 CPU 4/4 通过</span></td><td>L0–L2 QKV 末 4 token、L3 V 全 8 token。板端相对 L2 为 0.0552%–0.0776%。310P L3 V 相同实参复跑相对 L2 为 1.16503，暂停使用该 golden。<a href="../target-golden-verification.md#step6">同进程复测</a></td></tr>
 </tbody></table></div>
 <p class="hint">当前浮点标准：cosine &gt;0.99、relative-L2 &lt;0.05、KL &lt;0.005、RMSE &lt;1、MeanRE &lt;1，五项全部满足且重复稳定；Cache 另须整缓存逐位一致。数值来自用户回传，未在本地重跑设备。</p>
 <p class="hint">更新于 2026-11-18。图中数据按模块汇总，不代表一次整图执行。<a href="../target-accuracy-status.md">结果范围与证据</a></p>
@@ -149,7 +149,7 @@ function currentResults(){
   node(1090,55,495,115,"CacheUpdate",["Prefill 4/4 逐位通过","Decode 4/4 失败：历史保留待修复"],"red");
   node(20,195,495,115,"RoPE：4 项零误差",["Prefill / Decode × Q / K","显式 FP32 旋转；重复稳定"],"teal");
   node(555,195,495,115,"Attention 核心：2/2 五项通过",["独立参考；L2 0.11175% / 0.11438%","Prefill / Decode 各 10 次稳定"],"teal");
-  node(1090,195,495,115,"T8 投影：板端对 CPU 4/4 通过",["L0–L2 QKV 末 4 token，L3 V 全 8 token","相对 L2 0.0552%–0.0776%"],"teal");
+  node(1090,195,495,115,"T8 投影：板端对 CPU 4/4 通过",["板端相对 L2 0.0552%–0.0776%","310P L3 V 相同实参复跑 L2 1.16503"],"teal");
   text(24,345,"显式 ConvState 通过取自整层 new_conv_state；原内置路径的通过与否不能由此替代。",19,"#61738b");
  },"Target 当前模块精度结论","overview-svg");
 }

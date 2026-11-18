@@ -173,6 +173,8 @@ for key in ("capture_runtime", "runtime_before", "runtime_after"):
 PY
 ```
 
+<a id="step6"></a>
+
 ## 6. 在生成 golden 的四层 Prefill 中复测 L3 V
 
 在原 310P 环境运行。工具校验旧 fixture 的 token 文件、历史 L3 hidden 及前缀 trace，沿用旧 token 和中间量采集选项，从 CPU 构造并量化前四层，按原顺序执行一次 Prefill。第一次 L3 V matmul 的实参与返回值保存在新目录。Prefill 返回后，在同一进程把原张量对象及参数再交给同一算子入口一次。如果新 Prefill 到达 L3 的 hidden 已变，工具还会对当前初始化的 V 投影单独送入历史 hidden。
@@ -186,3 +188,23 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" check-prefill-matmul
 ```
 
 先看 `observation.operands_equal_before_repeat` 和 `observation.repeat_vs_first.equal_bits`。四个实参逐位一致而输出不同，表示这两次调用的结果有波动。输出一致时，看 `hidden_equal_to_historical`、`operands_equal_to_prefix`、`signature_equal_to_prefix` 以及 `first_vs_historical_golden` 和 `first_vs_prefix`。若 hidden 改变，用 `frozen_hidden_control` 看固定输入对照。这里新采的 A8 只代表本次 Prefill。完整报告位于 `$CHECK_PARENT/check/report.json`，旧 fixture 和前缀 trace 仅读取。
+
+**T8 实测。** 四个操作数在首次调用与 Prefill 结束后复跑前逐位相同，两次返回的相对 L2 为 1.16503，余弦为 0.22432，最大绝对误差为 6.67578。自然 Prefill 的 L3 hidden 已与历史捕获不同。送入历史 hidden 后，四个实参均与之前的前缀实验逐位一致，两次输出相对 L2 仍为 0.86869。此 L3 V golden 暂停用于判定 CPro 精度。
+
+复用上一步生成的 `CHECK="$CHECK_PARENT/check"`，在保存这两份 fixture 的主机定位最早的偏差。该命令只读取文件。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-prefill-drift \
+  --fixture "$PREFILL_FIXTURE" --check "$CHECK"
+```
+
+`wrapper_input_differences` 列出发生变化的具名输入。`first_changed_boundary` 按捕获顺序指向第一次输入或输出字节变化，`first_output_outside_gate` 指向第一个有变化且超出既有精度标准的输出所在边界。对应的 `observations` 给出差异张量、指标、属性和已记录权重的逐位对比。两个字段可以指向同一边界。捕获点之间仍可能包含未观测的计算。
+
+在原 310P 自定义算子环境中，使用同一 `CHECK` 单独重放保存的 L3 矩阵乘。只从 `first_call.pt` 恢复一次设备张量，按原参数连续调用三次，每次同步、回读并复核操作数。Prefill 和板端 OMC 均无需重跑。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" replay-saved-matmul \
+  --check "$CHECK" --device npu:0
+```
+
+`calls[1:]` 中的 `vs_previous` 比较相邻两次返回，`vs_prefill` 对比原首次调用，`vs_delayed` 对比原 Prefill 结束后的复跑。格式、stride 和还原的逻辑字节可在同一份输出中核对。独立进程使用重新分配的设备张量；三次结果一致时，原 Prefill 进程的差异仍须单独解释。若算子调度报错，报告会保留错误码和已完成的调用数。

@@ -6,7 +6,7 @@ import torch
 
 from .common import checked, identity, metrics, read_array, save_json, sha
 from .qlinear import arguments, describe, snapshot
-from .qlinear_golden import load_capture, separate_output, tensor_spec
+from .qlinear_golden import _audit, load_capture, separate_output, tensor_spec
 
 
 OPERANDS = ('x1', 'x2', 'scale', 'pertoken_scale')
@@ -106,6 +106,68 @@ def replay_hidden(probe, hidden, prefix, golden):
 
 def source_hashes(record):
     return {(Path(s['path']).name, s['sha256']) for s in record['sources']}
+
+
+def replay_saved_matmul(check, device='npu:0'):
+    """Rebuild the four saved operands once and execute three synchronized calls."""
+    from .qlinear_backend import runtime, tensor_formats
+
+    check = Path(check).resolve(strict=True)
+    record = json.loads((check/'report.json').read_text())
+    capture = load_capture(check/'fixture/capture', ['self_attn_v_proj'])
+    _, manifest, (region,) = capture
+    observation = record['observation']
+    if record['case'] != region['id'] or observation['positional_count'] != 3:
+        raise ValueError('expected the saved L3 V three-positional-argument call')
+    call = torch.load(checked(check, observation['first_call']), weights_only=True, map_location='cpu')
+    delayed = torch.load(checked(check, observation['repeat_y']), weights_only=True, map_location='cpu')
+    m, k = call['x1'].shape
+    golden = projection(capture, 'outputs', 'golden_y')
+    if golden.ndim != 3 or golden.shape[:2] != (1, m) or not equal_bits(golden[0], call['matmul_y']):
+        raise ValueError('saved call does not match the fresh fixture module output')
+    audit = _audit(manifest, region, m, k, golden.shape[-1])
+    if audit['original_kwargs'] != observation['kwargs']:
+        raise ValueError('saved call signature differs from the Prefill audit')
+    result = dict(status='PARTIAL', scope='STANDALONE_RESTORED_TENSORS', case=region['id'],
+                  first_call_sha256=observation['first_call']['sha256'], calls=[])
+    try:
+        import torch_npu
+        current = runtime(torch_npu)
+        result['runtime'] = {k: current.get(k) for k in ('python', 'torch_version', 'torch_npu_version')}
+        result['runtime']['custom_opp_path'] = current['environment'].get('ASCEND_CUSTOM_OPP_PATH')
+        if torch.device(device).type != 'npu':
+            raise ValueError('the standalone test requires an NPU device')
+        operands = {key: call[key].to(device) for key in OPERANDS}
+        old_desc = dict(audit['inputs'], pertoken_scale=observation['kwargs']['pertoken_scale'])
+        desc, formats = describe(operands), tensor_formats(torch_npu, operands)
+        result['descriptor_match'] = {key: all(old_desc[key].get(f) == desc[key].get(f)
+                                             for f in ('shape', 'dtype', 'stride'))
+                                      for key in OPERANDS}
+        result['formats'] = {key: [((audit.get('npu_formats') or {}).get(key) or {}).get('format'),
+                                   formats[key].get('format')] for key in OPERANDS}
+        result['restored_bits'] = compare_operands(snapshot(operands), call)
+        if not all(result['restored_bits'].values()):
+            raise ValueError('device transfer changed a logical operand')
+        kwargs = dict(observation['kwargs'], output_dtype=torch.float16, pertoken_scale=operands['pertoken_scale'])
+        previous = None
+        with torch.no_grad():
+            for i in range(3):
+                dst = torch_npu.npu_quant_matmul(operands['x1'], operands['x2'], operands['scale'], **kwargs)
+                torch.npu.synchronize(device)
+                y = snapshot(dst)
+                row = dict(call=i+1, vs_prefill=compare_output(y, call['matmul_y']),
+                           vs_delayed=compare_output(y, delayed))
+                if previous is not None:
+                    row['vs_previous'] = compare_output(y, previous)
+                row['operands_equal_after'] = compare_operands(snapshot(operands), call)
+                result['calls'].append(row)
+                if not all(row['operands_equal_after'].values()):
+                    raise ValueError('operand changed during standalone replay')
+                previous = y
+        result['status'] = 'INSPECTED'
+    except (ImportError, OSError, ValueError, RuntimeError) as exc:
+        result['error'] = f'{type(exc).__name__}: {exc}'
+    return result
 
 
 def check_prefill_matmul(fixture, trace, source_root, config, output, device):
