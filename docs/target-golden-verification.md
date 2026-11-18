@@ -329,4 +329,14 @@ L3 的 `attention_audit=FAILED` 表示原 fused Attention core 输出超出同�
 python "$PROBE" inspect-prefill-audit --fixture "$T64_FIXTURE"
 ```
 
+本次 T64 中，query 16–31 的全部 16 个 head 均输出零，对应 CPU 参考行均有非零元素。最大偏差在 head 6、query 39、channel 15，原 core 输出 904，CPU 为 2.10742，有效 V 全局绝对值最大 3.49414。原 core 对 CPU 相对 L2 为 53.1411，原模块 hidden 对数学 core 重放为 55.1066，两组 K/V 缓存逐位一致。此前 T256 的独立 core 也观察到同一段零行，当时 CPro 对 CPU 相对 L2 为 0.001117。[T256 单模块记录](../specs/target-attention-reference-results.json)
+
+在 310P 的 `qwen3_5_w4` 环境，用同一份 T64 fixture 对照融合调用与普通算子的计算结果。诊断在主机按捕获的页表和 GQA 头映射解包，保留原 additive mask，在 NPU 上做 FP32 矩阵乘、softmax、矩阵乘，最后转 FP16 回读。
+
+```bash
+python "$PROBE" inspect-prefill-audit --fixture "$T64_FIXTURE" --device-math npu:0
+```
+
+`device_math.status=PASSED` 要求三次都通过同一 CPU 参考的五项指标，且三次输出逐位一致。该结果检验逻辑张量上的分步计算。原融合调用的物理布局、页寻址和 query 分块仍需结合实际实现定位。
+
 对照板端 Full Attention 时选择 `--full-attention-reference math-replay`，用重放输出作主参考，同时保留原模块输出作对照。整网 logits 和 GDN 状态的精度仍需单独验证。[两类 Attention 的验证流程](target-attention-pair.md#t64-full)

@@ -20,7 +20,7 @@ def unpack(value, heads):
     return value.reshape(b, heads, width//heads, seq, lane).transpose(0, 1, 3, 2, 4).reshape(b, heads, seq, -1)
 
 
-def inspect_prefill_audit(fixture):
+def inspect_prefill_audit(fixture, device_math=None):
     """Summarize the original call in its logical layout using the retained CPU reference."""
     root = Path(fixture).resolve(strict=True)
     manifest = json.loads((root/'manifest.json').read_text())
@@ -71,6 +71,32 @@ def inspect_prefill_audit(fixture):
             result['module_replay'] = dict(status=replay['status'], error=replay.get('error'),
                 cache_replay_bitwise_equal=replay.get('cache_replay_bitwise_equal'),
                 original_hidden_vs_replay={k: hidden.get(k) for k in ('relative_l2', 'cosine', 'max_abs', 'passed')})
+    if device_math is not None:
+        control = result['device_math'] = dict(device=device_math, status='PARTIAL', calls=[],
+            scope='DENSE_FP32_TORCH_OPS_ON_HOST_UNPACKED_INPUTS; FINAL_FP16')
+        try:
+            import torch
+            import torch_npu
+            device = torch.device(device_math)
+            if device.type != 'npu':
+                raise ValueError('device math requires an NPU, e.g. npu:0')
+            control.update(torch_version=str(torch.__version__), torch_npu_version=str(torch_npu.__version__))
+            inputs = {s['name']: read_array(root, s) for s in call['inputs']}
+            previous = None
+            for output in _torch_math_outputs(inputs, evidence, device):
+                diff = metrics(output, reference)
+                row = {k: diff[k] for k in ('passed', 'relative_l2', 'cosine', 'max_abs', 'failed_metrics')}
+                if previous is not None:
+                    row['equal_bits_to_previous'] = output.tobytes() == previous.tobytes()
+                control['calls'].append(row)
+                previous = output
+            passed = len(control['calls']) == 3 and all(
+                r['passed'] and r.get('equal_bits_to_previous', True) for r in control['calls'])
+            control['status'] = 'PASSED' if passed else 'FAILED'
+        except (ImportError, RuntimeError, OSError, ValueError, KeyError) as exc:
+            control['error'] = f'{type(exc).__name__}: {exc}'
+        if control['status'] != 'PASSED':
+            result['status'] = control['status']
     return result
 
 
@@ -85,6 +111,38 @@ def paged(cache, table, heads, dim, block_size, length):
     view = cache.reshape(cache.shape[0], heads, dim//16, block_size, 16)
     view = view.transpose(0, 1, 3, 2, 4).reshape(cache.shape[0], heads, block_size, dim)
     return view[pages].transpose(1, 0, 2, 3).reshape(heads, -1, dim)[:, :length]
+
+
+def _torch_math_outputs(inputs, evidence, device):
+    """Run the split attention arithmetic three times on the same dense tensors."""
+    import torch
+
+    heads, kv_heads, length = (evidence[k] for k in ('num_heads', 'num_key_value_heads', 'kv_length'))
+    q = unpack(inputs['query'], heads)[0]
+    mask = inputs['mask']
+    if (evidence['status'] != 'COMPUTED' or kv_heads < 1 or heads % kv_heads
+            or length != q.shape[1] or q.shape[2] != evidence['head_dim']
+            or mask.shape != (1, 1, length, evidence['mask_stride']) or mask.shape[3] < length):
+        raise ValueError('requires a completed fresh Prefill audit with matching head, mask and sequence dimensions')
+
+    def tensor(array):
+        return torch.from_numpy(np.ascontiguousarray(array)).to(device=device, dtype=torch.float32)
+
+    def cache(name):
+        dense = paged(inputs[name], inputs['table'], kv_heads, q.shape[2], inputs['key'].shape[2], length)
+        return tensor(dense.repeat(heads // kv_heads, axis=0))
+
+    with torch.no_grad():
+        query, key, value = tensor(q), cache('key'), cache('value')
+        key_t = key.transpose(1, 2).contiguous()
+        bias = tensor(mask[0, :, :, :length])
+        for _ in range(3):
+            scores = torch.bmm(query, key_t) * evidence['scale_value'] + bias
+            probabilities = torch.softmax(scores, dim=-1)
+            context = torch.bmm(probabilities, value)
+            if context.device != query.device or context.dtype != torch.float32:
+                raise ValueError('unexpected output device or dtype for the FP32 attention control')
+            yield context.unsqueeze(0).to(torch.float16).to('cpu', copy=True).contiguous().numpy()
 
 
 def reference_math(query, key, value, mask, table, length, *, heads, kv_heads, block_size, scale):
