@@ -134,7 +134,10 @@ def main():
                     if (status['placement'].get('constructed_layers') != 4
                             or observer.report['model_layer_count'] != 4):
                         raise ValueError('replay requires original loader to construct layers 0..3 from 40')
-                    observer.replay_captured_hidden(module, capture)
+                    # inference.py calls prefill(wrapper, input_ids, mask, caches, max_len).
+                    names = frame.f_code.co_varnames[:frame.f_code.co_argcount]
+                    token_arg = 'input_ids' if 'input_ids' in frame.f_locals or len(names) < 2 else names[1]
+                    observer.replay_captured_hidden(module, capture, frame.f_locals.get(token_arg), token_arg)
             except Exception as exc:
                 status['attach_error'] = f'{type(exc).__name__}: {exc}'
                 if args.replay_l3_prefix:
@@ -168,14 +171,16 @@ def main():
             status['observed_layers'] = observer.report.get('model_layer_count')
             save_json(out / 'live.json', observer.report)
         status['status'] = 'PARTIAL'
-        if observer is not None and observer.report['status'] == 'CAPTURED':
+        if observer is not None and observer.report['status'] in ('CAPTURED', 'MODULE_ONLY'):
             try:
                 expected_layers = 4 if args.replay_l3_prefix else args.reference_layers
                 if expected_layers and status['observed_layers'] != expected_layers:
                     raise ValueError(f"requested {expected_layers} layers, observed {status['observed_layers']}")
                 from qwen35_moe_dflash.target.layer_probe.live_projection import compare_live
                 status['comparison'] = compare_live(out, capture, cpu)
-                if status['inference'] in ('FINISHED', 'STOPPED_AFTER_L3_REPLAY'):
+                if observer.report['status'] == 'MODULE_ONLY':
+                    status['comparison_error'] = status['comparison']['same_call_cpu_skipped']
+                elif status['inference'] in ('FINISHED', 'STOPPED_AFTER_L3_REPLAY'):
                     status['status'] = 'INSPECTED'
             except Exception as exc:
                 status['comparison_error'] = f'{type(exc).__name__}: {exc}'

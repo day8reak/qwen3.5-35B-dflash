@@ -43,26 +43,61 @@ class LiveProjection:
         self.handles.append(module.register_forward_hook(self.after))
         return module
 
-    def replay_captured_hidden(self, module, capture):
+    def replay_captured_hidden(self, module, capture, input_ids=None, token_arg='input_ids'):
         import torch
 
         root, _, (region,) = load_capture(capture, ['self_attn_v_proj'])
         spec = tensor_spec(region, 'inputs', 'x')
         hidden = torch.from_numpy(read_array(root, spec))
+        tensors = dict(module.named_parameters())
+        tensors.update(module.named_buffers())
+        tensors.update((k, v) for k, v in vars(module).items() if isinstance(v, torch.Tensor))
         weight = getattr(module, 'W_q', None)
-        if (not isinstance(weight, torch.Tensor) or weight.ndim != 2
-                or weight.device.type != 'npu' or weight.dtype != torch.int32):
-            raise ValueError('initialized L3 V requires the original packed INT32 W_q on NPU')
-        if hidden.dtype != torch.float16 or tuple(hidden.shape) != (1, region['sequence_length'], weight.shape[0]):
+        if isinstance(weight, torch.Tensor):
+            tensors['W_q'] = weight
+        self.report.update(module_tensors=describe(tensors), module_formats=tensor_formats(self.npu, tensors),
+                           W_q_type=type(weight).__name__ if hasattr(module, 'W_q') else 'MISSING',
+                           prefill_input_ids=describe(input_ids),
+                           input_source='CAPTURED_LOGICAL_HIDDEN', input_tensor=spec)
+        if (hidden.dtype != torch.float16 or hidden.ndim != 3 or hidden.shape[-1] < 1
+                or hidden.shape[:2] != (1, region['sequence_length'])):
             raise ValueError('capture hidden dtype/shape does not match the L3 Prefill input')
-        self.report.update(input_source='CAPTURED_LOGICAL_HIDDEN', input_tensor=spec)
+        npu_types = ('npu', 'privateuseone')
+        if (isinstance(input_ids, torch.Tensor) and input_ids.device.type in npu_types
+                and (token_arg == 'input_ids' or input_ids.dtype in (torch.int16, torch.int32, torch.int64))):
+            device = input_ids.device
+            source = f'prefill.{token_arg}'
+        else:
+            devices = {t.device for t in tensors.values() if t.device.type in npu_types}
+            if len(devices) != 1:
+                raise ValueError(f'cannot identify L3 replay NPU from Prefill input_ids or module tensors: {devices}')
+            device, = devices
+            source = 'module_tensors'
+        self.report.update(replay_device=str(device), replay_device_source=source)
+        forward = getattr(module.forward, '__code__', None)
+        if forward is not None:
+            self.report['module_forward'] = dict(path=forward.co_filename, line=forward.co_firstlineno)
+        save_json(self.out / 'live.json', self.report)
+        print(f'[target-trace] replay {list(hidden.shape)} on {device} from {source}; '
+              f'module tensors={json.dumps(self.report["module_tensors"])}', flush=True)
         with torch.no_grad():
-            module(hidden.to(weight.device))
+            device_hidden = hidden.to(device)
+            try:
+                module(device_hidden)
+            except Exception as exc:
+                self.report['module_forward_error'] = f'{type(exc).__name__}: {exc}'
+                raise
 
     def before(self, module, args, kwargs):
         import torch
 
         hidden = args[0] if args else kwargs.get('x')
+        # Retain the module boundary even when this backend bypasses the Python matmul hook.
+        try:
+            torch.save(snapshot(hidden), self.out / 'module_x.pt')
+            self.report['module_x'] = identity(self.out / 'module_x.pt', self.out)
+        except Exception as exc:
+            self.report['input_snapshot_error'] = f'{type(exc).__name__}: {exc}'
         self.report['runtime_before'] = runtime(self.npu)
         original = getattr(self.npu, 'npu_quant_matmul', None)
         if not callable(original):
@@ -105,11 +140,9 @@ class LiveProjection:
         self.close()
         self.report['calls'] = self.calls
         try:
-            if self.calls != 1 or 'call' not in self.report:
-                self.report['status'] = 'INCOMPLETE'
-                return
             torch.save(snapshot(result), self.out / 'module_y.pt')
-            self.report.update(status='CAPTURED', module_y=identity(self.out / 'module_y.pt', self.out))
+            status = 'CAPTURED' if self.calls == 1 and 'call' in self.report else 'MODULE_ONLY'
+            self.report.update(status=status, module_y=identity(self.out / 'module_y.pt', self.out))
             save_json(self.out / 'live.json', self.report)
         except Exception as exc:
             self.report.update(status='INCOMPLETE', observation_error=f'{type(exc).__name__}: {exc}')
@@ -141,35 +174,47 @@ def compare_live(out, capture, cpu_report):
     def load_tensor(spec):
         return torch.load(checked(out, spec), map_location='cpu', weights_only=True)
 
-    tensors = load_tensor(live['call'])
+    tensors = load_tensor(live['call']) if live['status'] == 'CAPTURED' else {}
     module_y = load_tensor(live['module_y']).numpy()
-    hidden, q, w, s, ps, y = (tensors[key].numpy() for key in
-                              ('hidden', 'x1', 'x2', 'scale', 'pertoken_scale', 'matmul_y'))
+    hidden = (load_tensor(live['module_x']) if 'module_x' in live else tensors['hidden']).numpy()
     history_x = read_array(root, tensor_spec(region, 'inputs', 'x'))
     history_y = read_array(root, tensor_spec(region, 'outputs', 'golden_y'))
 
     def same(a, b):
         return a.shape == b.shape and a.dtype == b.dtype and a.tobytes() == b.tobytes()
 
+    def operand_matches(tensor, array):
+        return (isinstance(tensor, torch.Tensor) and tensor.dtype == torch.from_numpy(array).dtype
+                and tuple(tensor.shape) == array.shape and same(tensor.numpy(), array))
+
     if hidden.ndim != 3 or hidden.shape[0] != 1 or hidden.shape[1] <= 1:
         raise ValueError('need a batch-one Prefill activation')
-    m, k = q.shape
-    n = y.shape[-1]
-    if (q.shape != hidden.shape[1:] or y.shape != (m, n) or y.dtype != np.float16
-            or module_y.shape != (1, m, n) or s.shape != (k // 256, n)):
-        raise ValueError('unexpected projection dimensions or output dtype')
+    m, k = hidden.shape[1:]
+    n = history_y.shape[-1]
+    if module_y.shape != (1, m, n):
+        raise ValueError(f'unexpected L3 V output shape {module_y.shape}, expected {(1, m, n)}')
     result = dict(live_hidden_shape=list(hidden.shape), capture_hidden_shape=list(history_x.shape),
-                  hidden_equal_bits=same(hidden, history_x), module_equals_matmul=same(module_y[0], y))
+                  hidden_equal_bits=same(hidden, history_x))
+    if result['hidden_equal_bits'] and history_y.shape == module_y.shape:
+        result['module_vs_four_layer'] = metrics(module_y, history_y)
+        result['module_vs_four_layer']['equal_bits'] = same(module_y, history_y)
+        cpu_tensor = case.get('cpu_reference', {}).get('tensor')
+        if cpu_tensor:
+            result['module_vs_cpu_reference'] = metrics(module_y, read_array(cpu_report, cpu_tensor))
+    if not tensors:
+        result['same_call_cpu_skipped'] = (live.get('observation_error') or
+            f"observed {live.get('calls', 0)} torch_npu.npu_quant_matmul calls; need one complete call")
+        return result
+    q, ps, y = (tensors.get(name) for name in ('x1', 'pertoken_scale', 'matmul_y'))
+    result['module_equals_matmul'] = operand_matches(y, module_y[0])
     weights = OriginalQuantWeights(Path(cpu['quanted_pth']))
     raw, scales = weights.logical('target.layers.3.self_attn.v_proj.weight', (n, k))
     if _array_identity(raw) != binding['raw_weight'] or _array_identity(scales) != binding['raw_scale']:
         raise ValueError('reference checkpoint contents changed')
-    result['weight_equal_bits'] = same(w, pack_i4zn(raw))
+    result['weight_equal_bits'] = operand_matches(tensors.get('x2'), pack_i4zn(raw))
     reference_scales = scales[:, :, 0].astype(np.float32).T
-    result['scale_equal_bits'] = same(s, reference_scales)
+    result['scale_equal_bits'] = operand_matches(tensors.get('scale'), reference_scales)
     if result['hidden_equal_bits'] and history_y.shape == module_y.shape:
-        result['module_vs_four_layer'] = metrics(module_y, history_y)
-        result['module_vs_four_layer']['equal_bits'] = same(module_y, history_y)
         replay = cpu.get('dynamic_quant_replay')
         if replay:
             try:
@@ -178,8 +223,8 @@ def compare_live(out, capture, cpu_report):
                 dq = rows[region['id']]
                 aq = read_array(replay_root, dq['q'])
                 token_scale = read_array(replay_root, dq['token_scale'])
-                result['a8_equals_replay'] = same(q, aq)
-                result['token_scale_equals_replay'] = same(ps, token_scale)
+                result['a8_equals_replay'] = operand_matches(q, aq)
+                result['token_scale_equals_replay'] = operand_matches(ps, token_scale)
             except (ValueError, KeyError, OSError) as exc:
                 result['quant_replay_unavailable'] = str(exc)
     kwargs = live['kwargs']
@@ -187,9 +232,12 @@ def compare_live(out, capture, cpu_report):
                and kwargs.get('group_sizes') in (None, [0, 0, 256])
                and all(v is None for key, v in kwargs.items()
                        if key not in ('output_dtype', 'group_sizes', 'pertoken_scale')))
-    if result['weight_equal_bits'] and result['scale_equal_bits'] and audited:
-        expected, _ = group_matmul(q, ps, raw, scales)
-        result['matmul_vs_same_call_cpu'] = metrics(y, expected)
+    if (result['weight_equal_bits'] and result['scale_equal_bits'] and audited
+            and isinstance(q, torch.Tensor) and q.dtype == torch.int8 and q.shape == (m, k)
+            and isinstance(ps, torch.Tensor) and ps.dtype == torch.float32 and ps.shape == (m, 1)
+            and isinstance(y, torch.Tensor) and y.dtype == torch.float16 and y.shape == (m, n)):
+        expected, _ = group_matmul(q.numpy(), ps.numpy(), raw, scales)
+        result['matmul_vs_same_call_cpu'] = metrics(y.numpy(), expected)
     else:
-        result['same_call_cpu_skipped'] = 'weight bytes, scale or call signature differs from group256 reference'
+        result['same_call_cpu_skipped'] = 'weight bytes, scale, shape or call signature differs from group256 reference'
     return result

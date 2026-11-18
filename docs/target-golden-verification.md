@@ -136,9 +136,11 @@ python "$TRACE" --reference-layers 40 --replay-l3-prefix \
   --config "$TARGET_CONFIG" --quant_mode enable --quant_bits 4 --max_token 2
 ```
 
-当 `hidden_equal_bits=true` 时，`module_vs_four_layer` 比较新投影和历史 golden。`matmul_vs_same_call_cpu` 比较本次矩阵乘与由同次 A8、token scale 重算的 CPU 结果。跳过重算时看 `weight_equal_bits`、`scale_equal_bits` 和 `live.json` 中的算子实参。
+原脚本可能先打印 256 个 token。单投影重放只用这份 `input_ids` 确定设备，输入值取自 capture 的 L3 hidden。`live.json` 记录设备来源、模块张量的名称、dtype、shape、stride 和可读的 NPU format；若原调用报错，也会保留当时的描述。
 
-**四层 L3 诊断**可以继续用当前声明 4 层的 `TARGET_CONFIG`。上面命令改为 `--reference-layers 4` 和 `--config "$TARGET_CONFIG"`，另取新的输出目录。对于已声明四层的 Qwen 配置，工具仅在当前进程内取过长层类型列表的前四项。报告记录配置适配和实际观测的模型层数。该结果只覆盖四层路径。
+当 `hidden_equal_bits=true` 时，`module_vs_four_layer` 对比历史 golden，`module_vs_cpu_reference` 对比同一 hidden 的已存 CPU 参考。捕获到已知签名、权重及 scale 的矩阵乘时，另有 `matmul_vs_same_call_cpu`，使用现场 A8 和 token scale 重算。仅取得模块输入输出时报告为 `PARTIAL`，可在 `report.json` 中查看已完成的比较。
+
+**已声明四层的模型**可以用 `--reference-layers 4` 运行自然 Prefill 观察，省略 `--replay-l3-prefix`，另取新的输出目录。对于已声明四层的 Qwen 配置，工具仅在当前进程内取过长层类型列表的前四项。报告记录配置适配和实际观测的模型层数。该结果只覆盖四层路径。
 
 `matmul_vs_same_call_cpu` 用本次观测的 A8 和 token scale 重算，先逐位核对本次权重与 group scale。`hidden_equal_bits` 同时覆盖形状、dtype 和内容，只有它为 true 才比较新旧模块输出以及新 A8 与重放 A8。原入口若把 prompt 重复 32 次，很可能与 T8 捕获长度不同，此时同次矩阵乘对照仍有效。采集细节在输出目录的 `live.json`，比较在 `report.json`。
 
