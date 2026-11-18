@@ -124,6 +124,8 @@ def main():
     s.add_argument('--dequant-control', action='store_true', help='also compare ordinary device matmul on dequantized checkpoint W4 to the frozen-A8 CPU reference')
     s.add_argument('--device', default='npu:0')
     s.add_argument('--output', required=True)
+    s = sub.add_parser('inspect-row-profiles', help='read the existing M=8/64/256 probe reports and exported msprof task tables')
+    s.add_argument('--root', required=True, type=Path, help='parent of m8/, m64/, m256/ and profile-*/')
     s = sub.add_parser('inspect-live-layout', help='compare two W4 layouts on the saved L3 V call using CPU arithmetic')
     s.add_argument('--trace', required=True, type=Path, help='completed trace_target_prefill_matmul.py directory')
     s.add_argument('--capture', required=True, type=Path)
@@ -185,6 +187,9 @@ def main():
         result = run_probe(a.capture, a.quant_replay, a.cpu, a.output, a.layer, a.device,
                            repeat_original=a.repeat_original, dequant_control=a.dequant_control,
                            compare_group256=a.compare_group256, probe_rows=a.probe_rows)
+    elif a.command == 'inspect-row-profiles':
+        from qwen35_moe_dflash.target.layer_probe.row_profiles import inspect_row_profiles
+        result = inspect_row_profiles(a.root)
     elif a.command == 'inspect-live-layout':
         from qwen35_moe_dflash.target.layer_probe.live_projection import compare_live
         evidence = compare_live(a.trace, a.capture, a.cpu, inspect_layouts=True)

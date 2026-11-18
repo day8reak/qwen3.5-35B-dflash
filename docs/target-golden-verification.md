@@ -271,3 +271,25 @@ grep 'original check:' "$L0_ROWS"/m*/summary.txt
 ```
 
 `PASSED` 要求每次的整体及每个 8 行块均对齐 CPU，且三次输出逐位一致。若只有较长 M 通过，记录哪些行数能复现偏差。有 profiling 时对照各行数的 `op_summary_*.csv` 和 `task_time_*.csv` 里实际记录的任务名、类型和输入形状（如有）。仅凭张量格式号和已加载的库还无法确定具体内核。工具的采集和导出字段见[华为 msprof 文档](https://www.hiascend.com/document/detail/en/mindstudio/700/TITools/Profiling/atlasprofiling_16_0005.html)。
+
+L0 QKV 实测中，M=8 的首次输出对 CPU 的相对 L2 为 1.01228，余弦为 0.22522，三次调用综合判定失败。M=64 和 M=256 均通过，首次相对 L2 均为 0.00074388，余弦均为 0.99999975。当前能稳定复现行数相关的差异。具体内核、最小可用 M，以及其他投影和整网的精度仍待验证。
+
+直接在同一台 310P 主机读取这次的 profiling：
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-row-profiles --root "$L0_ROWS"
+```
+
+按 M 和来源 CSV 对照设备侧记录的算子名、内核名、Block Dim 及 tiling key 等可用列。`NO_EXPORTED_CSV` 时查看 `raw_profile_dirs`；已有原始 `PROF_*` 目录可用 `msprof --export=on --output=<原始目录>` 导出后再读。[msprof 导出说明](https://www.hiascend.com/doc_center/source/en/mindstudio/700/TITools/Profiling/atlasprofiling_16_0055.html)
+
+继续验证另外三个已捕获的投影时，共用原 T8 的逐层输入和 CPU 参考，只测试已在 L0 通过的 M=64：
+
+```bash
+for layer in 1 2 3; do
+  python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" probe-310p-matmul \
+    --capture "$PREFILL_FIXTURE/capture" --quant-replay "$GOLDEN_CHECK/dynamic-quant" \
+    --cpu "$GOLDEN_CHECK/with-dynamic-quant" --layer "$layer" --device npu:0 \
+    --probe-rows 64 --output "$L0_ROWS/layer-$layer-m64"
+done
+grep -E 'original_vs_cpu:|original check:' "$L0_ROWS"/layer-*-m64/summary.txt
+```
