@@ -103,6 +103,10 @@ def main():
     s.add_argument('--layer', type=int, choices=range(4), default=3, help='L3 V by default, or L0-L2 QKV')
     s.add_argument('--device', default='npu:0')
     s.add_argument('--output', required=True)
+    s = sub.add_parser('inspect-live-layout', help='compare two W4 layouts on the saved L3 V call using CPU arithmetic')
+    s.add_argument('--trace', required=True, type=Path, help='completed trace_target_prefill_matmul.py directory')
+    s.add_argument('--capture', required=True, type=Path)
+    s.add_argument('--cpu', required=True, type=Path, help='matching verify-qlinear-golden directory')
     s = sub.add_parser('compare-projection-values', help='compare retained Prefill state values directly to independent CPU projections')
     s.add_argument('--cpu', required=True, help='completed verify-qlinear-golden directory')
     s.add_argument('--group', required=True, help='linear or full-fp32-pos directory containing omc, execution, recovery and comparison')
@@ -145,6 +149,17 @@ def main():
     elif a.command == 'probe-310p-matmul':
         from qwen35_moe_dflash.target.layer_probe.qlinear_matmul_probe import run_probe
         result = run_probe(a.capture, a.quant_replay, a.cpu, a.output, a.layer, a.device)
+    elif a.command == 'inspect-live-layout':
+        from qwen35_moe_dflash.target.layer_probe.live_projection import compare_live
+        evidence = compare_live(a.trace, a.capture, a.cpu, inspect_layouts=True)
+        layout = evidence.pop('layout_report', None)
+        result = dict(status='INSPECTED' if layout else 'PARTIAL',
+                      case='l03_c00_self_attn_v_proj', **(layout or {}))
+        for key, value in evidence.items():
+            if not isinstance(value, dict):
+                result[key] = value
+        if not layout:
+            result['error'] = evidence.get('same_call_cpu_skipped') or 'need matching captured hidden and module/matmul output'
     elif a.command == 'compare-projection-values':
         import csv
         from qwen35_moe_dflash.target.layer_probe.projection_values import compare_values

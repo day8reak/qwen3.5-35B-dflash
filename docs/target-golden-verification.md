@@ -140,6 +140,20 @@ python "$TRACE" --reference-layers 40 --replay-l3-prefix \
 
 当 `hidden_equal_bits=true` 时，`module_vs_four_layer` 对比历史 golden，`module_vs_cpu_reference` 对比同一 hidden 的已存 CPU 参考。捕获到已知签名、权重及 scale 的矩阵乘时，另有 `matmul_vs_same_call_cpu`，使用现场 A8 和 token scale 重算。仅取得模块输入输出时报告为 `PARTIAL`，可在 `report.json` 中查看已完成的比较。
 
+**T8 前缀重放结果。** L3 V 使用相同的 hidden，现场模块输出与同次矩阵乘返回逐位一致。现场对历史 golden 的相对 L2 为 1.13231，余弦为 0.25882。现场对同次实参的 CPU group256 计算，相对 L2 为 1.40265，余弦为 0.10193。packed W 和 group scale 的逻辑值与 checkpoint 重建结果逐位一致，现场 A8 和 token scale 与独立 DynamicQuant 重放逐位一致。历史调用的 A8 内容未采集。
+
+在保存 trace 和原权重的服务器执行离线比较，`LIVE_PARENT` 取上一步成功运行的目录。
+
+```bash
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" inspect-live-layout \
+  --trace "$LIVE_PARENT/trace" --capture "$GOLDEN_CAPTURE" \
+  --cpu "$GOLDEN_CHECK/with-dynamic-quant"
+```
+
+`comparisons` 给出两种 CPU 预测。两者使用同一份现场 A8、group scale 和 token scale。`checkpoint_i4zn` 使用与现场 packed W 核对过的 checkpoint 逻辑权重，`nd_output_channel_nibbles` 将每个 INT32 从低到高解成八个连续输出通道。`live_vs_prediction` 的相对 L2 以 CPU 预测为分母，`prediction_vs_capture` 以历史 golden 为分母。`capture` 和 `live` 列出两次调用的 dtype、shape、stride、NPU format 和传参。库路径分别取自历史采集初始化和现场算子返回后的快照；实际选用的 kernel 仍需验证。
+
+如果仅连续通道解释与现场吻合，可在另一份输入上复核该排列。如果两种解释均偏离，下一步在生成历史 golden 的环境记录同一投影成功调用时的四个操作数和返回，并在同进程用相同张量重复调用，区分运行间输入差异和调用本身的可重复性。
+
 **已声明四层的模型**可以用 `--reference-layers 4` 运行自然 Prefill 观察，省略 `--replay-l3-prefix`，另取新的输出目录。对于已声明四层的 Qwen 配置，工具仅在当前进程内取过长层类型列表的前四项。报告记录配置适配和实际观测的模型层数。该结果只覆盖四层路径。
 
 `matmul_vs_same_call_cpu` 用本次观测的 A8 和 token scale 重算，先逐位核对本次权重与 group scale。`hidden_equal_bits` 同时覆盖形状、dtype 和内容，只有它为 true 才比较新旧模块输出以及新 A8 与重放 A8。原入口若把 prompt 重复 32 次，很可能与 T8 捕获长度不同，此时同次矩阵乘对照仍有效。采集细节在输出目录的 `live.json`，比较在 `report.json`。

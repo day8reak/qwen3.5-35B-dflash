@@ -6,7 +6,7 @@ from threading import get_ident
 from .common import checked, identity, metrics, read_array, save_json, sha
 from .qlinear import arguments, describe, snapshot
 from .qlinear_backend import runtime, tensor_formats
-from .qlinear_golden import _array_identity, _replay, load_capture, tensor_spec
+from .qlinear_golden import _array_identity, _audit, _replay, load_capture, tensor_spec
 from .qlinear_math import group_matmul
 from ..original_quant import OriginalQuantWeights, pack_i4zn
 
@@ -156,11 +156,47 @@ class LiveProjection:
         self.handles.clear()
 
 
-def compare_live(out, capture, cpu_report):
+def _layout_report(live, manifest, source_call, tensors, checkpoint_y, historical_y):
+    """Compare two fixed W4 interpretations using the saved call operands."""
+    from .qlinear_matmul_probe import nd_weight_hypothesis
+
+    q, weight, scales, token_scale, live_y = (
+        tensors[key].numpy() for key in ('x1', 'x2', 'scale', 'pertoken_scale', 'matmul_y'))
+    nd_y, _ = group_matmul(q, token_scale, nd_weight_hypothesis(weight), scales.T[:, :, None])
+    comparisons = []
+    for layout, predicted in [('checkpoint_i4zn', checkpoint_y), ('nd_output_channel_nibbles', nd_y)]:
+        for pair, actual, reference in [('live_vs_prediction', live_y, predicted),
+                                        ('prediction_vs_capture', predicted, historical_y)]:
+            score = metrics(actual, reference)
+            comparisons.append(dict(layout=layout, pair=pair, relative_l2=score['relative_l2'],
+                                    cosine=score['cosine'], max_abs=score['max_abs'], passed=score['passed']))
+
+    def call_info(inputs, formats, kwargs, runtime):
+        runtime = runtime or {}
+        return dict(
+            operands={key: dict(dtype=desc.get('dtype'), shape=desc.get('shape'),
+                                stride=desc.get('stride'), format=(formats or {}).get(key, {}).get('format'))
+                      for key, desc in inputs.items()},
+            kwargs={k: v for k, v in kwargs.items() if k != 'pertoken_scale'},
+            python=runtime.get('python'), torch=runtime.get('torch_version'),
+            torch_npu=runtime.get('torch_npu_version'), torch_npu_file=runtime.get('torch_npu_file'),
+            custom_opp_path=runtime.get('environment', {}).get('ASCEND_CUSTOM_OPP_PATH'),
+            mapped_opapi=[p for p in runtime.get('loaded_libraries', [])
+                          if Path(p).name.startswith(('libcust_opapi.so', 'libopapi.so'))])
+
+    old_kwargs = source_call['original_kwargs']
+    return dict(
+        comparisons=comparisons,
+        capture=call_info(dict(source_call['inputs'], pertoken_scale=old_kwargs['pertoken_scale']),
+                          source_call.get('npu_formats'), old_kwargs, manifest['quant_matmul'].get('runtime')),
+        live=call_info(live['inputs'], live.get('formats'), live['kwargs'], live.get('runtime_after')))
+
+
+def compare_live(out, capture, cpu_report, *, inspect_layouts=False):
     import torch
     import numpy as np
 
-    root, _, (region,) = load_capture(capture, ['self_attn_v_proj'])
+    root, manifest, (region,) = load_capture(capture, ['self_attn_v_proj'])
     cpu = json.loads((cpu_report / 'report.json').read_text())
     if (cpu.get('scope') != 'SELECTED_QLINEAR_GOLDEN_MATH_ONLY'
             or cpu['capture_sha256'] != sha(root / 'manifest.json')):
@@ -238,6 +274,10 @@ def compare_live(out, capture, cpu_report):
             and isinstance(y, torch.Tensor) and y.dtype == torch.float16 and y.shape == (m, n)):
         expected, _ = group_matmul(q.numpy(), ps.numpy(), raw, scales)
         result['matmul_vs_same_call_cpu'] = metrics(y.numpy(), expected)
+        if (inspect_layouts and result['hidden_equal_bits'] and result['module_equals_matmul']
+                and same(tensors['hidden'].numpy(), history_x) and history_y.shape == module_y.shape):
+            source_call = _audit(manifest, region, m, k, n)
+            result['layout_report'] = _layout_report(live, manifest, source_call, tensors, expected, history_y[0])
     else:
         result['same_call_cpu_skipped'] = 'weight bytes, scale, shape or call signature differs from group256 reference'
     return result
