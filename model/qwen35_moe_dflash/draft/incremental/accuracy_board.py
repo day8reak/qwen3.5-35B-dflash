@@ -98,10 +98,10 @@ def extract_outputs(archive, destination, meta, reproduction=None):
 
 
 def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol=0.01,
-          timeout_seconds=1800, ddk_root=None, replay=None, output_initialization='zero',
+          timeout_seconds=1800, ddk_root=None, replay=None, output_initialization='untouched',
           kv_reproduction_case=None):
-    if output_initialization not in ('zero', 'untouched') or (not replay and output_initialization != 'zero'):
-        raise ValueError('output initialization experiment requires replay and zero or untouched')
+    if output_initialization not in ('zero', 'untouched'):
+        raise ValueError('output initialization must be zero or untouched')
     candidate_replay = bool(replay and compiled)
     if replay and any((compiled, source, air, ddk_root)) and not all((compiled, source, air, ddk_root)):
         raise ValueError('candidate replay requires compiled, source, air and ddk_root together')
@@ -163,8 +163,9 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
         if built.get('diagnostic_binaries',{}).get(binary.name) != observed:
             raise ValueError('accuracy runner differs from its native build; rebuild runtime/native')
         reports_initialization = output_initialization in built.get('accuracy_output_initialization', [])
-        if replay and not reports_initialization:
-            raise ValueError('rebuild runtime/native: the accuracy runner lacks output initialization replay support')
+        pass_initialization = bool(replay) or output_initialization == 'untouched'
+        if pass_initialization and not reports_initialization:
+            raise ValueError('rebuild runtime/native: the accuracy runner lacks the requested output initialization mode')
         if reproduction and built.get('accuracy_kv_reproduction_version') != reproduction['version']:
             raise ValueError('rebuild runtime/native: the accuracy runner lacks KV reproduction support')
         if meta.get('feature_pack') and built.get('accuracy_feature_pack_version') != 1:
@@ -226,7 +227,7 @@ def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol
         command = ['timeout','-k','5',str(timeout_seconds),'env',
             'LD_LIBRARY_PATH='+':'.join([str(board/'lib'),*search]),
             str(board/'draft-accuracy'),str(model),env['runtime_version'],str(board/'fixture'),str(board/'outputs')]
-        if replay:
+        if pass_initialization:
             command.append(output_initialization)
         if reproduction:
             command.append(str(reproduction['case']))

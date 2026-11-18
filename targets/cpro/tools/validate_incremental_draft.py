@@ -32,14 +32,15 @@ def main():
     parser.add_argument('--rtol',type=float)
     parser.add_argument('--timeout-seconds',type=int,default=1800)
     parser.add_argument('--output-initialization', choices=('zero', 'untouched'),
-                        help='--replay only: caller output initialization, default zero; SDK allocation behavior is unchanged')
+                        help='caller output initialization for a fresh run or replay (default: untouched)')
     parser.add_argument('--kv-reproduction-case', type=int,
                         help='untouched same-OMC replay only: append 10 rewrite/reuse pairs for this case, without KV commits')
     args=parser.parse_args()
-    if args.output_initialization is not None and not args.replay:
-        parser.error('--output-initialization requires --replay')
-    if args.kv_reproduction_case is not None and (not args.replay or args.compiled or args.output_initialization != 'untouched'):
-        parser.error('--kv-reproduction-case requires --replay --output-initialization untouched without --compiled')
+    if args.output_initialization is not None and not (args.compiled or args.replay):
+        parser.error('--output-initialization requires --compiled or --replay')
+    output_initialization = args.output_initialization or 'untouched'
+    if args.kv_reproduction_case is not None and (not args.replay or args.compiled or output_initialization != 'untouched'):
+        parser.error('--kv-reproduction-case requires a same-OMC replay with untouched outputs')
     from qwen35_moe_dflash.draft.incremental.accuracy import summarize_result
     if args.compare_feature_pack or args.compare_offline_weights:
         if (args.apply or any((args.config,args.compiled,args.source,args.air_export,args.output,args.ddk_root))
@@ -108,7 +109,7 @@ def main():
         result=start(args.config,args.compiled,args.source,args.air_export,args.output,apply=args.apply,
                      timeout_seconds=args.timeout_seconds,replay=args.replay,
                      ddk_root=args.ddk_root,
-                     output_initialization=args.output_initialization or 'zero',
+                     output_initialization=output_initialization,
                      kv_reproduction_case=args.kv_reproduction_case)
     elif args.recover:
         if args.apply or any((args.config,args.compiled,args.source,args.air_export,args.ddk_root)):
@@ -120,7 +121,7 @@ def main():
         result=start(args.config,args.compiled,args.source,args.air_export,args.output,
                      apply=args.apply,atol=0.01 if args.atol is None else args.atol,
                      rtol=0.01 if args.rtol is None else args.rtol,timeout_seconds=args.timeout_seconds,
-                     ddk_root=args.ddk_root)
+                     ddk_root=args.ddk_root,output_initialization=output_initialization)
     print(json.dumps(summarize_result(result),ensure_ascii=False))
     return 1 if (result['status'] in ('FAILED','NUMERICAL_FAILED')
                  or result.get('kv_reproduction', {}).get('native_status') == 'FAILED'
