@@ -34,6 +34,8 @@ def main():
         s.add_argument('--torchair-pb2')
         s.add_argument('--gdn-state-dtype', choices=('source', 'float16', 'float32'), default='source',
                        help='whole gdn_layer: explicit recurrent input/output/writeback dtype; float16 also casts g at the GE operator input; golden unchanged')
+        s.add_argument('--gdr-mode', choices=('chunk', 'single-token'), default='chunk',
+                       help='whole Prefill GDN: one original GDR call, or one state-chained S=1 call per token')
         s.add_argument('--gdn-convstate', choices=('kernel', 'reference'), default='kernel',
                        help='whole gdn_layer only: reference uses explicit concat/tail after exact capture checks; full-length calls, one-token Decode; golden unchanged')
         s.add_argument('--qlinear-scales', choices=('source', 'fp16'), default='source',
@@ -114,6 +116,7 @@ def main():
     s.add_argument('--layer', type=int, choices=range(4), default=3, help='L3 V by default, or L0-L2 QKV')
     s.add_argument('--repeat-original', action='store_true',
                    help='repeat DynamicQuant on captured hidden and original QuantMatmul on frozen operands three times each')
+    s.add_argument('--dequant-control', action='store_true', help='also compare ordinary device matmul on dequantized checkpoint W4 to the frozen-A8 CPU reference')
     s.add_argument('--device', default='npu:0')
     s.add_argument('--output', required=True)
     s = sub.add_parser('inspect-live-layout', help='compare two W4 layouts on the saved L3 V call using CPU arithmetic')
@@ -160,13 +163,13 @@ def main():
         result = batch.export_batch(a.capture, a.output, a.source_root, a.converter_script,
             points=a.points, kinds=a.kinds, phases=a.phases, timeout=a.timeout, torchair_pb2=a.torchair_pb2, target_config=a.target_config,
             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
-            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate,
+            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate, gdr_mode=a.gdr_mode,
             full_attention_reference=a.full_attention_reference)
     elif a.command == 'export-one':
         from qwen35_moe_dflash.target.layer_probe.replay import export_one
         result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2, a.target_config,
                             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
-                            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate,
+                            gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate, gdr_mode=a.gdr_mode,
                             full_attention_reference=a.full_attention_reference)
     elif a.command == 'compile':
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
@@ -174,7 +177,8 @@ def main():
                                      cases=a.cases, compiler_profile=a.compiler_profile)
     elif a.command == 'probe-310p-matmul':
         from qwen35_moe_dflash.target.layer_probe.qlinear_matmul_probe import run_probe
-        result = run_probe(a.capture, a.quant_replay, a.cpu, a.output, a.layer, a.device, repeat_original=a.repeat_original)
+        result = run_probe(a.capture, a.quant_replay, a.cpu, a.output, a.layer, a.device,
+                           repeat_original=a.repeat_original, dequant_control=a.dequant_control)
     elif a.command == 'inspect-live-layout':
         from qwen35_moe_dflash.target.layer_probe.live_projection import compare_live
         evidence = compare_live(a.trace, a.capture, a.cpu, inspect_layouts=True)

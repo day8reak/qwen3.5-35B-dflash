@@ -9,7 +9,7 @@ from .attention_inspect import attention_length_constant
 
 
 @contextmanager
-def gdn_state_contract(enabled, state_dtype='float32'):
+def gdn_state_contract(enabled, state_dtype='float32', expected_calls=1):
     if not enabled:
         yield None
         return
@@ -44,6 +44,10 @@ def gdn_state_contract(enabled, state_dtype='float32'):
     def adapted(*args, **kwargs):
         bound = signature.bind(*args, **kwargs)
         values = bound.arguments
+        if expected_calls > 1:
+            for port in ('query', 'key', 'value', 'g', 'beta'):
+                if tuple(values[port].meta.shape[:2]) != (1, 1):
+                    raise ValueError(f'single-token GDR converter received a non-singleton {port} sequence')
         state = values['initial_state']
         if (state.dtype != dtype or not isinstance(state.meta, torch.Tensor)
                 or state.meta.dtype != torch_dtype):
@@ -82,8 +86,8 @@ def gdn_state_contract(enabled, state_dtype='float32'):
         if getter(op) is not adapted:
             raise ValueError('TorchAir did not select the GDN state adapter')
         yield evidence
-        if evidence['calls'] != 1:
-            raise ValueError('whole GDN must contain one ChunkGatedDeltaRule call')
+        if evidence['calls'] != expected_calls:
+            raise ValueError(f"whole GDN needs {expected_calls} GDR calls, converted {evidence['calls']}")
     finally:
         if existed:
             registry[op] = previous
@@ -96,44 +100,72 @@ def gdn_state_contract(enabled, state_dtype='float32'):
         evidence['restored'] = getter(op) is original
 
 
-def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode='kernel'):
+def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode='kernel', expected_calls=1):
     from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype, port_names, _data_edges
     from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
     from .candidates import check_graph
     enums = schema.enums[schema.package + '.DataType']
     nodes = graph['op']
     selected = [n for n in nodes if n['type'] == 'ChunkGatedDeltaRule']
-    if len(selected) != 1:
-        raise ValueError('whole GDN must retain one ChunkGatedDeltaRule')
-    op = selected[0]
-    names = port_names(_attributes(op), 'input')
+    if not selected or len(selected) != expected_calls:
+        raise ValueError(f'whole GDN AIR needs {expected_calls} GDR nodes, found {len(selected)}')
+    by_name = {n['name']: n for n in nodes}
     if state_dtype not in ('float16', 'float32'):
         raise ValueError('GDN state dtype must be float16 or float32')
     expected = {'initial_state': state_dtype}
     if state_dtype == 'float16':
         expected.update(query='float16', key='float16', value='float16', g='float16',
                         beta='float16', effective_length='int16')
-    for name, dtype in expected.items():
-        slots = [i for i, n in names.items() if n == name]
-        if len(slots) != 1 or _dtype(descriptor(op['input_desc'][slots[0]], enums)) != dtype:
-            raise ValueError(f'GDN source {name} must be {dtype}')
-    if state_dtype == 'float16':
-        gate_slot = next(i for i, name in names.items() if name == 'g')
-        edge = _data_edges(op)[gate_slot]
-        producer = next((n for n in nodes if n['name'] == edge.rsplit(':', 1)[0]), {})
-        if (not edge.endswith(':0') or producer.get('type') != 'Cast'
-                or _dtype(descriptor(producer['input_desc'][0], enums)) != 'float32'
-                or _dtype(descriptor(producer['output_desc'][0], enums)) != 'float16'):
-            raise ValueError('GDN g must use an explicit FP32-to-FP16 Cast after source computation')
+    expected_chunk = 1 if phase == 'decode' or expected_calls > 1 else 64
+    state_parents = {}
+    for op in selected:
+        attrs = _attributes(op)
+        ports = {name: slot for slot, name in port_names(attrs, 'input').items()}
+        for name, dtype in expected.items():
+            if name not in ports or _dtype(descriptor(op['input_desc'][ports[name]], enums)) != dtype:
+                raise ValueError(f'GDN source {name} must be {dtype}')
+        edges = _data_edges(op)
+        if state_dtype == 'float16':
+            edge = edges[ports['g']]
+            producer = by_name.get(edge.rsplit(':', 1)[0], {})
+            if (not edge.endswith(':0') or producer.get('type') != 'Cast'
+                    or _dtype(descriptor(producer['input_desc'][0], enums)) != 'float32'
+                    or _dtype(descriptor(producer['output_desc'][0], enums)) != 'float16'):
+                raise ValueError('GDN g must use an explicit FP32-to-FP16 Cast after source computation')
+        if (len(op.get('output_desc', [])) != 2
+                or _dtype(descriptor(op['output_desc'][1], enums)) != state_dtype):
+            raise ValueError(f'GDN operator state output must be {state_dtype}')
+        if attrs.get('chunk_size', {}).get('i') != expected_chunk:
+            raise ValueError(f'GDN {op["name"]} must have chunk_size={expected_chunk}')
+        if expected_calls > 1:
+            edge = edges[ports['initial_state']]
+            visited = set()
+            while edge.endswith(':0') and by_name[edge[:-2]]['type'] in ('Cast', 'Identity', 'TensorMove'):
+                if edge in visited:
+                    raise ValueError('cycle in GDR state input')
+                visited.add(edge)
+                edge = _data_edges(by_name[edge[:-2]])[0]
+            state_parents[op['name']] = edge
+    if expected_calls > 1:
+        # Follow the unique tail back to the initial state, independent of serialization order.
+        parents = {name: edge.rsplit(':', 1)[0] for name, edge in state_parents.items()
+                   if edge.endswith(':1') and edge[:-2] in state_parents}
+        tails = set(state_parents) - set(parents.values())
+        if len(tails) != 1 or len(parents) != expected_calls - 1:
+            raise ValueError('single-token GDR nodes must form one chain through recurrent state output 1')
+        name = tails.pop()
+        visited = {name}
+        while name in parents:
+            name = parents[name]
+            if name in visited:
+                raise ValueError('cycle in single-token GDR state chain')
+            visited.add(name)
+        if len(visited) != expected_calls or state_parents[name].rsplit(':', 1)[0] in state_parents:
+            raise ValueError('single-token GDR nodes must form one chain through recurrent state output 1')
     nets = [n for n in nodes if n['type'] == 'NetOutput']
-    if (len(op.get('output_desc', [])) != 2
-            or _dtype(descriptor(op['output_desc'][1], enums)) != state_dtype
-            or len(nets) != 1 or len(nets[0].get('input_desc', [])) != 3
+    if (len(nets) != 1 or len(nets[0].get('input_desc', [])) != 3
             or _dtype(descriptor(nets[0]['input_desc'][2], enums)) != state_dtype):
         raise ValueError(f'GDN source operator output and writeback must both be {state_dtype}')
-    chunk = _attributes(op).get('chunk_size', {}).get('i')
-    if chunk != (1 if phase == 'decode' else 64):
-        raise ValueError('GDN chunk_size differs from original phase branch')
     projections = [n for n in nodes if n['type'] == 'QuantBatchMatmulV4444']
     if convstate_mode not in ('kernel', 'reference'):
         raise ValueError('unknown ConvState source graph contract')
@@ -148,7 +180,8 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
         check_graph(dict(op=[n for n in nodes if n['type'] != 'QuantBatchMatmulV4444' or n is p]), schema, True)
     return dict(status='PASSED', initial_state=state_dtype, last_recurrent_state=state_dtype,
                 checked_inputs=expected, writeback=state_dtype,
-                quantized_projections=5, chunk_size=chunk, convstate=convstate, scope='SOURCE_AIR_ONLY')
+                quantized_projections=5, chunk_size=expected_chunk, gdr_calls=expected_calls,
+                convstate=convstate, scope='SOURCE_AIR_ONLY')
 
 
 def attention_contract(record, inputs, graph, schema, bindings):

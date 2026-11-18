@@ -279,14 +279,14 @@ def check_adjusted_graph(kind, graph):
 
 def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None,
                *, qlinear_scales='source', cache_indexing='kernel', rope_precision='source', gdn_state_dtype='source',
-               gdn_convstate='kernel', full_attention_reference='math-replay'):
+               gdn_convstate='kernel', full_attention_reference='math-replay', gdr_mode='chunk'):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
     try:
         if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer')
                 or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')
-                or gdn_convstate not in ('kernel', 'reference')
+                or gdn_convstate not in ('kernel', 'reference') or gdr_mode not in ('chunk', 'single-token')
                 or full_attention_reference not in ('math-replay', 'captured-audited')):
             raise ValueError('unknown module candidate')
         capture = Path(capture).resolve()
@@ -309,6 +309,10 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if full_attention_reference != 'math-replay' and not whole_attention:
             raise ValueError('--full-attention-reference requires full_attention_layer')
         whole = whole_gdn or whole_attention
+        single_token = gdr_mode == 'single-token'
+        if single_token and (not whole_gdn or record['phase'] != 'prefill'):
+            raise ValueError('--gdr-mode single-token requires a whole Prefill gdn_layer')
+        gdr_calls = record['sequence_length'] if single_token else 1
         if gdn_convstate != 'kernel' and not whole_gdn:
             raise ValueError('--gdn-convstate reference requires a whole gdn_layer region')
         if whole_gdn:
@@ -332,6 +336,11 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         inputs = [torch.from_numpy(read_array(capture, spec).copy()) for spec in record['inputs']]
         input_paths = [checked(capture, spec) for spec in record['inputs']]
         fixture_specs = record['inputs']
+        if single_token:
+            lengths = inputs[4]
+            if (inputs[0].shape[:2] != (1, gdr_calls) or gdr_calls < 2 or lengths.shape != (1,)
+                    or lengths.dtype != torch.int16 or lengths.item() != gdr_calls):
+                raise ValueError('single-token GDR requires an unpadded B=1 Prefill and effective_length=[T] (INT16)')
         if whole_gdn and gdn_convstate == 'reference':
             from .convstate_reference import validate_capture
             result['convstate_reference_check'] = validate_capture(record, capture)
@@ -365,11 +374,11 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if whole_gdn:
             from .whole_gdn import build
             model, result['source_contract'] = build(record, capture, target, converters, factory,
-                target_config, source_root, root, gdn_state_dtype, gdn_convstate)
+                target_config, source_root, root, gdn_state_dtype, gdn_convstate, gdr_mode)
             result['target_weights'] = dict(status='ORIGINAL_CHECKPOINT_BOUND')
             result['candidate'] = dict(kind='WHOLE_GDN_' + ('FP16' if gdn_state_dtype == 'float16' else 'FP32') + '_STATE',
                 state_dtype=gdn_state_dtype, golden_state_dtype='float32', convstate_mode=gdn_convstate,
-                qlinear_scales='fp16', reference='ORIGINAL_CAPTURE_UNCHANGED')
+                qlinear_scales='fp16', gdr_mode=gdr_mode, gdr_calls=gdr_calls, reference='ORIGINAL_CAPTURE_UNCHANGED')
         elif whole_attention:
             from .whole_attention import build, prepare_cache_position_input, INPUTS
             model, result['source_contract'] = build(record, capture, target, converters, factory,
@@ -420,7 +429,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             os.chdir(root)
             with (torch.no_grad(), export_input_identity(inputs) as input_identity,
                   qlinear_ge_scales(qlinear_fp16 or whole, expected_calls=5 if whole_gdn else 4 if whole_attention else 1) as ge_adapter,
-                  gdn_state_contract(whole_gdn, gdn_state_dtype) as gdn_adapter,
+                  gdn_state_contract(whole_gdn, gdn_state_dtype, gdr_calls) as gdn_adapter,
                   cache_ge_integer_mul(cache_mode == 'integer', record['attrs'].get('block_size')) as cache_adapter):
                 if ge_adapter is not None:
                     result['candidate']['ge_adapter'] = ge_adapter
@@ -439,7 +448,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             if whole_gdn:
                 from .module_contracts import check_gdn_source
                 result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'], gdn_state_dtype,
-                                                                   gdn_convstate)
+                                                                   gdn_convstate, expected_calls=gdr_calls)
             elif rope_fp32:
                 from .rope import check_graph as check_rope_graph
                 result['candidate_graph_check'] = check_rope_graph(graph, schema, golden['dtype'])

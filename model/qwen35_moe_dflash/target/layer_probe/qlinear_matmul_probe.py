@@ -52,7 +52,32 @@ def repeat_dynamic_quant(npu, hidden, saved_q, saved_scale, device, rows):
             previous = current
 
 
-def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0', *, repeat_original=False):
+def dequantized_device_matmul(reference_report, ref_case, region, q, ps, n, device):
+    """Ordinary FP32 matmul on the same A8 and logical W4 as the CPU reference."""
+    import torch
+    from ..original_quant import OriginalQuantWeights
+    from .qlinear_golden import _array_identity
+
+    member = 'self_attn.v_proj' if region['point'] == 'self_attn_v_proj' else 'linear_attn.in_proj_qkv'
+    weights = OriginalQuantWeights(Path(reference_report['quanted_pth']))
+    raw, scales = weights.logical(f'target.layers.{region["layer"]}.{member}.weight', (n, q.shape[1]))
+    binding = ref_case['weight_binding']
+    if _array_identity(raw) != binding['raw_weight'] or _array_identity(scales) != binding['raw_scale']:
+        raise ValueError('logical checkpoint W4 or group scales changed since the CPU reference')
+    with torch.no_grad():
+        x = torch.from_numpy(q).to(device=device, dtype=torch.float32)
+        w = torch.from_numpy(raw.copy()).to(device=device, dtype=torch.float32)
+        s = torch.from_numpy(scales.copy()).to(device=device, dtype=torch.float32)
+        w = (w.reshape(n, -1, 256) * s).reshape(n, q.shape[1])
+        token_scale = torch.from_numpy(ps).to(device)
+        for _ in range(2):
+            y = (torch.matmul(x, w.T) * token_scale).to(torch.float16)
+            torch.npu.synchronize(device)
+            yield y.detach().to('cpu', copy=True).contiguous().numpy()
+
+
+def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0', *,
+              repeat_original=False, dequant_control=False):
     import torch
     from .qlinear import describe, explicit_group256
     from .qlinear_backend import runtime, tensor_formats
@@ -195,6 +220,20 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
                 break
         report['runtime_after'] = runtime(torch_npu)
         executed = all(row['status'] == 'EXECUTED' for row in report['variants']) and 'dynamic_quant_error' not in report
+        if dequant_control:
+            control = report['dequant_control'] = dict(calls=[], input='SAVED_DYNAMIC_QUANT_REPLAY', output_dtype='float16')
+            last = None
+            try:
+                for i, values in enumerate(dequantized_device_matmul(reference_report, ref_case, region, q, ps, n, device), 1):
+                    row = dict(call=i, vs_cpu=record_comparison(f'dequant_{i}_vs_cpu', values, expected[0]))
+                    if last is not None:
+                        row['vs_previous'] = record_comparison('dequant_2_vs_previous', values, last)
+                    control['calls'].append(row)
+                    last = values
+            except Exception as exc:
+                control['error'] = f'{type(exc).__name__}: {exc}'
+                summaries.append('ordinary device matmul: ' + control['error'])
+                executed = False
         report['status'] = 'INSPECTED' if executed else 'PARTIAL'
     except Exception as exc:
         report.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')

@@ -226,8 +226,10 @@ L0_RUN=$(mktemp -d "${GOLDEN_CHECK:?}/l0-stages.XXXXXXXX")
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" probe-310p-matmul \
   --capture "$PREFILL_FIXTURE/capture" --quant-replay "$GOLDEN_CHECK/dynamic-quant" \
   --cpu "$GOLDEN_CHECK/with-dynamic-quant" --layer 0 --device npu:0 \
-  --repeat-original --output "$L0_RUN/probe"
+  --repeat-original --dequant-control --output "$L0_RUN/probe"
 cat "$L0_RUN/probe/summary.txt"
 ```
 
 `dynamic_quant_calls[].vs_previous` 给出相邻量化结果的逐位比较，`vs_saved` 比较本次与已保存量化重放的输出。`variants[].vs_previous` 给出相邻矩阵乘输出的误差。量化稳定而固定实参的矩阵乘输出变化时，可独立复现 L0 的矩阵乘波动。若两步都稳定，再核对摘要中三次原签名输出对 CPU 参考及历史捕获的误差，继续检查原调用现场与独立重放的差异。
+
+`--dequant-control` 使用同一份 A8、per-token scale 和经哈希核对的原始 W4／group scale，在 310P 上显式反量化权重，做两次普通 FP32 张量矩阵乘，乘 token scale 后转 FP16。先看 `dequant_1_vs_cpu`、`dequant_2_vs_cpu` 的五项指标，以及 `dequant_2_vs_previous` 的逐位一致性。再看原融合调用的 `original*_vs_cpu` 和 `*_vs_previous`。报告中的 `INSPECTED` 只表示诊断执行完成。

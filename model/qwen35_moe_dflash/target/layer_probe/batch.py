@@ -42,10 +42,10 @@ def export_variants(region, cache_indexing):
 def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None, phases=None,
                  timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel',
                  rope_precision='source', gdn_state_dtype='source', gdn_convstate='kernel',
-                 full_attention_reference='math-replay'):
+                 full_attention_reference='math-replay', gdr_mode='chunk'):
     if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both')
             or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')
-            or gdn_convstate not in ('kernel', 'reference')
+            or gdn_convstate not in ('kernel', 'reference') or gdr_mode not in ('chunk', 'single-token')
             or full_attention_reference not in ('math-replay', 'captured-audited')):
         raise ValueError('unknown module candidate')
     if phases is not None and (not phases or set(phases) - {'prefill', 'decode'}):
@@ -68,6 +68,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                and (phases is None or r['phase'] in phases)]
     if not regions:
         raise ValueError('no matching captured regions')
+    if gdr_mode == 'single-token' and any(r['kind'] != 'gdn_layer' or r['phase'] != 'prefill' for r in regions):
+        raise ValueError('--gdr-mode single-token requires whole gdn_layer Prefill cases')
     if full_attention_reference != 'math-replay' and not any(r['kind'] == 'full_attention_layer' for r in regions):
         raise ValueError('--full-attention-reference requires full_attention_layer selection')
     if gdn_convstate != 'kernel' and any(r['kind'] != 'gdn_layer' for r in regions):
@@ -98,6 +100,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         reference='ORIGINAL_CAPTURE_UNCHANGED')
     if any(r['kind'] == 'full_attention_layer' for r in regions):
         report['candidate_options']['full_attention_reference'] = full_attention_reference
+    if any(r['kind'] == 'gdn_layer' for r in regions):
+        report['candidate_options']['gdr_mode'] = gdr_mode
     report['selected_phases'] = sorted({r['phase'] for r in regions})
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
@@ -125,6 +129,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 argv += ['--gdn-state-dtype', gdn_state_dtype]
             if gdn_convstate != 'kernel':
                 argv += ['--gdn-convstate', gdn_convstate]
+            if gdr_mode != 'chunk':
+                argv += ['--gdr-mode', gdr_mode]
             if qlinear_scales != 'source':
                 argv += ['--qlinear-scales', qlinear_scales]
             if mode != 'kernel':
@@ -369,6 +375,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
             model=_file_record(model, name+'/model.omc'), graphop_counts=observed['graphop_counts']))
         if state_contract:
             cases[-1]['compiled_state_contract'] = state_contract
+            cases[-1]['gdr_mode'] = exported.get('candidate', {}).get('gdr_mode', 'chunk')
             cases[-1]['convstate_mode'] = exported.get('candidate', {}).get('convstate_mode', 'kernel')
         if 'attention_contract' in exported:
             cases[-1]['attention_contract'] = exported['attention_contract']

@@ -65,7 +65,28 @@ def assemble(manifest):
     return records
 
 
-def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel'):
+def single_token_gdr(query, key, value, g, beta, chunk_size, initial_state, effective_length,
+                     output_final_state, use_qk_l2norm_in_kernel):
+    import torch_npu
+
+    if chunk_size != 64 or not output_final_state:
+        raise ValueError('single-token Prefill expects the original chunk_size=64 call with final state')
+    # The exporter validates effective_length=[T] before tracing this static fixture.
+    one = torch.ones_like(effective_length)
+    state = initial_state
+    blocks = []
+    for t in range(query.shape[1]):
+        core, next_state = torch_npu.npu_chunk_gated_delta_rule(
+            query[:, t:t+1].contiguous(), key[:, t:t+1].contiguous(), value[:, t:t+1].contiguous(),
+            g=g[:, t:t+1].contiguous(), beta=beta[:, t:t+1].contiguous(), chunk_size=1,
+            initial_state=state, effective_length=one, output_final_state=output_final_state,
+            use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel)
+        blocks.append(core)
+        state = next_state.to(initial_state.dtype)
+    return torch.cat(blocks, dim=1), state
+
+
+def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel', gdr_mode='chunk'):
     if state_dtype not in ('float16', 'float32'):
         raise ValueError('whole GDN state must be float16 or float32')
     tree, evidence = definition(owner)
@@ -95,6 +116,12 @@ def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel'):
     initial = [k for k in op.keywords if k.arg == 'initial_state']
     if len(initial) != 1 or ast.unparse(initial[0].value) != 'recurrent_state':
         raise ValueError('review changed GDN initial_state expression')
+    if gdr_mode == 'single-token':
+        op.func = ast.Name(id='_probe_single_token_gdr', ctx=ast.Load())
+        tree.body.insert(0, ast.ImportFrom(
+            module=__name__, names=[ast.alias(name='single_token_gdr', asname='_probe_single_token_gdr')], level=0))
+    elif gdr_mode != 'chunk':
+        raise ValueError('unknown GDR mode')
     # Source ConvState returns NCL, but this DDK infers NC1L for its padded
     # output. Reshape fixes the Conv2D rank in either case; unsqueeze would
     # turn the target's already-4D output into a rejected 5D tensor.
@@ -119,6 +146,9 @@ def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel'):
                                     preserves='ELEMENT_ORDER_AND_DTYPE'),
                     arithmetic_precision='INTERNAL_KERNEL_ACCUMULATION_NOT_ESTABLISHED')
     evidence['convstate_mode'] = convstate_mode
+    evidence['gdr_mode'] = gdr_mode
+    if gdr_mode == 'single-token':
+        evidence['adaptations'].append('SINGLE_TOKEN_GDR_WITH_ORDERED_CORE_CONCAT_AND_RECURRENT_FEEDBACK')
     if convstate_mode == 'reference':
         evidence['adaptations'].append('REFERENCE_CONVSTATE_CONCAT_TAIL; FULL_CAPTURE_LENGTH_ONLY')
         evidence['convstate_binding'] = 'FORWARD_LOCAL_IMPORT; ORIGINAL_SOURCE_MODULE_UNCHANGED'
@@ -142,7 +172,7 @@ class WholeGDN(torch.nn.Module):
 
 
 def build(record, capture, target, converters, factory, config_path, source_root, root, state_dtype='float32',
-          convstate_mode='kernel'):
+          convstate_mode='kernel', gdr_mode='chunk'):
     import yaml
     from .candidates import adapt_qlinear
     from .target_weights import load_weights
@@ -183,7 +213,7 @@ def build(record, capture, target, converters, factory, config_path, source_root
                 setattr(parent, name, torch.nn.Parameter(value, requires_grad=False))
     if any(t.is_meta for t in (*op.parameters(), *op.buffers())):
         raise ValueError('whole GDN has unbound meta weights')
-    forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward, state_dtype, convstate_mode)
+    forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward, state_dtype, convstate_mode, gdr_mode)
     op.forward = MethodType(forward, op)
     model = WholeGDN(op, state_dtype).eval()
     evidence = dict(status='BOUND_TO_SOURCE', kind='gdn_layer', source=source,

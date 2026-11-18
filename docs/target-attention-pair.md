@@ -2,7 +2,7 @@
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 
-T8 两组已执行。板端可观测的四个投影区域与独立 CPU 参考一致，四层整模块输出与原捕获存在偏差。当前核对正常 310P 推理进程中的 L3 V。[投影核验结果与执行命令](target-golden-verification.md#step5)
+T8 板端可观测的四个投影与独立 CPU 参考一致。310P 的排查从 L0 QKV 开始。Linear Attention 可另用同一份 T64 输入比较分块 GDR 与逐 token GDR。[CPU 与 310P 对照](target-golden-verification.md#step7) · [T64 GDR 对照](#t64-gdr)
 
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。以下流程要求 `capture/manifest.json` 为 `CAPTURED`，同次 `attention_audit` 为 `PASSED`。保留完整 `PREFILL_FIXTURE`（含父 manifest 和 `attention-audit/`），无需再次执行整网 Prefill。
 
@@ -91,3 +91,37 @@ cat "$BATCH_ROOT/comparison/summary.csv"
 `PENDING` 时仅重复 recover；已有 native 输出后，即使精度失败也继续 compare。每图预热 3 次、采样 10 次，每次恢复同一输入。Linear 应有 9 行，Full 应有 3 行。Full CSV 的 `reference_basis` 标明参考来源；上述模式中常规指标与 `captured_*` 都对比同次原输出。K/V 另外要求本次有效写入区域满足相同精度门槛，未写区域逐位等于旧输入。
 
 回传两组 `summary.csv` 和 `report.json`。只有两组各自完成执行和比较后，才能判断是 GDN、FullAttention 或两者存在偏差；模块通过也不代表 MoE、整网 logits 或连续状态反馈已经通过。
+
+<a id="t64-gdr"></a>
+
+## T64 Prefill 的 GDR 分块与逐 token 对照
+
+两组均使用同一份 L0–L2 捕获。分块组按原路径运行一次 GDR，逐 token 组在每层的同一张静态图内运行 64 次 S=1、chunk_size=1 的 GDR。每步消费对应 token 的 Q/K/V、g、beta 和上一步的 recurrent state，有效长度为 1。按时间顺序拼接 core 后执行原有 gated norm 和输出投影。两组都使用 FP16 状态接口，逐步回传 FP16 状态会引入与分块计算不同的舍入。
+
+**310P 采集。** 已有同次 T64 Prefill 的完整边界捕获时，直接将 `T64_FIXTURE` 指向它。当前 YAML 的单条 prompt 为 8 个 token，下面示例将原文重复 8 次并校验实际分词数为 64。已有 T8 golden 可单独用于 8 步对照。
+
+```bash
+T64_FIXTURE="$AI_RUN_DIR/target/tests/prefill-fixture-t64"
+python "$REPO_DIR/targets/cpro/tools/generate_target_prefill.py" \
+  --source-root "$TARGET_SOURCE" --config "$TARGET_CONFIG" --device npu:0 \
+  --prompt-repeat 8 --sequence-length 64 --capture-boundaries \
+  --output "$T64_FIXTURE"
+```
+
+**AIR 导出。** 在 AIR 服务器配置上述 `T64_FIXTURE`，确认其 `capture/manifest.json` 为 `CAPTURED`。使用第 1 节的 CPro 源目录和 converter。在后续各主机沿用同一 `PAIR_ROOT` 相对目录结构。
+
+```bash
+export PAIR_ROOT="$AI_RUN_DIR/target/tests/gdr-t64"
+for mode in chunk single-token; do
+  python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
+    --capture "$T64_FIXTURE/capture" --source-root "$CPRO_SOURCE" \
+    --target-config "$TARGET_CONFIG" --converter-script "$CPRO_EXPORT_SCRIPT" \
+    --points gdn_layer --phases prefill --qlinear-scales fp16 \
+    --gdn-state-dtype float16 --gdn-convstate reference --gdr-mode "$mode" \
+    --output "$PAIR_ROOT/$mode/air" || break
+done
+```
+
+核对两组 AIR manifest 的 `capture_sha256` 相同。每份 `export.json` 的 `candidate_graph_check` 应分别显示 `gdr_calls=1, chunk_size=64` 和 `gdr_calls=64, chunk_size=1`。沿用第 2 节的 DDK 编译命令，将循环组名改为 `chunk single-token`。执行第 3 节时分别设置 `GROUP=chunk` 和 `GROUP=single-token`，各自回收 3 层、9 项输出。
+
+逐层对比两组板端输出。先确认重复稳定的 `golden_new_conv_state` 对应实际输出哈希在 A/B 间一致，再看 hidden 和 recurrent state 的变化，以及各自对同一捕获的误差。两组都偏离 310P 时，还需结合 CPU 与 310P 的投影对照。仅切换 GDR 无法证明其它模块全部正确。
