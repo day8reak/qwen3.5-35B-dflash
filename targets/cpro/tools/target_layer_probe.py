@@ -96,6 +96,9 @@ def main():
             s.add_argument('--quant-replay', help='optional replay-dynamic-quant output directory')
         else:
             s.add_argument('--device', default='npu:0')
+    s = sub.add_parser('compare-projection-values', help='compare retained Prefill state values directly to independent CPU projections')
+    s.add_argument('--cpu', required=True, help='completed verify-qlinear-golden directory')
+    s.add_argument('--group', required=True, help='linear or full-fp32-pos directory containing omc, execution, recovery and comparison')
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
@@ -132,6 +135,14 @@ def main():
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format,
                                      cases=a.cases, compiler_profile=a.compiler_profile)
+    elif a.command == 'compare-projection-values':
+        import csv
+        from qwen35_moe_dflash.target.layer_probe.projection_values import compare_values
+        rows = compare_values(a.cpu, a.group)
+        writer = csv.DictWriter(sys.stdout, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+        return 0
     elif a.command == 'inspect-prefill-links':
         from qwen35_moe_dflash.target.layer_probe.prefill_links import inspect_prefill_links
         result = inspect_prefill_links(a.capture, a.output)

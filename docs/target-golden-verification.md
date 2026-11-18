@@ -54,4 +54,17 @@ cat "$GOLDEN_CHECK/with-dynamic-quant/summary.txt"
 | 两套矩阵参考均与原投影明显不符 | 查原 QuantMatmul 的 group、packing、调用环境；暂不把这些 golden 当正确参考 |
 | 所选投影一致 | 再推进 GDN 后续计算、FullAttention 及整网参考核验；四个投影不覆盖全部模型 |
 
-先回传 `cpu/summary.txt`；如执行第二步，再带上 `with-dynamic-quant/report.json`。无需回传权重或大 tensor。
+本次 T8 的四个投影均为 `DIFFERS`。L0、L1、L2 的 QKV 相对 L2 误差分别为 1.390、1.155、1.195，L3 V 为 1.217。先执行上面的 DynamicQuant 重放。请保留 `with-dynamic-quant/report.json`，其中 `quantizer_comparison` 给出 A8 的不同元素数所需计数和 token scale 误差。
+
+## 3. 用已有板端输出直接比 CPU
+
+L3 CPU V 投影与原捕获的最大误差为 4.89306640625，板端 V cache 与原捕获的最大误差也是这个值。要确认板端与 CPU 是否接近，用保存了 `execution/fixture`、`recovery/native`、`omc/manifest.json` 和 `comparison/report.json` 的主机直接比较。如果分布在两台机器，把完整的 `golden-check/cpu/` 目录复制过去。
+
+```bash
+for group in linear full-fp32-pos; do
+  python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare-projection-values \
+    --cpu "$GOLDEN_CHECK/cpu" --group "$PAIR_ROOT/$group"
+done
+```
+
+`board_vs_cpu` 直接比较同一 token、同一通道的值。L0–L2 的 ConvState 可观测最后 4 个 token，L3 按实际 block table 取出 8 个有效 token 的 V。另两行分别给出 CPU、板端在相同区域对 310P 的误差。已有第二步结果时，`--cpu "$GOLDEN_CHECK/with-dynamic-quant"` 可一次比较两套参考。
