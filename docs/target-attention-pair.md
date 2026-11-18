@@ -11,6 +11,7 @@
 切到此前成功导出 CPro AIR 的 Python 环境。`CPRO_SOURCE` 指向原私有 CPro 源码根目录；GDN 导出器在进程内将原 `linear_attention_convstate_update` 展开为已验证的 concat/tail，因此应使用保留该原调用的源码副本。不要指向已手工应用整网 ConvState patch 的副本。权重 YAML 使用原 checkpoint／量化权重，路径规则见采集文档。
 
 ```bash
+conda activate qwen3_5_cpro
 export CPRO_SOURCE="${CPRO_SOURCE:-$TARGET_SOURCE}"
 export CPRO_EXPORT_SCRIPT="$CPRO_SOURCE/export_glm_model_qwen3_5_moe.py"
 export PAIR_ROOT="$AI_RUN_DIR/target/tests/attention-pair"
@@ -49,9 +50,10 @@ Mask 核验保留模块入口和核心入口的实际数据。零符号或因果
 
 ### T64 Full Attention 使用模块数学重放
 
-在 AIR 导出环境复用已采集的 T64 边界和第 1 节的 CPro 源码、converter。主参考取自同一模块输入上的重放，只将 Attention core 换成 FP64 数学计算后转 FP16，投影、gate 等其余计算仍使用原模块。导出时会再次核对输入和 K/V 的文件记录。
+在此前成功导出 AIR 的 `qwen3_5_cpro` 环境复用 T64 边界和第 1 节的 CPro 源码、converter。主参考取自同一模块输入上的重放，只将 Attention core 换成 FP64 数学计算后转 FP16，投影、gate 等其余计算仍使用原模块。导出时会再次核对输入和 K/V 的文件记录。
 
 ```bash
+conda activate qwen3_5_cpro
 T64_FIXTURE="$AI_RUN_DIR/target/tests/prefill-fixture-t64"
 export PAIR_ROOT="$AI_RUN_DIR/target/tests/attention-pair-t64"
 python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
@@ -62,6 +64,8 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 ```
 
 按第 2 节只编译 `full`，第 3 节使用 `GROUP=full`。比较报告的 `relative_l2` 和 `cosine` 对应板端对数学 core 的模块重放，`captured_relative_l2` 和 `captured_cosine` 对应板端对原模块输出。Linear 两组沿用下方[分块与逐 token 对照](#t64-gdr)。
+
+若导出在 `npu_quant_matmul` 的 FakeTensor 检查时报 A8W4 的 `scale` 要求 INT64，先核对 traceback 中的 Python 环境。已复现的失败使用了 310P 采集环境 `qwen3_5_w4`。切回此前成功的 CPro AIR Python、CANN 和 TorchAir 配置，保留 `--qlinear-scales fp16` 与原 fixture。重试可将 `PAIR_ROOT` 设为 `$AI_RUN_DIR/target/tests/attention-pair-t64-cpro`，后续编译和上板沿用该目录。
 
 ## 2. 编译
 
@@ -129,6 +133,7 @@ python "$REPO_DIR/targets/cpro/tools/generate_target_prefill.py" \
 **AIR 导出。** 在 AIR 服务器配置上述 `T64_FIXTURE`，确认其 `capture/manifest.json` 为 `CAPTURED`。使用第 1 节的 CPro 源目录和 converter。在后续各主机沿用同一 `PAIR_ROOT` 相对目录结构。
 
 ```bash
+conda activate qwen3_5_cpro
 export PAIR_ROOT="$AI_RUN_DIR/target/tests/gdr-t64"
 for mode in chunk single-token; do
   python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
