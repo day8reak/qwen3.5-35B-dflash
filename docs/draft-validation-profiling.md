@@ -53,14 +53,14 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 2. 完整 Draft 精度验证
 
-**启动验证**
+**启动验证**（默认 `untouched`）
 
 ```bash
 python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
   --config "$DRAFT_RUNTIME_CONFIG" \
   --compiled "$AI_RUN_DIR/draft/omc" --air-export "$AI_RUN_DIR/draft/air" \
   --source "$AI_RUN_DIR/draft/source/prepared" --ddk-root "$CPRO_DDK_ROOT" \
-  --output-initialization untouched --output "$DRAFT_ACCURACY_RUN" --apply
+  --output "$DRAFT_ACCURACY_RUN" --apply
 ```
 
 **回收结果**

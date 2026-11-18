@@ -98,7 +98,7 @@ def extract_outputs(archive, destination, meta, reproduction=None):
 
 
 def start(config, compiled, source, air, output, *, apply=False, atol=0.01, rtol=0.01,
-          timeout_seconds=1800, ddk_root=None, replay=None, output_initialization='zero',
+          timeout_seconds=1800, ddk_root=None, replay=None, output_initialization='untouched',
           kv_reproduction_case=None):
     if output_initialization not in ('zero', 'untouched'):
         raise ValueError('output initialization must be zero or untouched')
