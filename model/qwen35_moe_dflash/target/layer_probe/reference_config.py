@@ -1,6 +1,7 @@
 """Keep a bounded reference config consistent without writing the checkpoint."""
 from contextlib import contextmanager
 from copy import deepcopy
+import inspect
 import json
 from pathlib import Path
 
@@ -65,6 +66,22 @@ def set_layer_prefix(config, count):
     config.num_hidden_layers = count
     for name, values in selected.items():
         setattr(config, name, values)
+
+
+def load_layer_prefix(loader, args, kwargs, count, record):
+    """Use the original factory's prefix argument, preserving device and dtype."""
+    values = inspect.signature(loader).bind(*args, **kwargs)
+    values.apply_defaults()
+    if 'layer_num' not in values.arguments or values.arguments.get('start_layer_idx', 0) != 0:
+        raise ValueError('reference prefix requires layer_num and start_layer_idx=0')
+    values.arguments['layer_num'] = count
+    model = loader(*values.args, **values.kwargs)
+    total = model.config.num_hidden_layers
+    if count > total or len(model.model.layers) != count:
+        raise ValueError('original loader did not construct the requested layer prefix')
+    record.update(source_num_hidden_layers=total, constructed_layers=count)
+    set_layer_prefix(model.config, count)
+    return model
 
 
 def consistent_hf_dict(raw, count):

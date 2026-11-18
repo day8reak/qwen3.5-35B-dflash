@@ -5,7 +5,7 @@ import functools
 import inspect
 
 import torch
-from .reference_config import set_layer_prefix
+from .reference_config import load_layer_prefix
 
 
 class LayerStreaming:
@@ -43,21 +43,10 @@ class LayerStreaming:
         cls = wrapper_module.Qwen3_5MoeForCausalLMWrapper
         if self.model_layers is not None:
             def load(original, args, kwargs):
-                values = inspect.signature(original).bind(*args, **kwargs)
-                values.apply_defaults()
-                if 'layer_num' not in values.arguments or values.arguments.get('start_layer_idx', 0) != 0:
-                    raise ValueError('four-layer reference requires original loader layer_num and start_layer_idx=0')
-                values.arguments['layer_num'] = self.model_layers
-                model = original(*values.args, **values.kwargs)
-                total = model.config.num_hidden_layers
-                if self.model_layers > total or len(model.model.layers) != self.model_layers:
-                    raise ValueError('original loader did not construct the requested layer prefix')
-                self.record.update(source_num_hidden_layers=total,
-                    executed_num_hidden_layers=self.model_layers,
-                    full_model_forward_preserved=self.model_layers == total,
+                model = load_layer_prefix(original, args, kwargs, self.model_layers, self.record)
+                self.record.update(executed_num_hidden_layers=self.model_layers,
+                    full_model_forward_preserved=self.model_layers == self.record['source_num_hidden_layers'],
                     decode_token_source=f'FIRST_{self.model_layers}_LAYERS_PLUS_ORIGINAL_NORM_LM_HEAD')
-                # Original inference allocates caches and unpacks outputs using this field.
-                set_layer_prefix(model.config, self.model_layers)
                 return model
             self.patch(wrapper_module, 'load_npu_model', load)
 

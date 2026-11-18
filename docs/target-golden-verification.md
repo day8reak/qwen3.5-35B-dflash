@@ -116,15 +116,27 @@ python "$TRACE" --source-root "$TARGET_SOURCE" --list-configs -- --config "$TARG
 
 如果 tokenizer 报 `num_hidden_layers (4)` 与 `layer_types (40)` 冲突，错误发生在 Prefill 之前。上面的命令列出原项目根目录、`config/` 及当前 YAML 同目录的候选，打印实际 HF 配置路径、声明层数、层类型列表长度、W4 目录和权重头中出现的层号。路径按原推理工作目录解析。`w4_layer_ids` 表示这些层有权重记录，每层各投影的完整性仍需加载验证。
 
-**40 层正常推理**使用当时正常吐字的 YAML，将其路径设为 `TARGET_CONFIG_40`。本模型对应 40 层，显式 `layer_types` 列表有 40 项，W4 应覆盖索引 0–39。四层捕获继续作为对照输入。每次重试用独立目录。
+**40 层正常推理**使用当时正常吐字的 YAML。若上一步确认当前 `TARGET_CONFIG` 指向 40 层 checkpoint，沿用该变量即可。本模型的 `layer_types` 有 40 项，W4 应覆盖索引 0–39。
 
 ```bash
 LIVE_PARENT=$(mktemp -d "$GOLDEN_CHECK/l3-live-40.XXXXXXXX")
 python "$TRACE" --reference-layers 40 \
   --source-root "$TARGET_SOURCE" --capture "$GOLDEN_CAPTURE" \
   --cpu "$GOLDEN_CHECK/with-dynamic-quant" --output "$LIVE_PARENT/trace" -- \
-  --config "${TARGET_CONFIG_40:?请指定原40层推理使用的YAML}" --quant_mode enable --quant_bits 4 --max_token 2
+  --config "$TARGET_CONFIG" --quant_mode enable --quant_bits 4 --max_token 2
 ```
+
+**40 层模型在构造阶段显存不足时**，在同一个 310P 推理环境运行下面的 L3 单投影实验。工具向原加载器指定第 0–3 层，保留原脚本的设备选择和 W4 初始化，在第一次 Prefill 入口取出已初始化的 `v_proj`，用四层 capture 中保存的 hidden 调用一次，然后退出。完整 Prefill 和 Decode 此次均未执行。
+
+```bash
+LIVE_PARENT=$(mktemp -d "$GOLDEN_CHECK/l3-prefix.XXXXXXXX")
+python "$TRACE" --reference-layers 40 --replay-l3-prefix \
+  --source-root "$TARGET_SOURCE" --capture "$GOLDEN_CAPTURE" \
+  --cpu "$GOLDEN_CHECK/with-dynamic-quant" --output "$LIVE_PARENT/trace" -- \
+  --config "$TARGET_CONFIG" --quant_mode enable --quant_bits 4 --max_token 2
+```
+
+当 `hidden_equal_bits=true` 时，`module_vs_four_layer` 比较新投影和历史 golden。`matmul_vs_same_call_cpu` 比较本次矩阵乘与由同次 A8、token scale 重算的 CPU 结果。跳过重算时看 `weight_equal_bits`、`scale_equal_bits` 和 `live.json` 中的算子实参。
 
 **四层 L3 诊断**可以继续用当前声明 4 层的 `TARGET_CONFIG`。上面命令改为 `--reference-layers 4` 和 `--config "$TARGET_CONFIG"`，另取新的输出目录。对于已声明四层的 Qwen 配置，工具仅在当前进程内取过长层类型列表的前四项。报告记录配置适配和实际观测的模型层数。该结果只覆盖四层路径。
 

@@ -41,6 +41,23 @@ class LiveProjection:
                            entry=str(Path(code.co_filename).resolve()), entry_sha256=sha(code.co_filename))
         self.handles.append(module.register_forward_pre_hook(self.before, with_kwargs=True))
         self.handles.append(module.register_forward_hook(self.after))
+        return module
+
+    def replay_captured_hidden(self, module, capture):
+        import torch
+
+        root, _, (region,) = load_capture(capture, ['self_attn_v_proj'])
+        spec = tensor_spec(region, 'inputs', 'x')
+        hidden = torch.from_numpy(read_array(root, spec))
+        weight = getattr(module, 'W_q', None)
+        if (not isinstance(weight, torch.Tensor) or weight.ndim != 2
+                or weight.device.type != 'npu' or weight.dtype != torch.int32):
+            raise ValueError('initialized L3 V requires the original packed INT32 W_q on NPU')
+        if hidden.dtype != torch.float16 or tuple(hidden.shape) != (1, region['sequence_length'], weight.shape[0]):
+            raise ValueError('capture hidden dtype/shape does not match the L3 Prefill input')
+        self.report.update(input_source='CAPTURED_LOGICAL_HIDDEN', input_tensor=spec)
+        with torch.no_grad():
+            module(hidden.to(weight.device))
 
     def before(self, module, args, kwargs):
         import torch
