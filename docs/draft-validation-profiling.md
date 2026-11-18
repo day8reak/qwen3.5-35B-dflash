@@ -53,24 +53,24 @@ python3 "$REPO_DIR/targets/cpro/scripts/compile_incremental_draft.py" \
 
 ## 2. 完整 Draft 精度验证
 
-一次运行生成参考输入和输出，上板验证后将报告写入 `accuracy-result/result.json`。
+**启动验证**
 
 ```bash
-(
-  set -e
-  validate="$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py"
-  python3 "$validate" --config "$DRAFT_RUNTIME_CONFIG" \
-    --compiled "$AI_RUN_DIR/draft/omc" --air-export "$AI_RUN_DIR/draft/air" \
-    --source "$AI_RUN_DIR/draft/source/prepared" --ddk-root "$CPRO_DDK_ROOT" \
-    --output-initialization untouched --output "$DRAFT_ACCURACY_RUN" --apply
-  while :; do
-    python3 "$validate" --recover "$DRAFT_ACCURACY_RUN" --output "$DRAFT_ACCURACY"
-    status=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["status"])' "$DRAFT_ACCURACY/result.json")
-    [ "$status" = DRAFT_ACCURACY_PENDING ] || break
-    sleep 5
-  done
-)
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --config "$DRAFT_RUNTIME_CONFIG" \
+  --compiled "$AI_RUN_DIR/draft/omc" --air-export "$AI_RUN_DIR/draft/air" \
+  --source "$AI_RUN_DIR/draft/source/prepared" --ddk-root "$CPRO_DDK_ROOT" \
+  --output-initialization untouched --output "$DRAFT_ACCURACY_RUN" --apply
 ```
+
+**回收结果**
+
+```bash
+python3 "$REPO_DIR/targets/cpro/tools/validate_incremental_draft.py" \
+  --recover "$DRAFT_ACCURACY_RUN" --output "$DRAFT_ACCURACY"
+```
+
+若返回 `DRAFT_ACCURACY_PENDING`，稍后再执行回收命令。完成后查看 `$DRAFT_ACCURACY/result.json`。
 
 ## 3. 采集 Profiling
 
