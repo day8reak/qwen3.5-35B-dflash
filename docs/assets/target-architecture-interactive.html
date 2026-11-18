@@ -28,11 +28,12 @@
 <tr><td>ConvState 显式展开</td><td><span class="pill low">6/6 通过</span></td><td>transpose + concat + slice；取整层 GDN 的 new_conv_state 输出。原内置 LinearAttentionConvstateUpdate 路径已编译执行，但数值未通过。</td></tr>
 <tr><td>整层 GDN</td><td><span class="pill bad">11/18 通过</span></td><td>Prefill hidden/state 六项失败；Decode 仅 L1 hidden 失败。独立 GDN 相邻边界为 43/48 通过。</td></tr>
 <tr><td>RoPE</td><td><span class="pill low">4 项零误差</span></td><td>Prefill／Decode × Q／K；显式 FP32 旋转，FP16 输出，重复稳定。</td></tr>
+<tr><td>L3 Full Attention · T64 Prefill</td><td><span class="pill low">3/3 通过</span></td><td>板端 hidden 对数学重放的相对 L2 为 1.6221%。K/V 有效区为 0.2449% / 0.2245%，未写区逐位保留。<a href="../../specs/target-full-attention-t64-metrics.csv">三项指标</a></td></tr>
 <tr><td>Attention 核心算子</td><td><span class="pill low">2/2 五项通过</span></td><td>对独立 NumPy FP64 → FP16 参考，L2 为 0.11175% / 0.11438%，各 10 次稳定。原 Prefill captured golden 不可信。</td></tr>
 <tr><td>CacheUpdate</td><td>Prefill <span class="pill low">4/4 逐位通过</span>；Decode <span class="pill bad">4/4 失败</span></td><td>K/V × 两种索引；Decode 历史缓存保留问题未闭环。</td></tr>
 <tr><td>T8 QKV / V 投影</td><td><span class="pill low">板端对 CPU 4/4 通过</span></td><td>L0–L2 QKV 末 4 token、L3 V 全 8 token，相对 L2 为 0.0552%–0.0776%。310P 的 L0 QKV 显式反量化路径对 CPU 为 0.01737%，原融合调用 0/3 通过。<a href="../target-golden-verification.md#step7">310P 复测</a></td></tr>
 </tbody></table></div>
-<p class="hint">当前浮点标准：cosine &gt;0.99、relative-L2 &lt;0.05、KL &lt;0.005、RMSE &lt;1、MeanRE &lt;1，五项全部满足且重复稳定；Cache 另须整缓存逐位一致。数值来自用户回传，未在本地重跑设备。</p>
+<p class="hint">当前浮点标准：cosine &gt;0.99、relative-L2 &lt;0.05、KL &lt;0.005、RMSE &lt;1、MeanRE &lt;1，五项全部满足且重复稳定；独立 CacheUpdate 检查整缓存逐位一致，T64 Full Attention 分别检查有效写入区精度和未写区逐位保留。数值来自用户回传，未在本地重跑设备。</p>
 <p class="hint">更新于 2026-11-18。图中数据按模块汇总，不代表一次整图执行。<a href="../target-accuracy-status.md">结果范围与证据</a></p>
 </section>
 <section class="card" id="whole-gdn-results"><h2>整层 GDN：显式 ConvState 版本</h2>
@@ -46,11 +47,11 @@
 <div id="overview" class="svg-scroll"></div></section>
 <section class="card"><h2>2. Prefill 与 Decode：相同的 40 层结构，不同的输入长度和状态使用</h2>
 <div id="timeline" class="svg-scroll"></div>
-<p class="hint">这里画普通自回归执行。首次 Prefill 使用初始化状态；续接 Prefill 使用已有状态，按调用配置确定。Decode 每步 1 token，读取此前状态。绿色/红色数据来自独立捕获输入的小图，不证明此跨调用闭环已验证。已测 Prefill T256 与其他整图长度不能混用。</p>
+<p class="hint">这里画普通自回归执行。首次 Prefill 使用初始化状态；续接 Prefill 使用已有状态，按调用配置确定。Decode 每步 1 token，读取此前状态。绿色/红色数据来自独立捕获输入的小图，不证明此跨调用闭环已验证。显式 ConvState 整层 GDN 的 Prefill 为 T256，L3 Full Attention 模块为 T64。</p>
 <div id="phase-counts" class="legend"></div></section>
 <section class="card"><h2>3. 40 层导航</h2><p class="hint">点击任意层展开其两条残差和注意力 / MoE 子图。L0–L3 展示各模块最近一次实测结果；L4–L39 不套用其他层的数值。</p><div class="navigator" id="navigator"></div></section>
 <div id="layers"></div>
-<footer><p id="metrics-summary"></p><p>红色表示原始 FAILED、重复不稳定或已知指标未达当前五项标准。缺失指标显示“未记录”，不能用 L2 反推 cosine 或 KL。青色只表示已有指标未超限；全部五项达标且重复稳定才通过，Cache 另须整缓存逐位一致。ConvState 青色仅指显式展开版本的 6 个 new_conv_state 输出通过；不代表原内置算子路径通过。</p>
+<footer><p id="metrics-summary"></p><p>红色表示原始 FAILED、重复不稳定或已知指标未达当前五项标准。缺失指标显示“未记录”，不能用 L2 反推 cosine 或 KL。青色只表示已有指标未超限；全部五项达标且重复稳定才通过，独立 CacheUpdate 另须整缓存逐位一致。ConvState 青色仅指显式展开版本的 6 个 new_conv_state 输出通过；不代表原内置算子路径通过。</p>
 <p>源码依据：原 Target 的 DecoderLayer 两次 residual + 运算，及 export wrapper 的 hidden_states = layer_outputs[0] 层间传递。此图为模型语义结构，实际编译融合以 AIR / OMC 为准；不含 Draft、视觉编码器和 MTP。</p>
 <p>单文件 HTML，无外部脚本、图片、字体或网络请求；下载后直接用浏览器打开。<a href="../../specs/target-latest-boundary-metrics.csv">各模块最新指标 CSV</a> · <a href="../target-accuracy-status.md">状态说明</a></p></footer>
 <dialog id="metrics-dialog"><div class="dialog-header"><h2 id="dialog-title">边界指标</h2><button id="dialog-close">关闭</button></div><div id="dialog-content"></div></dialog>
@@ -117,7 +118,8 @@ function shellParts(d,i,y=0){
  const y0=y+100;
  node(20,y0,100,65,"h["+i+"]",[],"blue");
  node(170,y0,205,70,"Input RMSNorm");
- node(425,y0,230,70,mix);
+ if(i===3 && mode!=="decode") node(425,y0,230,70,mix,["Prefill T64 · 3/3 通过"],"teal");
+ else node(425,y0,230,70,mix);
  node(705,y0,75,65,"Add 1",[],"purple");
  node(830,y0,230,70,"Post-attn RMSNorm");
  node(1110,y0,210,70,"MoE");
@@ -149,7 +151,7 @@ function currentResults(){
   node(1090,55,495,115,"CacheUpdate",["Prefill 4/4 逐位通过","Decode 4/4 失败：历史保留待修复"],"red");
   node(20,195,495,115,"RoPE：4 项零误差",["Prefill / Decode × Q / K","显式 FP32 旋转；重复稳定"],"teal");
   node(555,195,495,115,"Attention 核心：2/2 五项通过",["独立参考；L2 0.11175% / 0.11438%","Prefill / Decode 各 10 次稳定"],"teal");
-  node(1090,195,495,115,"T8 投影：板端对 CPU 4/4 通过",["310P L0 显式反量化对 CPU 通过","L0 原融合调用 0/3 通过"],"teal");
+  node(1090,195,495,115,"L3 Full Attention · T64 Prefill",["hidden、K、V 对数学重放 3/3 通过","K/V 未写区逐位保留"],"teal");
   text(24,345,"显式 ConvState 通过取自整层 new_conv_state；原内置路径的通过与否不能由此替代。",19,"#61738b");
  },"Target 当前模块精度结论","overview-svg");
 }
@@ -165,7 +167,7 @@ function timeline(){
   const {node,edge,text}=d;
   text(30,32,"Prefill：整段输入，多 token",24,"#235d9a","start",600);
   text(850,32,"Decode：一个新 token，重复执行",24,"#7541a6","start",600);
-  node(30,75,180,82,"prompt [B,S]",["已测 S=256"],"blue");
+  node(30,75,180,82,"prompt [B,S]",["按模块选择 S"],"blue");
   node(260,75,230,82,"同一套 L0 → L39",["hidden [B,S,2048]"],"blue");
   node(540,75,210,82,"FinalNorm / Head",["最后有效位置选 token"]);
   edge([[210,116],[260,116]]);edge([[490,116],[540,116]]);
@@ -329,7 +331,7 @@ $("#expand-tested").onclick=()=>{for(const i of new Set(METRICS.map(r=>r.layer))
 $("#collapse-all").onclick=()=>{$$(".layer-card").forEach(el=>el.open=false);openLayers.clear();updateNavigation()};
 function exportSVG(){
  const svgs=$$("svg[data-export]").filter(el=>!el.closest("details:not([open])"));
- let y=165,content='<rect width="1605" height="165" fill="#f4f7fb"/><text x="24" y="40" font-size="28" font-family="sans-serif" fill="#182c46">Target: '+E(mode)+' / 层间直连 + 每层两次残差</text><text x="24" y="76" font-size="18" font-family="sans-serif" fill="#61738b">红色：FAILED / 超限；当前模块结果；更新于 2026-11-17</text><text x="24" y="110" font-size="18" font-family="sans-serif" fill="#61738b">验收门槛：五项全部达标；Cache 逐位一致；缺项不能判通过</text><text x="24" y="144" font-size="18" font-family="sans-serif" fill="#61738b">紫色实线：层内 identity 残差；蓝色虚线：状态读写 / 跨步反馈；每层 MoE 结构相同</text>';
+ let y=165,content='<rect width="1605" height="165" fill="#f4f7fb"/><text x="24" y="40" font-size="28" font-family="sans-serif" fill="#182c46">Target: '+E(mode)+' / 层间直连 + 每层两次残差</text><text x="24" y="76" font-size="18" font-family="sans-serif" fill="#61738b">红色：FAILED / 超限；当前模块结果；更新于 2026-11-18</text><text x="24" y="110" font-size="18" font-family="sans-serif" fill="#61738b">验收门槛：浮点五项达标；独立 CacheUpdate 整缓存逐位一致；T64 Full Attention 的 K/V 未写区逐位保留</text><text x="24" y="144" font-size="18" font-family="sans-serif" fill="#61738b">紫色实线：层内 identity 残差；蓝色虚线：状态读写 / 跨步反馈；每层 MoE 结构相同</text>';
  const used=new Set();
  for(const el of svgs){
   if(used.has(el))continue;
@@ -354,7 +356,7 @@ $("#current-results").innerHTML=currentResults();
 $("#whole-gdn-summary").innerHTML=wholeGdnSummary();
 $("#whole-gdn-metrics").innerHTML=metricsTable(WHOLE_GDN);
 $("#overview").innerHTML=overview();$("#timeline").innerHTML=timeline();
-$("#metrics-summary").textContent="150 项独立边界 + 18 项显式 ConvState 整层输出分开记录；Prefill／Decode 独立边界各 75 项。完整状态反馈、MoE／LM head 和整模型精度尚未闭环。";
+$("#metrics-summary").textContent="150 项独立边界、18 项显式 ConvState 整层输出及 3 项 T64 Full Attention 输出分开记录；Prefill／Decode 独立边界各 75 项。完整状态反馈、MoE／LM head 和整模型精度尚未闭环。";
 buildLayers();setMode(mode);
 window.targetDiagram={setMode,exportSVG,get metrics(){return METRICS},get wholeGdn(){return WHOLE_GDN},overCount};
 </script></main></body></html>

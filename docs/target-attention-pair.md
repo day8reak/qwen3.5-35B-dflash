@@ -2,7 +2,7 @@
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 
-真实 T64 Prefill 的四个已测投影均通过 CPU 对照。L3 原 Attention core 审计失败，模块数学重放已完成。Linear Attention 可用同一输入比较分块 GDR 与逐 token GDR。[CPU 与 310P 对照](target-golden-verification.md#t64-golden) · [T64 GDR 对照](#t64-gdr)
+T64 Prefill 的四个已测投影均通过 CPU 对照。CPro L3 Full Attention 的 hidden、K、V 对数学重放均通过。L0–L2 Linear Attention 使用同一份捕获比较分块 GDR 和逐 token GDR。[CPU 与 310P 对照](target-golden-verification.md#t64-golden) · [T64 GDR 对照](#t64-gdr)
 
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。保留完整 fixture，确认 `capture/manifest.json` 的状态为 `CAPTURED`。Full 的 `captured-audited` 模式还要求同次 core 审计为 `PASSED`。本次 T64 使用[模块数学重放](#t64-full)。
 
@@ -38,7 +38,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 
 预期 Linear 为 3 张图、每图 hidden／ConvState／recurrent state；Full 为 1 张图，内部串联 QKV、Q/K Norm、RoPE、CacheUpdate、Attention、gate、o_proj，输出 hidden／K cache／V cache。Full 使用已验证的 FP16 QLinear scale 和 FP32 RoPE 旋转，并保留原输出 dtype。
 
-Full 导出会在主机将 `new_kv_cache_pos` 从捕获的整数转为精确 FP32 输入，形状仍为 `[T,1]`。这是原 `update()` 第一条转换的前移，用于绕过本轮 `Cast_27` 的 INT64→FP32 编译失败；原浮点索引公式、位置值及 golden 不变，`allQLen` 仍为 INT64。导出器检查源码使用位置、数值回转、实际 AIR 输入 dtype，并在 `export.json` 的 `source_contract.cache_position_carrier` 保存两份描述。T8 时该输入由 64 字节变为 32 字节，输入数量不变；必须重新导出、编译并生成执行 fixture，不能复用旧输入文件或槽位。用户已回传修复后的执行结果：hidden／K／V 均数值失败，K/V 未写区逐位保留；编译问题解决不代表精度通过。
+Full 导出会在主机将 `new_kv_cache_pos` 从捕获的整数转为精确 FP32 输入，形状仍为 `[T,1]`。这是原 `update()` 第一条转换的前移，用于绕过本轮 `Cast_27` 的 INT64→FP32 编译失败；原浮点索引公式、位置值及 golden 不变，`allQLen` 仍为 INT64。导出器检查源码使用位置、数值回转、实际 AIR 输入 dtype，并在 `export.json` 的 `source_contract.cache_position_carrier` 保存两份描述。T8 时该输入由 64 字节变为 32 字节，输入数量不变；必须重新导出、编译并生成执行 fixture，不能复用旧输入文件或槽位。T8 批次的 hidden／K／V 对原 310P 捕获均超差，K/V 未写区逐位保留。
 
 这里显式选用 `captured-audited`：Full 的主参考是**同次原 NZ 模块的 hidden／K／V**。导出前会核验原文件、CacheUpdate→core→模块返回的 K/V 链路，并重新计算独立 FP64 Attention core 参考、转 FP16 后按原精度门槛比较；失败则停止。该审计只验证核心，同次模块输出仍是原实现参考，不代表全模块独立数学验证或整网精度通过。
 
@@ -51,6 +51,8 @@ Mask 核验保留模块入口和核心入口的实际数据。零符号或因果
 ### T64 Full Attention 使用模块数学重放
 
 在此前成功导出 AIR 的 `qwen3_5_cpro` 环境复用 T64 边界和第 1 节的 CPro 源码、converter。主参考取自同一模块输入上的重放，只将 Attention core 换成 FP64 数学计算后转 FP16，投影、gate 等其余计算仍使用原模块。导出时会再次核对输入和 K/V 的文件记录。
+
+板端本次三项通过且重复稳定。hidden 对数学重放的相对 L2 为 **1.6221%**，对同次 310P 原模块输出为 **99.6910%**。原模块和重放的 K/V 逐位相同，板端 K/V 有效写入区的相对 L2 分别为 **0.2449% / 0.2245%**，未写区均逐位保留。[三项板端比较结果](../specs/target-full-attention-t64-metrics.csv)
 
 ```bash
 conda activate qwen3_5_cpro
@@ -110,7 +112,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" compare \
 cat "$BATCH_ROOT/comparison/summary.csv"
 ```
 
-`PENDING` 时仅重复 recover；已有 native 输出后，即使精度失败也继续 compare。每图预热 3 次、采样 10 次，每次恢复同一输入。Linear 应有 9 行，Full 应有 3 行。Full CSV 的 `reference_basis` 标明参考来源；上述模式中常规指标与 `captured_*` 都对比同次原输出。K/V 另外要求本次有效写入区域满足相同精度门槛，未写区域逐位等于旧输入。
+`PENDING` 时仅重复 recover；已有 native 输出后，即使精度失败也继续 compare。每图预热 3 次、采样 10 次，每次恢复同一输入。Linear 应有 9 行，Full 应有 3 行。Full CSV 的 `reference_basis` 标明参考来源；`captured-audited` 的两组指标均与原捕获比较，`math-replay` 的常规指标与重放比较。K/V 另外要求本次有效写入区域满足相同精度门槛，未写区域逐位等于旧输入。
 
 回传两组 `summary.csv` 和 `report.json`。只有两组各自完成执行和比较后，才能判断是 GDN、FullAttention 或两者存在偏差；模块通过也不代表 MoE、整网 logits 或连续状态反馈已经通过。
 
