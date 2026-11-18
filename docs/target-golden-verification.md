@@ -110,13 +110,25 @@ cat "$GOLDEN_CHECK/l3-matmul/summary.txt"
 ```bash
 git -C "$REPO_DIR" pull --ff-only
 cd "$TARGET_SOURCE"
-python "$REPO_DIR/targets/cpro/tools/trace_target_prefill_matmul.py" \
-  --source-root "$TARGET_SOURCE" --capture "$GOLDEN_CAPTURE" \
-  --cpu "$GOLDEN_CHECK/with-dynamic-quant" --output "$GOLDEN_CHECK/l3-live" -- \
-  --config "$TARGET_CONFIG" --quant_mode enable --quant_bits 4 --max_token 2
+TRACE="$REPO_DIR/targets/cpro/tools/trace_target_prefill_matmul.py"
+python "$TRACE" --source-root "$TARGET_SOURCE" --list-configs -- --config "$TARGET_CONFIG"
 ```
 
-`matmul_vs_same_call_cpu` 用本次观测的 A8 和 token scale 重算，先逐位核对本次权重与 group scale。`hidden_equal_bits` 同时覆盖形状、dtype 和内容，只有它为 true 才比较新旧模块输出以及新 A8 与重放 A8。原入口若把 prompt 重复 32 次，很可能与 T8 捕获长度不同，此时同次矩阵乘对照仍有效。采集细节在 `l3-live/live.json`，比较在 `l3-live/report.json`。
+如果 tokenizer 报 `num_hidden_layers (4)` 与 `layer_types (40)` 冲突，错误发生在 Prefill 之前。上面的命令列出原项目根目录、`config/` 及当前 YAML 同目录的候选，打印实际 HF 配置路径、声明层数、层类型列表长度、W4 目录和权重头中出现的层号。路径按原推理工作目录解析。`w4_layer_ids` 表示这些层有权重记录，每层各投影的完整性仍需加载验证。
+
+**40 层正常推理**使用当时正常吐字的 YAML，将其路径设为 `TARGET_CONFIG_40`。本模型对应 40 层，显式 `layer_types` 列表有 40 项，W4 应覆盖索引 0–39。四层捕获继续作为对照输入。每次重试用独立目录。
+
+```bash
+LIVE_PARENT=$(mktemp -d "$GOLDEN_CHECK/l3-live-40.XXXXXXXX")
+python "$TRACE" --reference-layers 40 \
+  --source-root "$TARGET_SOURCE" --capture "$GOLDEN_CAPTURE" \
+  --cpu "$GOLDEN_CHECK/with-dynamic-quant" --output "$LIVE_PARENT/trace" -- \
+  --config "${TARGET_CONFIG_40:?请指定原40层推理使用的YAML}" --quant_mode enable --quant_bits 4 --max_token 2
+```
+
+**四层 L3 诊断**可以继续用当前声明 4 层的 `TARGET_CONFIG`。上面命令改为 `--reference-layers 4` 和 `--config "$TARGET_CONFIG"`，另取新的输出目录。对于已声明四层的 Qwen 配置，工具仅在当前进程内取过长层类型列表的前四项。报告记录配置适配和实际观测的模型层数。该结果只覆盖四层路径。
+
+`matmul_vs_same_call_cpu` 用本次观测的 A8 和 token scale 重算，先逐位核对本次权重与 group scale。`hidden_equal_bits` 同时覆盖形状、dtype 和内容，只有它为 true 才比较新旧模块输出以及新 A8 与重放 A8。原入口若把 prompt 重复 32 次，很可能与 T8 捕获长度不同，此时同次矩阵乘对照仍有效。采集细节在输出目录的 `live.json`，比较在 `report.json`。
 
 已有独立重放报告也可直接对比进程信息。四层 capture 的快照早于实际投影，库映射清单可提供线索，单凭清单不能确认 V5 由哪个库实现。
 
