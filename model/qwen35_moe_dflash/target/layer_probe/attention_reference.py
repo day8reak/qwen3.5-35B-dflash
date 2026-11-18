@@ -44,6 +44,17 @@ def inspect_prefill_audit(fixture, device_math=None):
               'failed_metrics', 'nonfinite_actual', 'max_error_coordinate', 'actual_at_max', 'golden_at_max')
     result['core_vs_cpu'] = {k: call['metrics'].get(k) for k in fields}
     result['active_value_bounds'] = evidence['v_bounds']
+    # Even selecting the wrong in-range page cannot exceed the entire V cache
+    # bound in exact normalized attention. Small rounding excess is diagnostic.
+    full_bound = evidence.get('full_value_cache_abs_max')
+    if full_bound is not None and math.isfinite(full_bound):
+        magnitudes = np.abs(actual[np.isfinite(actual)])
+        result['full_value_cache_check'] = dict(
+            cache_abs_max=full_bound,
+            finite_core_abs_max=float(magnitudes.max()) if magnitudes.size else None,
+            finite_core_elements_above_cache_abs_max=int(np.count_nonzero(magnitudes > full_bound)),
+            kv_length=evidence['kv_length'], mask_stride=evidence['mask_stride'],
+            all_negative_infinity_query_rows=evidence['mask']['all_negative_infinity_query_rows'])
     result['query_blocks'] = blocks = []
     for start in range(0, sequence, 16):
         stop = min(start + 16, sequence)

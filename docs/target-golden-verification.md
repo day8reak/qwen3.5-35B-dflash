@@ -337,6 +337,8 @@ python "$PROBE" inspect-prefill-audit --fixture "$T64_FIXTURE"
 python "$PROBE" inspect-prefill-audit --fixture "$T64_FIXTURE" --device-math npu:0
 ```
 
-`device_math.status=PASSED` 要求三次都通过同一 CPU 参考的五项指标，且三次输出逐位一致。该结果检验逻辑张量上的分步计算。原融合调用的物理布局、页寻址和 query 分块仍需结合实际实现定位。
+本次 310P 分步计算三次均通过 CPU 参考的五项指标，输出逐位一致。相对 L2 为 0.00025501（0.02550%），余弦为 0.9999999675，最大绝对误差为 0.001953125。这项对照验证了按同一页表和头映射解包后的 Attention 数学计算。
+
+离线报告的 `full_value_cache_check` 将原融合输出与包含闲置页在内的整块 V cache 比较。若原输出的 904 远超整块 cache 的最大绝对值，仅读错一个合法 V 页无法解释该值，需继续检查原融合调用的 packed 地址、归一化和分块写回。该检查复用上面的 `inspect-prefill-audit --fixture "$T64_FIXTURE"`，无需重新采集。
 
 对照板端 Full Attention 时选择 `--full-attention-reference math-replay`，用重放输出作主参考，同时保留原模块输出作对照。整网 logits 和 GDN 状态的精度仍需单独验证。[两类 Attention 的验证流程](target-attention-pair.md#t64-full)
