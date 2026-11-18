@@ -2,6 +2,8 @@
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 
+当前 T8 两组均已执行但数值未通过，按[投影与缓存链路定位](target-attention-localization.md)检查现有捕获并缩小首个偏差；无需重新生成整网 Prefill。
+
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。以下流程要求 `capture/manifest.json` 为 `CAPTURED`，同次 `attention_audit` 为 `PASSED`。保留完整 `PREFILL_FIXTURE`（含父 manifest 和 `attention-audit/`），无需再次执行整网 Prefill。
 
 ## 1. 导出两组 AIR
@@ -35,7 +37,7 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 
 预期 Linear 为 3 张图、每图 hidden／ConvState／recurrent state；Full 为 1 张图，内部串联 QKV、Q/K Norm、RoPE、CacheUpdate、Attention、gate、o_proj，输出 hidden／K cache／V cache。Full 使用已验证的 FP16 QLinear scale 和 FP32 RoPE 旋转，并保留原输出 dtype。
 
-Full 导出会在主机将 `new_kv_cache_pos` 从捕获的整数转为精确 FP32 输入，形状仍为 `[T,1]`。这是原 `update()` 第一条转换的前移，用于绕过本轮 `Cast_27` 的 INT64→FP32 编译失败；原浮点索引公式、位置值及 golden 不变，`allQLen` 仍为 INT64。导出器检查源码使用位置、数值回转、实际 AIR 输入 dtype，并在 `export.json` 的 `source_contract.cache_position_carrier` 保存两份描述。T8 时该输入由 64 字节变为 32 字节，输入数量不变；必须重新导出、编译并生成执行 fixture，不能复用旧输入文件或槽位。这项修复尚待实际编译与数值验证。
+Full 导出会在主机将 `new_kv_cache_pos` 从捕获的整数转为精确 FP32 输入，形状仍为 `[T,1]`。这是原 `update()` 第一条转换的前移，用于绕过本轮 `Cast_27` 的 INT64→FP32 编译失败；原浮点索引公式、位置值及 golden 不变，`allQLen` 仍为 INT64。导出器检查源码使用位置、数值回转、实际 AIR 输入 dtype，并在 `export.json` 的 `source_contract.cache_position_carrier` 保存两份描述。T8 时该输入由 64 字节变为 32 字节，输入数量不变；必须重新导出、编译并生成执行 fixture，不能复用旧输入文件或槽位。用户已回传修复后的执行结果：hidden／K／V 均数值失败，K/V 未写区逐位保留；编译问题解决不代表精度通过。
 
 这里显式选用 `captured-audited`：Full 的主参考是**同次原 NZ 模块的 hidden／K／V**。导出前会核验原文件、CacheUpdate→core→模块返回的 K/V 链路，并重新计算独立 FP64 Attention core 参考、转 FP16 后按原精度门槛比较；失败则停止。该审计只验证核心，同次模块输出仍是原实现参考，不代表全模块独立数学验证或整网精度通过。
 

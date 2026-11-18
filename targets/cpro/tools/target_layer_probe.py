@@ -64,8 +64,8 @@ def main():
     s.add_argument('--compiler-entry', action='store_true', help='also read OMG/env entry scripts and compare current shell with probe environment preparation; executes neither script nor compiler')
     s.add_argument('--state-chain', action='store_true', help='also decode compiled OMC and trace whole-GDN output 2 through visible Cast/shape nodes; writes state-summary.txt without changing the requested ABI')
     s.add_argument('--reference-ir', nargs='+', help='up to 8 existing IR files; strictly compare selected DDK and retained AIR producer schemas, without compiling')
-    s = sub.add_parser('inspect-qlinear', help='read every QLinear AIR/OMC boundary, constant bytes and kernel build arguments; no compilation')
-    s.add_argument('--batch', required=True, help='existing OMC batch; automatically includes every QLinear case')
+    s = sub.add_parser('inspect-qlinear', help='read independent/whole-module QLinear boundaries, constant pairs and kernel build arguments; no compilation')
+    s.add_argument('--batch', required=True, help='existing OMC batch; includes QLinear, whole GDN and whole FullAttention cases')
     s.add_argument('--output', required=True, help='fresh inspection directory, separate from AIR/OMC')
     s.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'), required=not bool(os.environ.get('CPRO_DDK_ROOT')))
     s.add_argument('--fixture', help='optional prepared execution fixture directory containing manifest.json and per-case inputs')
@@ -80,6 +80,9 @@ def main():
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
     s.add_argument('--output', required=True)
+    s = sub.add_parser('inspect-prefill-links', help='check captured QKV/ConvState and V projection/cache links offline; no export, compilation or device execution')
+    s.add_argument('--capture', required=True, help='original fresh-Prefill boundary capture directory')
+    s.add_argument('--output', required=True, help='fresh read-only inspection report directory')
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
@@ -116,6 +119,12 @@ def main():
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format,
                                      cases=a.cases, compiler_profile=a.compiler_profile)
+    elif a.command == 'inspect-prefill-links':
+        from qwen35_moe_dflash.target.layer_probe.prefill_links import inspect_prefill_links
+        result = inspect_prefill_links(a.capture, a.output)
+        result = dict(status=result['status'], report=str(Path(a.output).resolve()/'report.json'),
+            summary=str(Path(a.output).resolve()/'summary.txt'),
+            model_compilation='NOT_RUN', device_execution='NOT_RUN')
     elif a.command == 'inspect-qlinear':
         from qwen35_moe_dflash.target.layer_probe.contracts import inspect_qlinear
         result = inspect_qlinear(a.batch, a.output, a.ddk_root, a.fixture)

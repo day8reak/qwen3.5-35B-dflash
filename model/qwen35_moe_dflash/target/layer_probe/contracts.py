@@ -24,9 +24,10 @@ from qwen35_moe_dflash.target.original_air_roundtrip import _attributes, _decode
 from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
 from qwen35_moe_dflash.toolchain.omc_wire import Schema, load_schema
 from .common import KIND, checked, identity, new_output, save_json, sha
-from .inspection import bounded_bytes, metadata_attributes, retained_ir
+from .inspection import SOURCE_AIR_READ_LIMIT, bounded_bytes, metadata_attributes, retained_ir
 
 LIMIT = 64 << 20
+QLINEAR_KINDS = {'qlinear', 'gdn_layer', 'full_attention_layer'}
 CHAIN = CHAIN_TYPES | {'TransData', 'Permute', 'ReFormat', 'Reformat'}
 NUMPY_DTYPES = {'float16': '<f2', 'float32': '<f4', 'int8': 'i1',
                 'int16': '<i2', 'int32': '<i4', 'int64': '<i8'}
@@ -119,7 +120,7 @@ def constants(graph, schema, folder, expected):
     for node in graph.get('op', []):
         if node.get('type') not in ('Const', 'Constant', 'FileConstant'):
             continue
-        row = dict(name=node['name'], type=node['type'], status='UNAVAILABLE')
+        row = dict(graph=graph.get('name'), name=node['name'], type=node['type'], status='UNAVAILABLE')
         result.append(row)
         try:
             attrs = _attributes(node)
@@ -168,6 +169,70 @@ def constants(graph, schema, folder, expected):
         except Exception as exc:
             row['error'] = f'{type(exc).__name__}: {exc}'
     return result
+
+
+def whole_expected_weights(export):
+    """Anonymous receipt groups; their list order does not establish module roles."""
+    candidates = export.get('source_contract', {}).get('qlinear_candidates', [])
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError('whole export has no QLinear candidate weight identities')
+    expected = {}
+    for index, candidate in enumerate(candidates):
+        for role, key in (('W_q', 'packed_weight'), ('scale', 'exported_scale')):
+            value = candidate.get(key, {})
+            if (not isinstance(value, dict) or type(value.get('bytes')) is not int or value['bytes'] <= 0
+                    or not re.fullmatch(r'[0-9a-f]{64}', str(value.get('sha256', '')))
+                    or value.get('dtype') not in NUMPY_DTYPES):
+                raise ValueError(f'incomplete whole candidate_{index} {key} identity')
+            expected[f'candidate_{index}.{role}'] = value
+    return expected
+
+
+def whole_weight_pairs(nodes, constant_rows, expected):
+    """Bind each QBM's two upstream payloads to ONE receipt candidate group."""
+    candidates = sorted({key.rsplit('.', 1)[0] for key in expected})
+    constants_by_name = {(c.get('graph'), c['name']): c for c in constant_rows}
+    pairs, ports = [], []
+    for node in nodes:
+        if 'QuantBatchMat' not in node['type']:
+            continue
+        sets, unresolved = {}, False
+        for port_name, role in (('x2', 'W_q'), ('scale', 'scale')):
+            selected = [p for p in node['inputs'] if p['port'] == port_name]
+            producer = selected[0]['producer'] if len(selected) == 1 else {}
+            chain = producer.get('chain', [])
+            tail = chain[-1] if chain else {}
+            constant = constants_by_name.get((node.get('graph'), tail.get('name')), {})
+            resolved = (len(selected) == 1 and producer.get('stop') == 'PRODUCER_REACHED'
+                        and tail.get('output_slot') == 0 and tail.get('type') in ('Const', 'Constant', 'FileConstant')
+                        and constant.get('status') == 'READ')
+            matches = [c for c in candidates if f'{c}.{role}' in constant.get('matches_exported_weights', [])] if resolved else []
+            sets[port_name] = set(matches)
+            unresolved |= not resolved
+            status = ('UNRESOLVED' if not resolved else 'SOURCE_WEIGHT_BYTES_DIFFER' if not matches
+                      else 'EXACT_SOURCE_WEIGHT_BYTES' if len(matches) == 1 else 'AMBIGUOUS_SOURCE_WEIGHT_BYTES')
+            ports.append(dict(node=node['name'], graph=node.get('graph'), port=port_name, status=status,
+                candidates=matches, constant=constant.get('name'), producer=producer,
+                scope='UPSTREAM_CONSTANT_BYTES_BEFORE_TRANSFORMATIONS; NOT_CONSUMER_STORAGE'))
+        common = sorted(sets['x2'] & sets['scale'])
+        status = ('UNRESOLVED' if unresolved else 'EXACT_SOURCE_WEIGHT_PAIR' if len(common) == 1
+                  else 'AMBIGUOUS_CANDIDATE_PAIR' if common else 'CROSS_PAIRED_CANDIDATES'
+                  if sets['x2'] and sets['scale'] else 'SOURCE_WEIGHT_BYTES_DIFFER')
+        pairs.append(dict(node=node['name'], graph=node.get('graph'), status=status, candidates=common))
+    assigned = Counter(p['candidates'][0] for p in pairs if p['status'] == 'EXACT_SOURCE_WEIGHT_PAIR')
+    duplicate = sorted(c for c, count in assigned.items() if count > 1)
+    for pair in pairs:
+        if pair['status'] == 'EXACT_SOURCE_WEIGHT_PAIR' and pair['candidates'][0] in duplicate:
+            pair['status'] = 'DUPLICATE_CANDIDATE_PAIR'
+    missing = [c for c in candidates if not assigned[c]]
+    complete = (len(pairs) == len(candidates) and not missing and not duplicate
+                and all(p['status'] == 'EXACT_SOURCE_WEIGHT_PAIR' for p in pairs))
+    return dict(status='EXACT_SOURCE_WEIGHT_PAIRS' if complete else 'REVIEW_REQUIRED',
+        candidates=len(candidates), qbm_nodes=len(pairs), matched_nodes=sum(
+            p['status'] == 'EXACT_SOURCE_WEIGHT_PAIR' for p in pairs),
+        missing_candidates=missing, duplicate_candidates=duplicate, pairs=pairs, ports=ports,
+        scope='SOURCE_AIR_UPSTREAM_PAYLOAD_PAIRING_ONLY', semantic_projection_roles='NOT_VERIFIED',
+        internal_compiled_storage='NOT_VERIFIED')
 
 
 def boundaries(document, schema, stage):
@@ -246,7 +311,7 @@ def fixture_binding(path, batch, source, compiled, manifest):
     result = {}
     for case in meta['cases']:
         name = case['case']
-        if name not in cases or cases[name]['kind'] != 'qlinear':
+        if name not in cases or cases[name]['kind'] not in QLINEAR_KINDS:
             continue
         exp = json.loads(checked(source, cases[name]['export']).read_text())
         if case['model']['sha256'] != compiled['cases'][name]['omc']['sha256']:
@@ -275,7 +340,7 @@ def inspect_qlinear(batch, output, ddk_root, fixture=None):
             or compiled['manifest_sha256'] != sha(root/'manifest.json')
             or compiled['manifest_sha256'] != sha(source/'manifest.json')):
         raise ValueError('compile/AIR manifest binding changed')
-    selected = [c for c in manifest['cases'] if c['kind'] == 'qlinear']
+    selected = [c for c in manifest['cases'] if c['kind'] in QLINEAR_KINDS]
     if not selected or len({c['id'] for c in selected}) != len(selected):
         raise ValueError('requires distinct QLinear cases')
     out = output_path(output)
@@ -286,7 +351,7 @@ def inspect_qlinear(batch, output, ddk_root, fixture=None):
     out = new_output(out)
     report = dict(artifact_kind=KIND+'-qlinear-contracts', status='INSPECTED',
         manifest=identity(root/'manifest.json', root), compilation=identity(root/'compile.json', root),
-        coverage='ALL_QLinear_CASES', cases={}, model_compilation='NOT_RUN', device_execution='NOT_RUN',
+        coverage='ALL_QLINEAR_AND_WHOLE_ATTENTION_CASES', cases={}, model_compilation='NOT_RUN', device_execution='NOT_RUN',
         numerical_validation='NOT_RUN', runtime_matmul_input_bytes='NOT_OBSERVED',
         abi_hypothesis='USER_KERNEL_REVIEW: INT8 x1, INT32 packed W4, FP16 scale/per-token; selected binary ABI unverified')
     compiler_schema = None
@@ -315,13 +380,15 @@ def inspect_qlinear(batch, output, ddk_root, fixture=None):
             schema_file = folder/'air-schema.pb'
             schema = SampleSchema(bounded_bytes(schema_file, 8 << 20),
                 expected_file=exp['schema']['schema_file'], expected_package=exp['schema']['schema_package'])
-            _, document, graph = _decode(schema, bounded_bytes(air, LIMIT))
+            _, document, graph = _decode(schema, bounded_bytes(air, SOURCE_AIR_READ_LIMIT))
             row['source_identity'] = dict(air=identity(air, folder), schema=identity(schema_file, folder),
                 schema_binding='RETAINED_DESCRIPTOR; LEGACY_EXPORT_NO_DESCRIPTOR_HASH')
             row['export_evidence'] = {k: exp.get(k) for k in ('source_contract', 'qlinear_factory',
                 'target_weights', 'captured_weights', 'exported_weights', 'source_files', 'torchair_version')}
             row['stages']['SOURCE_AIR'] = boundaries(document, schema, 'SOURCE_AIR')
-            row['constants'] = constants(graph, schema, folder, exp.get('exported_weights', {}))
+            whole = case['kind'] != 'qlinear'
+            expected = whole_expected_weights(exp) if whole else exp.get('exported_weights', {})
+            row['constants'] = constants(graph, schema, folder, expected)
             row['input_files'] = []
             for spec in exp['source_inputs']:
                 path = checked(folder, spec)
@@ -333,10 +400,11 @@ def inspect_qlinear(batch, output, ddk_root, fixture=None):
                 row['input_files'].append(dict(spec, sample=sample(dict(prefix_hex=prefix.hex()), spec['dtype'])))
             # A match is full byte identity, not a proof of the consumer's layout.
             row['weight_matches'] = {w: [c['name'] for c in row['constants']
-                if w in c.get('matches_exported_weights', [])] for w in exp.get('exported_weights', {})}
+                if w in c.get('matches_exported_weights', [])] for w in expected}
             row['weight_port_bindings'] = []
             constant_by_name = {c['name']: c for c in row['constants']}
-            for node in row['stages']['SOURCE_AIR']:
+            single_nodes = [] if whole else row['stages']['SOURCE_AIR']
+            for node in single_nodes:
                 if 'QuantBatchMat' not in node['type']:
                     continue
                 for port in node['inputs']:
@@ -352,6 +420,12 @@ def inspect_qlinear(batch, output, ddk_root, fixture=None):
                         expected_weight=expected_weight, constant=constant.get('name'), status=status,
                         transformations=[n['type'] for n in chain[:-1]],
                         scope='BEFORE_LISTED_TRANSFORMATIONS; NOT_COMPILED_CONSUMER_STORAGE'))
+            if whole:
+                pairing = whole_weight_pairs(row['stages']['SOURCE_AIR'], row['constants'], expected)
+                row['whole_weight_pairing'] = pairing
+                row['weight_port_bindings'] = pairing['ports']
+                if pairing['status'] != 'EXACT_SOURCE_WEIGHT_PAIRS':
+                    report['status'] = 'PARTIAL'
         except Exception as exc:
             row['errors'].append('source: ' + str(exc))
         try:
@@ -435,13 +509,23 @@ def inspect_qlinear(batch, output, ddk_root, fixture=None):
     if 'fixture_binding' in report:
         lines.append('fixture_binding=' + report['fixture_binding']['status'])
     for name, row in report['cases'].items():
-        lines += ['', name + ': ' + str(row['compilation_status']),
-            'weight_matches=' + json.dumps(row.get('weight_matches', {})),
-            'weight_port_bindings=' + json.dumps(row.get('weight_port_bindings', [])),
-            'omc_visibility=' + row.get('omc_visibility', 'NOT_INSPECTED')]
+        lines += ['', name + ': ' + str(row['compilation_status'])]
+        pairing = row.get('whole_weight_pairing')
+        if pairing:
+            lines.append('whole_weight_pairing=' + json.dumps({k: v for k, v in pairing.items() if k not in ('ports', 'pairs')}))
+            for pair in pairing['pairs']:
+                lines.append(f"{pair['node']}: {pair['status']} {pair['candidates']}")
+            for port in pairing['ports']:
+                chain = port['producer'].get('chain', [])
+                lines.append(f"  {port['node']}.{port['port']}: {port['status']} | " +
+                    ' <- '.join(f"{n['name']}:{n['output_slot']}({n['type']})" for n in chain))
+        else:
+            lines += ['weight_matches=' + json.dumps(row.get('weight_matches', {})),
+                      'weight_port_bindings=' + json.dumps(row.get('weight_port_bindings', []))]
+        lines.append('omc_visibility=' + row.get('omc_visibility', 'NOT_INSPECTED'))
         if not row.get('compiler_arguments', {}).get('records'):
             lines.append('BUILD_ARGUMENTS_NOT_FOUND; NOT_A_DTYPE_PASS')
-        for port in [p for p in csv_rows if p['case'] == name and p['stage'] in ('SOURCE_AIR', 'COMPILER_BUILD_ARGUMENTS')]:
+        for port in [p for p in csv_rows if not pairing and p['case'] == name and p['stage'] in ('SOURCE_AIR', 'COMPILER_BUILD_ARGUMENTS')]:
             lines.append(f"{port['stage']} {port['op']} input[{port['slot']}] {port['port'] or ''}: {port['dtype']} {port['shape']} {port['format']} | {port['producer_chain']}")
         for rec in row.get('compiler_arguments', {}).get('records', []):
             if rec['status'] != 'PARSED':
