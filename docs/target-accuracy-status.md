@@ -1,6 +1,6 @@
 # Target 精度状态
 
-2026-11-18，T8 Prefill 的板端 L0–L2 QKV 末 4 token 和 L3 V 全 8 token 均通过独立 CPU 对照，相对 L2 为 0.0552%–0.0776%。两次 310P Prefill 的首个超差捕获点是 L0 QKV 投影。两次的投影输入、记录的权重及 group scale 一致，输出相对 L2 为 1.08216。L3 V 的矩阵乘在独立进程使用同一组实参连续运行三次，相邻输出相对 L2 为 1.04879 和 1.07200。这两处 T8 历史输出暂缓用于判定 CPro 精度。[复测数据与 L0 诊断命令](target-golden-verification.md#step7)
+2026-11-18，T8 Prefill 的板端 L0–L2 QKV 末 4 token 和 L3 V 全 8 token 均通过独立 CPU 对照，相对 L2 为 0.0552%–0.0776%。310P 的首个超差捕获点是 L0 QKV。该层全部 8 个 token 的 DynamicQuant 三次逐位一致，显式反量化后普通矩阵乘两次通过 CPU 对照（相对 L2 0.01737%），原 A8W4 融合调用三次均超差。L3 V 的原融合调用也有波动。这两处 T8 历史输出暂缓用于判定 CPro 精度。[复测数据与 L0 分组参数对照](target-golden-verification.md#step7)
 
 阶段与标准更新：2026-11-17；**CPro Attention Prefill／Decode 对独立数学参考五项全部通过**，relative-L2 分别为 **0.11175% / 0.11438%**，各自 10 次输出一致。原 Prefill captured golden 错误已确认。显式 transpose + concat + slice 的 ConvState 六项输出通过；整层 GDN 为 11 通过、7 失败。原内置 LinearAttentionConvstateUpdate 路径已编译执行，但数值未通过。GDN 48 个独立边界仍为 **43 PASSED / 5 FAILED**。Cache 为 Prefill **4/4 PASSED**、Decode **4/4 FAILED**，历史保留问题暂后处理。
 

@@ -77,7 +77,7 @@ def dequantized_device_matmul(reference_report, ref_case, region, q, ps, n, devi
 
 
 def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0', *,
-              repeat_original=False, dequant_control=False):
+              repeat_original=False, dequant_control=False, compare_group256=False):
     import torch
     from .qlinear import describe, explicit_group256
     from .qlinear_backend import runtime, tensor_formats
@@ -109,6 +109,8 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
             or original.dtype != np.float16 or expected.dtype != np.float16):
         raise ValueError('expected FP16 projection [1,T,N]')
     source_call = _audit(manifest, region, m, k, n)
+    if compare_group256 and (repeat_original or source_call['group_sizes_argument'] is not None):
+        raise ValueError('group256 comparison requires a separate run and an original call without explicit groups')
     tensors = torch.load(checked(root, region['weights']), weights_only=True, map_location='cpu')
     w, scale = tensors['W_q'].contiguous(), tensors['scale'].contiguous()
     if (w.dtype != torch.int32 or tuple(w.shape) != (k, n // 8) or scale.dtype != torch.float32
@@ -162,12 +164,8 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
             summaries.append(f"{key} (capture -> replay): dtype {before.get('dtype')} -> {after['dtype']}, "
                              f"stride {before.get('stride')} -> {after['stride']}, "
                              f"NPU format {old_fmt} -> {new_fmt}")
-        variants = ['original']
-        previous_y = None
+        repeated = repeat_original or compare_group256
         if repeat_original:
-            from .qlinear import snapshot
-            from .prefill_matmul_repeat import compare_operands
-
             report['scope'] = 'REPEATED_DYNAMIC_QUANT_AND_SEPARATE_FROZEN_ORIGINAL_MATMUL'
             quant_calls = report['dynamic_quant_calls'] = []
             try:
@@ -178,25 +176,39 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
                 summaries.append('DynamicQuant: ' + report['dynamic_quant_error'])
             for call in quant_calls:
                 summaries.append(f'DynamicQuant {call}')
+        schedule = ['original']
+        if repeat_original:
+            schedule *= 3
+        elif compare_group256:
+            report['scope'] = 'FROZEN_ORIGINAL_VS_EXPLICIT_GROUP256'
+            schedule = ['original', 'explicit_group256', 'explicit_group256',
+                        'original', 'original', 'explicit_group256']
+        elif kwargs.get('group_sizes') is None:
+            schedule.append('explicit_group256')
+        if repeated:
+            from .qlinear import snapshot
+            from .prefill_matmul_repeat import compare_operands
+
             saved = dict(x1=torch.from_numpy(q), x2=w, scale=scale, pertoken_scale=torch.from_numpy(ps))
             report['operands_equal_before'] = compare_operands(snapshot(replay_inputs), saved)
             if not all(report['operands_equal_before'].values()):
                 raise ValueError('restored matmul operands differ from the saved logical values')
-            variants += ['original_repeat_2', 'original_repeat_3']
-        elif kwargs.get('group_sizes') is None:
-            variants.append('explicit_group256')
-        for label in variants:
-            row = dict(name=label, status='DISPATCHING')
+        counts = {}
+        previous = {}
+        for signature in schedule:
+            count = counts[signature] = counts.get(signature, 0) + 1
+            label = signature if count == 1 else f'{signature}_repeat_{count}'
+            row = dict(name=label, signature=signature, status='DISPATCHING')
             report['variants'].append(row)
             save_json(out/'report.json', report)
             try:
-                options = explicit_group256(args, kwargs) if label == 'explicit_group256' else kwargs
+                options = explicit_group256(args, kwargs) if signature == 'explicit_group256' else kwargs
                 row['group_sizes'] = options.get('group_sizes')
                 with torch.no_grad():
                     device_y = torch_npu.npu_quant_matmul(*args, **options)
                     if device_y.device != args[0].device:
                         raise ValueError(f'unexpected output device {device_y.device}')
-                    if repeat_original:
+                    if repeated:
                         torch.npu.synchronize(device)
                     y = device_y.detach().to('cpu', copy=True).contiguous()
                 if y.dtype != torch.float16 or tuple(y.shape) != (m, n):
@@ -204,20 +216,32 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
                 values = y.numpy()
                 for reference, array in references.items():
                     row['vs_' + reference] = record_comparison(f'{label}_vs_{reference}', values, array)
-                if repeat_original:
+                if repeated:
                     row['operands_equal_after'] = compare_operands(snapshot(replay_inputs), saved)
                     if not all(row['operands_equal_after'].values()):
                         raise ValueError('a frozen operand changed during QuantMatmul')
-                    if previous_y is not None:
-                        row['vs_previous'] = record_comparison(f'{label}_vs_previous', values, previous_y)
-                    previous_y = values
+                    if signature in previous:
+                        row['previous_call'], previous_values = previous[signature]
+                        row['vs_previous'] = record_comparison(f'{label}_vs_previous', values, previous_values)
+                    previous[signature] = (label, values)
                 row['status'] = 'EXECUTED'
             except Exception as exc:
                 row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
                 summaries.append(f"{label}: FAILED {row['error']}")
             save_json(out/'report.json', report)
-            if repeat_original and row['status'] == 'FAILED':
+            if repeated and row['status'] == 'FAILED':
                 break
+        if compare_group256:
+            verdicts = report['group_comparison'] = {}
+            for signature in ('original', 'explicit_group256'):
+                rows = [r for r in report['variants'] if r['signature'] == signature and r['status'] == 'EXECUTED']
+                verdict = 'INCOMPLETE'
+                if len(rows) == 3:
+                    accurate = all(r['vs_cpu']['passed'] for r in rows)
+                    stable = all(r['vs_previous']['equal_bits'] for r in rows[1:])
+                    verdict = 'PASSED' if accurate and stable else 'FAILED'
+                verdicts[signature] = verdict
+                summaries.append(f'{signature} group check: {verdict} ({len(rows)}/3 completed)')
         report['runtime_after'] = runtime(torch_npu)
         executed = all(row['status'] == 'EXECUTED' for row in report['variants']) and 'dynamic_quant_error' not in report
         if dequant_control:

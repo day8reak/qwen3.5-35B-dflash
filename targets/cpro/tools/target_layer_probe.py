@@ -114,8 +114,11 @@ def main():
     s.add_argument('--quant-replay', required=True, help='completed replay-dynamic-quant directory')
     s.add_argument('--cpu', required=True, help='verify-qlinear-golden output obtained with this quant replay')
     s.add_argument('--layer', type=int, choices=range(4), default=3, help='L3 V by default, or L0-L2 QKV')
-    s.add_argument('--repeat-original', action='store_true',
-                   help='repeat DynamicQuant on captured hidden and original QuantMatmul on frozen operands three times each')
+    repeat = s.add_mutually_exclusive_group()
+    repeat.add_argument('--repeat-original', action='store_true',
+                        help='repeat DynamicQuant on captured hidden and original QuantMatmul on frozen operands three times each')
+    repeat.add_argument('--compare-group256', action='store_true',
+                        help='compare the original and explicit group256 signatures three times each on identical frozen operands')
     s.add_argument('--dequant-control', action='store_true', help='also compare ordinary device matmul on dequantized checkpoint W4 to the frozen-A8 CPU reference')
     s.add_argument('--device', default='npu:0')
     s.add_argument('--output', required=True)
@@ -178,7 +181,8 @@ def main():
     elif a.command == 'probe-310p-matmul':
         from qwen35_moe_dflash.target.layer_probe.qlinear_matmul_probe import run_probe
         result = run_probe(a.capture, a.quant_replay, a.cpu, a.output, a.layer, a.device,
-                           repeat_original=a.repeat_original, dequant_control=a.dequant_control)
+                           repeat_original=a.repeat_original, dequant_control=a.dequant_control,
+                           compare_group256=a.compare_group256)
     elif a.command == 'inspect-live-layout':
         from qwen35_moe_dflash.target.layer_probe.live_projection import compare_live
         evidence = compare_live(a.trace, a.capture, a.cpu, inspect_layouts=True)

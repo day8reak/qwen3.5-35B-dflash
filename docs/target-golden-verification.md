@@ -1,6 +1,6 @@
 # 先核验 Target golden
 
-本次 T8 Prefill，板端可观测的四个投影与独立 CPU group256 参考均通过。两次 310P Prefill 首先在 L0 QKV 投影出现偏差，L3 V 在原 W4 环境单独重放也复现了输出波动。[最新结果和 L0 复测](#step7)
+T8 Prefill 的四个板端投影在已比较的位置均通过 CPU 对照。310P 的 L0 QKV 显式反量化路径也通过 CPU 对照，原 A8W4 融合调用仍有偏差。[L0 数据和分组参数对照](#step7)
 
 ## 1. CPU 独立重算
 
@@ -230,6 +230,23 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" probe-310p-matmul \
 cat "$L0_RUN/probe/summary.txt"
 ```
 
-`dynamic_quant_calls[].vs_previous` 给出相邻量化结果的逐位比较，`vs_saved` 比较本次与已保存量化重放的输出。`variants[].vs_previous` 给出相邻矩阵乘输出的误差。量化稳定而固定实参的矩阵乘输出变化时，可独立复现 L0 的矩阵乘波动。若两步都稳定，再核对摘要中三次原签名输出对 CPU 参考及历史捕获的误差，继续检查原调用现场与独立重放的差异。
+用户在 `qwen3_5_w4` 回传的 L0 QKV 结果覆盖全部 8 个 token。
 
-`--dequant-control` 使用同一份 A8、per-token scale 和经哈希核对的原始 W4／group scale，在 310P 上显式反量化权重，做两次普通 FP32 张量矩阵乘，乘 token scale 后转 FP16。先看 `dequant_1_vs_cpu`、`dequant_2_vs_cpu` 的五项指标，以及 `dequant_2_vs_previous` 的逐位一致性。再看原融合调用的 `original*_vs_cpu` 和 `*_vs_previous`。报告中的 `INSPECTED` 只表示诊断执行完成。
+| 310P 路径 | 对照结果 | 重复执行 |
+| --- | --- | --- |
+| DynamicQuant | 三次 A8 和 per-token scale 均与已保存的量化重放逐位一致 | 三次 hidden 均保持原值 |
+| 显式反量化 checkpoint W4，FP32 矩阵乘，乘 token scale 后转 FP16 | 两次均通过 CPU 五项指标，相对 L2 0.01737%，最大绝对误差 0.015625 | 两次输出逐位一致 |
+| 原 A8W4 融合矩阵乘 | 三次对 CPU 的相对 L2 分别为 1.25139、1.03471、1.03471（比值） | 第 2 次对第 1 次最大绝对差 24.03906，第 3 次与第 2 次逐位一致 |
+
+要检验原调用省略分组参数是否影响结果，在同一 310P 环境复用上一步的 capture、量化重放和 CPU 参考。只改变 `group_sizes` 参数，交错运行原签名和显式 `[0,0,256]` 各三次。每次同步后比较 CPU 数值、四个操作数的逻辑字节及同签名的上次输出。
+
+```bash
+L0_GROUP=$(mktemp -d "${GOLDEN_CHECK:?}/l0-group.XXXXXXXX")
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" probe-310p-matmul \
+  --capture "$PREFILL_FIXTURE/capture" --quant-replay "$GOLDEN_CHECK/dynamic-quant" \
+  --cpu "$GOLDEN_CHECK/with-dynamic-quant" --layer 0 --device npu:0 \
+  --compare-group256 --output "$L0_GROUP/probe"
+cat "$L0_GROUP/probe/summary.txt"
+```
+
+摘要末尾分别给出两个签名的 `group check`。通过要求同签名三次均对齐 CPU 且输出逐位稳定。调度报错会保留原始错误和已完成次数。该对照只判定固定输入的 L0 QKV，整网 golden 仍待验证。
