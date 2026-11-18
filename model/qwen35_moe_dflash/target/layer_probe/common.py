@@ -10,7 +10,7 @@ from qwen35_moe_dflash.common.artifacts import output_path
 from qwen35_moe_dflash.common.accuracy import POLICY, floating_metrics
 
 KIND = 'qwen35-target-cpro-boundary-probe-v1'
-DTYPES = {'float16': '<f2', 'float32': '<f4', 'int16': '<i2', 'int32': '<i4', 'int64': '<i8'}
+DTYPES = {'float16': '<f2', 'float32': '<f4', 'int8': 'i1', 'int16': '<i2', 'int32': '<i4', 'int64': '<i8'}
 
 
 def save_json(path, value):

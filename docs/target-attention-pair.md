@@ -2,7 +2,7 @@
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 
-当前 T8 两组均已执行但数值未通过，按[投影与缓存链路定位](target-attention-localization.md)检查现有捕获并缩小首个偏差；无需重新生成整网 Prefill。
+当前 T8 两组均已执行但数值未通过，捕获连接与源 AIR 权重配对检查已通过。先做 [golden 独立数学核验](target-golden-verification.md)，确认投影参考，再继续[投影与缓存链路定位](target-attention-localization.md)；无需重新生成整网 Prefill。
 
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。以下流程要求 `capture/manifest.json` 为 `CAPTURED`，同次 `attention_audit` 为 `PASSED`。保留完整 `PREFILL_FIXTURE`（含父 manifest 和 `attention-audit/`），无需再次执行整网 Prefill。
 

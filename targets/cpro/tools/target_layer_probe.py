@@ -83,6 +83,19 @@ def main():
     s = sub.add_parser('inspect-prefill-links', help='check captured QKV/ConvState and V projection/cache links offline; no export, compilation or device execution')
     s.add_argument('--capture', required=True, help='original fresh-Prefill boundary capture directory')
     s.add_argument('--output', required=True, help='fresh read-only inspection report directory')
+    for command in ('verify-qlinear-golden', 'replay-dynamic-quant'):
+        s = sub.add_parser(command, help='independent CPU QKV/V reference' if command == 'verify-qlinear-golden'
+                           else 'only original DynamicQuant on frozen inputs; no QuantMatmul or whole-model replay')
+        s.add_argument('--capture', required=True)
+        s.add_argument('--output', required=True)
+        s.add_argument('--points', nargs='+', choices=('linear_attn_in_proj_qkv', 'self_attn_v_proj'),
+                       help='omitted selects L0-L2 QKV and L3 V')
+        if command == 'verify-qlinear-golden':
+            s.add_argument('--source-root', required=True, help='original NZ/310P source matching capture; also resolves relative YAML resource paths')
+            s.add_argument('--target-config', required=True, help='original YAML with quanted_pth')
+            s.add_argument('--quant-replay', help='optional replay-dynamic-quant output directory')
+        else:
+            s.add_argument('--device', default='npu:0')
     s = sub.add_parser('compare')
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
@@ -125,6 +138,16 @@ def main():
         result = dict(status=result['status'], report=str(Path(a.output).resolve()/'report.json'),
             summary=str(Path(a.output).resolve()/'summary.txt'),
             model_compilation='NOT_RUN', device_execution='NOT_RUN')
+    elif a.command == 'verify-qlinear-golden':
+        from qwen35_moe_dflash.target.layer_probe.qlinear_golden import verify
+        result = verify(a.capture, a.target_config, a.source_root, a.output,
+                        points=a.points, quant_replay=a.quant_replay)
+    elif a.command == 'replay-dynamic-quant':
+        from qwen35_moe_dflash.target.layer_probe.qlinear_quant_replay import replay
+        result = replay(a.capture, a.output, a.device, points=a.points)
+        result = dict(status=result['status'], manifest=str(Path(a.output).resolve()/'manifest.json'),
+                      summary=str(Path(a.output).resolve()/'summary.txt'),
+                      cases={c['id']: c['status'] for c in result['cases']}, errors=result['errors'])
     elif a.command == 'inspect-qlinear':
         from qwen35_moe_dflash.target.layer_probe.contracts import inspect_qlinear
         result = inspect_qlinear(a.batch, a.output, a.ddk_root, a.fixture)

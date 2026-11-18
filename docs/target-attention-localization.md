@@ -1,6 +1,6 @@
 # Target T8 Prefill：定位投影与缓存链路
 
-当前同次 T8 捕获的完整 Linear／Full Attention 均有数值偏差；先复用现有输入和 golden 检查连接，再用五张小图区分投影计算与缓存写入。无需重新生成整网 Prefill。
+当前同次 T8 捕获的完整 Linear／Full Attention 均有数值偏差。现有捕获连接检查已通过，QKV→ConvState 与 V→缓存逐位一致，19 对源 AIR weight/scale 配对一致；投影计算本身仍待核验。**当前先执行 [golden 独立数学核验](target-golden-verification.md)，暂缓下面五张 CPro 小图。** 无需重新生成整网 Prefill。
 
 环境与变量沿用 [Attention 分层验证](target-attention-pair.md)：`GOLDEN_CAPTURE` 必须指向本次 T8 的 `prefill-fixture/capture`，`CPRO_SOURCE` 仍是保留原调用的私有 CPro 源码。导出适配由工具自动应用，原源码与 golden 不改写。先同步 `main`。
 
@@ -33,7 +33,7 @@ done
 
 这一步不调用编译器。旧导出记录中的投影候选没有语义名称，工具按匿名候选组核对完整常量字节和 x2／scale 配对；不因此声称已证明 Q/K/V 的语义接线或编译后内部存储正确。文件缺失或不透明的中间链会保留未确认状态。
 
-## 2. 导出五张小图
+## 2. golden 核验后：导出五张小图
 
 在此前成功导出 AIR 的 CPro Python 环境执行。使用同一次 T8 捕获的三层 QKV 投影、L3 V 投影和 L3 V CacheUpdate；独立 CacheUpdate 直接使用捕获的 updates／block／offset，不经过 RoPE 或浮点索引转换。
 
@@ -91,4 +91,4 @@ cat "$DIAG_ROOT/comparison/summary.csv"
 | V 投影通过，独立 CacheUpdate 失败 | 检查 T8 updates、写入行和缓存布局 |
 | 五张小图与离线连接均通过，完整模块仍失败 | 对比整图内部边、输出槽位及存储复用；小图通过不能排除串联问题 |
 
-先回传离线检查的 `summary.txt`；若离线链路及权重配对没有发现异常，再执行五图并回传 `projection-t8/comparison/summary.csv`。有异常时同时保留对应 `report.json`。当前根因未确认，不据这些诊断修改已捕获参考或放宽阈值。
+离线连接和权重配对的当前检查已完成；先回传 [golden 核验](target-golden-verification.md)的 `summary.txt`。参考计算核实后，再执行五图并回传 `projection-t8/comparison/summary.csv`。当前根因未确认，不据这些诊断修改已捕获参考或放宽阈值。
