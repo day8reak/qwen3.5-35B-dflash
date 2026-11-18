@@ -1,6 +1,6 @@
 # 先核验 Target golden
 
-本次 T8 Prefill，板端可观测的四个投影与独立 CPU group256 参考均通过，原四层捕获在这些位置偏离参考。独立重放 L3 矩阵乘停在 V5 参数校验和 TransData，当前从[步骤 5](#step5)记录正常吐字进程的同次实参和返回值。
+本次 T8 Prefill，板端可观测的四个投影与独立 CPU group256 参考均通过。两次 310P Prefill 首先在 L0 QKV 投影出现偏差，L3 V 在原 W4 环境单独重放也复现了输出波动。[最新结果和 L0 复测](#step7)
 
 ## 1. CPU 独立重算
 
@@ -209,3 +209,25 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" replay-saved-matmul 
 ```
 
 `calls[1:]` 中的 `vs_previous` 比较相邻两次返回，`vs_prefill` 对比原首次调用，`vs_delayed` 对比原 Prefill 结束后的复跑。格式、stride 和还原的逻辑字节可在同一份输出中核对。独立进程使用重新分配的设备张量；三次结果一致时，原 Prefill 进程的差异仍须单独解释。若算子调度报错，报告会保留错误码和已完成的调用数。
+
+<a id="step7"></a>
+
+## 7. 定位 T8 Prefill 的首个投影偏差
+
+两次四层 Prefill 的 wrapper 输入一致。按捕获顺序检查到第 2 个边界时，L0 `linear_attn.in_proj_qkv` 已经超差。该模块的 hidden、属性、packed W 和 group scale 一致，输出相对 L2 为 1.08216，余弦为 0.39999。原始两次调用均缺少该层 A8 和 per-token scale 的值。
+
+在 `qwen3_5_w4` 环境独立重放 L3 V，四个实参的还原字节、dtype、shape、stride 和格式均匹配，每次同步后实参保持一致。第 2 对第 1 次、第 3 对第 2 次的输出相对 L2 分别为 1.04879、1.07200，余弦分别为 0.45271、0.41593。该结果只覆盖这份 T8 调用，具体执行内核及原因仍待确认。
+
+在同一 310P 环境分两步复测 L0。第一步用同一份捕获 hidden 连续量化三次，分别检查 A8 和 per-token scale。第二步固定已有量化重放保存的 A8、per-token scale 和捕获的两份权重参数，按原调用签名连续做三次矩阵乘。两步都逐次同步并检查输入。输出目录由本次命令新建。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only
+L0_RUN=$(mktemp -d "${GOLDEN_CHECK:?}/l0-stages.XXXXXXXX")
+python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" probe-310p-matmul \
+  --capture "$PREFILL_FIXTURE/capture" --quant-replay "$GOLDEN_CHECK/dynamic-quant" \
+  --cpu "$GOLDEN_CHECK/with-dynamic-quant" --layer 0 --device npu:0 \
+  --repeat-original --output "$L0_RUN/probe"
+cat "$L0_RUN/probe/summary.txt"
+```
+
+`dynamic_quant_calls[].vs_previous` 给出相邻量化结果的逐位比较，`vs_saved` 比较本次与已保存量化重放的输出。`variants[].vs_previous` 给出相邻矩阵乘输出的误差。量化稳定而固定实参的矩阵乘输出变化时，可独立复现 L0 的矩阵乘波动。若两步都稳定，再核对摘要中三次原签名输出对 CPU 参考及历史捕获的误差，继续检查原调用现场与独立重放的差异。

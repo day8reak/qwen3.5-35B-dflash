@@ -22,7 +22,37 @@ def nd_weight_hypothesis(carrier):
     return decoded.T
 
 
-def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'):
+def repeat_dynamic_quant(npu, hidden, saved_q, saved_scale, device, rows):
+    import torch
+    from .prefill_matmul_repeat import equal_bits
+    from .qlinear import snapshot
+
+    source = torch.from_numpy(hidden).reshape(saved_q.shape)
+    x = source.to(device)
+    if not equal_bits(snapshot(x), source):
+        raise ValueError('device transfer changed the captured hidden')
+    previous = None
+    with torch.no_grad():
+        for i in range(3):
+            q, scale = npu.npu_dynamic_quant(x)
+            torch.npu.synchronize(device)
+            if (q.device != x.device or scale.device != x.device or q.dtype != torch.int8
+                    or q.shape != saved_q.shape or scale.dtype != torch.float32
+                    or tuple(scale.shape) not in ((x.shape[0],), (x.shape[0], 1))):
+                raise ValueError('unexpected DynamicQuant output descriptors')
+            current = snapshot(dict(a8=q, token_scale=scale.reshape(-1, 1)))
+            vs_saved = dict(a8=equal_bits(current['a8'], saved_q),
+                            token_scale=equal_bits(current['token_scale'], saved_scale))
+            row = dict(call=i + 1, vs_saved=vs_saved, hidden_equal_after=equal_bits(snapshot(x), source))
+            if previous is not None:
+                row['vs_previous'] = {key: equal_bits(value, previous[key]) for key, value in current.items()}
+            rows.append(row)
+            if not row['hidden_equal_after']:
+                raise ValueError('hidden changed during DynamicQuant')
+            previous = current
+
+
+def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0', *, repeat_original=False):
     import torch
     from .qlinear import describe, explicit_group256
     from .qlinear_backend import runtime, tensor_formats
@@ -108,32 +138,63 @@ def run_probe(capture, quant_replay, cpu_report, output, layer=3, device='npu:0'
                              f"stride {before.get('stride')} -> {after['stride']}, "
                              f"NPU format {old_fmt} -> {new_fmt}")
         variants = ['original']
-        if kwargs.get('group_sizes') is None:
+        previous_y = None
+        if repeat_original:
+            from .qlinear import snapshot
+            from .prefill_matmul_repeat import compare_operands
+
+            report['scope'] = 'REPEATED_DYNAMIC_QUANT_AND_SEPARATE_FROZEN_ORIGINAL_MATMUL'
+            quant_calls = report['dynamic_quant_calls'] = []
+            try:
+                hidden = read_array(root, tensor_spec(region, 'inputs', 'x'))
+                repeat_dynamic_quant(torch_npu, hidden, torch.from_numpy(q), torch.from_numpy(ps), device, quant_calls)
+            except Exception as exc:
+                report['dynamic_quant_error'] = f'{type(exc).__name__}: {exc}'
+                summaries.append('DynamicQuant: ' + report['dynamic_quant_error'])
+            for call in quant_calls:
+                summaries.append(f'DynamicQuant {call}')
+            saved = dict(x1=torch.from_numpy(q), x2=w, scale=scale, pertoken_scale=torch.from_numpy(ps))
+            report['operands_equal_before'] = compare_operands(snapshot(replay_inputs), saved)
+            if not all(report['operands_equal_before'].values()):
+                raise ValueError('restored matmul operands differ from the saved logical values')
+            variants += ['original_repeat_2', 'original_repeat_3']
+        elif kwargs.get('group_sizes') is None:
             variants.append('explicit_group256')
         for label in variants:
             row = dict(name=label, status='DISPATCHING')
             report['variants'].append(row)
             save_json(out/'report.json', report)
             try:
-                options = kwargs if label == 'original' else explicit_group256(args, kwargs)
+                options = explicit_group256(args, kwargs) if label == 'explicit_group256' else kwargs
                 row['group_sizes'] = options.get('group_sizes')
                 with torch.no_grad():
                     device_y = torch_npu.npu_quant_matmul(*args, **options)
                     if device_y.device != args[0].device:
                         raise ValueError(f'unexpected output device {device_y.device}')
-                    y = device_y.detach().cpu().contiguous()
+                    if repeat_original:
+                        torch.npu.synchronize(device)
+                    y = device_y.detach().to('cpu', copy=True).contiguous()
                 if y.dtype != torch.float16 or tuple(y.shape) != (m, n):
                     raise ValueError(f'unexpected output {y.dtype} {tuple(y.shape)}')
                 values = y.numpy()
                 for reference, array in references.items():
                     row['vs_' + reference] = record_comparison(f'{label}_vs_{reference}', values, array)
+                if repeat_original:
+                    row['operands_equal_after'] = compare_operands(snapshot(replay_inputs), saved)
+                    if not all(row['operands_equal_after'].values()):
+                        raise ValueError('a frozen operand changed during QuantMatmul')
+                    if previous_y is not None:
+                        row['vs_previous'] = record_comparison(f'{label}_vs_previous', values, previous_y)
+                    previous_y = values
                 row['status'] = 'EXECUTED'
             except Exception as exc:
                 row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
                 summaries.append(f"{label}: FAILED {row['error']}")
             save_json(out/'report.json', report)
+            if repeat_original and row['status'] == 'FAILED':
+                break
         report['runtime_after'] = runtime(torch_npu)
-        executed = all(row['status'] == 'EXECUTED' for row in report['variants'])
+        executed = all(row['status'] == 'EXECUTED' for row in report['variants']) and 'dynamic_quant_error' not in report
         report['status'] = 'INSPECTED' if executed else 'PARTIAL'
     except Exception as exc:
         report.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
