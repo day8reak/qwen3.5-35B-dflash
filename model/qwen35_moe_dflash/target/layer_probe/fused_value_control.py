@@ -6,9 +6,9 @@ import numpy as np
 import torch
 from torch.utils._pytree import tree_flatten
 
-from .attention_reference import unpack
+from .attention_reference import reference_math, unpack
 from .capture import cpu
-from .common import checked, read_array
+from .common import checked, metrics, read_array
 
 
 def previous_call(fixture):
@@ -37,8 +37,74 @@ def same_arguments(live, saved):
     return True
 
 
+def live_description(npu, kwargs):
+    def describe(x):
+        if isinstance(x, (tuple, list)):
+            return {'container': type(x).__name__, 'items': [describe(v) for v in x]}
+        if not isinstance(x, torch.Tensor):
+            return x
+        result = dict(shape=list(x.shape), dtype=str(x.dtype), device=str(x.device),
+                      stride=list(x.stride()), storage_offset=x.storage_offset())
+        if x.device.type == 'npu':
+            result['npu_format'] = int(npu.get_npu_format(x))
+        return result
+
+    result = {name: describe(x) for name, x in kwargs.items()}
+    if torch.is_tensor(kwargs['all_seq_lengths_q']):
+        result['all_seq_lengths_q']['values'] = cpu(kwargs['all_seq_lengths_q']).tolist()
+    return result
+
+
+def mask_control(npu, kwargs, saved, original, reference, report):
+    mask = kwargs['atten_mask']
+    data = saved['atten_mask'].numpy()
+    if data.dtype != np.float16 or data.shape[:3] != (1, 1, 64) or data.shape[-1] < 64:
+        raise ValueError('Expected a fresh T64 FP16 causal mask')
+    hidden = (np.arange(data.shape[-1])[None, :] > np.arange(64)[:, None])[None, None]
+    if np.any(data[~hidden] != 0) or not np.all(np.isneginf(data[hidden]) | (data[hidden] == -65504)):
+        raise ValueError('Expected allowed zeros and masked -inf or -65504 at the causal positions')
+    report['original_mask_counts'] = dict(negative_infinity=int(np.isneginf(data).sum()),
+                                          fp16_min=int((data == -65504).sum()))
+    scratch = mask.clone(memory_format=torch.preserve_format)
+    args = dict(kwargs, atten_mask=scratch)
+    if live_description(npu, args)['atten_mask'] != report['live_arguments']['atten_mask']:
+        raise ValueError('Private mask copy differs from original descriptor')
+    variants = report['calls'] = {}
+    previous = {}
+    for label, sentinel in (('original', None), ('finite_min', -65504), ('negative_inf', -np.inf),
+                            ('finite_min_repeat', -65504), ('negative_inf_repeat', -np.inf), ('restored', None)):
+        variant = data.copy()
+        if sentinel is not None:
+            variant[hidden] = sentinel
+        math_output = reference_math(saved['query'].numpy(), saved['key'][0].numpy(), saved['value'][0].numpy(),
+            variant, saved['block_table'].numpy(), 64, heads=kwargs['num_heads'], kv_heads=kwargs['num_key_value_heads'],
+            block_size=kwargs['block_size'], scale=kwargs['scale_value'])['output']
+        if math_output is None or math_output.tobytes() != reference.tobytes():
+            raise ValueError('Mask variant changes the independent FP16 reference: ' + label)
+        scratch.copy_(torch.from_numpy(variant))
+        if cpu(scratch).numpy().tobytes() != variant.tobytes():
+            raise ValueError('Mask upload changed bits: ' + label)
+        y = cpu(npu.adn_fused_infer_attention(**args)).numpy()
+        if y.shape != original.shape or y.dtype != original.dtype:
+            raise ValueError('Fused output descriptor changed: ' + label)
+        score = metrics(unpack(y, kwargs['num_heads']), reference)
+        variants[label] = {key: score[key] for key in ('passed', 'relative_l2', 'max_abs', 'failed_metrics')}
+        variants[label]['equal_bits_to_live_prefill'] = y.tobytes() == original.tobytes()
+        if sentinel in previous:
+            variants[label]['equal_bits_to_first_same_variant'] = y.tobytes() == previous[sentinel]
+        else:
+            previous[sentinel] = y.tobytes()
+        if not same_arguments(kwargs, saved):
+            raise ValueError('Original arguments changed during mask control: ' + label)
+    report['sentinel_outputs_equal_bits'] = previous[-65504] == previous[-np.inf]
+    report['repeats_stable'] = all(variants[label]['equal_bits_to_first_same_variant']
+                                   for label in ('finite_min_repeat', 'negative_inf_repeat', 'restored'))
+    report['original_mask_reproduces_live_prefill'] = all(variants[label]['equal_bits_to_live_prefill']
+                                                          for label in ('original', 'restored'))
+
+
 @torch.no_grad()
-def run_control(npu, live_calls, root, audit, historical, report):
+def run_control(npu, live_calls, root, audit, historical, report, *, probe_mask=False):
     if len(live_calls) != 1 or len(audit['calls']) != 1:
         raise ValueError('expected one captured live source attention call')
     kwargs, saved = live_calls[0]
@@ -53,6 +119,11 @@ def run_control(npu, live_calls, root, audit, historical, report):
         raise ValueError('live attention arguments changed since capture')
     original = read_array(root, call['actual'])
     reference = read_array(root, call['independent_reference'])
+    if probe_mask:
+        report['live_arguments'] = live_description(npu, kwargs)
+        mask_control(npu, kwargs, saved, original, reference, report)
+        report['status'] = 'INSPECTED'
+        return
     value = kwargs['value'][0]
     scratch = value.clone(memory_format=torch.preserve_format)
     if (value.stride() != scratch.stride() or value.storage_offset() != scratch.storage_offset()

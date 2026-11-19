@@ -315,7 +315,7 @@ def attention_audit(npu, capture, *, live_calls=None):
 
 
 def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=False, npu=None,
-                    capture_boundaries=False, l3_repeat=None, fused_value_baseline=None):
+                    capture_boundaries=False, l3_repeat=None, fused_value_baseline=None, probe_mask=False):
     """Run the original prefill once. No decoder or second golden evaluation."""
     root = Path(root)
     max_len = source.config_data['kv_cache_max_len']
@@ -378,9 +378,10 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
             records=[dict(layer=row.get('layer'), status=row.get('status'), error=row.get('error')) for row in rows])
     if live_calls is not None:
         from .layer_probe.fused_value_control import run_control
-        control = record['fused_value_control'] = dict(status='PARTIAL')
+        control = record['fused_mask_control' if probe_mask else 'fused_value_control'] = dict(status='PARTIAL')
         try:
-            run_control(npu, live_calls, root, record['attention_audit'], fused_value_baseline, control)
+            run_control(npu, live_calls, root, record['attention_audit'], fused_value_baseline, control,
+                        probe_mask=probe_mask)
         except Exception as exc:
             control['error'] = f'{type(exc).__name__}: {exc}'
     return record
@@ -388,7 +389,7 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
 
 def generate(source_root, config_path, input_ids, sequence_length, output, *, device='npu:0',
              intermediates=False, capture_boundaries=False, prompt_index=0, prompt_repeat=1, l3_repeat=None,
-             probe_fused_value=None):
+             probe_fused_value=None, probe_fused_mask=None):
     root = new_output(output)
     source_root = Path(source_root).resolve(strict=True)
     config_path = Path(config_path)
@@ -423,12 +424,14 @@ def generate(source_root, config_path, input_ids, sequence_length, output, *, de
             raise ValueError('invalid Prefill sequence-length for this cache/int16 length input')
         path = None
         fused_value_baseline = None
-        if probe_fused_value is not None:
+        probe_mask = probe_fused_mask is not None
+        probe_fixture = probe_fused_mask if probe_mask else probe_fused_value
+        if probe_fixture is not None:
             from .layer_probe.fused_value_control import previous_call
-            if input_ids is not None:
-                raise ValueError('--probe-fused-value already uses the specified fixture token file')
-            input_ids, fused_value_baseline = previous_call(probe_fused_value)
-            record['fused_value_baseline_fixture'] = str(Path(probe_fused_value).resolve())
+            if input_ids is not None or (probe_mask and probe_fused_value is not None):
+                raise ValueError('Supply one fused-control fixture as the token source')
+            input_ids, fused_value_baseline = previous_call(probe_fixture)
+            record['fused_mask_baseline_fixture' if probe_mask else 'fused_value_baseline_fixture'] = str(Path(probe_fixture).resolve())
         if input_ids is not None:
             if prompt_index != 0 or prompt_repeat != 1:
                 raise ValueError('prompt options cannot be combined with --input-ids')
@@ -494,13 +497,13 @@ def generate(source_root, config_path, input_ids, sequence_length, output, *, de
         stage('ORIGINAL_PREFILL_ONCE')
         execute_prefill(source, wrapper, tokens.to(device), root, record, intermediates=intermediates,
                         npu=npu, capture_boundaries=capture_boundaries, l3_repeat=l3_repeat,
-                        fused_value_baseline=fused_value_baseline)
+                        fused_value_baseline=fused_value_baseline, probe_mask=probe_mask)
         status = 'CAPTURED' if record.get('boundary_capture', {}).get('status', 'CAPTURED') == 'CAPTURED' else 'PARTIAL'
         if capture_boundaries:
             replay_rows = record.get('attention_module_reference', {}).get('records', [])
             if len(replay_rows) != 1 or replay_rows[0]['status'] != 'COMPUTED':
                 status = 'PARTIAL'
-        if probe_fused_value is not None and record['fused_value_control']['status'] != 'INSPECTED':
+        if probe_fixture is not None and record['fused_mask_control' if probe_mask else 'fused_value_control']['status'] != 'INSPECTED':
             status = 'PARTIAL'
         record.update(status=status, stage='COMPLETE', reference_execution='EXECUTED',
             next_action='Bind inputs by semantic name to the actual OMC runtime ABI, then compare its matching Prefill outputs.')
