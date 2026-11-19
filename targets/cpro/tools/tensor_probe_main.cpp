@@ -23,6 +23,7 @@ struct Plan {
   std::vector<HiaiTensorSpec> inputs, outputs;
   std::string preparation = "none";
   bool reset_inputs = false;
+  std::string model_load = "legacy-buffer";
 };
 Plan ReadPlan(const fs::path& path) {
   if (!fs::is_regular_file(path) || fs::file_size(path) > 65536)
@@ -47,6 +48,9 @@ Plan ReadPlan(const fs::path& path) {
     } else if (fields.size() == 2 && fields[0] == "input_reset" && fields[1] == "copy-each-call" &&
                iterations && !plan.reset_inputs && plan.inputs.empty() && plan.outputs.empty()) {
       plan.reset_inputs = true;
+    } else if (fields.size() == 2 && fields[0] == "model_load" && fields[1] == "file-v2-external" &&
+               plan.model_load == "legacy-buffer" && plan.reset_inputs && plan.inputs.empty() && plan.outputs.empty()) {
+      plan.model_load = fields[1];
     } else if (fields.size() == 5 && iterations && (fields[0] == "input" || fields[0] == "output")) {
       auto& specs = fields[0] == "input" ? plan.inputs : plan.outputs;
       if (Number(fields[1]) != specs.size() || specs.size() >= 16 ||
@@ -105,7 +109,7 @@ int main(int argc, char** argv) {
     for (std::size_t i = 0; i < plan.inputs.size(); ++i)
       inputs.push_back(Read(fixture / ("input_" + std::to_string(i) + ".bin"), HiaiTensorBytes(plan.inputs[i])));
     HiaiStatefulExecutor executor(argv[1], argv[2], plan.inputs, plan.outputs,
-        30000, true, -1, false, "legacy-buffer", "qwen35_tensor_probe", nullptr, {}, false, false,
+        30000, true, -1, false, plan.model_load, "qwen35_tensor_probe", nullptr, {}, false, false,
         output_initialization == "zero");
     fs::create_directories(output);
     const bool prepare_each_call = plan.preparation != "none";
@@ -124,7 +128,7 @@ int main(int argc, char** argv) {
     const char* evidence = "device-hiai";
 #endif
     result << "{\"evidence_kind\":\"" << evidence << "\",\"output_initialization\":\""
-           << output_initialization << "\",\"warmup\":" << plan.warmup
+           << output_initialization << "\",\"model_load\":\"" << plan.model_load << "\",\"warmup\":" << plan.warmup
            << ",\"repetitions\":" << plan.repetitions << ",\"api_us\":[";
     for (unsigned i = 0; i < plan.warmup + plan.repetitions; ++i) {
       const auto start = Clock::now();

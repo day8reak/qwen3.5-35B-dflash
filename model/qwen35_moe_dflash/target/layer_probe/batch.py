@@ -348,7 +348,33 @@ def check_io_budget(name, io, max_slots=8):
                          f'limit=33554432 bytes (32 MiB), at most {max_slots} slots per direction')
 
 
-def prepare_fixture(root, out, ddk, ddk_id, selection=None):
+def _external_prefill_files(root, case, compiled):
+    from qwen35_moe_dflash.toolchain.existing_air import select_primary_omc
+    name = case['id']
+    if case['kind'] != 'segment_prefill' or compiled.get('weight_storage') != 'embedded-stream':
+        raise ValueError('external weights require a segment prefill batch with a retained packing receipt')
+    packing = json.loads(checked(root, compiled['weight_packing']).read_text())
+    if (packing.get('status') != 'EMBEDDED' or packing.get('artifact_kind') != 'qwen35-omc-embedded-stream'
+            or any(packing['output'][k] != compiled['omc'][k] for k in ('bytes', 'sha256'))):
+        raise ValueError('external weight receipt differs from the previously packed model')
+    compiler_dir = root/'models'/name/'omc'
+    raw = select_primary_omc(compiler_dir, required=True)
+    model = checked(compiler_dir, dict(packing['source'], path=str(raw.relative_to(compiler_dir))))
+    weights = []
+    for row in packing['weights']:
+        # Packing already verified the graph owner and the exact weight range.
+        # Resolve beside the retained model so moving the batch remains supported.
+        filename = row['graphop_name'] + '.weight'
+        if Path(row['path']).name != filename:
+            raise ValueError('invalid external GraphOp weight filename')
+        path = checked(model.parent, dict(row, path=filename))
+        weights.append(dict(local=str(path), remote=name+'/'+filename, bytes=row['bytes'], sha256=row['sha256']))
+    if not weights or len({r['remote'] for r in weights}) != len(weights):
+        raise ValueError('missing or duplicate external GraphOp weight')
+    return model, weights
+
+
+def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=False):
     from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
@@ -377,9 +403,16 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         case = available[name]
         exported = json.loads(checked(source_root, case['export']).read_text())
         folder = source_root/'models'/name
-        model = checked(root, compiled['cases'][name]['omc'])
-        parts = [p for p in read_container(model)['partitions'] if p['type'] == 0]
-        if len(parts) != 1 or any(model.parent.glob('*.weight')):
+        build = compiled['cases'][name]
+        if external_weights:
+            model, weights = _external_prefill_files(root, case, build)
+        else:
+            model = checked(root, build['omc'])
+        partitions = read_container(model)['partitions']
+        parts = [p for p in partitions if p['type'] == 0]
+        if external_weights and ([p['type'] for p in partitions] != [0, 1, 2] or partitions[1]['bytes'] != 0):
+            raise ValueError('original external prefill OMC must have an empty weight partition')
+        if len(parts) != 1 or (not external_weights and any(model.parent.glob('*.weight'))):
             raise ValueError('requires embedded weights and one main metadata partition')
         doc = schema.decode(read_partition(model, parts[0]), 'ModelDef')
         try:
@@ -391,6 +424,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         fixture = out/'fixture'/name
         fixture.mkdir(parents=True)
         plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']
+        if external_weights:
+            plan.append('model_load file-v2-external')
         for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
             for spec in io[direction]:
                 source = checked(folder, exported.get('goldens', [exported['golden']])[spec['index']]
@@ -411,6 +446,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
         cases.append(dict(case=name, **io, layer=case['layer'], call=case['call'], point=case['point'],
             kind=case['kind'], phase=case['phase'], ordinal=case['ordinal'], output_name=case['output_name'],
             model=_file_record(model, name+'/model.omc'), graphop_counts=observed['graphop_counts']))
+        if external_weights:
+            cases[-1].update(model_load='file-v2-external', external_weights=weights)
         if state_contract:
             cases[-1]['compiled_state_contract'] = state_contract
             cases[-1]['gdr_mode'] = exported.get('candidate', {}).get('gdr_mode', 'chunk')
@@ -477,6 +514,8 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
         try:
             folder = native/case['case']
             receipt = json.loads((folder/'result.json').read_text())
+            if case.get('model_load', 'legacy-buffer') != receipt.get('model_load', 'legacy-buffer'):
+                raise ValueError('runner model loading route differs from fixture')
             if (receipt.get('status') != 'EXECUTED' or receipt.get('evidence_kind') != ('host-fake-hiai' if allow_host_fake else 'device-hiai')
                     or receipt.get('repetitions') != meta['repetitions'] or receipt.get('warmup') != meta['warmup']
                     or len(receipt.get('api_us', [])) != meta['repetitions']

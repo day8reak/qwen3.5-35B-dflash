@@ -317,9 +317,10 @@ struct Model {
   }
   void LoadFile(const std::filesystem::path& path, const std::string& expected_version,
                 std::size_t input_count, std::size_t output_count, bool descriptor_only = false,
-                const std::string& resident_model_name = "") {
+                const std::string& resident_model_name = "", bool external_weights = false) {
     file_v2 = true;
     name = descriptor_only ? "qwen35_model_io_probe" : "qwen35_standalone_draft";
+    if (external_weights) name = resident_model_name;
     try {
       Stage("RUNTIME_IDENTITY");
       const auto probe = ProbeHiai();
@@ -363,11 +364,16 @@ struct Model {
       const auto initialized_status = manager->Init(options, built_model, nullptr);
       if (initialized_status != 0)
         throw std::runtime_error("IModelManager::Init failed: " + std::to_string(initialized_status));
+      if (external_weights) {
+        Stage("INIT_WEIGHTS_AFTER_INIT");
+        const auto status = manager->InitWeights(path.parent_path().string());
+        if (status != 0) throw std::runtime_error("InitWeights failed: " + std::to_string(status));
+      }
       Stage("TENSOR_DESCRIPTORS");
       nd_input_dims = built_model->GetInputTensorDescs();
       nd_output_dims = built_model->GetOutputTensorDescs();
       if (nd_input_dims.size() != input_count || nd_output_dims.size() != output_count)
-        throw std::runtime_error("HIAI V2 tensor count differs from standalone full draft ABI");
+        throw std::runtime_error("HIAI V2 tensor count differs from the declared model ABI");
     } catch (const std::exception& error) {
       throw HiaiRuntimeError(stage, std::string(error.what()) + " [path=" + path.string() +
                              ", runtime=" + version + ", api=file-v2]");
@@ -395,9 +401,9 @@ struct Model {
       if (desc.format != hiai::Format::ND ||
           (actual != spec.shape && !IsTrailingOnePadding(spec.shape, actual) &&
            !IsLeadingOnePadding(spec.shape, actual)))
-        throw std::runtime_error("HIAI V2 tensor shape/format differs from full draft ND ABI: " + context);
+        throw std::runtime_error("HIAI V2 tensor shape/format differs from declared ND ABI: " + context);
       if (desc.dataType != dtype)
-        throw std::runtime_error("HIAI V2 tensor dtype differs from full draft ABI: " + context);
+        throw std::runtime_error("HIAI V2 tensor dtype differs from the declared ABI: " + context);
       auto buffer = hiai::CreateNDTensorBuffer(desc);
       if (!buffer) throw std::runtime_error("CreateNDTensorBuffer returned null: " + context);
       Tensor tensor{nullptr, HiaiTensorBytes(spec), buffer};
@@ -648,8 +654,11 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
   if (model_preread && !impl_->target.profile_load)
     throw std::invalid_argument("preread requires a resident legacy-buffer draft");
   impl_->target.legacy.preread_requested=model_preread;
-  if (model_load_api != "legacy-buffer" && model_load_api != "file-v2")
-    throw std::invalid_argument("model load API must be legacy-buffer or file-v2");
+  const bool external_weights = model_load_api == "file-v2-external";
+  if (model_load_api != "legacy-buffer" && model_load_api != "file-v2" && !external_weights)
+    throw std::invalid_argument("unknown model load API: " + model_load_api);
+  if (external_weights && (!fused_operator_probe || standalone_draft))
+    throw std::invalid_argument("file-v2-external requires a tensor probe");
   if (model_load_api == "file-v2" && !standalone_draft)
     throw std::invalid_argument("file-v2 requires the standalone draft ABI");
   if (inputs.empty() || inputs.size() > 1024 || outputs.empty() || outputs.size() > 1024 ||
@@ -672,8 +681,8 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
         throw std::invalid_argument("stateful target IO exceeds 2 GiB");
     }
   }
-  if (model_load_api == "file-v2")
-    impl_->target.LoadFile(target, expected_version, inputs.size(), outputs.size(),false,resident_model_name);
+  if (model_load_api == "file-v2" || external_weights)
+    impl_->target.LoadFile(target, expected_version, inputs.size(), outputs.size(), false, resident_model_name, external_weights);
   else impl_->target.Load(target, !resident_model_name.empty()?resident_model_name:standalone_draft ? "qwen35_standalone_draft" :
                      fused_operator_probe ? "qwen35_fused_operator" : "qwen35_stateful_target",
                      expected_version, timeout_ms, inputs.size(), outputs.size(),
@@ -689,7 +698,7 @@ HiaiStatefulExecutor::HiaiStatefulExecutor(
                          spec.dtype == "float32" ? hiai::HIAI_DATATYPE_FLOAT32 :
                          spec.dtype == "int64" ? hiai::HIAI_DATATYPE_INT64 :
                          spec.dtype == "int16" ? hiai::HIAI_DATATYPE_INT16 : hiai::HIAI_DATATYPE_INT32;
-      if (model_load_api == "file-v2") impl_->target.AddFileTensor(input, i, spec);
+      if (impl_->target.file_v2) impl_->target.AddFileTensor(input, i, spec);
       else impl_->target.Add(input, i, spec.shape, dtype, true);
       const auto& tensor = (input ? impl_->target.inputs : impl_->target.outputs).back();
       const auto allocated_bytes = tensor.Size();
@@ -884,11 +893,15 @@ void HiaiStatefulExecutor::Execute() {
       for (const auto& t : impl_->target.outputs) std::memset(t.Data(), impl_->diagnostic.output_fill_byte, t.bytes);
     impl_->target.Run();
     // Cheap output extent/pointer checks remain; no readback hash or fill scan.
-    if(!impl_->resident_storage.empty())for(std::size_t i=0;i<impl_->target.outputs.size();++i){
-      const auto& t=impl_->target.outputs[i];
-      const auto& old=impl_->resident_storage.at(impl_->target.inputs.size()+i);
-      if(t.Object()!=old.object||t.Buffer()!=old.data||t.Size()!=old.bytes)
-        throw HiaiRuntimeError("OUTPUT_VALIDATION","draft output storage changed during Process");
+    if (!impl_->resident_storage.empty()) {
+      if (impl_->target.OutputCount() != impl_->target.outputs.size())
+        throw HiaiRuntimeError("OUTPUT_VALIDATION", "unexpected number of runtime outputs");
+      for (std::size_t i = 0; i < impl_->target.outputs.size(); ++i) {
+        const auto current = impl_->target.CurrentOutput(i);
+        const auto& original = impl_->resident_storage.at(impl_->target.inputs.size() + i);
+        if (current.Object() != original.object || current.Buffer() != original.data || current.Size() != original.bytes)
+          throw HiaiRuntimeError("OUTPUT_VALIDATION", "runtime replaced output storage during execution");
+      }
     }
   }
   if (impl_->target.file_v2) impl_->target.Stage("EXECUTED");

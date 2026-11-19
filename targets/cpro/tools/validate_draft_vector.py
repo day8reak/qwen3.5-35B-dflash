@@ -179,13 +179,15 @@ def bind_io(document, declared, enums, *, input_order='data-index'):
                 netoutput_input_metadata=net[0].get('input'))
 
 
-def prepare(compiled, out, ddk, ddk_id, selection=None):
+def prepare(compiled, out, ddk, ddk_id, selection=None, *, external_weights=False):
     from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
     if (root/'manifest.json').is_file() and read_json(root/'manifest.json').get('artifact_kind') == TARGET_LAYER_KIND:
-        return target_layer_probe.prepare_fixture(root, out, ddk, ddk_id, selection)
+        return target_layer_probe.prepare_fixture(root, out, ddk, ddk_id, selection, external_weights=external_weights)
+    if external_weights:
+        raise ValueError('--external-weights requires a compiled Target segment prefill batch')
     if (root/'manifest.json').is_file() and read_json(root/'manifest.json').get('artifact_kind') in attention_validation.KINDS:
         return attention_validation.prepare_fixture(root, out, ddk, ddk_id, selection)
     report = read_json(root/'result.json')
@@ -584,6 +586,9 @@ def log_names(cases):
 
 
 def _check_probe_dtypes(meta, built):
+    if (any(c.get('model_load') == 'file-v2-external' for c in meta['cases']) and
+            'file-v2-external' not in built.get('tensor_probe_load_modes', [])):
+        raise ValueError('rebuild runtime/native with build_hiai.py --replace for external Target weights')
     if meta.get('input_reset') and meta['input_reset'] not in built.get('tensor_probe_input_reset', []):
         raise ValueError('rebuild runtime/native with build_hiai.py --replace; golden replay requires resetting every input before each call')
     required_preparation = {c['input_preparation'] for c in meta['cases'] if 'input_preparation' in c}
@@ -634,7 +639,8 @@ def start(args, out):
         with (source.parent/('.'+source.name+'.lock')).open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             selection = top1_semantics.BASE_CASES if getattr(args, 'top1_semantics', False) else args.cases
-            meta = prepare(source, out, args.ddk_root, env['ddk_id'], selection)
+            meta = prepare(source, out, args.ddk_root, env['ddk_id'], selection,
+                           external_weights=getattr(args, 'external_weights', False))
             if meta.get('artifact_kind') == attention_validation.KIND:
                 mode = getattr(args, 'output_initialization', 'zero')
                 if mode not in ('zero', 'untouched'):
@@ -670,6 +676,7 @@ def start(args, out):
                 raise ValueError('shared model destination has conflicting source/hash records')
             if record['remote'] not in models:
                 uploads.append(record); models[record['remote']] = record
+            uploads.extend(case.get('external_weights', []))
             for path in sorted((out/'fixture'/case['case']).iterdir()):
                 if path.name.startswith('input_') or path.name == 'plan.txt':
                     uploads.append(_file_record(path, case['case']+'/'+path.name))
@@ -953,6 +960,8 @@ def recover(root, out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiled')
+    parser.add_argument('--external-weights', action='store_true',
+        help='run the original four-layer prefill OMC and its GraphOp weight files using HIAI V2')
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--cases', nargs='+', type=case_argument,
         help='Only execute these existing probes; Target boundary names are checked against the compiled batch')
@@ -967,6 +976,8 @@ def main():
     parser.add_argument('--output')
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
+    if args.external_weights and (not args.compiled or args.recover or args.analyze or args.status or args.top1_semantics):
+        parser.error('--external-weights requires a Target prefill --compiled start')
     if args.air_export and not args.analyze:
         parser.error('--air-export requires --analyze')
     if args.status:
