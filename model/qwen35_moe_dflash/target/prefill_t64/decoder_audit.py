@@ -66,7 +66,72 @@ def replay_layer(cpu, layer, index, captured, initial, prefix_input):
     return checks, prefix_out
 
 
-def audit(fixture, source_root, config):
+def relative_changes(native, fixed, prefix):
+    """Three distances with a common captured-tensor denominator, for all rows and the tail."""
+    if native.shape[:2] != (1, 64) or fixed.shape != native.shape or prefix.shape != native.shape:
+        raise ValueError(f'Incompatible T64 trace shapes: {native.shape}, {fixed.shape}, {prefix.shape}')
+    n, f, p = (x.detach().double() for x in (native, fixed, prefix))
+    if not all(torch.isfinite(x).all() for x in (n, f, p)):
+        raise ValueError('Nonfinite value in T64 drift trace')
+    distances = {}
+    for label, start in (('all', 0), ('last_four', 60)):
+        a, b, c = (x[:, start:] for x in (n, f, p))
+        denominator = torch.linalg.vector_norm(a).item()
+        distances[label] = [torch.linalg.vector_norm(delta).item() / denominator if denominator else None
+                            for delta in (b - a, c - a, c - b)]
+    return distances
+
+
+@torch.inference_mode()
+def trace_layer(cpu, layer, i, captured, initial, prefix_input, region, root):
+    entry, pre, gdn, residual, after_norm, moe, output = captured
+    mixer = f'layers.{i}.linear_attn'
+    prefix_pre = norm(prefix_input, layer.input_layernorm)
+    fixed, propagated = {}, {}
+    fixed_gdn = cpu.gdn(pre, layer.linear_attn, mixer, initial, stages=fixed)[0]
+    prefix_gdn = cpu.gdn(prefix_pre, layer.linear_attn, mixer, initial, stages=propagated)[0]
+    prefix_residual = prefix_input + prefix_gdn
+    prefix_norm = norm(prefix_residual, layer.post_attention_layernorm)
+    rows = {'gdn_input': relative_changes(pre, pre, prefix_pre)}
+    for name in ('in_proj_qkv', 'in_proj_a', 'in_proj_b', 'in_proj_z'):
+        native = tensor(root, region('linear_attn_' + name), 'outputs', 'golden_y')
+        rows[name] = relative_changes(native, fixed[name], propagated[name])
+    conv = tensor(root, region('conv1d'), 'outputs', 'golden_conv').transpose(1, 2)
+    rows['conv'] = relative_changes(conv, fixed['conv'], propagated['conv'])
+    core = region('gdn')
+    for name in ('query', 'key', 'value', 'g', 'beta'):
+        native = tensor(root, core, 'inputs', name)
+        rows[name] = relative_changes(native, fixed[name], propagated[name])
+    for name, native in (
+        ('core', tensor(root, core, 'outputs', 'golden_core')),
+        ('out_proj_input', tensor(root, region('linear_attn_out_proj'), 'inputs', 'x')),
+        ('hidden', gdn),
+    ):
+        rows[name] = relative_changes(native, fixed[name], propagated[name])
+    rows['after_gdn_residual'] = relative_changes(residual, entry + fixed_gdn, prefix_residual)
+
+    mlp = f'layers.{i}.mlp'
+    detail = {'stages': rows}
+    if i == 1:
+        # Both router invocations are CPU predictions. The capture retains the MoE return.
+        recorded_input_routes = cpu.routes(after_norm, layer.mlp, mlp)
+        prefix_routes = cpu.routes(prefix_norm, layer.mlp, mlp)
+        changed = (recorded_input_routes[1].sort(dim=-1).values !=
+                   prefix_routes[1].sort(dim=-1).values).any(dim=-1)
+        fixed_moe = cpu.moe(after_norm, layer.mlp, mlp, routes=recorded_input_routes)
+        prefix_moe = cpu.moe(prefix_norm, layer.mlp, mlp, routes=prefix_routes)
+        held_moe = cpu.moe(prefix_norm, layer.mlp, mlp, routes=recorded_input_routes)
+        rows['moe_branch'] = relative_changes(moe, fixed_moe, prefix_moe)
+        detail['routing'] = {
+            'changed_expert_sets_tokens': changed.nonzero().flatten().tolist(),
+            'decoder_output': relative_changes(output, prefix_residual + held_moe, prefix_residual + prefix_moe),
+        }
+    else:
+        prefix_moe = cpu.moe(prefix_norm, layer.mlp, mlp)
+    return detail, prefix_residual + prefix_moe
+
+
+def audit(fixture, source_root, config, *, trace_drift=False):
     fixture = Path(fixture).resolve(strict=True)
     source_root = Path(source_root).resolve(strict=True)
     baseline = json.loads((fixture / 'manifest.json').read_text())
@@ -119,7 +184,12 @@ def audit(fixture, source_root, config):
         if any(v.dtype != torch.float16 or torch.count_nonzero(v) for v in initial):
             raise ValueError('Expected fresh FP16 GDN cache inputs')
         print(f'[target-prefill] CPU replay of L{i} GDN and MoE', flush=True)
-        result['layers'][str(i)], prefix_input = replay_layer(cpu, cpu.model.model.layers[i], i,
-            (entry, pre, gdn, after_gdn, after_norm, moe, output), initial, prefix_input)
+        captured = (entry, pre, gdn, after_gdn, after_norm, moe, output)
+        layer_args = (cpu, cpu.model.model.layers[i], i, captured, initial, prefix_input)
+        if trace_drift:
+            rows, prefix_input = trace_layer(*layer_args, region, root)
+        else:
+            rows, prefix_input = replay_layer(*layer_args)
+        result['layers'][str(i)] = rows
         previous = output
     return result

@@ -59,16 +59,20 @@ class CpuPrefill:
         weight, scale = self.weights.logical('target.' + name + '.weight', tuple(module.weight.shape))
         return linear(x, weight, scale)
 
-    def gdn(self, x, layer, prefix, pair):
+    def gdn(self, x, layer, prefix, pair, *, stages=None):
         def project(name):
-            return self.project(x, prefix + '.' + name, getattr(layer, name))
+            y = self.project(x, prefix + '.' + name, getattr(layer, name))
+            if stages is not None:
+                stages[name] = y
+            return y
 
         qkv = project('in_proj_qkv').transpose(1, 2)
         history, state = pair
         joined = torch.cat((history, qkv), dim=2).to(layer.conv1d.weight.dtype)
         next_history = joined[:, :, -history.size(2):].to(history.dtype).contiguous()
         conv = F.conv1d(joined, layer.conv1d.weight, layer.conv1d.bias, groups=qkv.size(1))
-        mixed = F.silu(conv[:, :, -x.size(1):]).to(qkv.dtype).transpose(1, 2)
+        conv = conv[:, :, -x.size(1):]
+        mixed = F.silu(conv).to(qkv.dtype).transpose(1, 2)
         q, k, v = mixed.split((layer.key_dim, layer.key_dim, layer.value_dim), dim=-1)
         repeat = layer.num_v_heads // layer.num_k_heads
         q, k = [t.reshape(1, x.size(1), layer.num_k_heads, layer.head_k_dim)
@@ -81,6 +85,9 @@ class CpuPrefill:
         z = project('in_proj_z').reshape_as(core)
         gated = (norm(core, layer.norm, gated=True) * F.silu(z.float())).to(core.dtype)
         y = self.project(gated.flatten(2), prefix + '.out_proj', layer.out_proj)
+        if stages is not None:
+            stages.update(conv=conv.transpose(1, 2), query=q, key=k, value=v, g=g, beta=beta,
+                          core=core, out_proj_input=gated.flatten(2), hidden=y)
         return y, (next_history, torch.from_numpy(final).to(state.dtype))
 
     def attention(self, x, layer, prefix, pair, args):
@@ -122,7 +129,14 @@ class CpuPrefill:
         y = (core * gate.sigmoid()).reshape(b, t, heads*d)
         return self.project(y, prefix + '.o_proj', layer.o_proj), states
 
-    def moe(self, x, layer, prefix):
+    def routes(self, x, layer, prefix):
+        logits = self.project(x.flatten(0, 1), prefix + '.gate', layer.gate)
+        probs, ids = logits.float().softmax(dim=-1).topk(layer.top_k, dim=-1)
+        if layer.norm_topk_prob:
+            probs = probs / probs.sum(dim=-1, keepdim=True)
+        return probs.to(torch.float16), ids
+
+    def moe(self, x, layer, prefix, *, routes=None):
         flat = x.flatten(0, 1)
         shared = layer.shared_expert
         shared_prefix = prefix + '.shared_expert.'
@@ -131,11 +145,7 @@ class CpuPrefill:
         shared_out = self.project(F.silu(gate)*up, shared_prefix + 'down_proj', shared.down_proj)
         shared_gate = F.linear(flat.float(), layer.shared_expert_gate.weight.float()).to(flat.dtype)
         shared_out = shared_out * shared_gate.sigmoid()
-        logits = self.project(flat, prefix + '.gate', layer.gate)
-        probs, ids = logits.float().softmax(dim=-1).topk(layer.top_k, dim=-1)
-        if layer.norm_topk_prob:
-            probs = probs / probs.sum(dim=-1, keepdim=True)
-        probs = probs.to(torch.float16)
+        probs, ids = self.routes(x, layer, prefix) if routes is None else routes
         n, h = layer.num_experts, x.size(-1)
         middle = self.model.config.moe_intermediate_size
         w13, s13 = self.weights.logical('target.' + prefix + '.experts.gate_up_proj', (n, middle*2, h))
