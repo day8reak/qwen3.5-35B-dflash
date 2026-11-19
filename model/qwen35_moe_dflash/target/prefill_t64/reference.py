@@ -113,10 +113,28 @@ def bind_core(npu, fixture, baseline, read_array):
         npu.adn_fused_infer_attention = original
 
 
+def source_config(source_root, config_path, baseline):
+    import yaml
+    from qwen35_moe_dflash.target.layer_probe.common import sha
+
+    cfg = yaml.safe_load(config_path.read_text())
+    for name in ("model_file", "quanted_pth", "embedding_weight_path", "embedding_scale_path"):
+        cfg[name] = str((source_root / cfg[name]).resolve(strict=True))
+        if Path(cfg[name]) != Path(baseline["resources"][name]).resolve():
+            raise ValueError(f"Model resource differs from the T64 fixture: {name}")
+    sources = [
+        source_root / "inference.py", source_root / "utils.py", config_path,
+        source_root / "models/export_model_wrapper_qwen3_5_moe.py",
+        source_root / "models/modeling_qwen3_5_moe_hiai_nz.py",
+    ]
+    if [sha(path) for path in sources] != [row["sha256"] for row in baseline["sources"]]:
+        raise ValueError("Original 310P source or configuration differs from the T64 fixture")
+    return cfg
+
+
 def reference(args):
     import numpy as np
     import torch
-    import yaml
     from qwen35_moe_dflash.target import prefill_fixture as pf
     from qwen35_moe_dflash.target.original_quant import load_embedding
     from qwen35_moe_dflash.target.layer_probe.common import metrics, new_output, read_array, save_json, sha
@@ -135,18 +153,7 @@ def reference(args):
     for original in (source_root, fixture):
         if out == original or out in original.parents or original in out.parents:
             raise ValueError("Choose a distinct output outside the original source and fixture")
-    cfg = yaml.safe_load(config_path.read_text())
-    for name in ("model_file", "quanted_pth", "embedding_weight_path", "embedding_scale_path"):
-        cfg[name] = str((source_root / cfg[name]).resolve(strict=True))
-        if Path(cfg[name]) != Path(baseline["resources"][name]).resolve():
-            raise ValueError(f"Model resource differs from the T64 fixture: {name}")
-    sources = [
-        source_root / "inference.py", source_root / "utils.py", config_path,
-        source_root / "models/export_model_wrapper_qwen3_5_moe.py",
-        source_root / "models/modeling_qwen3_5_moe_hiai_nz.py",
-    ]
-    if [sha(path) for path in sources] != [row["sha256"] for row in baseline["sources"]]:
-        raise ValueError("Original 310P source or configuration differs from the T64 fixture")
+    cfg = source_config(source_root, config_path, baseline)
 
     specs = baseline["outputs"]
     if [r["semantic_name"] for r in specs] != ["logits", *pf.STATE_NAMES]:
