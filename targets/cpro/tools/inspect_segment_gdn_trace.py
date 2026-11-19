@@ -11,7 +11,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline', required=True, type=Path, help='original attention-layers group')
     parser.add_argument('--trace', type=Path, help='trace group with compiled batch, execution and recovery')
+    parser.add_argument('--core-precision', action='store_true',
+                        help='test GDR core substitution at hidden and fixed-input numerical hypotheses offline')
     args = parser.parse_args()
-    summarize_hidden(args.baseline)
+    if args.core_precision and not args.trace:
+        parser.error('--core-precision requires --trace')
+    if not args.core_precision:
+        summarize_hidden(args.baseline)
     if args.trace:
-        compare(args.baseline, args.trace)
+        compare(args.baseline, args.trace, core_precision=args.core_precision)

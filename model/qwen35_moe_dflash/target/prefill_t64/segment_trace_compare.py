@@ -69,9 +69,9 @@ def _heads(value):
     return value.reshape(1, 19, 32, 128)
 
 
-def _replay_core(values):
+def _replay_core(values, *, round_state=False):
     operands = [_heads(values[n]) if n in ('query', 'key', 'value') else values[n] for n in OPERANDS]
-    result, _ = compute(*operands, np.zeros((1, 32, 128, 128), np.float32))
+    result, _ = compute(*operands, np.zeros((1, 32, 128, 128), np.float32), round_state=round_state)
     return result
 
 
@@ -137,7 +137,7 @@ def _show_core_origin(refs, board, ref_replay, board_replay, gamma, epsilon):
               f'CPro={rms(board["core"]):.6g} sqrt(epsilon)={np.sqrt(epsilon):.6g}')
 
 
-def compare(baseline, trace):
+def compare(baseline, trace, *, core_precision=False):
     omc = trace / 'omc'
     build = _json(omc / 'compile.json')
     air = omc / build['source_batch']
@@ -175,10 +175,6 @@ def compare(baseline, trace):
         print(f"{name:42s} {fmt(all_rows['relative_l2']):>11} {fmt(last['relative_l2']):>11}"
               f"  {'PASS' if all_rows['passed'] and last['passed'] else 'FAIL'}")
 
-    print('comparison                                  valid19_L2  token18_L2  five_metrics')
-    for key in (*TAPS, 'golden_hidden'):
-        show('board vs 310P / ' + key, board[key][:, :19], refs[key][:, :19])
-
     gamma = read_array(folder, spec['gamma'])
     epsilon = spec['epsilon']
     def norm(d, gates):
@@ -190,7 +186,18 @@ def compare(baseline, trace):
         quant, token_scale, _ = dynamic_quant(x)
         return group_matmul(quant, token_scale, weight, scale)[1].reshape(1, 19, -1)
 
-    ref_replay, board_replay = _replay_core(refs), _replay_core(board)
+    board_replay = _replay_core(board)
+    if core_precision:
+        from .gdr_core_precision import precision_controls
+        precision_controls(board, refs, board_replay, gamma, epsilon,
+                           _replay_core(board, round_state=True), project, show)
+        return
+
+    print('comparison                                  valid19_L2  token18_L2  five_metrics')
+    for key in (*TAPS, 'golden_hidden'):
+        show('board vs 310P / ' + key, board[key][:, :19], refs[key][:, :19])
+
+    ref_replay = _replay_core(refs)
     show('310P core vs CPU on 310P GDR inputs', _heads(refs['core']), ref_replay)
     show('board core vs CPU on board GDR inputs', _heads(board['core']), board_replay)
     show('310P proj input vs CPU on 310P core/gate', _heads(refs['out_proj_input']), norm(refs, refs))
