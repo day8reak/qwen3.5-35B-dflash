@@ -20,7 +20,7 @@ def same_bits(left, right):
             and left.contiguous().numpy().tobytes() == right.contiguous().numpy().tobytes())
 
 
-def arm_prefix(frame, root, cleanup, *, attention_layers=False):
+def arm_prefix(frame, root, cleanup, *, attention_layers=False, trace_linear=None):
     caller = frame.f_back
     while caller and (caller.f_code.co_filename != frame.f_code.co_filename or 'model2' not in caller.f_locals):
         caller = caller.f_back
@@ -119,7 +119,7 @@ def arm_prefix(frame, root, cleanup, *, attention_layers=False):
 
     for i, layer in enumerate(layers):
         capture_layer(i, layer)
-        if attention_layers:
+        if attention_layers and (trace_linear is None or i == trace_linear):
             from .segment_modules import observe_module
             observe_module(root, manifest, hook, i, layer)
 

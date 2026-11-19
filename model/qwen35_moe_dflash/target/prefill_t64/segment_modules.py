@@ -61,7 +61,8 @@ def compare_cpu(root, output):
     from .segment_prefix_cpu import _load
     report = {'scope': 'SEGMENT_VALID19_FIXED_INPUT_ATTENTION_MODULE_HIDDEN', 'layers': {}}
     capture, cpu_model, _, _ = _load(root, report)
-    for i in range(4):
+    trace = capture.get('linear_trace')
+    for i in ([trace['layer']] if trace is not None else range(4)):
         layer = cpu_model.model.model.layers[i]
         record = capture['attention_modules'][str(i)]
         values = {k: torch.from_numpy(read_array(root, spec)) for k, spec in record['inputs'].items()}
@@ -74,6 +75,9 @@ def compare_cpu(root, output):
                         attention_mask=values['mask'][:, :, :19])
             result, _ = cpu_model.attention(x, layer.self_attn, prefix, (values['key'], values['value']), args)
         native = read_array(root, record['golden_hidden'])
+        if trace is not None:
+            from .segment_gdn_trace import save_projection
+            report['trace_projection'] = save_projection(output, root, trace, cpu_model, prefix, layer.linear_attn, native)
         # Score in the same direction as the existing 310P qualification (CPU as reference).
         cpu_hidden = result.contiguous().numpy()
         row = metrics(native[:, :19], cpu_hidden)

@@ -420,7 +420,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
                                exported.get('output_contract'))
         except ValueError as exc:
             raise ValueError(f'{name}: {exc}') from exc
-        check_io_budget(name, io, max_slots=16 if case['kind'] == 'segment_prefill' else 8)
+        check_io_budget(name, io, max_slots=16 if case['kind'] in ('segment_prefill', 'segment_gdn_trace') else 8)
         fixture = out/'fixture'/name
         fixture.mkdir(parents=True)
         plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']
@@ -452,6 +452,13 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
             cases[-1]['compiled_state_contract'] = state_contract
             cases[-1]['gdr_mode'] = exported.get('candidate', {}).get('gdr_mode', 'chunk')
             cases[-1]['convstate_mode'] = exported.get('candidate', {}).get('convstate_mode', 'kernel')
+        if case['kind'] == 'segment_gdn_trace':
+            from ..prefill_t64.segment_gdn_trace import BASIS, TAPS
+            if (exported['reference_basis'] != BASIS or exported['capture_sha256'] != manifest['capture_sha256']
+                    or [s['semantic_name'] for s in io['outputs']] != ['golden_hidden', *TAPS]
+                    or (exported['physical_rows'], exported['valid_rows'], exported['reference_position']) != (64, 19, 18)):
+                raise ValueError('Unexpected chunk GDR trace outputs or reference')
+            cases[-1]['reference_basis'] = BASIS
         if case['kind'] == 'segment_module_hidden':
             from ..prefill_t64.segment_export import MODULE_BASIS
             if (exported['reference_basis'] != MODULE_BASIS or exported['capture_sha256'] != manifest['capture_sha256']
@@ -566,10 +573,17 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     if valid_rows is not None:
                         actual = unpack(actual, attention['num_heads'])[:, :, :valid_rows]
                         valid_hashes.append(hashlib.sha256(actual.tobytes()).hexdigest())
-                    if case['kind'] == 'segment_module_hidden':
+                    if case['kind'] == 'segment_module_hidden' or (case['kind'] == 'segment_gdn_trace' and spec['index'] == 0):
                         from ..prefill_t64.segment_export import score_module_hidden
                         metric = score_module_hidden(actual, golden, atol, rtol)
                         valid_hashes.append(hashlib.sha256(actual[:, :19].tobytes()).hexdigest())
+                    elif case['kind'] == 'segment_gdn_trace':
+                        metric = metrics(actual, golden, atol=atol, rtol=rtol)
+                        last = metrics(actual[:, 18], golden[:, 18], atol=atol, rtol=rtol)
+                        metric['token_18'] = last
+                        if not last['passed']:
+                            metric['passed'] = False
+                            metric['failed_metrics'].extend('token_18_' + k for k in last['failed_metrics'])
                     elif case['kind'] == 'segment_prefill':
                         from ..prefill_t64.segment_export import compare_segment_output
                         metric = compare_segment_output(spec['semantic_name'], actual, golden, cpu_reference, atol, rtol)

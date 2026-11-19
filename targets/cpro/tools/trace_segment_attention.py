@@ -168,15 +168,15 @@ def save_valid19(output, snapshot, reference, report):
     return str(capture.root / 'manifest.json')
 
 
-def observe_l1_gdr_length(wrapper, report, cleanup, snapshot=None):
-    """Read the actual length argument inside the first L1 prefill forward."""
+def observe_l1_gdr_length(wrapper, report, cleanup, snapshot=None, *, layer_index=1):
+    """Observe the original GDR call in the selected layer of the first prefill."""
     import torch
     import torch_npu as npu
 
-    result = report['l1_gdr'] = dict(status='UNOBSERVED', calls=[])
-    matches = [m for name, m in wrapper.named_modules() if ('.' + name).endswith('.layers.1.linear_attn')]
+    result = report[f'l{layer_index}_gdr'] = dict(status='UNOBSERVED', calls=[])
+    matches = [m for name, m in wrapper.named_modules() if ('.' + name).endswith(f'.layers.{layer_index}.linear_attn')]
     if len(matches) != 1:
-        result['reason'] = 'could not identify the first segment L1 linear_attn'
+        result['reason'] = f'could not identify first segment L{layer_index} linear_attn'
         return
 
     def enter(layer, _args):

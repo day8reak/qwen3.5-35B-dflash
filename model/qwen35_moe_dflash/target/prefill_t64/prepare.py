@@ -88,7 +88,8 @@ def prepare(source, config, fixture, output, repo, *, attention_layers=False):
     segmented = 'valid_rows' in manifest
     if attention_layers and not segmented:
         raise ValueError('--attention-layers requires the physical64/valid19 segmented capture')
-    transforms = {MODELING: lambda text: stage_model(text, single_token=not segmented),
+    trace_chunk = attention_layers and 'linear_trace' in manifest
+    transforms = {MODELING: lambda text: stage_model(text, single_token=not segmented, trace_chunk=trace_chunk),
                   WRAPPER: lambda text: stage_wrapper(text, segmented=segmented),
                   EXPORTER: stage_exporter, 'utils.py': stage_utils, NZ: None}
     output.parent.mkdir(parents=True, exist_ok=True)

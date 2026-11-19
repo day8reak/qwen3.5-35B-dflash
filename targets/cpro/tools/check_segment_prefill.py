@@ -12,11 +12,12 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / 'model'))
 
 
-def capture(root, entry, config, prior, attention_layers=False):
+def capture(root, entry, config, prior, attention_layers=False, trace_linear=None):
     from qwen35_moe_dflash.target.layer_probe.common import save_json
     from qwen35_moe_dflash.target.prefill_t64.segment_prefix import arm_prefix
 
     manifest = None
+    snapshot = {}
     previous = sys.getprofile()
     with ExitStack() as cleanup:
         def entered(frame, event, _):
@@ -24,9 +25,15 @@ def capture(root, entry, config, prior, attention_layers=False):
             if (event == 'call' and frame.f_code.co_filename == str(entry)
                     and frame.f_code.co_name == 'prefill_chunk_segment1'):
                 sys.setprofile(previous)
-                manifest = arm_prefix(frame, root, cleanup, attention_layers=attention_layers)
+                manifest = arm_prefix(frame, root, cleanup, attention_layers=attention_layers, trace_linear=trace_linear)
                 from trace_segment_attention import observe_l1_gdr_length
-                observe_l1_gdr_length(frame.f_locals['model_wrapper'], manifest, cleanup)
+                wrapper = frame.f_locals['model_wrapper']
+                if trace_linear != 1:
+                    observe_l1_gdr_length(wrapper, manifest, cleanup)
+                if trace_linear is not None:
+                    from qwen35_moe_dflash.target.prefill_t64.segment_gdn_trace import observe_tail
+                    observe_tail(wrapper.model.model.layers[trace_linear].linear_attn, snapshot, cleanup)
+                    observe_l1_gdr_length(wrapper, manifest, cleanup, snapshot, layer_index=trace_linear)
 
         cleanup.callback(sys.setprofile, previous)
         sys.setprofile(entered)
@@ -53,6 +60,11 @@ def capture(root, entry, config, prior, attention_layers=False):
                                       read_array(prior, known['wrapper_ids']))):
             raise ValueError('token IDs or reference status differ from the supplied qualified GDR capture')
         manifest['gdr_capture_sha256'] = sha(previous_manifest)
+    if trace_linear is not None:
+        from qwen35_moe_dflash.target.prefill_t64.segment_gdn_trace import save_trace
+        trace = manifest['linear_trace'] = save_trace(root, manifest, trace_linear, snapshot)
+        for name, metric in trace['cpu_audit'].items():
+            print(f"L{trace_linear} 310P vs CPU {name}: rel_L2={metric['relative_l2']} passed={metric['passed']}", flush=True)
     manifest['status'] = 'CAPTURED'
     save_json(root / 'manifest.json', manifest)
     print(json.dumps(dict(status='CAPTURED', physical_rows=64, valid_rows=19, output_pos=18,
@@ -71,7 +83,13 @@ def main():
     p.add_argument('--capture-only', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--attention-layers', action='store_true',
                    help='capture standalone attention-module inputs/hidden and compare 310P with fixed-input CPU math')
+    p.add_argument('--trace-linear', type=int, choices=range(3), metavar='LAYER',
+                   help='observe one whole linear attention module and its chunk GDR boundaries on the same call')
     a = p.parse_args()
+    if a.trace_linear is not None:
+        if a.compare_cpu or a.diagnose_cpu:
+            p.error('--trace-linear is a capture option')
+        a.attention_layers = True
     from qwen35_moe_dflash.target.layer_probe.common import new_output
     if a.compare_cpu or a.diagnose_cpu:
         if a.source_root or a.capture_only or a.gdr_capture:
@@ -94,7 +112,7 @@ def main():
     config = (entry.parent / a.config).resolve(strict=True)
     prior = a.gdr_capture.resolve(strict=True) if a.gdr_capture else None
     if a.capture_only:
-        capture(new_output(a.output), entry, config, prior, a.attention_layers)
+        capture(new_output(a.output), entry, config, prior, a.attention_layers, a.trace_linear)
         return 0
     # Release both segmented NPU models before loading the independent CPU prefix.
     out = a.output.resolve()
@@ -105,6 +123,8 @@ def main():
         command.extend(['--gdr-capture', str(prior)])
     if a.attention_layers:
         command.append('--attention-layers')
+    if a.trace_linear is not None:
+        command.extend(['--trace-linear', str(a.trace_linear)])
     subprocess.run(command, cwd=entry.parent, check=True)
     cpu_command = [sys.executable, script, '--compare-cpu', str(out)]
     if a.attention_layers:

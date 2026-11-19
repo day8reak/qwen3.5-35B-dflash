@@ -1006,12 +1006,13 @@ def main():
     if 'cases' in result and not result.get('top1_semantics') and not result.get('offline_weight_layouts'):
         shown['cases'] = [{k: v for k, v in c.items() if k not in ('tensors', 'api_us')} for c in result['cases']]
         for row in shown['cases']:
-            if row.get('reference_basis') == 'CPU_CHECKED_310P_SEGMENT_WHOLE_ATTENTION_MODULE_HIDDEN_VALID19' and row.get('invocations'):
+            if row.get('reference_basis') in ('CPU_CHECKED_310P_SEGMENT_WHOLE_ATTENTION_MODULE_HIDDEN_VALID19',
+                                              'SEGMENT_310P_SAME_CALL_GDN_TRACE_VALID19') and row.get('invocations'):
                 first = row.pop('invocations')[0]
                 row.pop('output_sha256', None)
                 row.pop('valid_output_sha256', None)
                 row.update(valid19_rel_l2=first['relative_l2'], token18_rel_l2=first['token_18']['relative_l2'],
-                           padding_rel_l2=first['padding']['relative_l2'], failed_metrics=first['failed_metrics'])
+                           padding_rel_l2=first.get('padding', {}).get('relative_l2'), failed_metrics=first['failed_metrics'])
     print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
     return 1 if result['status'] in ('FAILED', 'NUMERICAL_FAILED') else 0
 

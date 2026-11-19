@@ -165,7 +165,7 @@ def _adapt_experts(tree):
     router.value.args[0] = _expr('router_input')
 
 
-def stage_model(text, *, single_token=True):
+def stage_model(text, *, single_token=True, trace_chunk=False):
     """Return the adapted private model source, leaving the supplied source file intact."""
     digest = sha256(text.replace('\r\n', '\n').encode('utf-8')).hexdigest()
     if digest not in (_ORIGINAL, _ADAPTED):
@@ -176,6 +176,10 @@ def stage_model(text, *, single_token=True):
         _register_fp16_scale(tree)
     _rotate_fp32(tree, original)
     _adapt_gdn(tree, original, single_token)
+    if trace_chunk:
+        from .segment_gdn_trace import instrument_chunk
+        forward = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
+        instrument_chunk(forward, _call(forward, 'torch_npu.npu_chunk_gated_delta_rule'))
     if not single_token:
         use_position_gathers(tree, 'Qwen3_5MoeRotaryEmbedding', ('self.cos_cached', 'self.sin_cached'), 'position_ids')
         # CacheUpdate mutates its input. Keep it internal to the nine-output model,
