@@ -168,6 +168,55 @@ def save_valid19(output, snapshot, reference, report):
     return str(capture.root / 'manifest.json')
 
 
+def observe_l1_gdr_length(wrapper, report, cleanup):
+    """Read the actual length argument inside the first L1 prefill forward."""
+    import torch
+    import torch_npu as npu
+
+    result = report['l1_gdr'] = dict(status='UNOBSERVED', calls=[])
+    matches = [m for name, m in wrapper.named_modules() if ('.' + name).endswith('.layers.1.linear_attn')]
+    if len(matches) != 1:
+        result['reason'] = 'could not identify the first segment L1 linear_attn'
+        return
+
+    def enter(layer, _args):
+        handle.remove()
+        original = getattr(npu, 'npu_chunk_gated_delta_rule', None)
+        if not callable(original):
+            result['reason'] = 'torch_npu.npu_chunk_gated_delta_rule unavailable'
+            return
+        @wraps(original)
+        def observed(*args, **kwargs):
+            if not torch.compiler.is_compiling():
+                entry = {}
+                try:
+                    query = args[0] if args else kwargs['query']
+                    length = kwargs['effective_length']
+                    entry.update(physical_q_rows=int(query.shape[1]), effective_length=length.detach().cpu().tolist(),
+                                 length_dtype=str(length.dtype), chunk_size=kwargs.get('chunk_size'))
+                    result['status'] = 'OBSERVED'
+                except (AttributeError, IndexError, KeyError, TypeError) as exc:
+                    entry['error'] = str(exc)
+                result['calls'].append(entry)
+            return original(*args, **kwargs)
+        restore = ExitStack()
+        cleanup.callback(restore.close)
+        npu.npu_chunk_gated_delta_rule = observed
+        restore.callback(setattr, npu, 'npu_chunk_gated_delta_rule', original)
+        namespace = getattr(layer.forward, '__globals__', {})
+        for key in [k for k, v in namespace.items() if v is original]:
+            namespace[key] = observed
+            restore.callback(namespace.__setitem__, key, original)
+        def leave(_module, _args, _output):
+            restore.close()
+            end.remove()
+        end = layer.register_forward_hook(leave)
+        cleanup.callback(end.remove)
+
+    handle = matches[0].register_forward_pre_hook(enter)
+    cleanup.callback(handle.remove)
+
+
 def arm(wrapper, baseline, report, cleanup):
     import torch
     import torch_npu as npu
@@ -268,6 +317,7 @@ def main():
     parser.add_argument('--output', type=Path, help='save the CPU-checked 19-valid-token L3 core at its observed physical size')
     parser.add_argument('--prefill-chunk-size', type=int, choices=(64,),
                         help='run both original Prefill chunk loops at 64 rows for the T64 CPro comparison')
+    parser.add_argument('--gdr-length', action='store_true', help='also observe effective_length at the L1 GDR call')
     parser.add_argument('inference_args', nargs=argparse.REMAINDER, help='-- followed by the normal inference arguments')
     args = parser.parse_args()
     if args.output:
@@ -302,6 +352,8 @@ def main():
                         ids.numpy().astype('<i4', copy=False).tobytes() == baseline[0].read_bytes())
                 wrapper = frame.f_locals['model_wrapper']
                 report['first_segment_layers'] = getattr(wrapper, 'layer_num', None)
+                if args.gdr_length:
+                    observe_l1_gdr_length(wrapper, report, cleanup)
                 captured = arm(wrapper, baseline, report, cleanup)
                 captured[0]['prompt_ids'] = ids
             except Exception as exc:
@@ -339,7 +391,8 @@ def main():
             if report['status'] == 'UNOBSERVED' and 'reason' not in report:
                 report['reason'] = 'no eager fused call observed at the selected first-segment L3 boundary'
             print('[segment-attention] ' + json.dumps(report, ensure_ascii=False, allow_nan=False), flush=True)
-    return 0 if report['status'] == 'PASSED' else 1
+    length_observed = not args.gdr_length or report.get('l1_gdr', {}).get('status') == 'OBSERVED'
+    return 0 if report['status'] == 'PASSED' and length_observed else 1
 
 
 if __name__ == '__main__':
