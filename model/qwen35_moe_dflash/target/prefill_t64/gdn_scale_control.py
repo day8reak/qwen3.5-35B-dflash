@@ -35,10 +35,13 @@ def _scale_readout_query(tree, op, scale):
         operand = op.args[slot] if keyword is None else keyword.value
         if not isinstance(operand, ast.Name):
             raise ValueError(f'Expected a local {name} tensor in the L0 GDR call')
-        expr = f'l2norm({operand.id}.float(), dim=-1, eps=1e-6)'
+        # ReduceSumCpro tiles a matrix. Each (batch, token, head) gets its own row.
+        rows = f'{operand.id}.reshape(-1, {operand.id}.shape[-1]).float()'
+        expr = f'l2norm({rows}, dim=1, eps=1e-6)'
         if name == 'query' and scale != 1:
             expr = f'({expr} * {float(scale)})'
-        normalized = ast.parse(f'{expr}.to({operand.id}.dtype).contiguous()', mode='eval').body
+        normalized = ast.parse(f'{expr}.to({operand.id}.dtype).reshape({operand.id}.shape).contiguous()',
+                               mode='eval').body
         if keyword is None:
             op.args[slot] = normalized
         else:
