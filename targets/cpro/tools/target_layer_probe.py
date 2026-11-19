@@ -97,6 +97,8 @@ def main():
     s.add_argument('--fixture', required=True)
     s.add_argument('--native', required=True)
     s.add_argument('--output', required=True)
+    s = sub.add_parser('inspect-segment-outputs', help='compare saved four-layer board slots against same-kind 310P states and inspect the 19 valid K/V rows')
+    s.add_argument('--recovery', required=True, type=Path, help='completed vector recovery directory')
     s = sub.add_parser('inspect-prefill-audit', help='show 310P attention core errors by query block and the saved module replay comparison')
     s.add_argument('--fixture', required=True, help='original Prefill fixture containing the top-level manifest.json')
     s.add_argument('--device-math', metavar='NPU', help='also run FP32 matmul, softmax and matmul on the NPU three times using the saved fixture (e.g. npu:0)')
@@ -224,6 +226,10 @@ def main():
         writer = csv.DictWriter(sys.stdout, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+        return 0
+    elif a.command == 'inspect-segment-outputs':
+        from qwen35_moe_dflash.target.prefill_t64.segment_outputs import inspect
+        print(inspect(a.recovery))
         return 0
     elif a.command == 'inspect-prefill-audit':
         from qwen35_moe_dflash.target.layer_probe.attention_reference import inspect_prefill_audit
