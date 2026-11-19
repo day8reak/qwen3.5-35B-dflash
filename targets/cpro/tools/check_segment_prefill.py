@@ -64,18 +64,23 @@ def main():
     p.add_argument('--source-root', type=Path, help='private 310P source containing inference_segment.py')
     p.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
     p.add_argument('--output', type=Path, required=True, help='fresh directory below AI_RUN_DIR')
-    p.add_argument('--compare-cpu', type=Path, metavar='CAPTURE', help='reuse a completed capture for CPU comparison')
+    offline = p.add_mutually_exclusive_group()
+    offline.add_argument('--diagnose-cpu', type=Path, metavar='CAPTURE', help='use saved four-layer inputs and cpu/report.json for fixed-input controls')
+    offline.add_argument('--compare-cpu', type=Path, metavar='CAPTURE', help='reuse a completed capture for CPU comparison')
     p.add_argument('--gdr-capture', type=Path, help='match the exact token IDs to the previously qualified GDR case')
     p.add_argument('--capture-only', action='store_true', help=argparse.SUPPRESS)
     a = p.parse_args()
     from qwen35_moe_dflash.target.layer_probe.common import new_output
-    if a.compare_cpu:
+    if a.compare_cpu or a.diagnose_cpu:
         if a.source_root or a.capture_only or a.gdr_capture:
-            p.error('--compare-cpu takes its source from the capture')
-        from qwen35_moe_dflash.target.prefill_t64.segment_prefix_cpu import compare
-        result = compare(a.compare_cpu.resolve(strict=True), new_output(a.output))
+            p.error('CPU replay takes its source from the capture')
+        from qwen35_moe_dflash.target.prefill_t64.segment_prefix_cpu import compare, diagnose
+        if a.diagnose_cpu:
+            result = diagnose(a.diagnose_cpu.resolve(strict=True), new_output(a.output))
+        else:
+            result = compare(a.compare_cpu.resolve(strict=True), new_output(a.output))
         print(json.dumps(result), flush=True)
-        return 0 if result['status'] == 'PASSED' else 1
+        return 0 if result['status'] in ('PASSED', 'INSPECTED') else 1
     if not a.source_root:
         p.error('--source-root is required for capture')
     entry = (a.source_root / 'inference_segment.py').resolve(strict=True)
