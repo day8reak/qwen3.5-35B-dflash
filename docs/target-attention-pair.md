@@ -75,6 +75,19 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 
 在原 DDK 编译环境执行，沿用已成功的 TBE 兼容诊断目录；两组均要求新输出目录。
 
+如果 AIR 导出机和 DDK 编译机使用独立存储且两端目录同名，在编译机的 `custom_pypto` 环境拉取导出的 `air/`。首次用两台机器的 SSH 地址初始化本地配置，按提示输入账号和密码。设置保存在 `~/.config/qwen35-cpro/transfer.json`。
+
+```bash
+python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" --init "$AIR_HOST" "$OMC_HOST"
+```
+
+每次导出完成后，在编译机将 `PAIR_ROOT` 设为与导出机相同的路径，再传本轮生成的目录。只测 Full 时，命令只传 `"$PAIR_ROOT/full/air"`。
+
+```bash
+python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" \
+  "$PAIR_ROOT/linear/air" "$PAIR_ROOT/full/air"
+```
+
 ```bash
 : "${CPRO_DDK_ROOT:?沿用已验证的 DDK 根目录}"
 export CPRO_DDK_ID="${CPRO_DDK_ID:-100.520.020.010}"
