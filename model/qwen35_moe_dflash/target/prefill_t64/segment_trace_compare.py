@@ -65,6 +65,78 @@ def summarize_hidden(baseline):
               f'  {peak:19d}  {share:.1%}')
 
 
+def _heads(value):
+    return value.reshape(1, 19, 32, 128)
+
+
+def _replay_core(values):
+    operands = [_heads(values[n]) if n in ('query', 'key', 'value') else values[n] for n in OPERANDS]
+    result, _ = compute(*operands, np.zeros((1, 32, 128, 128), np.float32))
+    return result
+
+
+def _magnitude(delta, reference):
+    denom = np.linalg.norm(reference)
+    return np.linalg.norm(delta) / denom if denom else None
+
+
+def _effect(delta, reference, observed_delta):
+    """Relative magnitude, and signed projection onto the measured endpoint difference."""
+    energy = np.vdot(observed_delta, observed_delta)
+    return (_magnitude(delta, reference),
+            100 * np.vdot(delta, observed_delta) / energy if energy else None)
+
+
+def _show_core_origin(refs, board, ref_replay, board_replay, gamma, epsilon):
+    ref_input = _heads(refs['out_proj_input'])[0].astype(np.float64)
+    board_input = _heads(board['out_proj_input'])[0].astype(np.float64)
+    observed = board_input - ref_input
+    def gated(core, gates=refs):
+        return _gate_norm(_heads(core), _heads(gates['norm_gate']), gamma, epsilon, np.float16)[0].astype(np.float64)
+
+    ref_math, board_math = gated(ref_replay), gated(board_replay)
+    steps = [
+        ('310P measured proj input', ref_input),
+        ('CPU norm on 310P core/gate', gated(refs['core'])),
+        ('replace 310P core with CPU(310P inputs)', ref_math),
+        ('switch GDR inputs: 310P -> CPro', board_math),
+        ('replace CPU(CPro inputs) with CPro core', gated(board['core'])),
+        ('switch norm gate: 310P -> CPro', gated(board['core'], board)),
+        ('CPro measured proj input', board_input),
+    ]
+    def fields(numbers):
+        return '  '.join(f'{v:12.6g}' if v is not None else '   undefined' for v in numbers)
+
+    print('Changes at out_proj input. Magnitudes use the measured 310P output norm for each scope.')
+    print('aligned_pct is the signed projection of each change onto the measured CPro-minus-310P difference.')
+    print('step from previous                          valid19_mag   aligned_pct   token18_mag   aligned_pct')
+    def step_row(name, delta):
+        values = (*_effect(delta, ref_input, observed), *_effect(delta[18], ref_input[18], observed[18]))
+        print(f'{name:42s} {fields(values)}')
+    for (_, before), (name, after) in zip(steps, steps[1:]):
+        step_row(name, after - before)
+    step_row('measured total', observed)
+
+    print('CPU operand swaps with the 310P norm gate. Both columns measure the gap to CPU on all 310P inputs.')
+    print('operand           only_CPro   restore_310P   only_CPro_18    restore_18')
+    for name in OPERANDS:
+        only = gated(_replay_core({**refs, name: board[name]})) - ref_math
+        restored = gated(_replay_core({**board, name: refs[name]})) - ref_math
+        values = (_magnitude(only, ref_input), _magnitude(restored, ref_input),
+                  _magnitude(only[18], ref_input[18]), _magnitude(restored[18], ref_input[18]))
+        print(f'{name:14s} {fields(values)}')
+
+    energy = np.sum(observed**2, axis=-1)
+    if energy.sum() > 0:
+        token, head = np.unravel_index(energy.argmax(), energy.shape)
+        def rms(value):
+            row = _heads(value)[0, token, head].astype(np.float64)
+            return np.sqrt(np.mean(row**2))
+        print(f'Largest measured proj input error: token={token} head={head} '
+              f'share={energy[token, head]/energy.sum():.2%} core RMS 310P={rms(refs["core"]):.6g} '
+              f'CPro={rms(board["core"]):.6g} sqrt(epsilon)={np.sqrt(epsilon):.6g}')
+
+
 def compare(baseline, trace):
     omc = trace / 'omc'
     build = _json(omc / 'compile.json')
@@ -107,16 +179,10 @@ def compare(baseline, trace):
     for key in (*TAPS, 'golden_hidden'):
         show('board vs 310P / ' + key, board[key][:, :19], refs[key][:, :19])
 
-    def shaped(d, key):
-        return d[key].reshape(1, 19, 32, -1)
-    def core(d):
-        operands = [shaped(d, n) if n in ('query', 'key', 'value') else d[n] for n in OPERANDS]
-        value, _ = compute(*operands, np.zeros((1, 32, 128, 128), np.float32))
-        return value
-
     gamma = read_array(folder, spec['gamma'])
+    epsilon = spec['epsilon']
     def norm(d, gates):
-        return _gate_norm(shaped(d, 'core'), shaped(gates, 'norm_gate'), gamma, spec['epsilon'], np.float16)
+        return _gate_norm(_heads(d['core']), _heads(gates['norm_gate']), gamma, epsilon, np.float16)
 
     weight, scale = (read_array(folder, spec[n]) for n in ('weight', 'scale'))
     def project(d):
@@ -124,11 +190,13 @@ def compare(baseline, trace):
         quant, token_scale, _ = dynamic_quant(x)
         return group_matmul(quant, token_scale, weight, scale)[1].reshape(1, 19, -1)
 
-    show('310P core vs CPU on 310P GDR inputs', shaped(refs, 'core'), core(refs))
-    show('board core vs CPU on board GDR inputs', shaped(board, 'core'), core(board))
-    show('310P proj input vs CPU on 310P core/gate', shaped(refs, 'out_proj_input'), norm(refs, refs))
-    show('board proj input vs CPU on board core/gate', shaped(board, 'out_proj_input'), norm(board, board))
+    ref_replay, board_replay = _replay_core(refs), _replay_core(board)
+    show('310P core vs CPU on 310P GDR inputs', _heads(refs['core']), ref_replay)
+    show('board core vs CPU on board GDR inputs', _heads(board['core']), board_replay)
+    show('310P proj input vs CPU on 310P core/gate', _heads(refs['out_proj_input']), norm(refs, refs))
+    show('board proj input vs CPU on board core/gate', _heads(board['out_proj_input']), norm(board, board))
     show('CPU norm / change core only', norm(board, refs), norm(refs, refs))
     show('CPU norm / change gate only', norm(refs, board), norm(refs, refs))
     show('310P hidden vs CPU on 310P proj input', refs['golden_hidden'][:, :19], project(refs))
     show('board hidden vs CPU on board proj input', board['golden_hidden'][:, :19], project(board))
+    _show_core_origin(refs, board, ref_replay, board_replay, gamma, epsilon)
