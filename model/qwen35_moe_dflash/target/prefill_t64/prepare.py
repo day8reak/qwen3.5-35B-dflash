@@ -84,7 +84,9 @@ def prepare(source, config, fixture, output, repo):
     cfg = yaml.safe_load(config.read_text())
     for key in ('model_file', 'quanted_pth'):
         cfg[key] = str((source / cfg[key]).resolve(strict=True))
-    transforms = {MODELING: stage_model, WRAPPER: stage_wrapper, EXPORTER: stage_exporter, 'utils.py': stage_utils, NZ: None}
+    manifest = json.loads((fixture / 'manifest.json').read_text())
+    segmented = 'valid_rows' in manifest
+    transforms = {MODELING: lambda text: stage_model(text, single_token=not segmented), WRAPPER: stage_wrapper, EXPORTER: stage_exporter, 'utils.py': stage_utils, NZ: None}
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent, prefix='.prepare-t64-') as staging:
         job = Path(staging) / 'job'
@@ -95,7 +97,11 @@ def prepare(source, config, fixture, output, repo):
             staged = transform(original) if transform else original
             ast.parse(staged, filename=name)
             (job / name).write_text(staged)
-        prepare_inputs(fixture, job)
+        if segmented:
+            from .segment_export import prepare_segment
+            prepare_segment(fixture, manifest, job)
+        else:
+            prepare_inputs(fixture, job)
         (job / 'config.yaml').write_text(yaml.safe_dump(cfg, allow_unicode=True))
         # The job owns its local private modules; public adapter imports resolve from this repository.
         (job / 'export_t64.py').write_text(
@@ -104,7 +110,8 @@ def prepare(source, config, fixture, output, repo):
             "sys.path.insert(0, str(repo / 'model'))\n"
             'from qwen35_moe_dflash.target.prefill_t64.export_job import export_air\n'
             'export_air(Path(__file__).resolve().parent)\n')
-        (job / 'reference_t64.py').write_bytes(Path(__file__).with_name('reference.py').read_bytes())
+        if not segmented:
+            (job / 'reference_t64.py').write_bytes(Path(__file__).with_name('reference.py').read_bytes())
         if output.exists():
             for path in job.rglob('*'):
                 if not path.is_file():

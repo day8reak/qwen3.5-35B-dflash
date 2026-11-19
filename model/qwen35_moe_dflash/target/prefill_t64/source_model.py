@@ -1,7 +1,7 @@
 """Adapt the operator boundaries of a supported private CPro model for T64 Prefill.
 
 Source operations, model weights and layer definitions come from the supplied local
-source at prepare time. The generated module uses the public single-token GDR helper.
+source at prepare time. The selected fixture determines the GDR chunk width.
 """
 import ast
 from hashlib import sha256
@@ -81,22 +81,23 @@ def _rotate_fp32(tree, original):
     forward.body[where:where] = casts
 
 
-def _adapt_gdn(tree, original):
+def _adapt_gdn(tree, original, single_token):
     cls = _definition(tree, 'Qwen3_5MoeGatedDeltaNet')
-    tree.body.insert(tree.body.index(cls), ast.ImportFrom(
-        module='qwen35_moe_dflash.target.layer_probe.whole_gdn',
-        names=[ast.alias(name='single_token_gdr')], level=0))
-    init = _definition(cls, '__init__')
-    index = init.body.index(_assignment(init, 'self.conv_kernel_size'))
-    init.body[index:index] = ast.parse(
-        "self.register_buffer('gdr_step_length', torch.tensor([1], dtype=torch.int16), persistent=False)").body
+    if single_token:
+        tree.body.insert(tree.body.index(cls), ast.ImportFrom(
+            module='qwen35_moe_dflash.target.layer_probe.whole_gdn',
+            names=[ast.alias(name='single_token_gdr')], level=0))
+        init = _definition(cls, '__init__')
+        index = init.body.index(_assignment(init, 'self.conv_kernel_size'))
+        init.body[index:index] = ast.parse(
+            "self.register_buffer('gdr_step_length', torch.tensor([1], dtype=torch.int16), persistent=False)").body
     forward = _definition(cls, 'forward')
     conv = _assignment(forward, 'conv_out')
     if original:
         update = _call(forward, 'torch.ops.my_ops.linear_attention_convstate_update')
         site = _one((s for s in forward.body if getattr(s, 'value', None) is update), 'history update')
         projected, old = map(ast.unparse, update.args[:2])
-        # BCT history and a full valid prefix. The same joined array supplies both tails.
+        # Match the original wrapper’s physical-tail ConvState writeback.
         history, window = [target.id for target in site.targets[0].elts]
         index = forward.body.index(site)
         forward.body[index:index+1] = ast.parse(
@@ -115,6 +116,8 @@ def _adapt_gdn(tree, original):
     silu = _assignment(forward, 'qkv_conv')
     silu.value = _convert(silu.value, 'to', [_expr('mixed_qkv.dtype')])
     gdr = _call(forward, 'torch_npu.npu_chunk_gated_delta_rule')
+    if not single_token:
+        return
     gdr.func = _expr('single_token_gdr')
     options = {kw.arg: kw for kw in gdr.keywords}
     options['chunk_size'].value = ast.Constant(64)
@@ -150,7 +153,7 @@ def _adapt_experts(tree):
     router.value.args[0] = _expr('router_input')
 
 
-def stage_model(text):
+def stage_model(text, *, single_token=True):
     """Return the adapted private model source, leaving the supplied source file intact."""
     digest = sha256(text.replace('\r\n', '\n').encode('utf-8')).hexdigest()
     if digest not in (_ORIGINAL, _ADAPTED):
@@ -160,7 +163,14 @@ def stage_model(text):
     if original:
         _register_fp16_scale(tree)
     _rotate_fp32(tree, original)
-    _adapt_gdn(tree, original)
+    _adapt_gdn(tree, original, single_token)
+    if not single_token:
+        # CacheUpdate mutates its input. Keep it internal to the nine-output model,
+        # just as in the whole-attention probe, and return the two updated caches.
+        forward = _definition(_definition(tree, 'Qwen3_5MoeAttention'), 'forward')
+        for site in ast.walk(forward):
+            if isinstance(site, ast.Call) and ast.unparse(site.func) == 'self.update':
+                site.args[2] = _convert(site.args[2], 'clone')
     _adapt_experts(tree)
     norm = _definition(_definition(tree, 'Qwen3_5MoeRMSNorm'), 'forward')
     _call(norm, 'torch_npu.npu_rms_norm').args[1] = _expr('self.export_gamma')

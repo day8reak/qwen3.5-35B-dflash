@@ -4,32 +4,36 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 
-_T64_ACTIVE = ContextVar('cpro_t64_export', default=False)
+_GDR_WIDTH = ContextVar('cpro_t64_gdr_width', default=None)
 
 
 def validate_gdr_inputs(chunk_size, *operands):
-    if _T64_ACTIVE.get():
+    width = _GDR_WIDTH.get()
+    if width is not None:
         from torchair.ge import DataType
-        if chunk_size != 1 or any(x.dtype != DataType.DT_FLOAT16 for x in operands):
-            raise ValueError('T64 GDR requires chunk_size=1 and FP16 query, key, value and beta')
+        if chunk_size != width or any(x.dtype != DataType.DT_FLOAT16 for x in operands):
+            raise ValueError(f'T64 GDR requires chunk_size={width} and FP16 query, key, value and beta')
 
 
 @contextmanager
-def cpro_export_contracts(enabled):
+def cpro_export_contracts(enabled, chunk_size=1):
     if not enabled:
         yield
         return
     from ..layer_probe.candidates import qlinear_ge_scales
     from ..layer_probe.module_contracts import gdn_state_contract
 
-    active = _T64_ACTIVE.set(True)
+    if chunk_size not in (1, 64):
+        raise ValueError('Unsupported GDR chunk width')
+    active = _GDR_WIDTH.set(chunk_size)
     try:
         with qlinear_ge_scales(True, expected_calls=None) as projections:
-            with gdn_state_contract(True, state_dtype='float16', expected_calls=3 * 64) as gdr:
+            with gdn_state_contract(True, state_dtype='float16', expected_calls=3 * (64 // chunk_size),
+                                    sequence_rows=chunk_size) as gdr:
                 yield
         print('CPro GE adapter calls:', {'qlinear': projections['calls'], 'gdn': gdr['calls']})
     finally:
-        _T64_ACTIVE.reset(active)
+        _GDR_WIDTH.reset(active)
 
 
 def _only(items, label):

@@ -49,7 +49,7 @@ Plan ReadPlan(const fs::path& path) {
       plan.reset_inputs = true;
     } else if (fields.size() == 5 && iterations && (fields[0] == "input" || fields[0] == "output")) {
       auto& specs = fields[0] == "input" ? plan.inputs : plan.outputs;
-      if (Number(fields[1]) != specs.size() || specs.size() >= 8 ||
+      if (Number(fields[1]) != specs.size() || specs.size() >= 16 ||
           (fields[3] != "float32" && fields[3] != "float16" && fields[3] != "int16" && fields[3] != "int32" && fields[3] != "int64"))
         throw std::invalid_argument("probe requires contiguous bounded FP32/FP16/INT16/INT32/INT64 slots");
       HiaiTensorSpec spec{fields[2], fields[3], {}};

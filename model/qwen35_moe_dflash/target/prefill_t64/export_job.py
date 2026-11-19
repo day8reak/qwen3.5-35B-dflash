@@ -1,6 +1,8 @@
-"""Export the same four-layer, full-length T64 case as the retained 310P capture."""
+"""Export the four-layer CPro prefill with the controls of its retained capture."""
 import hashlib
 import json
+from pathlib import Path
+import tempfile
 
 import numpy as np
 import torch
@@ -32,9 +34,11 @@ def _export_air(job):
         array = np.frombuffer(raw, dtype=dtype).reshape(row['shape']).copy()
         data[name] = torch.from_numpy(array)
 
+    segment_path = job / 'segment.json'
+    segment = json.loads(segment_path.read_text()) if segment_path.is_file() else None
     wrapper = exporter.Qwen3_5MoeForCausalLMCproWrapper(
         model_path=config['model_file'], device='cpu', dtype=torch.float16,
-        embedding_config={'embedding_in_omc': False, 'mul_twice': False}, quant_enable=True,
+        embedding_config={'embedding_in_omc': bool(segment), 'mul_twice': False}, quant_enable=True,
     ).eval()
     layers = wrapper.model.model.layers
     if len(layers) != 4 or [layer.block_type for layer in layers] != ['linear_attention'] * 3 + ['full_attention']:
@@ -43,6 +47,9 @@ def _export_air(job):
         raise ValueError('Capture requires KV capacity 2048')
     exporter.quant_model_inplace(wrapper, config['quanted_pth'], wrapper.model.config.num_experts,
                                 device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
+    if segment:
+        # Match inference_segment.py after the quantized weights have been loaded.
+        wrapper.model.to(dtype=torch.float16)
     for i, layer in enumerate(layers):
         if i < 3:
             attention = layer.linear_attn
@@ -58,18 +65,43 @@ def _export_air(job):
         for module in wrapper.modules():
             if isinstance(module, Qwen3_5MoeRMSNorm):
                 module.register_buffer('export_gamma', (module.weight + 1.0).detach().contiguous(), persistent=False)
-        if not torch.equal(layers[3].self_attn.block_table.cpu(), torch.arange(64, dtype=torch.int32).reshape(1, 64)):
+        table = data['block_table'] if segment else torch.arange(64, dtype=torch.int32).reshape(1, 64)
+        if not torch.equal(layers[3].self_attn.block_table.cpu(), table):
             raise ValueError('L3 page table differs from fresh sequential Prefill')
         states = [(data[f'conv_state_{i}'], data[f'recurrent_state_{i}']) for i in range(3)]
         states.append((data['key_cache_3'], data['value_cache_3']))
-        with exporter.cpro_export_contracts(True):
+        if segment:
+            embedded = wrapper.model.model.embed_tokens(data['input_ids']).to(torch.float16)
+            if not torch.equal(embedded.view(torch.int16), data['embedding'].view(torch.int16)):
+                raise ValueError('CPro token lookup differs from the captured L0 input')
+
+        def export(path):
             exporter.torchair.dynamo_export(
-                model=wrapper, export_path='air', dynamic=False, input_ids=data['input_ids'],
-                inputs_embeds=data['inputs_embeds'], embed_scale=data['embed_scale'],
+                model=wrapper, export_path=path, dynamic=False, input_ids=data['input_ids'],
+                inputs_embeds=data.get('inputs_embeds'), embed_scale=data.get('embed_scale'),
                 past_key_values=states, new_kv_cache_pos=data['new_kv_cache_pos'], allQLen=data['allQLen'],
                 attention_mask=data['attention_mask'], position_ids=data['position_ids'], output_pos=data['output_pos'],
                 effective_length=data['effective_length'], use_cache=True, export_flag=True, output_attentions=False,
                 topK=None, linear_update_tensor=None)
+
+        if segment:
+            from ..layer_probe.replay import export_input_identity
+            from .segment_export import CASE, finish_segment_export
+            names = [name for name in data if name not in ('embedding', 'block_table')]
+            with tempfile.TemporaryDirectory(dir=job, prefix='.export-t64-') as tmp:
+                batch = Path(tmp) / 'air'
+                folder = batch / 'models' / CASE
+                folder.mkdir(parents=True)
+                with working_directory(folder), export_input_identity([data[n] for n in names]) as evidence:
+                    with exporter.cpro_export_contracts(True, chunk_size=64):
+                        export('weight')
+                (folder / 'weight/export.air').replace(folder / 'export.air')
+                finish_segment_export(job, batch, segment, manifest, names, evidence)
+                batch.rename(air)
+            print(f'Four-layer physical64/valid19 AIR batch: {air / "manifest.json"}')
+            return
+        with exporter.cpro_export_contracts(True):
+            export('air')
     if not (air / 'export.air').is_file():
         raise FileNotFoundError(f'TorchAir completed but {air / "export.air"} is missing')
     print(f'Four-layer T64 AIR: {air / "export.air"}')

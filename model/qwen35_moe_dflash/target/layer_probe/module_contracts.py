@@ -10,7 +10,7 @@ from .attention_inspect import attention_length_constant
 
 
 @contextmanager
-def gdn_state_contract(enabled, state_dtype='float32', expected_calls=1):
+def gdn_state_contract(enabled, state_dtype='float32', expected_calls=1, *, sequence_rows=None):
     if not enabled:
         yield None
         return
@@ -45,10 +45,11 @@ def gdn_state_contract(enabled, state_dtype='float32', expected_calls=1):
     def adapted(*args, **kwargs):
         bound = signature.bind(*args, **kwargs)
         values = bound.arguments
-        if expected_calls > 1:
+        rows = sequence_rows if sequence_rows is not None else (1 if expected_calls > 1 else None)
+        if rows is not None:
             for port in ('query', 'key', 'value', 'g', 'beta'):
-                if tuple(values[port].meta.shape[:2]) != (1, 1):
-                    raise ValueError(f'single-token GDR converter received a non-singleton {port} sequence')
+                if tuple(values[port].meta.shape[:2]) != (1, rows):
+                    raise ValueError(f'GDR converter requires [1, {rows}] {port} leading dimensions')
         state = values['initial_state']
         if (state.dtype != dtype or not isinstance(state.meta, torch.Tensor)
                 or state.meta.dtype != torch_dtype):

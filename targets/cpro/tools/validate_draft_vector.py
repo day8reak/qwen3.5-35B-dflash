@@ -67,7 +67,7 @@ def selected_cases(names, available=VALIDATION_CASES):
 
 def target_case_name(name):
     return (isinstance(name, str) and len(name) <= 256
-            and re.fullmatch(r'l[0-9]{2,}_c[0-9]{2,}_(?:[a-z][a-z0-9_]*_o[0-9]+|gdn_layer_all|full_attention_layer_all)', name) is not None)
+            and re.fullmatch(r'l[0-9]{2,}_c[0-9]{2,}_(?:[a-z][a-z0-9_]*_o[0-9]+|gdn_layer_all|full_attention_layer_all|prefill_four_layers_all)', name) is not None)
 
 
 def fixture_cases(meta):
@@ -605,6 +605,8 @@ def _check_probe_dtypes(meta, built):
     # using the hash-bound build receipt rather than assuming a rebuilt runner.
     limit = built.get('tensor_probe_limits', {}).get('max_io_bytes', 16 << 20)
     for case in meta['cases']:
+        if max(len(case['inputs']), len(case['outputs'])) > built.get('tensor_probe_limits', {}).get('max_slots', 8):
+            raise ValueError('rebuild runtime/native with build_hiai.py --replace; this model requires more tensor slots')
         total = sum(math.prod(s['shape']) * WIDTHS[s['dtype']]
                     for direction in ('inputs', 'outputs') for s in case[direction])
         if total > limit:

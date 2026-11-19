@@ -319,13 +319,13 @@ def bind_compiled(document, source_inputs, golden, enums, output_contract=None):
                                 else 'SOLE_COMPILED_OUTPUT_NO_SHAPE_BASED_SLOT_GUESSING'))
 
 
-def check_io_budget(name, io):
+def check_io_budget(name, io, max_slots=8):
     sizes = {d: sum(s['bytes'] for s in io[d]) for d in ('inputs', 'outputs')}
     total = sum(sizes.values())
-    if total > 32 << 20 or any(len(io[d]) > 8 for d in sizes):
+    if total > 32 << 20 or any(len(io[d]) > max_slots for d in sizes):
         raise ValueError(f'{name}: probe IO requires {total} bytes '
                          f'(inputs={sizes["inputs"]}, outputs={sizes["outputs"]}); '
-                         'limit=33554432 bytes (32 MiB), at most 8 slots per direction')
+                         f'limit=33554432 bytes (32 MiB), at most {max_slots} slots per direction')
 
 
 def prepare_fixture(root, out, ddk, ddk_id, selection=None):
@@ -367,7 +367,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
                                exported.get('output_contract'))
         except ValueError as exc:
             raise ValueError(f'{name}: {exc}') from exc
-        check_io_budget(name, io)
+        check_io_budget(name, io, max_slots=16 if case['kind'] == 'segment_prefill' else 8)
         fixture = out/'fixture'/name
         fixture.mkdir(parents=True)
         plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']
@@ -395,6 +395,17 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
             cases[-1]['compiled_state_contract'] = state_contract
             cases[-1]['gdr_mode'] = exported.get('candidate', {}).get('gdr_mode', 'chunk')
             cases[-1]['convstate_mode'] = exported.get('candidate', {}).get('convstate_mode', 'kernel')
+        if case['kind'] == 'segment_prefill':
+            from ..prefill_t64.segment_export import OUTPUTS
+            if [s['semantic_name'] for s in io['outputs']] != list(OUTPUTS):
+                raise ValueError('Expected the four-layer logits and eight ordered states')
+            cases[-1]['reference_basis'] = exported['reference_basis']
+            cpu_outputs = {}
+            for spec in exported['cpu_outputs']:
+                target = fixture / ('cpu_' + spec['name'] + '.bin')
+                shutil.copyfile(checked(folder, spec), target)
+                cpu_outputs[spec['name']] = dict(spec, **identity(target, out / 'fixture'))
+            cases[-1]['cpu_outputs'] = cpu_outputs
         if 'attention_contract' in exported:
             cases[-1]['attention_contract'] = exported['attention_contract']
         if case['kind'] == 'gdn' and 'reference_basis' in exported:
@@ -475,6 +486,9 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     golden = unpack(golden, attention['num_heads'])[:, :, :valid_rows]
                     output_row.update(reference_basis='CPU_CHECKED_310P_SEGMENT_ATTENTION_VALID_ROWS',
                                       valid_query_rows=valid_rows, physical_query_rows=spec['shape'][2])
+                cpu_reference = None
+                if case['kind'] == 'segment_prefill' and spec['semantic_name'] in case['cpu_outputs']:
+                    cpu_reference = read_array(fixture, case['cpu_outputs'][spec['semantic_name']])
                 tensors, hashes = [], []
                 valid_hashes = []
                 for index in range(meta['repetitions']):
@@ -486,7 +500,14 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     if valid_rows is not None:
                         actual = unpack(actual, attention['num_heads'])[:, :, :valid_rows]
                         valid_hashes.append(hashlib.sha256(actual.tobytes()).hexdigest())
-                    metric = metrics(actual, golden, atol=atol, rtol=rtol)
+                    if case['kind'] == 'segment_prefill':
+                        from ..prefill_t64.segment_export import compare_segment_output
+                        metric = compare_segment_output(spec['semantic_name'], actual, golden, cpu_reference, atol, rtol)
+                        if 'valid_rows' in metric:
+                            active = actual[0, :, :metric['valid_rows'], :]
+                            valid_hashes.append(hashlib.sha256(active.tobytes()).hexdigest())
+                    else:
+                        metric = metrics(actual, golden, atol=atol, rtol=rtol)
                     if valid_rows is not None:
                         metric['last_valid_query'] = metrics(actual[:, :, -1], golden[:, :, -1], atol=atol, rtol=rtol)
                     if captured_golden is not None:
