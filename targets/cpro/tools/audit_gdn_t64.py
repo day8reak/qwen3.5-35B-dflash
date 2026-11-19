@@ -13,8 +13,10 @@ def print_scores(label, row):
     def number(name):
         value = row[name]
         return f'{value:.6g}' if value is not None else 'n/a'
+    gates = ", ".join(row.get('failed_metrics') or [])
+    top1 = f"  top1 CPU={row['cpu_top1']} 310P={row['device_top1']}" if 'cpu_top1' in row else ''
     print(f"{label:43}  rel_l2={number('relative_l2'):>10}  cosine={number('cosine'):>10}"
-          f"  {'PASS' if row['passed'] else 'FAIL'}")
+          f"  {'PASS' if row['passed'] else 'FAIL'}  {gates}{top1}".rstrip())
 
 
 def main():
@@ -22,14 +24,23 @@ def main():
     parser.add_argument('--capture', required=True, type=Path, help='original T64 fixture/capture directory')
     parser.add_argument('--layer', type=int, choices=(0,1,2), default=1, help='GDN layer, defaults to 1')
     parser.add_argument('--group', type=Path, help='optional completed single-token whole-GDN batch')
+    parser.add_argument('--prefill-check', type=Path, help='completed CPU/310P whole-Prefill comparison directory')
     parser.add_argument('--json', action='store_true', help='emit all metrics, links and per-token board errors')
     args = parser.parse_args()
     from qwen35_moe_dflash.target.prefill_t64.audit_gdn import audit
     report = audit(args.capture, args.layer, args.group)
+    if args.prefill_check:
+        from qwen35_moe_dflash.target.prefill_t64.gdn_input import audit_input
+        report['input_path'] = audit_input(args.capture, args.prefill_check, args.layer)
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False))
         return
     print(f"L{args.layer} T64, 310P capture {report['capture_sha256'][:16]}")
+    if args.prefill_check:
+        entry = report['input_path']
+        print('Current native ConvState equals historical capture (bits):', entry['native_conv_equals_historical_bits'])
+        for label, row in entry['comparisons'].items():
+            print_scores(label, row)
     gdr = report['gdr_comparisons']
     for key in ('cpu_core_vs_310p_core', 'cpu_state_vs_310p_raw_state',
                 'gate_fp16_core_vs_cpu_core', 'gate_and_step_fp16_core_vs_gate_fp16_core'):
