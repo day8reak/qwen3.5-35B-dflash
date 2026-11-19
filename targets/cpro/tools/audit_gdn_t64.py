@@ -60,9 +60,17 @@ def main():
                 'math_core_cpu_tail_vs_310p_hidden', 'board_hidden_vs_math_core_cpu_tail',
                 'board_hidden_vs_captured_core_cpu_tail', 'board_core_vs_310p_core',
                 'board_norm_gate_vs_310p_gate', 'board_out_proj_input_vs_310p',
-                'board_norm_vs_cpu_on_board_core_gate', 'board_hidden_vs_cpu_on_board_proj_input'):
+                'board_norm_vs_cpu_on_board_core_gate', 'board_hidden_vs_cpu_on_board_proj_input',
+                'cpu_norm_board_core_only_vs_capture_inputs', 'cpu_norm_board_gate_only_vs_capture_inputs',
+                'cpu_norm_board_both_vs_capture_inputs'):
         if key in tail['comparisons']:
             print_scores(key, tail['comparisons'][key])
+    if 'largest_norm_error_row' in tail:
+        row = tail['largest_norm_error_row']
+        print(f"Largest out_proj input error by token/head: token={row['token']} head={row['head']}"
+              f" share_of_squared_error={row['squared_error_share']:.2%}"
+              f" core_rms(310P/CPro)={row['captured_core_rms']:.6g}/{row['board_core_rms']:.6g}"
+              f" sqrt(epsilon)={row['sqrt_epsilon']:.6g}")
 
 
 if __name__ == '__main__':

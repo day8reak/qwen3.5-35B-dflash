@@ -143,7 +143,25 @@ def audit_tail(capture, regions, layer, core_310p, core_math, board_hidden=None,
         for value, expected in ((board_core, core_310p), (board_gate, gate), (board_input, proj_x)):
             if value.shape != expected.shape or value.dtype != expected.dtype or not np.isfinite(value).all():
                 raise ValueError('Board tail output differs from the captured shape/dtype or is nonfinite')
-        board_math_norm = _gate_norm(board_core.reshape(x.shape), board_gate, w, eps, x.dtype)
+        board_x = board_core.reshape(x.shape)
+        core_only = _gate_norm(board_x, gate, w, eps, x.dtype)
+        gate_only = _gate_norm(x, board_gate, w, eps, x.dtype)
+        board_math_norm = _gate_norm(board_x, board_gate, w, eps, x.dtype)
+        # All three controls use the same CPU arithmetic and the same reference.
+        comparison['cpu_norm_board_core_only_vs_capture_inputs'] = _summary(core_only, local_norm)
+        comparison['cpu_norm_board_gate_only_vs_capture_inputs'] = _summary(gate_only, local_norm)
+        comparison['cpu_norm_board_both_vs_capture_inputs'] = _summary(board_math_norm, local_norm)
+        delta = (board_input.astype(np.float64) - proj_x).reshape(seq, heads, dim)
+        row_energy = np.sum(delta * delta, axis=-1)
+        total_energy = row_energy.sum()
+        if total_energy:
+            token, head = map(int, np.unravel_index(row_energy.argmax(), row_energy.shape))
+            def rms(vector):
+                return float(np.sqrt(np.mean(np.square(vector, dtype=np.float64))))
+            report['largest_norm_error_row'] = dict(
+                token=token, head=head, squared_error_share=float(row_energy[token, head] / total_energy),
+                captured_core_rms=rms(core_310p[0, token, head]), board_core_rms=rms(board_core[0, token, head]),
+                sqrt_epsilon=float(np.sqrt(eps)))
         comparison['board_core_vs_310p_core'] = _summary(board_core, core_310p)
         comparison['board_norm_gate_vs_310p_gate'] = _summary(board_gate, gate)
         comparison['board_out_proj_input_vs_310p'] = _summary(board_input, proj_x)
