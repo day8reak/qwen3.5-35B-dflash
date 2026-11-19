@@ -184,7 +184,7 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
         raise ValueError(f'GDN source operator output and writeback must both be {state_dtype}')
     for raw, expected_output in zip(nets[0]['input_desc'][3:], readouts):
         desc = descriptor(raw, enums)
-        if (_dtype(desc) != expected_output['dtype']
+        if (_dtype(desc) != expected_output.get('board_dtype', expected_output['dtype'])
                 or (desc['shape_evidence'] == 'SOURCE_DESCRIPTOR_DIMENSIONS' and desc['shape'] != expected_output['shape'])):
             raise ValueError('GDN diagnostic output differs from captured ' + expected_output['name'])
     projections = [n for n in nodes if n['type'] == 'QuantBatchMatmulV4444']

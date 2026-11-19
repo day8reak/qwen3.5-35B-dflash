@@ -75,9 +75,13 @@ def audit_board(group, capture_hash, layer, captured_hidden, captured_state, cpu
     traced = manifest.get('candidate_options', {}).get('gdn_trace_layer') == layer
     if traced:
         names += ['golden_core', 'golden_norm_gate', 'golden_out_proj_input']
+    has_inputs = traced and manifest['candidate_options'].get('gdr_inputs', False)
+    if has_inputs:
+        names += ['gdr_query', 'gdr_key', 'gdr_value', 'gdr_g', 'gdr_beta']
+    golden_types = ['float32' if name in ('golden_recurrent_state_fp32', 'gdr_g') else 'float16' for name in names]
     if ([s['index'] for s in specs] != list(range(len(names))) or [s['semantic_name'] for s in specs] != names
             or any(s['dtype'] != 'float16' for s in specs)
-            or [s['golden_dtype'] for s in specs] != ['float16', 'float16', 'float32'] + ['float16']*(len(names)-3)):
+            or [s['golden_dtype'] for s in specs] != golden_types):
         raise ValueError('Unexpected GDN output order or dtype')
     for s in specs:
         n = math.prod(s['shape'])
@@ -130,5 +134,8 @@ def audit_board(group, capture_hash, layer, captured_hidden, captured_state, cpu
         samples = dict(hidden=hidden)
         if traced:
             samples.update(core=read_sample(3), gate=read_sample(4), proj_input=read_sample(5))
+        if has_inputs:
+            samples['gdr_inputs'] = {name.removeprefix('gdr_'): read_sample(i)
+                                     for i, name in enumerate(names) if name.startswith('gdr_')}
         return report, samples
     return (report, hidden) if return_hidden else report

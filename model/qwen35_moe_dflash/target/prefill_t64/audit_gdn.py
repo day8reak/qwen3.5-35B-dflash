@@ -87,11 +87,23 @@ def audit(capture, layer=1, group=None, baseline_group=None):
         if baseline_group:
             baseline = audit_board(baseline_group, *operands)
             board = report['board']
-            if ('core' not in samples or baseline['scope'] != 'WHOLE_LAYER_FINAL_OUTPUTS_ONLY'
+            if ('core' not in samples or not baseline['output_hashes'].keys() < board['output_hashes'].keys()
                     or board['input_hashes'] != baseline['input_hashes']):
-                raise ValueError('Expected a traced group and an original three-output group with the same inputs')
+                raise ValueError('Expected a traced group and a baseline with the same inputs and a subset of its outputs')
             report['original_outputs_equal_bits'] = {
                 name: board['output_hashes'][name] == digest for name, digest in baseline['output_hashes'].items()}
+    replay_cores = None
+    if 'gdr_inputs' in samples:
+        names = ('query', 'key', 'value', 'g', 'beta')
+        board_inputs = [samples['gdr_inputs'][name] for name in names]
+        for name, observed, captured in zip(names, board_inputs, inputs):
+            if observed.shape != captured.shape or observed.dtype != np.float16:
+                raise ValueError('CPro GDR operand shape/dtype mismatch: ' + name)
+            scores['board_gdr_' + name + '_vs_capture'] = row(observed, captured)
+        board_cpu_core, _ = compute(*board_inputs, state0, round_state=True, round_gate=True)
+        scores['board_core_vs_cpu_on_board_gdr_inputs'] = row(samples['core'], board_cpu_core)
+        replay_cores = (rounded_core, board_cpu_core)
     report['tail'] = audit_tail(capture, doc['regions'], layer, original_core, cpu_core,
-                                board_hidden=samples.get('hidden'), board_stages=samples if 'core' in samples else None)
+                                board_hidden=samples.get('hidden'), board_stages=samples if 'core' in samples else None,
+                                replay_cores=replay_cores)
     return report

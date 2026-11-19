@@ -42,7 +42,7 @@ def export_variants(region, cache_indexing):
 def export_batch(capture, output, source_root, converter_script, *, points=None, kinds=None, phases=None,
                  timeout=900, torchair_pb2=None, target_config=None, qlinear_scales='source', cache_indexing='kernel',
                  rope_precision='source', gdn_state_dtype='source', gdn_convstate='kernel',
-                 full_attention_reference='math-replay', gdr_mode='chunk', gdn_trace_layer=None):
+                 full_attention_reference='math-replay', gdr_mode='chunk', gdn_trace_layer=None, gdr_inputs=False):
     if (qlinear_scales not in ('source', 'fp16') or cache_indexing not in ('kernel', 'float', 'integer', 'both')
             or rope_precision not in ('source', 'fp32') or gdn_state_dtype not in ('source', 'float16', 'float32')
             or gdn_convstate not in ('kernel', 'reference') or gdr_mode not in ('chunk', 'single-token')
@@ -50,6 +50,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         raise ValueError('unknown module candidate')
     if phases is not None and (not phases or set(phases) - {'prefill', 'decode'}):
         raise ValueError('select prefill and/or decode phases')
+    if gdr_inputs and (gdn_trace_layer is None or gdn_state_dtype != 'float16'):
+        raise ValueError('--gdr-inputs requires --gdn-trace-layer and --gdn-state-dtype float16')
     if gdn_trace_layer is not None:
         if (points and set(points) != {'gdn_layer'} or kinds and set(kinds) != {'gdn_layer'}
                 or phases and set(phases) != {'prefill'} or gdr_mode != 'single-token'):
@@ -64,7 +66,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     available_regions = [r for r in source['regions'] if r['kind'] != 'full_attention_layer']
     if points and 'gdn_layer' in points or kinds and 'gdn_layer' in kinds:
         from .whole_gdn import assemble
-        available_regions += assemble(source, trace_layer=gdn_trace_layer)
+        available_regions += assemble(source, trace_layer=gdn_trace_layer, trace_inputs=gdr_inputs)
     if points and 'full_attention_layer' in points or kinds and 'full_attention_layer' in kinds:
         from .whole_attention import assemble
         available_regions += assemble(source, capture=capture, reference=full_attention_reference)
@@ -109,6 +111,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         report['candidate_options']['gdr_mode'] = gdr_mode
     if gdn_trace_layer is not None:
         report['candidate_options']['gdn_trace_layer'] = gdn_trace_layer
+    if gdr_inputs:
+        report['candidate_options']['gdr_inputs'] = True
     report['selected_phases'] = sorted({r['phase'] for r in regions})
     save_json(root/'manifest.json', report)
     tool = Path(__file__).resolve().parents[4]/'targets/cpro/tools/target_layer_probe.py'
@@ -140,6 +144,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                 argv += ['--gdr-mode', gdr_mode]
             if gdn_trace_layer is not None:
                 argv += ['--gdn-trace-layer', str(gdn_trace_layer)]
+            if gdr_inputs:
+                argv.append('--gdr-inputs')
             if qlinear_scales != 'source':
                 argv += ['--qlinear-scales', qlinear_scales]
             if mode != 'kernel':

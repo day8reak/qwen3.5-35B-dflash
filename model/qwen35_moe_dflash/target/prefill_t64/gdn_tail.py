@@ -65,7 +65,16 @@ def _summary(a, b):
                                         'mean_relative_error', 'kl_divergence', 'failed_metrics')}
 
 
-def audit_tail(capture, regions, layer, core_310p, core_math, board_hidden=None, board_stages=None):
+def _norm_distances(capture, cpu_capture, cpu_board, board):
+    """Measure each change using the same captured norm; distances need not add."""
+    reference_norm = np.linalg.norm(capture)
+    changes = dict(cpu_on_capture_vs_capture=cpu_capture - capture, change_gdr_inputs=cpu_board - cpu_capture,
+                   board_vs_same_input_cpu=board - cpu_board, total=board - capture)
+    return {k: float(np.linalg.norm(delta) / reference_norm) if reference_norm else None
+            for k, delta in changes.items()}
+
+
+def audit_tail(capture, regions, layer, core_310p, core_math, board_hidden=None, board_stages=None, replay_cores=None):
     """Compare fixed captures at each boundary, then propagate one alternate core to hidden.
 
     core_math is rounded to the recorded core interface before downstream arithmetic.
@@ -162,6 +171,15 @@ def audit_tail(capture, regions, layer, core_310p, core_math, board_hidden=None,
                 token=token, head=head, squared_error_share=float(row_energy[token, head] / total_energy),
                 captured_core_rms=rms(core_310p[0, token, head]), board_core_rms=rms(board_core[0, token, head]),
                 sqrt_epsilon=float(np.sqrt(eps)))
+        if replay_cores is not None:
+            # Use the captured z for all four cores, including the two CPU recurrences.
+            replay_norms = [_gate_norm(c.reshape(x.shape), gate, w, eps, x.dtype) for c in replay_cores]
+            vectors = [a.astype(np.float64).reshape(seq, heads, dim) for a in (local_norm, *replay_norms, core_only)]
+            effects = report['gdr_replay_norm_distances'] = dict(
+                whole=_norm_distances(*vectors), denominator='L2_NORM_OF_CPU_GATED_NORM_ON_CAPTURED_CORE_AND_Z')
+            if total_energy:
+                effects['largest_row'] = dict(token=token, head=head,
+                                              distances=_norm_distances(*(v[token, head] for v in vectors)))
         comparison['board_core_vs_310p_core'] = _summary(board_core, core_310p)
         comparison['board_norm_gate_vs_310p_gate'] = _summary(board_gate, gate)
         comparison['board_out_proj_input_vs_310p'] = _summary(board_input, proj_x)

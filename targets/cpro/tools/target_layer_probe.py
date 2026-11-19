@@ -38,6 +38,8 @@ def main():
                        help='whole Prefill GDN: one original GDR call, or one state-chained S=1 call per token')
         s.add_argument('--gdn-trace-layer', type=int, metavar='LAYER',
                        help='export only this single-token Prefill GDN layer, also returning core, norm gate and out_proj input')
+        s.add_argument('--gdr-inputs', action='store_true',
+                       help='also return Q, K, V, FP16 decay log g and beta for --gdn-trace-layer')
         s.add_argument('--gdn-convstate', choices=('kernel', 'reference'), default='kernel',
                        help='whole gdn_layer only: reference uses explicit concat/tail after exact capture checks; full-length calls, one-token Decode; golden unchanged')
         s.add_argument('--qlinear-scales', choices=('source', 'fp16'), default='source',
@@ -176,13 +178,13 @@ def main():
             points=a.points, kinds=a.kinds, phases=a.phases, timeout=a.timeout, torchair_pb2=a.torchair_pb2, target_config=a.target_config,
             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
             gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate, gdr_mode=a.gdr_mode,
-            full_attention_reference=a.full_attention_reference, gdn_trace_layer=a.gdn_trace_layer)
+            full_attention_reference=a.full_attention_reference, gdn_trace_layer=a.gdn_trace_layer, gdr_inputs=a.gdr_inputs)
     elif a.command == 'export-one':
         from qwen35_moe_dflash.target.layer_probe.replay import export_one
         result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2, a.target_config,
                             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
                             gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate, gdr_mode=a.gdr_mode,
-                            full_attention_reference=a.full_attention_reference, gdn_trace_layer=a.gdn_trace_layer)
+                            full_attention_reference=a.full_attention_reference, gdn_trace_layer=a.gdn_trace_layer, gdr_inputs=a.gdr_inputs)
     elif a.command == 'compile':
         result = batch.compile_batch(a.batch, a.output, a.ddk_root, a.ddk_id, tbe_diagnosis=a.tbe_diagnosis,
                                      timeout=a.timeout, use_origin_format=a.use_origin_format,

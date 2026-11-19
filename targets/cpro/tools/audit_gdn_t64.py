@@ -24,7 +24,7 @@ def main():
     parser.add_argument('--capture', required=True, type=Path, help='original T64 fixture/capture directory')
     parser.add_argument('--layer', type=int, choices=(0,1,2), default=1, help='GDN layer, defaults to 1')
     parser.add_argument('--group', type=Path, help='optional completed single-token whole-GDN batch')
-    parser.add_argument('--baseline-group', type=Path, help='original three-output group to compare with the traced --group')
+    parser.add_argument('--baseline-group', type=Path, help='original group or previous tail trace on the same input')
     parser.add_argument('--prefill-check', type=Path, help='completed CPU/310P whole-Prefill comparison directory')
     parser.add_argument('--json', action='store_true', help='emit all metrics, links and per-token board errors')
     args = parser.parse_args()
@@ -71,6 +71,15 @@ def main():
               f" share_of_squared_error={row['squared_error_share']:.2%}"
               f" core_rms(310P/CPro)={row['captured_core_rms']:.6g}/{row['board_core_rms']:.6g}"
               f" sqrt(epsilon)={row['sqrt_epsilon']:.6g}")
+    if 'gdr_replay_norm_distances' in tail:
+        for key in ('board_gdr_query_vs_capture', 'board_gdr_key_vs_capture', 'board_gdr_value_vs_capture',
+                    'board_gdr_g_vs_capture', 'board_gdr_beta_vs_capture', 'board_core_vs_cpu_on_board_gdr_inputs'):
+            print_scores(key, gdr[key])
+        effects = tail['gdr_replay_norm_distances']
+        print('Gated norm distances with fixed captured z and a common reference norm:')
+        print('all token/head rows', json.dumps(effects['whole'], allow_nan=False))
+        if 'largest_row' in effects:
+            print('largest out_proj input error row', json.dumps(effects['largest_row'], allow_nan=False))
 
 
 if __name__ == '__main__':
