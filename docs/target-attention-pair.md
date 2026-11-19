@@ -174,11 +174,15 @@ python "$REPO_DIR/targets/cpro/tools/prepare_cpro_prefill_t64.py" \
   --fixture "$T64_FIXTURE" --output "$JOB" --export
 ```
 
-导出文件为 `$JOB/air/export.air`。在 310P 上使用同一份 fixture 生成四层参考输出。脚本核对原推理的 L3 attention 输入，再将独立 attention 数学结果接回原模块并运行到 LM head。
+导出文件为 `$JOB/air/export.air`。在 310P 服务器上用同一份 T64 输入生成 CPU 和原生 310P 两套输出。已有 JOB 可以直接调用仓库脚本。
 
 ```bash
 conda activate qwen3_5_w4
-python "$JOB/reference_t64.py" --repo "$REPO_DIR" \
+python "$REPO_DIR/targets/cpro/tools/verify_target_prefill_t64.py" \
   --source-root "$TARGET_SOURCE" --config "$TARGET_CONFIG" \
-  --fixture "$T64_FIXTURE" --device npu:0 --output "$JOB/reference"
+  --fixture "$T64_FIXTURE" --device npu:0 --output "$JOB/cpu-310p"
 ```
+
+`cpu/outputs/` 和 `native-310p/outputs/` 各保存末位置 logits 与八个状态。CPU 按同一批 token ID 从原始 embedding 表取行，核对输入后，逐层计算 GDN、全注意力、MoE 和 LM head，量化投影从原始 W4 checkpoint 读取。每层 decoder hidden 和九个最终输出的精度指标在 `report.json`。logits 还要核对 top-1，K/V 分别检查有效写入行和未写区域。
+
+当四层 hidden、九项输出、原生 L3 core 审核均通过，且第二次原生运行的九个输出逐位一致并通过比较时，`selected_golden` 才指向本次原生 310P 输出及其 SHA256。这个结论适用于本次四层、空初态、T64 输入。`comparison.l3_math_310p` 单独记录把独立注意力结果接回原模块后的误差，便于定位 L3 对整链结果的影响。精度失败时脚本保留两套输出和报告，退出码为 2。
