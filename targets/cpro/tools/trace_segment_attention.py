@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Audit the first NZ L3 Prefill in the user's normal inference_segment.py process."""
 import argparse
+import ast
 from contextlib import ExitStack
 from functools import wraps
 import hashlib
@@ -9,12 +10,47 @@ import json
 from pathlib import Path
 import runpy
 import sys
+from types import ModuleType
 
 sys.path.append(str(Path(__file__).resolve().parents[3] / 'model'))
 
 
 def tensor_hash(tensor):
     return hashlib.sha256(tensor.contiguous().numpy().tobytes()).hexdigest()
+
+
+def run_segment_with_chunk_size(entry, size):
+    """Override only the two Prefill chunkers' use of chunk_size in this process."""
+    class ChunkWidth(ast.NodeTransformer):
+        def visit_Name(self, node):
+            if node.id == 'chunk_size' and isinstance(node.ctx, ast.Load):
+                return ast.copy_location(ast.Constant(size), node)
+            return node
+
+    tree = ast.parse(entry.read_bytes(), filename=str(entry))
+    names = ('prefill_chunk_segment1', 'prefill_chunk_segment2')
+    for name in names:
+        functions = [f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name == name]
+        if len(functions) != 1:
+            raise ValueError(f'expected one {name} in {entry}')
+        fn = functions[0]
+        loops = [n for n in fn.body if isinstance(n, ast.For)
+                 and ast.unparse(n.iter) == 'range(0, seq_len, chunk_size)']
+        if len(loops) != 1:
+            raise ValueError(f'{name}: cannot identify the source Prefill chunk loop')
+        # Include any allocations before the loop as well as the padding in it.
+        # actual_chunk_len, positions and the valid lengths stay source-derived.
+        transform = ChunkWidth()
+        fn.body = [transform.visit(stmt) for stmt in fn.body]
+    code = compile(ast.fix_missing_locations(tree), str(entry), 'exec', dont_inherit=True)
+    module = ModuleType('__main__')
+    module.__file__ = str(entry)
+    previous = sys.modules['__main__']
+    sys.modules['__main__'] = module
+    try:
+        exec(code, module.__dict__)
+    finally:
+        sys.modules['__main__'] = previous
 
 
 def single_int(value):
@@ -38,6 +74,9 @@ def compare_call(args, packed, wrapper, baseline, report):
     steps = query.shape[2]
     valid = single_int(wrapper['effective_length'])
     report.update(physical_query_rows=steps, valid_query_rows=valid)
+    if 'prefill_chunk_size_override' in report and (
+            steps != report['prefill_chunk_size_override'] or single_int(args['actual_seq_lengths_q']) != steps):
+        raise ValueError('the fused query did not execute at the requested physical chunk size')
     fields = {'query', 'key', 'value', 'atten_mask', 'block_table', 'all_seq_lengths_q',
               'actual_seq_lengths_q', 'actual_seq_lengths_kv', 'num_heads', 'num_key_value_heads',
               'scale_value', 'inner_precise', 'input_layout', 'block_size'}
@@ -102,18 +141,20 @@ def save_valid19(output, snapshot, reference, report):
 
     args = snapshot['inputs']
     ids = snapshot['wrapper_ids']
+    physical = report['physical_query_rows']
     if (report['status'] != 'PASSED' or not report['last_valid_query_vs_cpu']['passed']
             or report['fused_calls'] != 1 or report['segment_entry'] != 'prefill_chunk_segment1'
-            or (report['physical_query_rows'], report['valid_query_rows']) != (32, 19)
-            or single_int(args['actual_seq_lengths_q']) != 32
-            or list(ids.shape) != [1, 32] or list(snapshot['prompt_ids'].shape) != [1, 19]
+            or physical not in (32, 64) or report['valid_query_rows'] != 19
+            or physical != report.get('prefill_chunk_size_override', physical)
+            or single_int(args['actual_seq_lengths_q']) != physical
+            or list(ids.shape) != [1, physical] or list(snapshot['prompt_ids'].shape) != [1, 19]
             or not torch.equal(snapshot['prompt_ids'], ids[:, :19])):
-        raise ValueError('requires the CPU-checked first segmented Prefill with 19 prompt tokens and 32 physical rows')
+        raise ValueError('expected a CPU-checked first segmented Prefill with 19 valid tokens at the selected physical size')
 
     capture = Capture(output, layers=[3], calls=1)
     for path in (report['entry'], *report['module_sources']):
         capture.source(path)
-    capture.active = dict(layer=3, call=0, seq_len=32, execution_device=report['live_arguments']['query']['device'])
+    capture.active = dict(layer=3, call=0, seq_len=physical, execution_device=report['live_arguments']['query']['device'])
     inputs = {name: args[name] for name in ('query', 'atten_mask', 'block_table')}
     inputs.update(key=args['key'][0], value=args['value'][0],
                   all_seq_lengths_q=torch.as_tensor(args['all_seq_lengths_q'], dtype=torch.int64))
@@ -224,7 +265,9 @@ def arm(wrapper, baseline, report, cleanup):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fixture', type=Path, help='previous four-layer fixture for byte comparisons')
-    parser.add_argument('--output', type=Path, help='save the CPU-checked 19-valid/32-physical L3 core for CPro replay')
+    parser.add_argument('--output', type=Path, help='save the CPU-checked 19-valid-token L3 core at its observed physical size')
+    parser.add_argument('--prefill-chunk-size', type=int, choices=(64,),
+                        help='run both original Prefill chunk loops at 64 rows for the T64 CPro comparison')
     parser.add_argument('inference_args', nargs=argparse.REMAINDER, help='-- followed by the normal inference arguments')
     args = parser.parse_args()
     if args.output:
@@ -236,6 +279,8 @@ def main():
     forwarded = args.inference_args[1:] if args.inference_args[:1] == ['--'] else args.inference_args
     baseline = None
     report = dict(status='UNOBSERVED', entry=str(entry), argv=forwarded, entered_l3=False, fused_calls=0)
+    if args.prefill_chunk_size:
+        report['prefill_chunk_size_override'] = args.prefill_chunk_size
     captured = None
     previous = sys.getprofile()
     with ExitStack() as cleanup:
@@ -268,7 +313,10 @@ def main():
         sys.path.insert(0, str(entry.parent))
         completed = False
         try:
-            runpy.run_path(str(entry), run_name='__main__')
+            if args.prefill_chunk_size:
+                run_segment_with_chunk_size(entry, args.prefill_chunk_size)
+            else:
+                runpy.run_path(str(entry), run_name='__main__')
             completed = True
         except SystemExit as exc:
             if exc.code not in (None, 0):
