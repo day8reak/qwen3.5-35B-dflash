@@ -37,6 +37,18 @@ def _expr(code):
     return ast.parse(code, mode='eval').body
 
 
+def use_position_gathers(tree, class_name, tables, index):
+    """Lower axis-1 row selections for the prepared nonnegative INT32 positions."""
+    forward = _definition(_definition(tree, class_name), 'forward')
+    parents = [node for node in ast.walk(forward) if isinstance(getattr(node, 'value', None), ast.Subscript)]
+    for table in tables:
+        selection = f'{table}[:, {index}, :]'
+        parent = _one((node for node in parents if ast.unparse(node.value) == selection), selection)
+        # X90's frontend accepts FP32 gather data. Select from the already
+        # rounded values, then return rows in the source table's dtype.
+        parent.value = _expr(f'torch.index_select({table}.float(), 1, {index}.int()).to({table}.dtype)')
+
+
 def _convert(node, method, arguments=()):
     return ast.Call(func=ast.Attribute(value=node, attr=method, ctx=ast.Load()),
                     args=list(arguments), keywords=[])
@@ -165,6 +177,7 @@ def stage_model(text, *, single_token=True):
     _rotate_fp32(tree, original)
     _adapt_gdn(tree, original, single_token)
     if not single_token:
+        use_position_gathers(tree, 'Qwen3_5MoeRotaryEmbedding', ('self.cos_cached', 'self.sin_cached'), 'position_ids')
         # CacheUpdate mutates its input. Keep it internal to the nine-output model,
         # just as in the whole-attention probe, and return the two updated caches.
         forward = _definition(_definition(tree, 'Qwen3_5MoeAttention'), 'forward')

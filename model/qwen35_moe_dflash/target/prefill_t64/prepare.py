@@ -86,7 +86,9 @@ def prepare(source, config, fixture, output, repo):
         cfg[key] = str((source / cfg[key]).resolve(strict=True))
     manifest = json.loads((fixture / 'manifest.json').read_text())
     segmented = 'valid_rows' in manifest
-    transforms = {MODELING: lambda text: stage_model(text, single_token=not segmented), WRAPPER: stage_wrapper, EXPORTER: stage_exporter, 'utils.py': stage_utils, NZ: None}
+    transforms = {MODELING: lambda text: stage_model(text, single_token=not segmented),
+                  WRAPPER: lambda text: stage_wrapper(text, segmented=segmented),
+                  EXPORTER: stage_exporter, 'utils.py': stage_utils, NZ: None}
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent, prefix='.prepare-t64-') as staging:
         job = Path(staging) / 'job'

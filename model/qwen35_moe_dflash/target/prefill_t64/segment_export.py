@@ -98,6 +98,28 @@ def prepare_segment(fixture, manifest, job):
               reference_basis=BASIS, selected_golden=None))
 
 
+def _position_gathers(graph, runtime_edges, enums):
+    from ..operator_air_review import _data_edges, trace_input
+
+    controls = {runtime_edges[name]: name for name in ('position_ids', 'output_pos')}
+    gathers = {name: [] for name in controls.values()}
+    nodes = {node['name']: node for node in graph['op']}
+    for node in nodes.values():
+        if node['type'] not in ('Gather', 'GatherV2', 'GatherV2D'):
+            continue
+        edges = _data_edges(node)
+        if len(edges) < 2:
+            continue
+        chain = trace_input(edges[1], nodes, enums)['chain']
+        if chain and chain[-1]['type'] == 'Data':
+            control = controls.get(chain[-1]['name'] + ':0')
+            if control:
+                gathers[control].append(node['name'])
+    if len(gathers['position_ids']) != 2 or len(gathers['output_pos']) != 1:
+        raise ValueError(f'Expected two RoPE table gathers and one readout gather bound to the position inputs: {gathers}')
+    return gathers
+
+
 def finish_segment_export(job, root, segment, manifest, runtime_names, evidence):
     from qwen35_moe_dflash.draft.incremental.torch_export import _producer_schema, _schema
     from ..original_air_roundtrip import _decode, _attributes
@@ -107,7 +129,8 @@ def finish_segment_export(job, root, segment, manifest, runtime_names, evidence)
     folder = root / 'models' / CASE
     air = folder / 'export.air'
     descriptor, metadata = _producer_schema()
-    _, _, graph = _decode(_schema(descriptor, metadata), air.read_bytes())
+    schema = _schema(descriptor, metadata)
+    _, _, graph = _decode(schema, air.read_bytes())
     specs = []
     for name in runtime_names:
         spec = manifest[name]
@@ -119,6 +142,7 @@ def finish_segment_export(job, root, segment, manifest, runtime_names, evidence)
     if {s['semantic_name'] for s in bindings} != set(runtime_names):
         raise ValueError('Exported graph does not retain the declared segment runtime inputs')
     runtime_edges = {s['semantic_name']: s['name'] + ':0' for s in bindings}
+    position_gathers = _position_gathers(graph, runtime_edges, schema.enums[metadata['schema_package'] + '.DataType'])
     gdr_nodes = [n for n in graph['op'] if n['type'] == 'ChunkGatedDeltaRule']
     attention = [n for n in graph['op'] if n['type'] == 'AdnFusedInferAttention']
     if len(gdr_nodes) != 3 or len(attention) != 1:
@@ -143,7 +167,8 @@ def finish_segment_export(job, root, segment, manifest, runtime_names, evidence)
     save_json(record, dict(status='EXPORTED', air=identity(air, folder), source_inputs=bindings,
               golden=goldens[0], goldens=goldens, cpu_outputs=segment['cpu_outputs'], output_contract=dict(order=list(OUTPUTS),
               required_dtypes=required, source_edges=net['input']), capture_sha256=segment['capture_sha256'],
-              reference_basis=BASIS, physical_rows=64, valid_rows=19, output_pos=18, gdr_calls=len(gdr_nodes)))
+              reference_basis=BASIS, physical_rows=64, valid_rows=19, output_pos=18, gdr_calls=len(gdr_nodes),
+              position_gathers=position_gathers))
     case = dict(id=CASE, status='EXPORTED', layer=3, call=0, point='prefill_four_layers',
                 phase='prefill', kind='segment_prefill', ordinal=0, output_name='logits_and_states',
                 export=identity(record, root))

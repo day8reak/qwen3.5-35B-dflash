@@ -7,7 +7,17 @@ _SOURCE_DIGEST = "adffc184d14b606641ceb61db2628c886608996ead4f0abc21c9e9aa36903c
 _STAGED_DIGEST = "5d641ec2e050220f4c64fb934d24b57b939e99e25751ff2def141dea3ea44df7"
 
 
-def stage_wrapper(text: str) -> str:
+def stage_wrapper(text: str, *, segmented=False) -> str:
+    source = _stage_base_wrapper(text)
+    if segmented:
+        from .source_model import use_position_gathers
+        tree = ast.parse(source)
+        use_position_gathers(tree, 'Qwen3_5MoeForCausalLMCproWrapper', ('hidden_states',), 'output_pos')
+        return ast.unparse(ast.fix_missing_locations(tree)) + '\n'
+    return source
+
+
+def _stage_base_wrapper(text: str) -> str:
     """Stage the layer count and hidden dtypes of the CPro wrapper only."""
     source = text.replace("\r\n", "\n").encode("utf-8")
     digest = hashlib.sha256(source).hexdigest()
