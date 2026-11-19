@@ -1011,7 +1011,8 @@ def main():
                 first = row.pop('invocations')[0]
                 row.pop('output_sha256', None)
                 row.pop('valid_output_sha256', None)
-                row.update(valid19_rel_l2=first['relative_l2'], token18_rel_l2=first['token_18']['relative_l2'],
+                row.update(valid19_rel_l2=first['relative_l2'], valid19_cosine=first['cosine'],
+                           token18_rel_l2=first['token_18']['relative_l2'], token18_cosine=first['token_18']['cosine'],
                            padding_rel_l2=first.get('padding', {}).get('relative_l2'), failed_metrics=first['failed_metrics'])
     print(json.dumps(shown, ensure_ascii=False, allow_nan=False))
     return 1 if result['status'] in ('FAILED', 'NUMERICAL_FAILED') else 0
