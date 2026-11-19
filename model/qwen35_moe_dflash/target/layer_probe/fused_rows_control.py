@@ -24,7 +24,7 @@ def upload_window(npu, original, host_window, base_shape):
     return result
 
 
-def compare_query_rows(npu, live, saved, original, reference, report):
+def validate_t64_call(live, saved, report):
     heads, kv_heads = live['num_heads'], live['num_key_value_heads']
     query, mask = saved['query'], saved['atten_mask']
     if (tuple(query.shape) != (1, 256, 64, 16) or tuple(mask.shape) != (1, 1, 64, 2048)
@@ -38,6 +38,11 @@ def compare_query_rows(npu, live, saved, original, reference, report):
         raise ValueError('cannot use slices of the T64 reference without its fresh causal mask')
     if not (report['packed_inputs_match_previous_fixture'] and report['prefill_output_matches_previous_fixture']):
         raise ValueError('live T64 call differs from the selected fixture; inspect the new capture first')
+
+
+def compare_query_rows(npu, live, saved, original, reference, report):
+    validate_t64_call(live, saved, report)
+    query, mask, heads = saved['query'], saved['atten_mask'], live['num_heads']
 
     def window(start, physical):
         q = query[:, :, start:start+physical]

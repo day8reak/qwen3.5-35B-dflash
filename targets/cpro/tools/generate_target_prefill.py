@@ -25,6 +25,7 @@ def main():
     probe.add_argument('--probe-fused-value', metavar='FIXTURE', help='use tokens from an existing Prefill fixture and test the live fused attention with constant V after the original forward')
     probe.add_argument('--probe-fused-mask', metavar='T64_FIXTURE', help='record live argument descriptors and compare equivalent FP16 causal mask sentinels on the same fused call')
     probe.add_argument('--probe-fused-rows', metavar='T64_FIXTURE', help='compare 32/64 physical query rows using the same captured T64 operands and causal reference')
+    probe.add_argument('--probe-fused-pages', metavar='T64_FIXTURE', help='sweep cumulative lengths 32..64 on fixed T64 inputs and test causal and page-table invariance')
     args = parser.parse_args()
     from qwen35_moe_dflash.target.prefill_fixture import generate
     result = generate(args.source_root, args.config, args.input_ids, args.sequence_length,
@@ -32,7 +33,7 @@ def main():
                       capture_boundaries=args.capture_boundaries,
                       prompt_index=args.prompt_index, prompt_repeat=args.prompt_repeat,
                       probe_fused_value=args.probe_fused_value, probe_fused_mask=args.probe_fused_mask,
-                      probe_fused_rows=args.probe_fused_rows)
+                      probe_fused_rows=args.probe_fused_rows, probe_fused_pages=args.probe_fused_pages)
     print(json.dumps(dict(status=result['status'], manifest=str(Path(args.output)/'manifest.json'),
                          inputs=len(result.get('inputs', [])), outputs=len(result.get('outputs', [])),
                          sequence_length=result.get('sequence_length'),
@@ -44,6 +45,8 @@ def main():
                          **({'fused_value_control': result.get('fused_value_control')} if args.probe_fused_value else {}),
                          **({'fused_mask_control': result.get('fused_mask_control')} if args.probe_fused_mask else {}),
                          **({'fused_rows_control': result.get('fused_rows_control')} if args.probe_fused_rows else {}),
+                         **({'fused_pages_control': {k: v for k, v in result.get('fused_pages_control', {}).items()
+                                                     if k != 'length_sweep'}} if args.probe_fused_pages else {}),
                          error=result.get('error')), indent=2, ensure_ascii=False))
     return 0 if result['status'] == 'CAPTURED' else 1
 

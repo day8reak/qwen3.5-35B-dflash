@@ -119,6 +119,10 @@ def run_control(npu, live_calls, root, audit, historical, report, *, probe_mask=
         raise ValueError('live attention arguments changed since capture')
     original = read_array(root, call['actual'])
     reference = read_array(root, call['independent_reference'])
+    if probe_mode == 'pages':
+        from .fused_page_control import compare_pages
+        compare_pages(npu, kwargs, saved, original, reference, report)
+        return
     if probe_mode == 'rows':
         from .fused_rows_control import compare_query_rows
         compare_query_rows(npu, kwargs, saved, original, reference, report)

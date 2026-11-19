@@ -392,7 +392,7 @@ def execute_prefill(source, wrapper, tokens, root, record, *, intermediates=Fals
 
 def generate(source_root, config_path, input_ids, sequence_length, output, *, device='npu:0',
              intermediates=False, capture_boundaries=False, prompt_index=0, prompt_repeat=1, l3_repeat=None,
-             probe_fused_value=None, probe_fused_mask=None, probe_fused_rows=None):
+             probe_fused_value=None, probe_fused_mask=None, probe_fused_rows=None, probe_fused_pages=None):
     root = new_output(output)
     source_root = Path(source_root).resolve(strict=True)
     config_path = Path(config_path)
@@ -428,7 +428,8 @@ def generate(source_root, config_path, input_ids, sequence_length, output, *, de
         path = None
         fused_baseline = None
         probes = {name: fixture for name, fixture in (('value', probe_fused_value),
-                  ('mask', probe_fused_mask), ('rows', probe_fused_rows)) if fixture is not None}
+                  ('mask', probe_fused_mask), ('rows', probe_fused_rows), ('pages', probe_fused_pages))
+                  if fixture is not None}
         probe_mode, probe_fixture = next(iter(probes.items()), ('value', None))
         if probe_fixture is not None:
             from .layer_probe.fused_value_control import previous_call
