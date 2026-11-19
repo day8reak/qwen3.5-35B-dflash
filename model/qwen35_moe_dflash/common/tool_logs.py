@@ -26,6 +26,8 @@ _WORKER_FAILURE = re.compile(rb"COMPILER PROCESS DIED OF NODE|compiler process d
 _PASS_FAILURE = re.compile(rb"ByPassNode.*PreCheck|Pass Run failed|AfterInferShape.*failed to run", re.I)
 _BUILD_FAILURE = re.compile(rb"create OpGraphBuilder fail|opGraphBuilder is null|Op Build4NPU failed|OpPreBuild failed\. Node:", re.I)
 _TILING_FAILURE = re.compile(rb"GetDataParam.*inputTensorPtr is NULL|\bProduceTiling failed\b|\bcompileInfo is null\b", re.I)
+_OMC_SAVE_FAILURE = re.compile(
+    rb"large_memory_ops\.cpp.*memcpy_s.*false, return false|set model header failed!|Save compiled model to file failed!", re.I)
 
 
 _OMG_TRACE_PATTERNS = tuple(re.compile(pattern) for pattern in (
@@ -129,7 +131,7 @@ def _read_excerpt(log):
                     active_trace = None
             if _is_error(chunk) or python_failure:
                 if any(pattern.search(chunk) for pattern in
-                       (_PASS_FAILURE, _BUILD_FAILURE, _WORKER_FAILURE, _TILING_FAILURE)):
+                       (_PASS_FAILURE, _BUILD_FAILURE, _WORKER_FAILURE, _TILING_FAILURE, _OMC_SAVE_FAILURE)):
                     terminal_pass.append((line_number, chunk[:2048], len(chunk) > 2048))
                     terminal_pass = terminal_pass[-3:]
                 # A backend can reject many candidate dtypes before declaring

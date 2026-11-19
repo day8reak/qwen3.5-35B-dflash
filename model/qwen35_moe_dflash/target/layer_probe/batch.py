@@ -204,6 +204,7 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
     """Read an AIR batch and write a fresh, separate compilation batch."""
     from qwen35_moe_dflash.common.artifacts import output_path
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
+    from qwen35_moe_dflash.toolchain.omc_embed_weights import embed_external_weights
     root, ddk, output = Path(root).resolve(), Path(ddk).resolve(), output_path(output)
     for source in (root, ddk):
         if output == source or source in output.parents or output in source.parents:
@@ -249,14 +250,33 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
             folder = root/'models'/case['id']
             air = checked(folder, exported['air'])
             destination = output/'models'/case['id']/'omc'
+            stream_weights = case.get('kind') == 'segment_prefill' and not diagnostic
             print('compile', case['id'], flush=True)
             compiled = compile_existing_air(air, destination, ddk, ddk_id=ddk_id,
-                timeout_seconds=timeout, save_weights_as_external_data=diagnostic,
+                timeout_seconds=timeout, save_weights_as_external_data=diagnostic or stream_weights,
                 limit_partition_size=False if diagnostic else None, compiler_profile=compiler_profile,
                 use_origin_format=use_origin_format, tbe_diagnosis=tbe_diagnosis)
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(compiled.get('error', 'OMG failed; inspect retained omc/report.json'))
-            row.update(status='COMPILED', omc=identity(destination/compiled['omc']['path'], output))
+            model = destination/compiled['omc']['path']
+            if stream_weights:
+                row.update(stage='pack-weights', compiler_status='COMPILED')
+                print('pack weights', case['id'], flush=True)
+                sidecars = [dict(item, path=str(destination/item['path']))
+                            for item in compiled['external_data_candidates'] if Path(item['path']).suffix == '.weight']
+                packed_model = destination.parent/'model.omc'
+                packing = embed_external_weights(model, packed_model,
+                    ddk/'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so',
+                    expected_source_sha256=compiled['omc']['sha256'], sidecars=sidecars)
+                receipt = destination.parent/'weight-packing.json'
+                save_json(receipt, packing)
+                model_record = identity(packed_model, output)
+                if any(model_record[k] != packing['output'][k] for k in ('sha256', 'bytes')):
+                    raise ValueError('packed model differs from weight-packing receipt')
+                row.update(stage='complete', weight_storage='embedded-stream', weight_packing=identity(receipt, output))
+            else:
+                model_record = identity(model, output)
+            row.update(status='COMPILED', omc=model_record)
         except Exception as exc:
             row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')
         save_json(output/'compile.json', report)
