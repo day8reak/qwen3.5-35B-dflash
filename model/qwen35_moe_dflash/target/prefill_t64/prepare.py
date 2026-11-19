@@ -69,7 +69,7 @@ def prepare_inputs(fixture, job):
     (job / 'inputs.json').write_text(json.dumps(prepared, indent=2) + '\n')
 
 
-def prepare(source, config, fixture, output, repo):
+def prepare(source, config, fixture, output, repo, *, attention_layers=False):
     from .source_model import stage_model
     from .source_wrapper import stage_wrapper
     from .source_exporter import stage_utils, stage_exporter
@@ -86,6 +86,8 @@ def prepare(source, config, fixture, output, repo):
         cfg[key] = str((source / cfg[key]).resolve(strict=True))
     manifest = json.loads((fixture / 'manifest.json').read_text())
     segmented = 'valid_rows' in manifest
+    if attention_layers and not segmented:
+        raise ValueError('--attention-layers requires the physical64/valid19 segmented capture')
     transforms = {MODELING: lambda text: stage_model(text, single_token=not segmented),
                   WRAPPER: lambda text: stage_wrapper(text, segmented=segmented),
                   EXPORTER: stage_exporter, 'utils.py': stage_utils, NZ: None}
@@ -101,7 +103,7 @@ def prepare(source, config, fixture, output, repo):
             (job / name).write_text(staged)
         if segmented:
             from .segment_export import prepare_segment
-            prepare_segment(fixture, manifest, job)
+            prepare_segment(fixture, manifest, job, attention_layers=attention_layers)
         else:
             prepare_inputs(fixture, job)
         (job / 'config.yaml').write_text(yaml.safe_dump(cfg, allow_unicode=True))

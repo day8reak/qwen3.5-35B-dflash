@@ -16,7 +16,7 @@ def validate_gdr_inputs(chunk_size, *operands):
 
 
 @contextmanager
-def cpro_export_contracts(enabled, chunk_size=1):
+def cpro_export_contracts(enabled, chunk_size=1, *, gdn_layers=3):
     if not enabled:
         yield
         return
@@ -28,10 +28,10 @@ def cpro_export_contracts(enabled, chunk_size=1):
     active = _GDR_WIDTH.set(chunk_size)
     try:
         with qlinear_ge_scales(True, expected_calls=None) as projections:
-            with gdn_state_contract(True, state_dtype='float16', expected_calls=3 * (64 // chunk_size),
+            with gdn_state_contract(gdn_layers > 0, state_dtype='float16', expected_calls=gdn_layers * (64 // chunk_size),
                                     sequence_rows=chunk_size) as gdr:
                 yield
-        print('CPro GE adapter calls:', {'qlinear': projections['calls'], 'gdn': gdr['calls']})
+        print('CPro GE adapter calls:', {'qlinear': projections['calls'], 'gdn': gdr['calls'] if gdr else 0})
     finally:
         _GDR_WIDTH.reset(active)
 

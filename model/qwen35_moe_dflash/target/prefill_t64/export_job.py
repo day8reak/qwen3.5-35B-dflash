@@ -90,6 +90,10 @@ def _export_air(job):
             embedded = wrapper.model.model.embed_tokens(data['input_ids']).to(torch.float16)
             if not torch.equal(embedded.view(torch.int16), data['embedding'].view(torch.int16)):
                 raise ValueError('CPro token lookup differs from the captured L0 input')
+            if 'attention_modules' in segment:
+                from .module_export import export_modules
+                export_modules(job, segment, layers, exporter)
+                return
 
         def export(path):
             exporter.torchair.dynamo_export(

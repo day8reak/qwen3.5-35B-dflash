@@ -452,6 +452,13 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
             cases[-1]['compiled_state_contract'] = state_contract
             cases[-1]['gdr_mode'] = exported.get('candidate', {}).get('gdr_mode', 'chunk')
             cases[-1]['convstate_mode'] = exported.get('candidate', {}).get('convstate_mode', 'kernel')
+        if case['kind'] == 'segment_module_hidden':
+            from ..prefill_t64.segment_export import MODULE_BASIS
+            if (exported['reference_basis'] != MODULE_BASIS or exported['capture_sha256'] != manifest['capture_sha256']
+                    or [s['semantic_name'] for s in io['outputs']] != ['golden_hidden']
+                    or (exported['physical_rows'], exported['valid_rows'], exported['reference_position']) != (64, 19, 18)):
+                raise ValueError('Unexpected valid19 standalone module reference')
+            cases[-1]['reference_basis'] = MODULE_BASIS
         if case['kind'] == 'segment_prefill':
             from ..prefill_t64.segment_export import OUTPUTS
             if [s['semantic_name'] for s in io['outputs']] != list(OUTPUTS):
@@ -559,7 +566,11 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     if valid_rows is not None:
                         actual = unpack(actual, attention['num_heads'])[:, :, :valid_rows]
                         valid_hashes.append(hashlib.sha256(actual.tobytes()).hexdigest())
-                    if case['kind'] == 'segment_prefill':
+                    if case['kind'] == 'segment_module_hidden':
+                        from ..prefill_t64.segment_export import score_module_hidden
+                        metric = score_module_hidden(actual, golden, atol, rtol)
+                        valid_hashes.append(hashlib.sha256(actual[:, :19].tobytes()).hexdigest())
+                    elif case['kind'] == 'segment_prefill':
                         from ..prefill_t64.segment_export import compare_segment_output
                         metric = compare_segment_output(spec['semantic_name'], actual, golden, cpu_reference, atol, rtol)
                         if 'valid_rows' in metric:

@@ -10,9 +10,25 @@ from .prepare import STATES
 CASE = 'l03_c00_prefill_four_layers_all'
 OUTPUTS = ('logits', *STATES)
 BASIS = 'SEGMENTED_310P_FOUR_LAYER_CAPTURE; WHOLE_PREFIX_CPU_AGREEMENT_UNVERIFIED'
+MODULE_BASIS = 'CPU_CHECKED_310P_SEGMENT_WHOLE_ATTENTION_MODULE_HIDDEN_VALID19'
 
 
-def prepare_segment(fixture, manifest, job):
+def score_module_hidden(actual, golden, atol=None, rtol=None):
+    from ..layer_probe.common import metrics
+    if actual.shape != (1, 64, 2048) or golden.shape != actual.shape:
+        raise ValueError('Standalone prefill module must return physical [1,64,2048] hidden')
+    def score(rows):
+        return metrics(actual[:, rows], golden[:, rows], atol=atol, rtol=rtol)
+    row = score(slice(0, 19))
+    last = row['token_18'] = score(18)
+    row['padding'] = score(slice(19, 64))
+    if not last['passed']:
+        row['passed'] = False
+        row['failed_metrics'] = [*row['failed_metrics'], *('token_18_' + k for k in last['failed_metrics'])]
+    return row
+
+
+def prepare_segment(fixture, manifest, job, *, attention_layers=False):
     gdr = dict(physical_q_rows=64, effective_length=[19], length_dtype='torch.int16', chunk_size=64)
     if (manifest['status'] != 'CAPTURED' or manifest['layers'] != [0, 1, 2, 3]
             or (manifest['physical_rows'], manifest['valid_rows'], manifest['output_pos']) != (64, 19, 18)
@@ -70,6 +86,10 @@ def prepare_segment(fixture, manifest, job):
         store(name, value.astype('<f2'))
 
     save_json(job / 'inputs.json', prepared)
+    if attention_layers:
+        from .module_export import prepare_modules
+        prepare_modules(fixture, manifest, job)
+        return
     goldens = []
     (job / 'reference').mkdir()
     for name in OUTPUTS:

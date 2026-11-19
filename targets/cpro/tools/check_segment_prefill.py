@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / 'model'))
 
 
-def capture(root, entry, config, prior):
+def capture(root, entry, config, prior, attention_layers=False):
     from qwen35_moe_dflash.target.layer_probe.common import save_json
     from qwen35_moe_dflash.target.prefill_t64.segment_prefix import arm_prefix
 
@@ -24,7 +24,7 @@ def capture(root, entry, config, prior):
             if (event == 'call' and frame.f_code.co_filename == str(entry)
                     and frame.f_code.co_name == 'prefill_chunk_segment1'):
                 sys.setprofile(previous)
-                manifest = arm_prefix(frame, root, cleanup)
+                manifest = arm_prefix(frame, root, cleanup, attention_layers=attention_layers)
                 from trace_segment_attention import observe_l1_gdr_length
                 observe_l1_gdr_length(frame.f_locals['model_wrapper'], manifest, cleanup)
 
@@ -69,13 +69,20 @@ def main():
     offline.add_argument('--compare-cpu', type=Path, metavar='CAPTURE', help='reuse a completed capture for CPU comparison')
     p.add_argument('--gdr-capture', type=Path, help='match the exact token IDs to the previously qualified GDR case')
     p.add_argument('--capture-only', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--attention-layers', action='store_true',
+                   help='capture standalone attention-module inputs/hidden and compare 310P with fixed-input CPU math')
     a = p.parse_args()
     from qwen35_moe_dflash.target.layer_probe.common import new_output
     if a.compare_cpu or a.diagnose_cpu:
         if a.source_root or a.capture_only or a.gdr_capture:
             p.error('CPU replay takes its source from the capture')
         from qwen35_moe_dflash.target.prefill_t64.segment_prefix_cpu import compare, diagnose
-        if a.diagnose_cpu:
+        if a.attention_layers and a.compare_cpu:
+            from qwen35_moe_dflash.target.prefill_t64.segment_modules import compare_cpu
+            result = compare_cpu(a.compare_cpu.resolve(strict=True), new_output(a.output))
+        elif a.diagnose_cpu:
+            if a.attention_layers:
+                p.error('--attention-layers uses --compare-cpu to check saved module outputs')
             result = diagnose(a.diagnose_cpu.resolve(strict=True), new_output(a.output))
         else:
             result = compare(a.compare_cpu.resolve(strict=True), new_output(a.output))
@@ -87,7 +94,7 @@ def main():
     config = (entry.parent / a.config).resolve(strict=True)
     prior = a.gdr_capture.resolve(strict=True) if a.gdr_capture else None
     if a.capture_only:
-        capture(new_output(a.output), entry, config, prior)
+        capture(new_output(a.output), entry, config, prior, a.attention_layers)
         return 0
     # Release both segmented NPU models before loading the independent CPU prefix.
     out = a.output.resolve()
@@ -96,8 +103,13 @@ def main():
                '--output', str(out), '--capture-only']
     if prior:
         command.extend(['--gdr-capture', str(prior)])
+    if a.attention_layers:
+        command.append('--attention-layers')
     subprocess.run(command, cwd=entry.parent, check=True)
-    return subprocess.run([sys.executable, script, '--compare-cpu', str(out), '--output', str(out / 'cpu')]).returncode
+    cpu_command = [sys.executable, script, '--compare-cpu', str(out)]
+    if a.attention_layers:
+        cpu_command.append('--attention-layers')
+    return subprocess.run([*cpu_command, '--output', str(out / ('module-cpu' if a.attention_layers else 'cpu'))]).returncode
 
 
 if __name__ == '__main__':
