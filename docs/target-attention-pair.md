@@ -160,3 +160,25 @@ done
 核对两组 AIR manifest 的 `capture_sha256` 相同。每份 `export.json` 的 `candidate_graph_check` 应分别显示 `gdr_calls=1, chunk_size=64` 和 `gdr_calls=64, chunk_size=1`。逐 token 组的 `step_length_const_edges` 记录供 64 步使用的长度常量，导出时校验其 INT16 值为 1。若已有旧版 AIR 在 `OnesLike` 推形处失败，仅需重新导出和编译逐 token 组，使用新的输出路径。沿用第 2 节的 DDK 编译命令，将循环组名改为 `chunk single-token`。执行第 3 节时分别设置 `GROUP=chunk` 和 `GROUP=single-token`，各自回收 3 层、9 项输出。
 
 逐层对比两组板端输出。先确认重复稳定的 `golden_new_conv_state` 对应实际输出哈希在 A/B 间一致，再看 hidden 和 recurrent state 的变化，以及各自对同一捕获的误差。两组都偏离 310P 时，还需结合 CPU 与 310P 的投影对照。仅切换 GDR 无法证明其它模块全部正确。
+
+## 四层 T64 Prefill 导出
+
+在 AIR 服务器使用同一次 T64 捕获和本地 CPro 源码。L0–L2 各执行 64 次单 token GDR，这三层的输入投影、卷积和输出投影仍一次处理 64 个 token，L3 使用 full attention。四层之后取最后一个位置的 logits，同时输出八个状态张量。
+
+```bash
+conda activate qwen3_5_cpro
+T64_FIXTURE="$AI_RUN_DIR/target/tests/prefill-fixture-t64"
+JOB="$AI_RUN_DIR/target/tests/cpro-prefill-t64"
+python "$REPO_DIR/targets/cpro/tools/prepare_cpro_prefill_t64.py" \
+  --source-root "$CPRO_SOURCE" --config "$TARGET_CONFIG" \
+  --fixture "$T64_FIXTURE" --output "$JOB" --export
+```
+
+导出文件为 `$JOB/air/export.air`。在 310P 上使用同一份 fixture 生成四层参考输出。脚本核对原推理的 L3 attention 输入，再将独立 attention 数学结果接回原模块并运行到 LM head。
+
+```bash
+conda activate qwen3_5_w4
+python "$JOB/reference_t64.py" --repo "$REPO_DIR" \
+  --source-root "$TARGET_SOURCE" --config "$TARGET_CONFIG" \
+  --fixture "$T64_FIXTURE" --device npu:0 --output "$JOB/reference"
+```

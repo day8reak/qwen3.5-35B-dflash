@@ -259,7 +259,10 @@ def qlinear_ge_scales(enabled, expected_calls=1):
         if getter(op) is not adapted:
             raise ValueError('selected TorchAir did not select the process-local converter adapter')
         yield evidence
-        if evidence['calls'] != expected_calls:
+        if expected_calls is None:
+            if not evidence['calls']:
+                raise ValueError('candidate requires at least one adapted quant_matmul conversion')
+        elif evidence['calls'] != expected_calls:
             raise ValueError(f'candidate requires {expected_calls} adapted quant_matmul conversions')
     finally:
         if existed:
