@@ -134,6 +134,17 @@ class Region(torch.nn.Module):
             if k == 'gates':
                 args = (x['a'], x['b'])
             elif k == 'gdn':
+                if hasattr(self, 'gdr_valid_rows'):
+                    q, key, v, g, beta = (x[name] for name in ('query', 'key', 'value', 'g', 'beta'))
+                    state = x['initial_state'].to(torch.float16)
+                    if self.single_step:
+                        from .whole_gdn import single_token_gdr
+                        valid_inputs = (t[:, :self.gdr_valid_rows] for t in (q, key, v, g, beta))
+                        core, state = single_token_gdr(*valid_inputs, a['chunk_size'], state, self.step_length,
+                            a['output_final_state'], a['use_qk_l2norm_in_kernel'])
+                    else:
+                        core, state = self.source_forward(self, q, key, v, g, beta, state, x['effective_length'], q.shape[1])
+                    return core[:, :self.gdr_valid_rows] if self.output_index == 0 else state.to(torch.float16)
                 args = tuple(x[n] for n in ('query', 'key', 'value', 'g', 'beta', 'initial_state', 'effective_length')) + (x['query'].shape[1],)
             elif k == 'convstate':
                 args = (x['mixed_qkv'], x['old_conv_state'], x['linear_update_tensor'])
@@ -306,6 +317,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             raise ValueError('region must identify one captured invocation')
         record = matches[0]
         whole_gdn = record['kind'] == 'gdn_layer'
+        segment_gdr = record['kind'] == 'gdn' and 'gdr_valid_rows' in record
         whole_attention = record['kind'] == 'full_attention_layer'
         if full_attention_reference != 'math-replay' and not whole_attention:
             raise ValueError('--full-attention-reference requires full_attention_layer')
@@ -316,9 +328,9 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             raise ValueError('--gdr-inputs requires --gdn-trace-layer and --gdn-state-dtype float16')
         if trace_tail and (not whole_gdn or record['layer'] != gdn_trace_layer or not single_token):
             raise ValueError('--gdn-trace-layer requires the selected single-token GDN Prefill layer')
-        if single_token and (not whole_gdn or record['phase'] != 'prefill'):
-            raise ValueError('--gdr-mode single-token requires a whole Prefill gdn_layer')
-        gdr_calls = record['sequence_length'] if single_token else 1
+        if single_token and (not (whole_gdn or segment_gdr) or record['phase'] != 'prefill'):
+            raise ValueError('--gdr-mode single-token requires a whole Prefill GDN or qualified segmented GDR')
+        gdr_calls = record.get('gdr_valid_rows', record['sequence_length']) if single_token else 1
         if gdn_convstate != 'kernel' and not whole_gdn:
             raise ValueError('--gdn-convstate reference requires a whole gdn_layer region')
         if whole_gdn:
@@ -346,7 +358,13 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         inputs = [torch.from_numpy(read_array(capture, spec).copy()) for spec in record['inputs']]
         input_paths = [checked(capture, spec) for spec in record['inputs']]
         fixture_specs = record['inputs']
-        if single_token:
+        if segment_gdr:
+            from ..prefill_t64.segment_gdr import verify_capture
+            if gdn_state_dtype not in ('source', 'float16'):
+                raise ValueError('segmented GDR replay requires the FP16 CPro state path')
+            verify_capture(capture, manifest, record, inputs)
+            gdn_state_dtype = 'float16'
+        elif single_token:
             lengths = inputs[4]
             if (inputs[0].shape[:2] != (1, gdr_calls) or gdr_calls < 2 or lengths.shape != (1,)
                     or lengths.dtype != torch.int16 or lengths.item() != gdr_calls):
@@ -406,6 +424,13 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         else:
             model = Region(record, weights, target, torch_npu, output_index, factory)
             result['source_contract'] = bind_region(model, target, record)
+            if segment_gdr:
+                model.gdr_valid_rows, model.single_step = record['gdr_valid_rows'], single_token
+                if single_token:
+                    model.register_buffer('step_length', torch.tensor([1], dtype=torch.int16))
+                result['candidate'] = dict(kind='SEGMENT_GDR_FP16_STATE', physical_rows=64, valid_rows=model.gdr_valid_rows,
+                    gdr_mode=gdr_mode, gdr_calls=gdr_calls, state_dtype=gdn_state_dtype)
+                result['reference_basis'] = 'CPU_CHECKED_310P_SEGMENT_GDR_VALID19'
         result['source_contract']['weight_scope'] = result['target_weights']['status']
         result['qlinear_resolution'] = factory_evidence
         result['exported_weights'] = {name: tensor_metadata(value) for name, value in weights.items()}
@@ -440,7 +465,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             os.chdir(root)
             with (torch.no_grad(), export_input_identity(inputs) as input_identity,
                   qlinear_ge_scales(qlinear_fp16 or whole, expected_calls=5 if whole_gdn else 4 if whole_attention else 1) as ge_adapter,
-                  gdn_state_contract(whole_gdn, gdn_state_dtype, gdr_calls) as gdn_adapter,
+                  gdn_state_contract(whole_gdn or segment_gdr, gdn_state_dtype, gdr_calls) as gdn_adapter,
                   cache_ge_integer_mul(cache_mode == 'integer', record['attrs'].get('block_size')) as cache_adapter):
                 if ge_adapter is not None:
                     result['candidate']['ge_adapter'] = ge_adapter
@@ -461,6 +486,11 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
                 result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'], gdn_state_dtype,
                     gdn_convstate, expected_calls=gdr_calls, export_root=root,
                     readouts=record['outputs'][3:] if trace_tail else ())
+            elif segment_gdr:
+                from .module_contracts import check_gdr_nodes
+                nodes = check_gdr_nodes(graph, schema, record['phase'], gdn_state_dtype, gdr_calls, root)
+                result['candidate_graph_check'] = dict(status='PASSED', **nodes)
+                result['output_contract'] = dict(required_dtypes={0: 'float16'})
             elif rope_fp32:
                 from .rope import check_graph as check_rope_graph
                 result['candidate_graph_check'] = check_rope_graph(graph, schema, golden['dtype'])
@@ -481,6 +511,14 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             shutil.copyfile(checked(capture, golden), path)
             copied_goldens.append(dict(golden, **identity(path, root)))
         bindings = source_bindings(graph, specs, input_identity['nodes'], len(copied_goldens))
+        if segment_gdr and not single_token:
+            gdr, = [n for n in result['internal_boundaries']['nodes'] if n['type'] == 'ChunkGatedDeltaRule']
+            length_port, = [p for p in gdr['inputs'] if p['port'] == 'effective_length']
+            data, = [b for b in bindings if fixture_specs[b['fixture_index']]['name'] == 'effective_length']
+            source = length_port['producer']['chain'][-1]
+            if source['type'] != 'Data' or source['name'] != data['name'] or source['output_slot'] != 0:
+                raise ValueError('chunk GDR must consume the captured effective_length input')
+            result['candidate_graph_check']['effective_length_data'] = data['name']
         if whole_attention:
             from .whole_attention import check_graph as check_whole_attention
             result['candidate_graph_check'] = check_whole_attention(graph, schema, record, bindings)

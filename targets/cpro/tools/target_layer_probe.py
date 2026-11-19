@@ -35,7 +35,7 @@ def main():
         s.add_argument('--gdn-state-dtype', choices=('source', 'float16', 'float32'), default='source',
                        help='whole gdn_layer: explicit recurrent input/output/writeback dtype; float16 also casts g at the GE operator input; golden unchanged')
         s.add_argument('--gdr-mode', choices=('chunk', 'single-token'), default='chunk',
-                       help='whole Prefill GDN: one original GDR call, or one state-chained S=1 call per token')
+                       help='whole Prefill GDN or CPU-checked segmented GDR: one chunk call or state-chained S=1 calls on valid tokens')
         s.add_argument('--gdn-trace-layer', type=int, metavar='LAYER',
                        help='export only this single-token Prefill GDN layer, also returning core, norm gate and out_proj input')
         s.add_argument('--gdr-inputs', action='store_true',

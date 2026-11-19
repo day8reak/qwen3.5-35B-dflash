@@ -75,8 +75,9 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                and (phases is None or r['phase'] in phases)]
     if not regions:
         raise ValueError('no matching captured regions')
-    if gdr_mode == 'single-token' and any(r['kind'] != 'gdn_layer' or r['phase'] != 'prefill' for r in regions):
-        raise ValueError('--gdr-mode single-token requires whole gdn_layer Prefill cases')
+    if gdr_mode == 'single-token' and any(r['phase'] != 'prefill' or not (
+            r['kind'] == 'gdn_layer' or r['kind'] == 'gdn' and 'gdr_valid_rows' in r) for r in regions):
+        raise ValueError('--gdr-mode single-token requires whole Prefill GDN or qualified segmented GDR cases')
     if full_attention_reference != 'math-replay' and not any(r['kind'] == 'full_attention_layer' for r in regions):
         raise ValueError('--full-attention-reference requires full_attention_layer selection')
     if gdn_convstate != 'kernel' and any(r['kind'] != 'gdn_layer' for r in regions):
@@ -93,6 +94,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
     if any(r['kind'] == 'full_attention_layer' for r in regions) and (
             qlinear_scales != 'fp16' or rope_precision != 'fp32' or not target_config):
         raise ValueError('whole FullAttention requires --qlinear-scales fp16 --rope-precision fp32 --target-config')
+    if all('gdr_valid_rows' in r for r in regions) and gdn_state_dtype == 'source':
+        gdn_state_dtype = 'float16'
     root = new_output(output)
     report = dict(artifact_kind=KIND, status='EXPORTING', cases=[],
         capture_sha256=sha(capture/'manifest.json'), golden_source=source['reference'],
@@ -107,7 +110,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
         reference='ORIGINAL_CAPTURE_UNCHANGED')
     if any(r['kind'] == 'full_attention_layer' for r in regions):
         report['candidate_options']['full_attention_reference'] = full_attention_reference
-    if any(r['kind'] == 'gdn_layer' for r in regions):
+    if any(r['kind'] == 'gdn_layer' or 'gdr_valid_rows' in r for r in regions):
         report['candidate_options']['gdr_mode'] = gdr_mode
     if gdn_trace_layer is not None:
         report['candidate_options']['gdn_trace_layer'] = gdn_trace_layer
@@ -172,7 +175,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
                     raise ValueError('export receipt differs from captured golden')
                 if receipt.get('source_contract', {}).get('status') != 'BOUND_TO_SOURCE':
                     raise ValueError('export worker did not bind this region to original Target source')
-                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or region['kind'] in ('gdn_layer', 'full_attention_layer') or mode != 'kernel'
+                if ((region['kind'] == 'qlinear' and qlinear_scales == 'fp16') or region['kind'] in ('gdn_layer', 'full_attention_layer') or 'gdr_valid_rows' in region or mode != 'kernel'
                         or (region['kind'] == 'rope' and rope_precision == 'fp32')):
                     if not receipt.get('candidate') or receipt.get('candidate_graph_check', {}).get('status') != 'PASSED':
                         raise ValueError('candidate export is missing its source AIR checks')
@@ -394,6 +397,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None):
             cases[-1]['convstate_mode'] = exported.get('candidate', {}).get('convstate_mode', 'kernel')
         if 'attention_contract' in exported:
             cases[-1]['attention_contract'] = exported['attention_contract']
+        if case['kind'] == 'gdn' and 'reference_basis' in exported:
+            cases[-1].update(reference_basis=exported['reference_basis'], gdr_mode=exported['candidate']['gdr_mode'])
         if case['kind'] == 'full_attention_layer':
             from .whole_attention import reference_scope
             captured = exported.get('captured_goldens', [])

@@ -101,11 +101,9 @@ def gdn_state_contract(enabled, state_dtype='float32', expected_calls=1):
         evidence['restored'] = getter(op) is original
 
 
-def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode='kernel', expected_calls=1,
-                     export_root=None, readouts=()):
+def check_gdr_nodes(graph, schema, phase, state_dtype, expected_calls, export_root):
     from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype, port_names, _data_edges
     from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
-    from .candidates import check_graph
     enums = schema.enums[schema.package + '.DataType']
     nodes = graph['op']
     selected = [n for n in nodes if n['type'] == 'ChunkGatedDeltaRule']
@@ -178,6 +176,17 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
             visited.add(name)
         if len(visited) != expected_calls or state_parents[name].rsplit(':', 1)[0] in state_parents:
             raise ValueError('single-token GDR nodes must form one chain through recurrent state output 1')
+    return dict(checked_inputs=expected, chunk_size=expected_chunk, gdr_calls=expected_calls,
+                **({'step_length_const_edges': sorted(step_lengths)} if step_lengths else {}))
+
+
+def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode='kernel', expected_calls=1,
+                     export_root=None, readouts=()):
+    from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype
+    from .candidates import check_graph
+    gdr = check_gdr_nodes(graph, schema, phase, state_dtype, expected_calls, export_root)
+    enums = schema.enums[schema.package + '.DataType']
+    nodes = graph['op']
     nets = [n for n in nodes if n['type'] == 'NetOutput']
     if (len(nets) != 1 or len(nets[0].get('input_desc', [])) != 3 + len(readouts)
             or _dtype(descriptor(nets[0]['input_desc'][2], enums)) != state_dtype):
@@ -200,9 +209,7 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
     for p in projections:
         check_graph(dict(op=[n for n in nodes if n['type'] != 'QuantBatchMatmulV4444' or n is p]), schema, True)
     return dict(status='PASSED', initial_state=state_dtype, last_recurrent_state=state_dtype,
-                checked_inputs=expected, writeback=state_dtype,
-                quantized_projections=5, chunk_size=expected_chunk, gdr_calls=expected_calls,
-                **({'step_length_const_edges': sorted(step_lengths)} if step_lengths else {}),
+                writeback=state_dtype, quantized_projections=5, **gdr,
                 convstate=convstate, scope='SOURCE_AIR_ONLY')
 
 

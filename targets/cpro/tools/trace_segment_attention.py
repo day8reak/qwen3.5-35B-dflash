@@ -168,7 +168,7 @@ def save_valid19(output, snapshot, reference, report):
     return str(capture.root / 'manifest.json')
 
 
-def observe_l1_gdr_length(wrapper, report, cleanup):
+def observe_l1_gdr_length(wrapper, report, cleanup, snapshot=None):
     """Read the actual length argument inside the first L1 prefill forward."""
     import torch
     import torch_npu as npu
@@ -187,18 +187,34 @@ def observe_l1_gdr_length(wrapper, report, cleanup):
             return
         @wraps(original)
         def observed(*args, **kwargs):
-            if not torch.compiler.is_compiling():
-                entry = {}
+            if torch.compiler.is_compiling():
+                return original(*args, **kwargs)
+            entry = {}
+            result['calls'].append(entry)
+            try:
+                query = args[0] if args else kwargs['query']
+                length = kwargs['effective_length']
+                entry.update(physical_q_rows=int(query.shape[1]), effective_length=length.detach().cpu().tolist(),
+                             length_dtype=str(length.dtype), chunk_size=kwargs.get('chunk_size'))
+                result['status'] = 'OBSERVED'
+                if snapshot is not None and len(result['calls']) == 1:
+                    from qwen35_moe_dflash.target.layer_probe.capture import cpu
+                    from qwen35_moe_dflash.target.prefill_t64.segment_gdr import OPERANDS
+                    if query.device.type != 'npu' or len(args) > 5:
+                        raise ValueError('unrecognized GDR device or positional arguments')
+                    values = dict(zip(OPERANDS, args), **kwargs)
+                    snapshot['gdr'] = dict(inputs={n: cpu(values[n]) for n in OPERANDS},
+                        attrs={n: values[n] for n in ('chunk_size', 'output_final_state', 'use_qk_l2norm_in_kernel')},
+                        device=str(query.device), source=inspect.getfile(type(layer)))
+            except Exception as exc:
+                entry['error'] = str(exc)
+            outputs = original(*args, **kwargs)
+            if snapshot is not None and 'gdr' in snapshot and len(result['calls']) == 1:
                 try:
-                    query = args[0] if args else kwargs['query']
-                    length = kwargs['effective_length']
-                    entry.update(physical_q_rows=int(query.shape[1]), effective_length=length.detach().cpu().tolist(),
-                                 length_dtype=str(length.dtype), chunk_size=kwargs.get('chunk_size'))
-                    result['status'] = 'OBSERVED'
-                except (AttributeError, IndexError, KeyError, TypeError) as exc:
+                    snapshot['gdr']['outputs'] = cpu(outputs)
+                except Exception as exc:
                     entry['error'] = str(exc)
-                result['calls'].append(entry)
-            return original(*args, **kwargs)
+            return outputs
         restore = ExitStack()
         cleanup.callback(restore.close)
         npu.npu_chunk_gated_delta_rule = observed
@@ -318,13 +334,21 @@ def main():
     parser.add_argument('--prefill-chunk-size', type=int, choices=(64,),
                         help='run both original Prefill chunk loops at 64 rows for the T64 CPro comparison')
     parser.add_argument('--gdr-length', action='store_true', help='also observe effective_length at the L1 GDR call')
+    parser.add_argument('--gdr-output', type=Path, help='capture and CPU-check the L1 GDR core and state at T64/valid19')
     parser.add_argument('inference_args', nargs=argparse.REMAINDER, help='-- followed by the normal inference arguments')
     args = parser.parse_args()
-    if args.output:
+    if args.gdr_output and args.prefill_chunk_size != 64:
+        parser.error('--gdr-output requires --prefill-chunk-size 64')
+    if args.output or args.gdr_output:
         from qwen35_moe_dflash.common.artifacts import output_path
-        args.output = output_path(args.output)
-        if args.output.exists():
-            parser.error('--output requires a fresh capture directory')
+        args.output = output_path(args.output) if args.output else None
+        args.gdr_output = output_path(args.gdr_output) if args.gdr_output else None
+        for path in (args.output, args.gdr_output):
+            if path and path.exists():
+                parser.error(f'capture directory already exists: {path}')
+        if args.output and args.gdr_output and (
+                args.output.is_relative_to(args.gdr_output) or args.gdr_output.is_relative_to(args.output)):
+            parser.error('L1 and L3 capture directories must be separate')
     entry = (Path.cwd() / 'inference_segment.py').resolve(strict=True)
     forwarded = args.inference_args[1:] if args.inference_args[:1] == ['--'] else args.inference_args
     baseline = None
@@ -352,10 +376,10 @@ def main():
                         ids.numpy().astype('<i4', copy=False).tobytes() == baseline[0].read_bytes())
                 wrapper = frame.f_locals['model_wrapper']
                 report['first_segment_layers'] = getattr(wrapper, 'layer_num', None)
-                if args.gdr_length:
-                    observe_l1_gdr_length(wrapper, report, cleanup)
                 captured = arm(wrapper, baseline, report, cleanup)
                 captured[0]['prompt_ids'] = ids
+                if args.gdr_length or args.gdr_output:
+                    observe_l1_gdr_length(wrapper, report, cleanup, captured[0] if args.gdr_output else None)
             except Exception as exc:
                 report['reason'] = f'{type(exc).__name__}: {exc}'
 
@@ -377,6 +401,12 @@ def main():
         finally:
             if captured is not None:
                 snapshot, wrapper_args = captured
+                if args.gdr_output and completed:
+                    try:
+                        from qwen35_moe_dflash.target.prefill_t64.segment_gdr import save
+                        report['gdr_reference'] = save(args.gdr_output, snapshot, report)
+                    except Exception as exc:
+                        report['gdr_reference'] = dict(status='UNAVAILABLE', error=f'{type(exc).__name__}: {exc}')
                 if report['fused_calls'] == 1 and 'output' in snapshot:
                     try:
                         reference = compare_call(snapshot['inputs'], snapshot['output'], wrapper_args, baseline, report)
@@ -392,7 +422,8 @@ def main():
                 report['reason'] = 'no eager fused call observed at the selected first-segment L3 boundary'
             print('[segment-attention] ' + json.dumps(report, ensure_ascii=False, allow_nan=False), flush=True)
     length_observed = not args.gdr_length or report.get('l1_gdr', {}).get('status') == 'OBSERVED'
-    return 0 if report['status'] == 'PASSED' and length_observed else 1
+    qualified = not args.gdr_output or report.get('gdr_reference', {}).get('status') == 'CPU_CHECKED'
+    return 0 if report['status'] == 'PASSED' and length_observed and qualified else 1
 
 
 if __name__ == '__main__':
