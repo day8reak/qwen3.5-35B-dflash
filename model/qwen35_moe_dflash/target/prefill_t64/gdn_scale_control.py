@@ -102,6 +102,15 @@ def _air_facts(root, case, schema):
     return eps, [producer_type(inputs[n]) for n in ('value', 'initial_state')], weights
 
 
+def _hidden_reference(folder, record):
+    hidden = record['golden']
+    # Early single-output batches store only golden. Later batches also list every output.
+    if hidden['name'] != 'golden_hidden' or record.get('goldens', [hidden]) != [hidden]:
+        raise ValueError('Expected a single golden_hidden export reference')
+    checked(folder, hidden)
+    return {key: hidden[key] for key in ('name', 'shape', 'dtype', 'bytes', 'sha256')}
+
+
 def export_control(baseline, output):
     baseline = Path(baseline).resolve(strict=True)
     output = Path(output).resolve()
@@ -117,10 +126,12 @@ def export_control(baseline, output):
     segment = json.loads((baseline / 'segment.json').read_text())
     case, = [c for c in segment['attention_modules'] if c['id'] == CASE]
     original, = [c for c in manifest['cases'] if c['id'] == CASE and c['status'] == 'EXPORTED']
-    record = json.loads(checked(air, original['export']).read_text())
+    record_path = checked(air, original['export'])
+    record = json.loads(record_path.read_text())
+    baseline_hidden = _hidden_reference(record_path.parent, record)
     if (record['reference_basis'] != MODULE_BASIS or (record['physical_rows'], record['valid_rows']) != (64, 19)
             or record['capture_sha256'] != segment['capture_sha256']
-            or record['golden']['sha256'] != case['golden']['sha256'] or 'gdr_scale_control' in original):
+            or baseline_hidden['sha256'] != case['golden']['sha256'] or 'gdr_scale_control' in original):
         raise ValueError('Expected the original exported L0 physical64/valid19 hidden and its prepared job')
     for spec in record['source_inputs']:
         if spec['sha256'] != case['inputs'][spec['semantic_name']]['sha256']:
@@ -152,12 +163,14 @@ def export_control(baseline, output):
         new_case, = new_manifest['cases']
         if new_case['status'] != 'EXPORTED' or new_case['id'] != CASE or new_case['gdr_scale_control'] != control:
             raise ValueError('Scaled L0 hidden export did not complete')
-        new_record = json.loads(checked(job / 'air', new_case['export']).read_text())
+        new_record_path = checked(job / 'air', new_case['export'])
+        new_record = json.loads(new_record_path.read_text())
+        scaled_hidden = _hidden_reference(new_record_path.parent, new_record)
 
         def bindings(r):
             return {s['semantic_name']: (s['sha256'], s['dtype'], s['shape']) for s in r['source_inputs']}
 
-        if bindings(new_record) != bindings(record) or new_record['goldens'] != record['goldens']:
+        if bindings(new_record) != bindings(record) or scaled_hidden != baseline_hidden:
             raise ValueError('Scaled and baseline exported module fixtures differ')
         if new_record['air']['sha256'] == record['air']['sha256']:
             raise ValueError('Scaled export produced the original AIR bytes')
