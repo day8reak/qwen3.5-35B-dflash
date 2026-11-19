@@ -16,6 +16,19 @@ def export_air(job):
         _export_air(job)
 
 
+def _segment_wrapper(base):
+    class SegmentWrapper(base):
+        def forward(self, *, past_key_values, **kwargs):
+            # L0–L2 copy their new states into these tensors and return them.
+            # Keep those writes inside the graph. L3 already clones its two caches.
+            working_states = [(conv.clone(), recurrent.clone())
+                              for conv, recurrent in past_key_values[:-1]]
+            working_states.append(past_key_values[-1])
+            return super().forward(past_key_values=working_states, **kwargs)
+
+    return SegmentWrapper
+
+
 def _export_air(job):
     import export_glm_model_qwen3_5_moe as exporter
     from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
@@ -36,7 +49,10 @@ def _export_air(job):
 
     segment_path = job / 'segment.json'
     segment = json.loads(segment_path.read_text()) if segment_path.is_file() else None
-    wrapper = exporter.Qwen3_5MoeForCausalLMCproWrapper(
+    wrapper_type = exporter.Qwen3_5MoeForCausalLMCproWrapper
+    if segment:
+        wrapper_type = _segment_wrapper(wrapper_type)
+    wrapper = wrapper_type(
         model_path=config['model_file'], device='cpu', dtype=torch.float16,
         embedding_config={'embedding_in_omc': bool(segment), 'mul_twice': False}, quant_enable=True,
     ).eval()

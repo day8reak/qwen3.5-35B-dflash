@@ -47,44 +47,67 @@ def import_file(path):
     return module
 
 
+def _data_input_positions(inputs, export_graph):
+    """Locate each original GE input by its Data index, before weight conversion."""
+    positions = {}
+    for position, node in enumerate(export_graph.op):
+        if node.type not in ('Data', 'RefData'):
+            continue
+        if 'index' not in node.attr or not node.attr['index'].HasField('i'):
+            raise ValueError(f'{node.type} {node.name} has no integer GE input index')
+        index = node.attr['index'].i
+        if node.type == 'RefData':
+            raise ValueError(f'GE input {index} ({node.name}) is mutable RefData; this probe requires explicit state outputs')
+        if index < 0 or index >= len(inputs) or index in positions:
+            raise ValueError(f'Invalid or duplicate GE input index {index} on Data {node.name}')
+        positions[index] = position
+    if len(positions) != len(inputs):
+        missing = sorted(set(range(len(inputs))) - positions.keys())
+        raise ValueError(f'Export graph has no Data node for input indices {missing}')
+    return positions
+
+
 @contextmanager
 def export_input_identity(example_inputs):
-    """Observe the exporter's real input identities before Data renumbering.
-
-    Hook verified against Ascend/torchair export_utils._convert_data_to_const.
-    The weight-externalization decision and graph remain unchanged.
-    """
+    """Bind fixture tensors and weights to their original GE Data nodes."""
     module = importlib.import_module('torchair._utils.export_utils')
-    original = getattr(module, '_is_weight_externalized', None)
-    if not callable(original) or tuple(inspect.signature(original).parameters) != ('inputs', 'weight_name', 'export_graph'):
+    original = getattr(module, '_convert_data_to_const', None)
+    if not callable(original) or tuple(inspect.signature(original).parameters) != ('inputs', 'export_graph', 'file_path', 'weight_name'):
         raise ValueError('installed TorchAir input-binding hook differs; inspect its export_utils.py')
     by_id = {id(t): i for i, t in enumerate(example_inputs)}
     if len(by_id) != len(example_inputs):
         raise ValueError('replay input objects must have distinct identities')
     evidence = dict(calls=0, nodes={}, policy='ACTUAL_EXPORT_INPUT_OBJECT_IDENTITY', restored=False)
-    def observed(inputs, weight_name, export_graph):
+    def observed(inputs, export_graph, file_path, weight_name):
         evidence['calls'] += 1
         if evidence['calls'] != 1:
             raise ValueError('one region must export as one graph')
+        positions = _data_input_positions(inputs, export_graph)
         for i, value in enumerate(inputs):
             if id(value) in weight_name:
                 continue
             if id(value) not in by_id:
                 raise ValueError(f'exporter supplied unbound runtime input {i}, shape={getattr(value, "shape", None)}, dtype={getattr(value, "dtype", None)}; no shape/value guessing permitted')
-            if i >= len(export_graph.op) or export_graph.op[i].type != 'Data':
-                raise ValueError('export input is not its original Data node')
-            name = export_graph.op[i].name
+            name = export_graph.op[positions[i]].name
             if name in evidence['nodes']:
                 raise ValueError('duplicate source Data name')
             evidence['nodes'][name] = by_id[id(value)]
-        return original(inputs, weight_name, export_graph)
-    module._is_weight_externalized = observed
+        # TorchAir converts each named weight in place at op[i]. Keep graph order
+        # intact even when GE interleaves Data and computation nodes. Empty
+        # positions have no weight identity and the converter skips them.
+        if any(positions[i] != i for i, value in enumerate(inputs) if id(value) in weight_name):
+            aligned = [None] * (max(positions.values()) + 1)
+            for i, position in positions.items():
+                aligned[position] = inputs[i]
+            inputs = aligned
+        return original(inputs, export_graph, file_path, weight_name)
+    module._convert_data_to_const = observed
     try:
         yield evidence
         if evidence['calls'] != 1 or not evidence['nodes']:
             raise ValueError('TorchAir did not expose one identity-bound region graph')
     finally:
-        module._is_weight_externalized = original
+        module._convert_data_to_const = original
         evidence['restored'] = True
 
 
