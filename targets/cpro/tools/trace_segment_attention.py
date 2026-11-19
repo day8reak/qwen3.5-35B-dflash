@@ -4,6 +4,7 @@ import argparse
 from contextlib import ExitStack
 from functools import wraps
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import runpy
@@ -92,6 +93,38 @@ def compare_call(args, packed, wrapper, baseline, report):
     report['zero_head_query_rows_with_nonzero_reference'] = int(
         ((actual == 0).all(-1) & (ref['output'] != 0).any(-1)).sum())
     report['status'] = 'PASSED' if diff['passed'] else 'FAILED'
+    return ref['output']
+
+
+def save_valid19(output, snapshot, reference, report):
+    import torch
+    from qwen35_moe_dflash.target.layer_probe.capture import Capture
+
+    args = snapshot['inputs']
+    ids = snapshot['wrapper_ids']
+    if (report['status'] != 'PASSED' or not report['last_valid_query_vs_cpu']['passed']
+            or report['fused_calls'] != 1 or report['segment_entry'] != 'prefill_chunk_segment1'
+            or (report['physical_query_rows'], report['valid_query_rows']) != (32, 19)
+            or single_int(args['actual_seq_lengths_q']) != 32
+            or list(ids.shape) != [1, 32] or list(snapshot['prompt_ids'].shape) != [1, 19]
+            or not torch.equal(snapshot['prompt_ids'], ids[:, :19])):
+        raise ValueError('requires the CPU-checked first segmented Prefill with 19 prompt tokens and 32 physical rows')
+
+    capture = Capture(output, layers=[3], calls=1)
+    for path in (report['entry'], *report['module_sources']):
+        capture.source(path)
+    capture.active = dict(layer=3, call=0, seq_len=32, execution_device=report['live_arguments']['query']['device'])
+    inputs = {name: args[name] for name in ('query', 'atten_mask', 'block_table')}
+    inputs.update(key=args['key'][0], value=args['value'][0],
+                  all_seq_lengths_q=torch.as_tensor(args['all_seq_lengths_q'], dtype=torch.int64))
+    attrs = {k: v for k, v in args.items() if k not in inputs}
+    capture.emit('fused_attention', 'attention', inputs, {'attention_nz': snapshot['output']}, attrs=attrs)
+    capture.report['regions'][0]['audited_valid_query_rows'] = 19
+    capture.report.update(status='CAPTURED', scope='L3_FUSED_ATTENTION_FIRST_CHUNK_VALID_ROWS_ONLY',
+        segment_audit=dict(report), wrapper_ids=capture.tensor(capture.root, 'wrapper_ids', ids),
+        cpu_valid_bnsd=capture.tensor(capture.root, 'cpu_valid_bnsd', torch.from_numpy(reference)))
+    capture.flush()
+    return str(capture.root / 'manifest.json')
 
 
 def arm(wrapper, baseline, report, cleanup):
@@ -105,6 +138,7 @@ def arm(wrapper, baseline, report, cleanup):
         raise ValueError('could not identify one layers.3.self_attn in the first segment')
     name, attn = candidates[0]
     report.update(module=name, module_class=type(attn).__module__ + '.' + type(attn).__qualname__)
+    report['module_sources'] = [inspect.getfile(type(m)) for m in (wrapper, attn)]
     wrapper_args = {}
     snapshot = {}
 
@@ -121,7 +155,8 @@ def arm(wrapper, baseline, report, cleanup):
             report['wrapper_arguments'] = wrapper_args
             ids = values.get('input_ids')
             if torch.is_tensor(ids):
-                tokens = cpu(ids).numpy().astype('<i4', copy=False).tobytes()
+                snapshot['wrapper_ids'] = cpu(ids)
+                tokens = snapshot['wrapper_ids'].numpy().astype('<i4', copy=False).tobytes()
                 report['input_ids_shape'] = list(ids.shape)
                 report['input_ids_i32_sha256'] = hashlib.sha256(tokens).hexdigest()
                 if baseline is not None:
@@ -189,8 +224,14 @@ def arm(wrapper, baseline, report, cleanup):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fixture', type=Path, help='previous four-layer fixture for byte comparisons')
+    parser.add_argument('--output', type=Path, help='save the CPU-checked 19-valid/32-physical L3 core for CPro replay')
     parser.add_argument('inference_args', nargs=argparse.REMAINDER, help='-- followed by the normal inference arguments')
     args = parser.parse_args()
+    if args.output:
+        from qwen35_moe_dflash.common.artifacts import output_path
+        args.output = output_path(args.output)
+        if args.output.exists():
+            parser.error('--output requires a fresh capture directory')
     entry = (Path.cwd() / 'inference_segment.py').resolve(strict=True)
     forwarded = args.inference_args[1:] if args.inference_args[:1] == ['--'] else args.inference_args
     baseline = None
@@ -217,6 +258,7 @@ def main():
                 wrapper = frame.f_locals['model_wrapper']
                 report['first_segment_layers'] = getattr(wrapper, 'layer_num', None)
                 captured = arm(wrapper, baseline, report, cleanup)
+                captured[0]['prompt_ids'] = ids
             except Exception as exc:
                 report['reason'] = f'{type(exc).__name__}: {exc}'
 
@@ -224,17 +266,22 @@ def main():
         sys.setprofile(on_entry)
         sys.argv = [str(entry), *forwarded]
         sys.path.insert(0, str(entry.parent))
+        completed = False
         try:
             runpy.run_path(str(entry), run_name='__main__')
+            completed = True
         except SystemExit as exc:
             if exc.code not in (None, 0):
                 raise
+            completed = True
         finally:
             if captured is not None:
                 snapshot, wrapper_args = captured
                 if report['fused_calls'] == 1 and 'output' in snapshot:
                     try:
-                        compare_call(snapshot['inputs'], snapshot['output'], wrapper_args, baseline, report)
+                        reference = compare_call(snapshot['inputs'], snapshot['output'], wrapper_args, baseline, report)
+                        if args.output and completed and report['status'] == 'PASSED':
+                            report['capture'] = save_valid19(args.output, snapshot, reference, report)
                     except Exception as exc:
                         report.update(status='UNAVAILABLE', reason=f'{type(exc).__name__}: {exc}')
                 elif report['fused_calls']:

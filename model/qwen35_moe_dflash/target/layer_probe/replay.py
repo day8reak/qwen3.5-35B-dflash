@@ -486,7 +486,23 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
                 result['captured_goldens'].append(dict(spec, **identity(path, root)))
         if record['kind'] == 'attention':
             from .module_contracts import attention_contract
-            result['attention_contract'] = attention_contract(record, inputs, graph, schema, bindings)
+            contract = attention_contract(record, inputs, graph, schema, bindings)
+            result['attention_contract'] = contract
+            if 'audited_valid_query_rows' in record:
+                from .attention_reference import unpack
+                from .common import metrics
+                valid = record['audited_valid_query_rows']
+                if (not 0 < valid <= contract['physical_query_length'] or contract['all_seq_lengths_q'] != [valid]
+                        or golden['shape'] != contract['query_shape'] or golden['dtype'] != 'float16'):
+                    raise ValueError('valid-row golden does not match the exported attention ABI')
+                heads = record['attrs']['num_heads']
+                actual = unpack(read_array(capture, golden), heads)[:, :, :valid]
+                cpu_reference = read_array(capture, manifest['cpu_valid_bnsd'])
+                if not (metrics(actual, cpu_reference)['passed']
+                        and metrics(actual[:, :, -1], cpu_reference[:, :, -1])['passed']):
+                    raise ValueError('saved 310P attention output failed its same-call CPU check')
+                contract.update(audited_valid_query_rows=valid, num_heads=heads)
+                result['output_contract'] = dict(required_dtypes={0: golden['dtype']})
         if whole:
             result['goldens'] = copied_goldens
             result['output_contract'] = dict(order=[s['name'] for s in copied_goldens],

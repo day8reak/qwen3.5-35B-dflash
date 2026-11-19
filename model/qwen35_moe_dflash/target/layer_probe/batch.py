@@ -444,13 +444,31 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                 captured_golden = None
                 if case['kind'] == 'full_attention_layer':
                     captured_golden = read_array(fixture, case['captured_goldens'][spec['index']])
+                attention = case.get('attention_contract', {})
+                valid_rows = attention.get('audited_valid_query_rows')
+                if valid_rows is not None:
+                    from .attention_reference import unpack
+                    if (case['kind'] != 'attention' or spec['shape'] != attention['query_shape']
+                            or spec['dtype'] != spec['golden_dtype'] or not 0 < valid_rows <= golden.shape[2]
+                            or attention['all_seq_lengths_q'] != [valid_rows]):
+                        raise ValueError('invalid active query range or output ABI for the audited attention golden')
+                    golden = unpack(golden, attention['num_heads'])[:, :, :valid_rows]
+                    output_row.update(reference_basis='CPU_CHECKED_310P_SEGMENT_ATTENTION_VALID_ROWS',
+                                      valid_query_rows=valid_rows, physical_query_rows=spec['shape'][2])
                 tensors, hashes = [], []
+                valid_hashes = []
                 for index in range(meta['repetitions']):
                     path = folder/f'{index}.bin'
                     if path.stat().st_size != total_bytes:
                         raise ValueError('runtime output byte extent differs from compiled ABI')
                     actual = np.fromfile(path, dtype=DTYPES[spec['dtype']], count=math.prod(spec['shape']), offset=offset).reshape(spec['shape'])
+                    hashes.append(hashlib.sha256(actual.tobytes()).hexdigest())
+                    if valid_rows is not None:
+                        actual = unpack(actual, attention['num_heads'])[:, :, :valid_rows]
+                        valid_hashes.append(hashlib.sha256(actual.tobytes()).hexdigest())
                     metric = metrics(actual, golden, atol=atol, rtol=rtol)
+                    if valid_rows is not None:
+                        metric['last_valid_query'] = metrics(actual[:, :, -1], golden[:, :, -1], atol=atol, rtol=rtol)
                     if captured_golden is not None:
                         metric['original_capture_comparison'] = metrics(actual, captured_golden, atol=atol, rtol=rtol)
                         metric['original_capture_role'] = (
@@ -502,8 +520,9 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                         metric.update(mismatched_preserved_elements=int((changed & preserved).sum()),
                                       mismatched_updated_elements=int((changed & ~preserved).sum()))
                     tensors.append(metric)
-                    hashes.append(hashlib.sha256(actual.tobytes()).hexdigest())
-                stable = len(set(hashes)) == 1
+                stable = len(set(valid_hashes or hashes)) == 1
+                if valid_hashes:
+                    output_row.update(valid_output_sha256=valid_hashes, full_output_stable=len(set(hashes)) == 1)
                 finite = all(r['nonfinite_actual'] == r['nonfinite_golden'] == 0 for r in tensors)
                 passed = all(r['passed'] is True for r in tensors)
                 failed = not stable or not finite or any(r['passed'] is False for r in tensors)
