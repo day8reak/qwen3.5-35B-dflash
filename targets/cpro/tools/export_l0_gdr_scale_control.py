@@ -12,5 +12,7 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--baseline', type=Path, required=True, help='prepared attention-layers-t64-valid19 job')
     p.add_argument('--output', type=Path, required=True)
+    p.add_argument('--readout-scale', type=int, choices=(1, 16),
+                   help='apply this factor to normalized Q only, keeping V and state at their original scale')
     args = p.parse_args()
-    print(json.dumps(export_control(args.baseline, args.output)), flush=True)
+    print(json.dumps(export_control(args.baseline, args.output, readout_scale=args.readout_scale)), flush=True)
