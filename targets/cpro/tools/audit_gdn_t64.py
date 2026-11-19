@@ -24,11 +24,14 @@ def main():
     parser.add_argument('--capture', required=True, type=Path, help='original T64 fixture/capture directory')
     parser.add_argument('--layer', type=int, choices=(0,1,2), default=1, help='GDN layer, defaults to 1')
     parser.add_argument('--group', type=Path, help='optional completed single-token whole-GDN batch')
+    parser.add_argument('--baseline-group', type=Path, help='original three-output group to compare with the traced --group')
     parser.add_argument('--prefill-check', type=Path, help='completed CPU/310P whole-Prefill comparison directory')
     parser.add_argument('--json', action='store_true', help='emit all metrics, links and per-token board errors')
     args = parser.parse_args()
     from qwen35_moe_dflash.target.prefill_t64.audit_gdn import audit
-    report = audit(args.capture, args.layer, args.group)
+    if args.baseline_group and not args.group:
+        parser.error('--baseline-group requires --group')
+    report = audit(args.capture, args.layer, args.group, args.baseline_group)
     if args.prefill_check:
         from qwen35_moe_dflash.target.prefill_t64.gdn_input import audit_input
         report['input_path'] = audit_input(args.capture, args.prefill_check, args.layer)
@@ -47,13 +50,17 @@ def main():
         print_scores(key, gdr[key])
     if args.group:
         print_scores('board_hidden_vs_310p_hidden', report['board']['hidden_vs_captured_out_proj']['whole'])
+    if 'original_outputs_equal_bits' in report:
+        print('Traced vs original board outputs, equal bits:', report['original_outputs_equal_bits'])
     tail = report['tail']
     if tail['status'] == 'CAPTURE_LINK_MISMATCH':
         print('Mismatched capture links:', ', '.join(k for k,v in tail['links'].items() if not v))
         return
     for key in ('norm_fixed_inputs_vs_310p_norm', 'out_proj_fixed_input_vs_310p_hidden',
                 'math_core_cpu_tail_vs_310p_hidden', 'board_hidden_vs_math_core_cpu_tail',
-                'board_hidden_vs_captured_core_cpu_tail'):
+                'board_hidden_vs_captured_core_cpu_tail', 'board_core_vs_310p_core',
+                'board_norm_gate_vs_310p_gate', 'board_out_proj_input_vs_310p',
+                'board_norm_vs_cpu_on_board_core_gate', 'board_hidden_vs_cpu_on_board_proj_input'):
         if key in tail['comparisons']:
             print_scores(key, tail['comparisons'][key])
 

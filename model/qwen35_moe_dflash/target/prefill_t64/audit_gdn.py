@@ -24,7 +24,7 @@ def core_location(actual, reference):
                 error_share_by_16_tokens=(energy.reshape(4,16,-1).sum(axis=(1,2))/total).tolist())
 
 
-def audit(capture, layer=1, group=None):
+def audit(capture, layer=1, group=None, baseline_group=None):
     from qwen35_moe_dflash.target.layer_probe.common import KIND, metrics, read_array, sha
     from .gdr_math import compute
     from .gdn_tail import audit_tail
@@ -77,14 +77,21 @@ def audit(capture, layer=1, group=None):
     report = dict(layer=layer,call=0,tokens=64,capture_sha256=sha(manifest),gdr_comparisons=scores,
                   largest_core_error=core_location(cpu_core,original_core),
                   scope='CAPTURED_OPERANDS; CPU_ORIGINAL_MATH_AND_ROUNDING_CONTROLS')
-    board_hidden = None
+    samples = {}
     if group:
         from .gdn_board import audit_board
         proj = exactly_one((r for r in same_call if r['point']=='linear_attn_out_proj'),'out_proj')
         hidden = tensor(proj,'outputs','golden_y')
-        report['board'], board_hidden = audit_board(
-            group, report['capture_sha256'], layer, hidden, original_state,
-            cpu_state, rounded_state, return_hidden=True)
+        operands = (report['capture_sha256'], layer, hidden, original_state, cpu_state, rounded_state)
+        report['board'], samples = audit_board(group, *operands, return_samples=True)
+        if baseline_group:
+            baseline = audit_board(baseline_group, *operands)
+            board = report['board']
+            if ('core' not in samples or baseline['scope'] != 'WHOLE_LAYER_FINAL_OUTPUTS_ONLY'
+                    or board['input_hashes'] != baseline['input_hashes']):
+                raise ValueError('Expected a traced group and an original three-output group with the same inputs')
+            report['original_outputs_equal_bits'] = {
+                name: board['output_hashes'][name] == digest for name, digest in baseline['output_hashes'].items()}
     report['tail'] = audit_tail(capture, doc['regions'], layer, original_core, cpu_core,
-                                board_hidden=board_hidden)
+                                board_hidden=samples.get('hidden'), board_stages=samples if 'core' in samples else None)
     return report

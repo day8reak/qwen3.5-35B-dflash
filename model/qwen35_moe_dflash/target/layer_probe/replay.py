@@ -279,7 +279,7 @@ def check_adjusted_graph(kind, graph):
 
 def export_one(capture, region_id, output_index, output, source_root, converter_script, torchair_pb2=None, target_config=None,
                *, qlinear_scales='source', cache_indexing='kernel', rope_precision='source', gdn_state_dtype='source',
-               gdn_convstate='kernel', full_attention_reference='math-replay', gdr_mode='chunk'):
+               gdn_convstate='kernel', full_attention_reference='math-replay', gdr_mode='chunk', gdn_trace_layer=None):
     root = new_output(output)
     result = dict(artifact_kind=KIND, status='EXPORTING', region=region_id, output_index=output_index,
         model_scope='ONE_CPRO_REGION_ONE_OUTPUT; NO_FULL_MODEL_OR_LAYER_CONSTRUCTION')
@@ -296,7 +296,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         regions = manifest['regions']
         if region_id.endswith('_gdn_layer'):
             from .whole_gdn import assemble
-            regions = assemble(manifest)
+            regions = assemble(manifest, trace_layer=gdn_trace_layer)
         if region_id.endswith('_full_attention_layer'):
             from .whole_attention import assemble
             regions = assemble(manifest, capture=capture, reference=full_attention_reference)
@@ -310,6 +310,9 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             raise ValueError('--full-attention-reference requires full_attention_layer')
         whole = whole_gdn or whole_attention
         single_token = gdr_mode == 'single-token'
+        trace_tail = gdn_trace_layer is not None
+        if trace_tail and (not whole_gdn or record['layer'] != gdn_trace_layer or not single_token):
+            raise ValueError('--gdn-trace-layer requires the selected single-token GDN Prefill layer')
         if single_token and (not whole_gdn or record['phase'] != 'prefill'):
             raise ValueError('--gdr-mode single-token requires a whole Prefill gdn_layer')
         gdr_calls = record['sequence_length'] if single_token else 1
@@ -319,6 +322,8 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             if output_index is not None or gdn_state_dtype == 'source' or qlinear_scales != 'fp16' or not target_config:
                 raise ValueError('whole GDN requires all outputs, --gdn-state-dtype float16|float32, --qlinear-scales fp16 and --target-config')
             result['model_scope'] = 'ONE_COMPLETE_GATED_DELTANET_LAYER; THREE_OUTPUTS; NO_MOE_OR_DECODER_LAYER'
+            if trace_tail:
+                result['model_scope'] = 'ONE_COMPLETE_GATED_DELTANET_LAYER_WITH_THREE_ADDITIONAL_TAIL_OUTPUTS'
         elif whole_attention:
             if output_index is not None or qlinear_scales != 'fp16' or rope_precision != 'fp32' or not target_config:
                 raise ValueError('whole FullAttention requires all outputs, --qlinear-scales fp16 --rope-precision fp32 and --target-config')
@@ -374,7 +379,7 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
         if whole_gdn:
             from .whole_gdn import build
             model, result['source_contract'] = build(record, capture, target, converters, factory,
-                target_config, source_root, root, gdn_state_dtype, gdn_convstate, gdr_mode)
+                target_config, source_root, root, gdn_state_dtype, gdn_convstate, gdr_mode, trace_tail=trace_tail)
             result['target_weights'] = dict(status='ORIGINAL_CHECKPOINT_BOUND')
             result['candidate'] = dict(kind='WHOLE_GDN_' + ('FP16' if gdn_state_dtype == 'float16' else 'FP32') + '_STATE',
                 state_dtype=gdn_state_dtype, golden_state_dtype='float32', convstate_mode=gdn_convstate,
@@ -448,7 +453,8 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
             if whole_gdn:
                 from .module_contracts import check_gdn_source
                 result['candidate_graph_check'] = check_gdn_source(graph, schema, record['phase'], gdn_state_dtype,
-                                                                   gdn_convstate, expected_calls=gdr_calls, export_root=root)
+                    gdn_convstate, expected_calls=gdr_calls, export_root=root,
+                    readouts=record['outputs'][3:] if trace_tail else ())
             elif rope_fp32:
                 from .rope import check_graph as check_rope_graph
                 result['candidate_graph_check'] = check_rope_graph(graph, schema, golden['dtype'])
@@ -509,6 +515,8 @@ def export_one(capture, region_id, output_index, output, source_root, converter_
                 source_edges=next(n for n in graph['op'] if n['type'] == 'NetOutput')['input'],
                 binding='EXPLICIT_PYTHON_TUPLE_AND_NETOUTPUT_SLOT_ORDER',
                 required_dtypes={2: gdn_state_dtype} if whole_gdn else {i: s['dtype'] for i, s in enumerate(copied_goldens)})
+            if trace_tail:
+                result['output_contract']['required_dtypes'].update({i: s['dtype'] for i, s in enumerate(copied_goldens) if i != 2})
         result.update(status='EXPORTED', air=identity(root/'export.air', root),
             schema={k: metadata[k] for k in ('schema_file', 'schema_package')},
             source_inputs=bindings, golden=copied_goldens[0], export_input_identity=input_identity,

@@ -32,7 +32,8 @@ def _board_hidden_rows(actual, reference):
                 largest_error_energy_token=max(rows, key=lambda r: r['error_l2']))
 
 
-def audit_board(group, capture_hash, layer, captured_hidden, captured_state, cpu_state, rounded_state, *, return_hidden=False):
+def audit_board(group, capture_hash, layer, captured_hidden, captured_state, cpu_state, rounded_state,
+                *, return_hidden=False, return_samples=False):
     """Accept optional whole-GDN group and arrays in their original logical shapes."""
     if group is None:
         return None
@@ -71,9 +72,12 @@ def audit_board(group, capture_hash, layer, captured_hidden, captured_state, cpu
         raise ValueError('Need completed repeated board calls on the same fixtures')
     specs = case['outputs']
     names = ['golden_hidden', 'golden_new_conv_state', 'golden_recurrent_state_fp32']
-    if ([s['index'] for s in specs] != [0, 1, 2] or [s['semantic_name'] for s in specs] != names
+    traced = manifest.get('candidate_options', {}).get('gdn_trace_layer') == layer
+    if traced:
+        names += ['golden_core', 'golden_norm_gate', 'golden_out_proj_input']
+    if ([s['index'] for s in specs] != list(range(len(names))) or [s['semantic_name'] for s in specs] != names
             or any(s['dtype'] != 'float16' for s in specs)
-            or [s['golden_dtype'] for s in specs] != ['float16', 'float16', 'float32']):
+            or [s['golden_dtype'] for s in specs] != ['float16', 'float16', 'float32'] + ['float16']*(len(names)-3)):
         raise ValueError('Unexpected GDN output order or dtype')
     for s in specs:
         n = math.prod(s['shape'])
@@ -90,7 +94,7 @@ def audit_board(group, capture_hash, layer, captured_hidden, captured_state, cpu
     verified = json.loads((group/'comparison/report.json').read_text())
     previous = {r['output_name']: r for r in verified['cases'] if r['case'] == case_name}
     if set(previous) != set(names):
-        raise ValueError('Prior comparison lacks all three GDN outputs')
+        raise ValueError('Prior comparison does not cover the declared GDN outputs')
     for row in previous.values():
         if (not row.get('stable') or len(row['output_sha256']) != reps
                 or len(set(row['output_sha256'])) != 1):
@@ -119,5 +123,12 @@ def audit_board(group, capture_hash, layer, captured_hidden, captured_state, cpu
                 final_state_vs_capture=_board_scores(state, captured_state),
                 final_state_vs_cpu=_board_scores(state, cpu_state),
                 final_state_vs_cpu_rounded=_board_scores(state, rounded_state),
-                scope='WHOLE_LAYER_FINAL_OUTPUTS_ONLY')
+                scope='WHOLE_LAYER_WITH_TAIL_OUTPUTS' if traced else 'WHOLE_LAYER_FINAL_OUTPUTS_ONLY',
+                output_hashes={k: previous[k]['output_sha256'][0] for k in names},
+                input_hashes={s['fixture_index']: s['fixture_sha256'] for s in case['inputs']})
+    if return_samples:
+        samples = dict(hidden=hidden)
+        if traced:
+            samples.update(core=read_sample(3), gate=read_sample(4), proj_input=read_sample(5))
+        return report, samples
     return (report, hidden) if return_hidden else report

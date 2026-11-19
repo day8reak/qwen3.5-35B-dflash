@@ -102,7 +102,7 @@ def gdn_state_contract(enabled, state_dtype='float32', expected_calls=1):
 
 
 def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode='kernel', expected_calls=1,
-                     export_root=None):
+                     export_root=None, readouts=()):
     from qwen35_moe_dflash.target.operator_air_review import descriptor, _dtype, port_names, _data_edges
     from qwen35_moe_dflash.target.original_air_roundtrip import _attributes
     from .candidates import check_graph
@@ -179,9 +179,14 @@ def check_gdn_source(graph, schema, phase, state_dtype='float32', convstate_mode
         if len(visited) != expected_calls or state_parents[name].rsplit(':', 1)[0] in state_parents:
             raise ValueError('single-token GDR nodes must form one chain through recurrent state output 1')
     nets = [n for n in nodes if n['type'] == 'NetOutput']
-    if (len(nets) != 1 or len(nets[0].get('input_desc', [])) != 3
+    if (len(nets) != 1 or len(nets[0].get('input_desc', [])) != 3 + len(readouts)
             or _dtype(descriptor(nets[0]['input_desc'][2], enums)) != state_dtype):
         raise ValueError(f'GDN source operator output and writeback must both be {state_dtype}')
+    for raw, expected_output in zip(nets[0]['input_desc'][3:], readouts):
+        desc = descriptor(raw, enums)
+        if (_dtype(desc) != expected_output['dtype']
+                or (desc['shape_evidence'] == 'SOURCE_DESCRIPTOR_DIMENSIONS' and desc['shape'] != expected_output['shape'])):
+            raise ValueError('GDN diagnostic output differs from captured ' + expected_output['name'])
     projections = [n for n in nodes if n['type'] == 'QuantBatchMatmulV4444']
     if convstate_mode not in ('kernel', 'reference'):
         raise ValueError('unknown ConvState source graph contract')

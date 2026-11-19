@@ -19,10 +19,12 @@ from .source_regions import assignment, call, definition, one
 PROJECTIONS = ('in_proj_qkv', 'in_proj_z', 'in_proj_b', 'in_proj_a', 'out_proj')
 
 
-def assemble(manifest):
+def assemble(manifest, trace_layer=None):
     records = []
     for core in manifest['regions']:
         if core['point'] != 'gdn':
+            continue
+        if trace_layer is not None and (core['layer'] != trace_layer or core['phase'] != 'prefill'):
             continue
         siblings = [r for r in manifest['regions'] if all(r[k] == core[k] for k in ('layer', 'call', 'phase'))]
 
@@ -52,13 +54,25 @@ def assemble(manifest):
         state = tensor(core, 'outputs', 'golden_state_raw', 'golden_recurrent_state_fp32')
         if state['dtype'] != 'float32':
             raise ValueError('whole GDN comparison requires an original FP32 raw-state golden')
+        outputs = [tensor(projections[-1], 'outputs', 'golden_y', 'golden_hidden'),
+                   tensor(conv, 'outputs', 'golden_new_conv_state'), state]
+        if trace_layer is not None:
+            norm = region('linear_attn_norm')
+            readouts = [tensor(core, 'outputs', 'golden_core'),
+                        tensor(norm, 'inputs', 'gate', 'golden_norm_gate'),
+                        tensor(projections[-1], 'inputs', 'x', 'golden_out_proj_input')]
+            linked = [tensor(norm, 'inputs', 'x'), tensor(region('linear_attn_in_proj_z'), 'outputs', 'golden_y'),
+                      tensor(norm, 'outputs', 'golden_y')]
+            for observed, peer in zip(readouts, linked):
+                if observed['dtype'] != 'float16' or any(observed[k] != peer[k] for k in ('bytes', 'dtype', 'sha256')):
+                    raise ValueError('same-call GDN capture link differs at ' + observed['name'])
+            outputs.extend(readouts)
         records.append(dict(core, id=core['id'].removesuffix('_gdn') + '_gdn_layer',
             point='gdn_layer', kind='gdn_layer', attrs=dict(core['attrs']),
             inputs=[hidden, tensor(conv, 'inputs', 'old_conv_state'),
                     tensor(core, 'inputs', 'initial_state'), tensor(conv, 'inputs', 'linear_update_tensor'),
                     tensor(core, 'inputs', 'effective_length')],
-            outputs=[tensor(projections[-1], 'outputs', 'golden_y', 'golden_hidden'),
-                     tensor(conv, 'outputs', 'golden_new_conv_state'), state],
+            outputs=outputs,
             components=dependencies, provenance='SAME_CAPTURE_LAYER_CALL_PHASE; ORIGINAL_EXECUTED_OUTPUTS'))
     if not records:
         raise ValueError('capture has no GDN invocations for whole-layer replay')
@@ -84,7 +98,25 @@ def single_token_gdr(query, key, value, g, beta, chunk_size, initial_state, step
     return torch.cat(blocks, dim=1), state
 
 
-def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel', gdr_mode='chunk'):
+def trace_gdn_tail(tree, gdr):
+    # Keep references to the values at the call sites, before the source
+    # reuses local variable names or reshapes them. Evaluate each operand once.
+    norm = call(tree, 'self.norm')
+    proj = call(tree, 'self.out_proj')
+    if len(norm.args) != 2 or norm.keywords or len(proj.args) != 1 or proj.keywords:
+        raise ValueError('review changed GDN gated norm or out_proj signature')
+    target = one((n for n in ast.walk(tree) if isinstance(n, ast.Assign) and n.value is gdr),
+                 'GDR two-output assignment')
+
+    def retain(name, expr):
+        return ast.copy_location(ast.NamedExpr(ast.Name(name, ast.Store()), expr), expr)
+
+    target.value = retain('_probe_gdr_outputs', gdr)
+    norm.args[1] = retain('_probe_norm_gate', norm.args[1])
+    proj.args[0] = retain('_probe_proj_input', proj.args[0])
+
+
+def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel', gdr_mode='chunk', *, trace_tail=False):
     if state_dtype not in ('float16', 'float32'):
         raise ValueError('whole GDN state must be float16 or float32')
     tree, evidence = definition(owner)
@@ -135,7 +167,11 @@ def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel', gdr_mod
     returns = [n for n in tree.body if isinstance(n, ast.Return)]
     if len(returns) != 1 or ast.unparse(returns[0].value) != '(output, past_key_values)':
         raise ValueError('review changed GDN return interface')
-    returns[0].value = ast.parse('(output, conv_state, recurrent_state)', mode='eval').body
+    result = ast.parse('(output, conv_state, recurrent_state)', mode='eval').body
+    if trace_tail:
+        trace_gdn_tail(tree, op)
+        result.elts.extend(ast.parse('(_probe_gdr_outputs[0], _probe_norm_gate, _probe_proj_input)', mode='eval').body.elts)
+    returns[0].value = result
     module = ast.fix_missing_locations(ast.Module(body=[tree], type_ignores=[]))
     namespace = dict(owner.__globals__)
     exec(compile(module, evidence['file'], 'exec'), namespace)
@@ -148,6 +184,8 @@ def adapt_forward(owner, state_dtype='float32', convstate_mode='kernel', gdr_mod
                     arithmetic_precision='INTERNAL_KERNEL_ACCUMULATION_NOT_ESTABLISHED')
     evidence['convstate_mode'] = convstate_mode
     evidence['gdr_mode'] = gdr_mode
+    if trace_tail:
+        evidence['diagnostic_outputs'] = ['GDR result 0', 'self.norm argument 1', 'self.out_proj argument 0']
     if gdr_mode == 'single-token':
         evidence['adaptations'].append('SINGLE_TOKEN_GDR_WITH_ORDERED_CORE_CONCAT_AND_RECURRENT_FEEDBACK')
     if convstate_mode == 'reference':
@@ -173,7 +211,7 @@ class WholeGDN(torch.nn.Module):
 
 
 def build(record, capture, target, converters, factory, config_path, source_root, root, state_dtype='float32',
-          convstate_mode='kernel', gdr_mode='chunk'):
+          convstate_mode='kernel', gdr_mode='chunk', *, trace_tail=False):
     import yaml
     from .candidates import adapt_qlinear
     from .target_weights import load_weights
@@ -214,7 +252,8 @@ def build(record, capture, target, converters, factory, config_path, source_root
                 setattr(parent, name, torch.nn.Parameter(value, requires_grad=False))
     if any(t.is_meta for t in (*op.parameters(), *op.buffers())):
         raise ValueError('whole GDN has unbound meta weights')
-    forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward, state_dtype, convstate_mode, gdr_mode)
+    forward, source = adapt_forward(target.Qwen3_5MoeGatedDeltaNet.forward, state_dtype, convstate_mode, gdr_mode,
+                                    trace_tail=trace_tail)
     if gdr_mode == 'single-token':
         # B=1, each unrolled call consumes one valid token. Materialize this
         # before tracing so the X90 graph never has to execute OnesLike.
@@ -229,4 +268,6 @@ def build(record, capture, target, converters, factory, config_path, source_root
         weight_scope='ORIGINAL_CHECKPOINT_BOUND', weights=weights,
         qlinear_candidates=quant, golden_state_feedback='CAPTURED_310P_TRAJECTORY',
         cpro_state_feedback='NOT_TESTED')
+    if trace_tail:
+        evidence['output_scope'] = 'WHOLE_LAYER_WITH_GDR_CORE_NORM_GATE_AND_OUT_PROJ_INPUT'
     return model, evidence

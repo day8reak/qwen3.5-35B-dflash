@@ -65,7 +65,7 @@ def _summary(a, b):
                                         'mean_relative_error', 'kl_divergence', 'failed_metrics')}
 
 
-def audit_tail(capture, regions, layer, core_310p, core_math, board_hidden=None):
+def audit_tail(capture, regions, layer, core_310p, core_math, board_hidden=None, board_stages=None):
     """Compare fixed captures at each boundary, then propagate one alternate core to hidden.
 
     core_math is rounded to the recorded core interface before downstream arithmetic.
@@ -138,5 +138,16 @@ def audit_tail(capture, regions, layer, core_310p, core_math, board_hidden=None)
             raise ValueError('Board hidden shape or dtype differs from capture')
         comparison['board_hidden_vs_math_core_cpu_tail'] = _summary(board_hidden, from_math_core)
         comparison['board_hidden_vs_captured_core_cpu_tail'] = _summary(board_hidden, from_captured_core)
+    if board_stages is not None:
+        board_core, board_gate, board_input = (board_stages[n] for n in ('core', 'gate', 'proj_input'))
+        for value, expected in ((board_core, core_310p), (board_gate, gate), (board_input, proj_x)):
+            if value.shape != expected.shape or value.dtype != expected.dtype or not np.isfinite(value).all():
+                raise ValueError('Board tail output differs from the captured shape/dtype or is nonfinite')
+        board_math_norm = _gate_norm(board_core.reshape(x.shape), board_gate, w, eps, x.dtype)
+        comparison['board_core_vs_310p_core'] = _summary(board_core, core_310p)
+        comparison['board_norm_gate_vs_310p_gate'] = _summary(board_gate, gate)
+        comparison['board_out_proj_input_vs_310p'] = _summary(board_input, proj_x)
+        comparison['board_norm_vs_cpu_on_board_core_gate'] = _summary(board_input, board_math_norm.reshape(proj_x.shape))
+        comparison['board_hidden_vs_cpu_on_board_proj_input'] = _summary(board_hidden, project(board_input))
     return dict(report, status='INSPECTED', epsilon=float(eps),
                 quantizer='FP32_ABSMAX_DIV_127_RINT_TO_EVEN', weight='CAPTURED_PACKED_BYTES_I4ZN_ROUNDTRIP')
