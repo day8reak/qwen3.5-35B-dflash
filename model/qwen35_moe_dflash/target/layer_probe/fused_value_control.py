@@ -104,7 +104,7 @@ def mask_control(npu, kwargs, saved, original, reference, report):
 
 
 @torch.no_grad()
-def run_control(npu, live_calls, root, audit, historical, report, *, probe_mask=False):
+def run_control(npu, live_calls, root, audit, historical, report, *, probe_mask=False, probe_mode='value'):
     if len(live_calls) != 1 or len(audit['calls']) != 1:
         raise ValueError('expected one captured live source attention call')
     kwargs, saved = live_calls[0]
@@ -119,7 +119,11 @@ def run_control(npu, live_calls, root, audit, historical, report, *, probe_mask=
         raise ValueError('live attention arguments changed since capture')
     original = read_array(root, call['actual'])
     reference = read_array(root, call['independent_reference'])
-    if probe_mask:
+    if probe_mode == 'rows':
+        from .fused_rows_control import compare_query_rows
+        compare_query_rows(npu, kwargs, saved, original, reference, report)
+        return
+    if probe_mask or probe_mode == 'mask':
         report['live_arguments'] = live_description(npu, kwargs)
         mask_control(npu, kwargs, saved, original, reference, report)
         report['status'] = 'INSPECTED'
