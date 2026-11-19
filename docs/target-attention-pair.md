@@ -2,7 +2,9 @@
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 
-T64 Prefill 的四个已测投影均通过 CPU 对照。CPro L3 Full Attention 的 hidden、K、V 对数学重放均通过。L0–L2 Linear Attention 对同一份捕获，分块 GDR 通过 6/9 项，逐 token GDR 通过 8/9 项，剩余超差项为 L1 hidden。[CPU 与 310P 对照](target-golden-verification.md#t64-golden) · [T64 GDR 对照](#t64-gdr)
+物理 T64、19 个有效 token 的未缩放基线中，L0–L2 的整层 hidden 均超差，L0 已定位到 GDR core 的小数值偏差。[19 个有效 token 的逐层结果与 L0 对照](#t64-valid19-linear)
+
+在 64 个 token 全部有效的历史用例中，四个已测投影均通过 CPU 对照。CPro L3 Full Attention 的 hidden、K、V 对数学重放均通过。L0–L2 Linear Attention 对同一份捕获，分块 GDR 通过 6/9 项，逐 token GDR 通过 8/9 项，剩余超差项为 L1 hidden。[CPU 与 310P 对照](target-golden-verification.md#t64-golden) · [T64 GDR 对照](#t64-gdr)
 
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。保留完整 fixture，确认 `capture/manifest.json` 的状态为 `CAPTURED`。Full 的 `captured-audited` 模式还要求同次 core 审计为 `PASSED`。本次 T64 使用[模块数学重放](#t64-full)。
 
@@ -115,6 +117,31 @@ cat "$BATCH_ROOT/comparison/summary.csv"
 `PENDING` 时仅重复 recover；已有 native 输出后，即使精度失败也继续 compare。每图预热 3 次、采样 10 次，每次恢复同一输入。Linear 应有 9 行，Full 应有 3 行。Full CSV 的 `reference_basis` 标明参考来源；`captured-audited` 的两组指标均与原捕获比较，`math-replay` 的常规指标与重放比较。K/V 另外要求本次有效写入区域满足相同精度门槛，未写区域逐位等于旧输入。
 
 回传两组 `summary.csv` 和 `report.json`。只有两组各自完成执行和比较后，才能判断是 GDN、FullAttention 或两者存在偏差；模块通过也不代表 MoE、整网 logits 或连续状态反馈已经通过。
+
+<a id="t64-valid19-linear"></a>
+
+## T64、19 个有效 token 的 Linear Attention 未缩放基线
+
+本次重放使用物理 64 行、19 个有效 token、零初始状态。GDR 的 `effective_length=[19]`，单次执行 `chunk_size=64`。L0–L2 分别使用 310P 分段推理捕获的本层输入，整层输出 `golden_hidden` 取自同次 310P 调用，并通过了固定输入的 CPU 对照。下表报告 CPro 对 310P 的相对 L2；验收分别检查前 19 行和最后一个有效 token（索引 18）。三层均在独立执行本层时复现了偏差。
+
+| Linear Attention 层 | 前 19 个 token 的 hidden 相对 L2 | token 18 的 hidden 相对 L2 | 整层判定 |
+| --- | ---: | ---: | --- |
+| L0 | 22.17% | 22.92% | 失败 |
+| L1 | 36.24% | 55.30% | 失败 |
+| L2 | 35.35% | 56.06% | 失败 |
+
+**L0 的误差在门控 RMSNorm 后明显放大。** 增加中间张量回读后，前 19 行的 hidden 与原板端结果逐位一致。Q、K、V、g、beta 和门控输入均通过 310P 对照。板端 GDR core 对 310P core 的整体相对 L2 为 0.235%，但按 head 做门控 RMSNorm 后，`out_proj` 输入的相对 L2 达到 12.60%，最终 hidden 达到 22.17%。
+
+固定 CPro 的 GDR 输入和门控值，两次都在 CPU 上使用同一套门控 RMSNorm 和量化输出投影，仅替换送入 RMSNorm 的 core。两种 core 的整体相对 L2 仅为 0.0844%，整层 hidden 对 310P 的结果如下。
+
+| 送入 CPU 门控 RMSNorm 的 core | 前 19 个 token 的 hidden 相对 L2 | token 18 的 hidden 相对 L2 | 五项指标 |
+| --- | ---: | ---: | --- |
+| 板端回读的 CPro core | 22.13% | 22.92% | 失败 |
+| 在相同 CPro 输入上用 CPU 重算的 core | 1.93% | 4.75% | 通过 |
+
+**L0 最明显的数值特征是 FP16 次正规数对应的板端输出大量为零。** CPU 在相同输入上重算的 core 中有 37,424 个 FP16 次正规数，其中 37,371 个（99.86%）在 CPro 回读中为零。仅将 CPU core 输出中的次正规数置零，再用同一门控值归一化，CPU 与板端 core 所得归一化结果之间的 L2 差距降至置零前的 10.90%；单看 token 18，仍剩 41.62%。具体在哪一步变零、token 18 的剩余误差来自哪里，以及 L1、L2 是否具有相同机制，仍待验证。[离线回读与 core 替换工具](../targets/cpro/tools/inspect_segment_gdn_trace.py)
+
+ConvState 另有一项已观察到的差异。310P 返回物理 64 行末尾 4 行的卷积历史，CPU 的有效序列参考取截至 token 18 的末尾 4 行。本轮独立 prefill 从零状态开始；上面的 L0 core 替换对照使用同一份板端输入。
 
 <a id="t64-gdr"></a>
 
