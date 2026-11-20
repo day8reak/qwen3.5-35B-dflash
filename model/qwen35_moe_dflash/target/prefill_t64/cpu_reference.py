@@ -90,7 +90,7 @@ class CpuPrefill:
                           core=core, out_proj_input=gated.flatten(2), hidden=y)
         return y, (next_history, torch.from_numpy(final).to(state.dtype))
 
-    def attention(self, x, layer, prefix, pair, args):
+    def attention(self, x, layer, prefix, pair, args, *, stages=None):
         heads, kv, d = layer.num_heads, layer.num_key_value_heads, layer.head_dim
         b, t = x.shape[:2]
 
@@ -133,6 +133,8 @@ class CpuPrefill:
         prob = torch.softmax(logits + args['attention_mask'][..., :length].double(), dim=-1)
         core = (prob @ v).to(torch.float16).transpose(1, 2)
         y = (core * gate.sigmoid()).reshape(b, t, heads*d)
+        if stages is not None:
+            stages.update(query=q.to(x.dtype), core=core.transpose(1, 2), proj_input=y)
         return self.project(y, prefix + '.o_proj', layer.o_proj), states
 
     def routes(self, x, layer, prefix):

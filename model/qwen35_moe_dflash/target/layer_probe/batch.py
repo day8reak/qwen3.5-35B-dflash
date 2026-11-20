@@ -325,13 +325,15 @@ def bind_compiled(document, source_inputs, golden, enums, output_contract=None):
     outputs = []
     for index, item in enumerate(goldens):
         observed = _observed_desc(nets[0]['input_desc'][index], enums)
-        if observed['shape'] != item['shape'] or observed['dtype'] not in DTYPES:
+        views = (output_contract or {}).get('first_decode_views', {}).get(item.get('name'), [])
+        if ((observed['shape'] != item['shape'] and observed['shape'] not in views)
+                or math.prod(observed['shape']) != math.prod(item['shape']) or observed['dtype'] not in DTYPES):
             raise ValueError(f'compiled output {index} shape or dtype is incompatible with captured boundary')
         required = (output_contract or {}).get('required_dtypes', {})
         dtype = required.get(str(index), required.get(index))
         if dtype is not None and observed['dtype'] != dtype:
             raise ValueError(f'compiled output {index} must remain {dtype}, observed {observed["dtype"]}')
-        outputs.append(dict(item, index=index, semantic_name=item.get('name', f'output_{index}'), dtype=observed['dtype'],
+        outputs.append(dict(item, index=index, shape=observed['shape'], semantic_name=item.get('name', f'output_{index}'), dtype=observed['dtype'],
             golden_dtype=item['dtype'], bytes=math.prod(observed['shape'])*np.dtype(DTYPES[observed['dtype']]).itemsize))
     return dict(inputs=inputs, outputs=outputs, source_dtype_preserved=all(s['dtype'] == s['golden_dtype'] for s in outputs),
                 input_binding='SOURCE_ARGUMENT_NAME_THEN_COMPILED_GRAPHDEF_INPUT_ORDER',
@@ -546,6 +548,8 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
             output_rows, offset = [], 0
             for spec in case['outputs']:
                 output_row = dict(row)
+                if case['kind'] == 'decode_attention_trace':
+                    output_row['reference_basis'] = spec['reference_basis']
                 if len(case['outputs']) > 1:
                     output_row.update(output_index=spec['index'], output_name=spec['semantic_name'])
                 golden = np.fromfile(fixture/case['case']/f'golden_{spec["index"]}.bin', dtype=DTYPES[spec['golden_dtype']]).reshape(spec['shape'])

@@ -15,7 +15,7 @@ CASE = 'l03_c01_full_attention_layer_hidden_o0'
 CACHE_NAMES = ('key', 'value')
 
 
-def make_cpu_cache(fixture, root):
+def make_cpu_cache(fixture, root, *, stages=False):
     import torch
     from .segment_prefix import tensor_record
     from .segment_prefix_cpu import _load
@@ -42,9 +42,10 @@ def make_cpu_cache(fixture, root):
                 or old['cache_positions'].reshape(-1).tolist() != [19] or old['positions'].tolist() != [[19]]
                 or old['all_length'].tolist() != [20]):
             raise ValueError('Unexpected page table or decode position')
+        observed = {} if stages else None
         hidden, after = cpu_model.attention(old['hidden'], layer, 'layers.3.self_attn',
             (old['key'], old['value']), dict(position_ids=old['positions'], attention_mask=old['mask'],
-            new_kv_cache_pos=old['cache_positions'].reshape(-1), kv_length=20))
+            new_kv_cache_pos=old['cache_positions'].reshape(-1), kv_length=20), stages=observed)
     hidden_score = metrics(read_array(fixture, item['golden_hidden']), hidden.numpy())
     previous = read_array(audit_root, audit['layers']['3']['cpu_hidden'])
     if not hidden_score['passed'] or not metrics(hidden.numpy(), previous)['passed']:
@@ -65,6 +66,17 @@ def make_cpu_cache(fixture, root):
             raise ValueError(f'CPU {name} update did not change only the new token slot')
         report['caches'][name] = dict(tensor_record(root, name, cache),
             before_sha256=hashlib.sha256(before.numpy().tobytes()).hexdigest(), changed_elements=changed)
+    if stages:
+        report['decode_mask'] = tensor_record(root, 'decode_mask', old['mask'])
+        report['stages'] = {}
+        for name, tensor in observed.items():
+            if name in ('query', 'core'):
+                if tensor.shape != (1, 16, 1, 256):
+                    raise ValueError(f'Unexpected first-decode {name} geometry')
+                tensor = tensor.reshape(1, 256, 1, 16)
+            else:
+                tensor = tensor.reshape(1, 4096)
+            report['stages'][name] = tensor_record(root, name, tensor.contiguous())
     save_json(root / 'report.json', report)
     return report
 
@@ -200,10 +212,10 @@ def prepare_batch(baseline, cpu, root):
     save_json(root / 'manifest.json', dict(manifest, cases=cases, scope='L3_FIRST_DECODE_CPU_CACHE_INTERVENTION'))
 
 
-def build(action, source, output, cpu=None):
+def build(action, source, output, cpu=None, *, control=None, stages=False):
     source = source.resolve(strict=True)
     output = output_path(output)
-    inputs = (source,) if cpu is None else (source, cpu)
+    inputs = [p for p in (source, cpu, control) if p is not None]
     for existing in inputs:
         existing = existing.resolve(strict=True)
         if output == existing or existing in output.parents or output in existing.parents:
@@ -215,9 +227,12 @@ def build(action, source, output, cpu=None):
         root = Path(staging) / 'result'
         root.mkdir()
         if action == 'cpu':
-            report = make_cpu_cache(source, root)
+            report = make_cpu_cache(source, root, stages=stages)
             print('310P hidden vs CPU: relative_l2', report['cpu_hidden_check']['relative_l2'],
                   'cosine', report['cpu_hidden_check']['cosine'])
+        elif action == 'trace':
+            from .decode_cache_trace import prepare_trace
+            prepare_trace(source, control, cpu, root)
         else:
             prepare_batch(source, cpu, root)
         root.rename(output)

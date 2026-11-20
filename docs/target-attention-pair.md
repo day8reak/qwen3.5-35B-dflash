@@ -114,6 +114,64 @@ cat "$C/comparison/summary.csv"
 
 若只换 V 即恢复，说明相同 query 和原 K 下替换 V 路径足以消除本例的 hidden 超差；只换 K 的解释对称。若仅同时替换通过，需联合检查两路。CPU 也计算了当前 token 的投影行，要进一步区分投影与写回，可在原图测量实际写入行，以及更新后 0–18 号位置与输入历史是否逐位一致。若两路都换仍失败，继续检查 query、有效长度、mask、core 和 o_proj 输入。
 
+### L3 首步 Decode 的缓存替换结果
+
+每张图独立重放位置 19 的同一份输入，比较投影后的 hidden 和经过 CPU 检查的 310P hidden。四种图的重复输出均稳定。
+
+| Attention 使用的缓存 | relative L2 | cosine | RMSE |
+|---|---:|---:|---:|
+| 原 CPro K/V | 757.96909 | −0.052076 | 9.31366 |
+| CPU K、CPro V | 5975.50695 | 0.046523 | 73.42493 |
+| CPro K、CPU V | 0.733593 | 0.721121 | 0.009014 |
+| CPU K/V | 0.366521 | 0.930884 | 0.004504 |
+
+只换 V 就消除了大部分绝对误差，继续换 K 又使 RMSE 约减半。双换后 relative L2、cosine 和平均相对误差仍超限。替换同时提供独立投影的新行和保留历史的完整缓存，单凭 hidden 无法区分当前行计算、历史保留和图编译差异。
+
+在 AIR 机生成 CPU 的 Q、attention core 和 o_proj 输入，复用同一次 capture。输出目录自动设为 0777。
+
+```bash
+conda activate qwen3_5_w4
+git -C "$REPO_DIR" pull --ff-only origin main &&
+D="$AI_RUN_DIR/target/tests/decode-t1-after-valid19" &&
+python "$REPO_DIR/targets/cpro/tools/decode_cache_control.py" cpu --stages \
+  --fixture "$D/reference" --output "$D/cache-trace/cpu"
+```
+
+在 DDK 机拉取 CPU 张量，再从保留的原图和双换 K/V 图各生成一张带中间输出的 AIR。
+
+```bash
+conda activate custom_pypto
+D="$AI_RUN_DIR/target/tests/decode-t1-after-valid19"
+X="$D/cache-trace"
+TOOL="$REPO_DIR/targets/cpro/tools/decode_cache_control.py"
+PROBE="$REPO_DIR/targets/cpro/tools/target_layer_probe.py"
+VALIDATE="$REPO_DIR/targets/cpro/tools/validate_draft_vector.py"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+python3 "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" "$X/cpu" &&
+python "$TOOL" trace --baseline "$D/cpro" --control "$D/cache-control" --cpu "$X/cpu" --output "$X/air" &&
+python "$PROBE" compile --batch "$X/air" --output "$X/omc" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" --compiler-profile isolated-kirinx90 \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" --use-origin-format
+```
+
+两张图均为 `COMPILED` 后，在同一 DDK 终端启动一次板端执行。
+
+```bash
+conda activate custom_pypto
+python "$VALIDATE" --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --compiled "$X/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$X/execution" --apply
+```
+
+看到 `VECTOR_VALIDATION_STARTED` 后回收该次执行。数值失败也能检查已取回的稳定输出。
+
+```bash
+conda activate custom_pypto
+python "$VALIDATE" --recover "$X/execution" --output "$X/recovery"
+python "$TOOL" inspect --baseline "$D/cpro" --control "$D/cache-control" --trace "$X"
+```
+
+先确认两张图的 hidden 各自与原板端输出逐位相同。原图报告 attention 收到的缓存在 0–18 号位置及所有未写区的 FP16 位差，并把位置 19 的值与板端写入操作数比较。双换图核对实际 K/V 和 CPU 张量，比较 Q、core 和 o_proj 输入，再用读回的 Q/K/V、捕获的 mask 和页号、长度 20 独立计算 core。所有浮点对比同时报告 relative L2 和 cosine。
+
 ## 1. 导出两组 AIR
 
 切到此前成功导出 CPro AIR 的 Python 环境。`CPRO_SOURCE` 指向原私有 CPro 源码根目录；GDN 导出器在进程内将原 `linear_attention_convstate_update` 展开为已验证的 concat/tail，因此应使用保留该原调用的源码副本。不要指向已手工应用整网 ConvState patch 的副本。权重 YAML 使用原 checkpoint／量化权重，路径规则见采集文档。
