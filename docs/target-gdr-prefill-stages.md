@@ -40,6 +40,8 @@ ls -lh "$G"/air/models/*/export.air
 
 第一条命令用本轮采集重新导出三个原始整层 hidden 图。第二条从这些图增加实际算子输出端口，把三张整层图、三张 GDR 图和三张 RMSNorm/门控图写入 `air/manifest.json`。最后应列出九个 `export.air`。采集和导出脚本已将待传输的 `reference`、`air` 目录及内容设为 0777。
 
+三张 RMSNorm 诊断图用运行时 INT32 索引 `gamma_read_indices.bin`（0 到 127）顺序读出 CPro 的 gamma。GatherV2 从原 RMSNorm 的权重边取值，权重仍由该模型提供。采集脚本校验索引的内容、编译后的输入绑定和 gamma 输出槽的连接。最终 `dump/l*/cpro/gamma.bin` 来自板端返回的权重槽。
+
 **3. 10.136.181.35，传输并编译这九个 AIR**
 
 ```bash
@@ -79,6 +81,30 @@ python "$REPO_DIR/targets/cpro/tools/gdr_prefill_stages.py" inspect-abi \
   --case l00_c00_norm_prefill_stages_o0
 ```
 
+如果旧 OMC 的 `gamma` 输出边为空、`shape=null`，DDK 服务器上已有的 `fresh01/air` 批次内含三个原始整层 AIR，可以在该机直接重建诊断图。下列命令从同一次 310P 采集生成新的九图批次。通过 ABI 检查后，在第 4 步使用 `$FIX/omc`、`$FIX/execution` 和 `$FIX/recovery`，第 5 步使用 `--reference "$G/reference" --trace "$FIX" --output "$FIX/dump"`。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+FIX="$G/gamma-readout"
+TOOLS="$REPO_DIR/targets/cpro/tools"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+python "$TOOLS/gdr_prefill_stages.py" prepare \
+  --baseline "$G" --reference "$G/reference" --include-baseline --output "$FIX/air" &&
+python "$TOOLS/target_layer_probe.py" compile \
+  --batch "$FIX/air" --output "$FIX/omc" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile isolated-kirinx90 \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" --use-origin-format &&
+(
+  set -e
+  for layer in 00 01 02; do
+    python "$TOOLS/gdr_prefill_stages.py" inspect-abi \
+      --compiled "$FIX/omc" --ddk-root "$CPRO_DDK_ROOT" --case "l${layer}_c00_norm_prefill_stages_o0"
+  done
+)
+```
+
 **5. 同一台 10.136.181.35，导出两端 bin 并逐张量对比**
 
 回收结果中 `device_execution=EXECUTED_OUTPUTS_RETRIEVED` 表示已经取得板端计算结果。即使此时 `numerical_validation=FAILED`，仍可执行下面的命令定位误差。
@@ -96,7 +122,7 @@ head -n 8 "$G/dump/tensor-map.csv"
 
 ### 如何辨认一个 bin
 
-`dump/tensor-map.csv` 每行对应一个导出文件，给出中文计算步骤、张量含义、后端、相对路径、逻辑形状、数据类型、字节数以及原始文件位置。`source_offset_bytes` 是从零开始的字节偏移。在 CPro 原始 `recovery/native/<case>/0.bin` 中，`0` 是调用序号，文件按输出槽依次拼接。槽 0 是用于核对基线的整层 hidden，后面的槽是本组采集的中间张量。用 `source_slot`、`source_offset_bytes` 和 `source_length_bytes` 可以取出对应槽的原始字节。多个语义名称读同一条 AIR 边时，表中列出相同的槽和偏移。分拆后的 `dump/l*/cpro/*.bin` 直接从文件头读取。板端执行目录中的 `input_N.bin` 是整图输入，`golden_N.bin` 是该输出槽的参考值。
+`dump/tensor-map.csv` 每行对应一个导出文件，给出中文计算步骤、张量含义、后端、相对路径、逻辑形状、数据类型、字节数以及原始文件位置。`module_edge` 指向原计算图中被读取的张量，`air_edge` 指向诊断图实际返回的边。gamma 的这两项分别对应 RMSNorm 的权重输入和顺序 Gather 的输出。`source_offset_bytes` 是从零开始的字节偏移。在 CPro 原始 `recovery/native/<case>/0.bin` 中，`0` 是调用序号，文件按输出槽依次拼接。槽 0 是用于核对基线的整层 hidden，后面的槽是本组采集的中间张量。用 `source_slot`、`source_offset_bytes` 和 `source_length_bytes` 可以取出对应槽的原始字节。多个语义名称读同一条 AIR 边时，表中列出相同的槽和偏移。分拆后的 `dump/l*/cpro/*.bin` 直接从文件头读取。板端执行目录中的 `input_N.bin` 是整图输入，`golden_N.bin` 是该输出槽的参考值。
 
 例如读取 L0 的 CPro 乘法结果并查看最后一个有效 token。以下命令在生成 dump 的 DDK 终端执行。
 

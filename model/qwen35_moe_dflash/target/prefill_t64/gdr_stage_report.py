@@ -10,6 +10,7 @@ import numpy as np
 from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import identity, metrics, read_array, save_json, sha
 from .decode_cache_trace import _record
+from .gdr_gamma_readout import verify_index_input
 from .gdr_stage_data import DESCRIPTIONS, GROUPS, STATIC, case_id, logical
 from .segment_trace_compare import board_case
 
@@ -77,7 +78,11 @@ def compare(baseline, reference, trace, output):
                 for spec in fixture_case['outputs']:
                     offsets[spec['semantic_name']] = (spec['index'], offset, spec['bytes'])
                     offset += spec['bytes']
-                for role, (dtype, shape, digest) in trace_inputs.items():
+                module_inputs = trace_inputs.copy()
+                readout = record['output_contract'].get('gamma_readout')
+                if readout:
+                    verify_index_input(module_inputs.pop(readout['index_input'], None))
+                for role, (dtype, shape, digest) in module_inputs.items():
                     live = read_array(reference, capture['attention_modules'][str(i)]['inputs'][role])
                     bound = live.astype(dtype, copy=False)
                     if list(bound.shape) != shape or hashlib.sha256(bound.tobytes()).hexdigest() != digest:
@@ -87,6 +92,7 @@ def compare(baseline, reference, trace, output):
                 matched = actual['golden_hidden'][:, :19].tobytes() == base['golden_hidden'][:, :19].tobytes()
                 info['graphs'][group] = dict(module_inputs=meta.get('module_inputs', 'BASELINE_310P_CAPTURE'),
                                             full_inputs_equal_baseline=trace_inputs == base_inputs,
+                                            module_inputs_equal_baseline=module_inputs == base_inputs, gamma_readout=readout,
                                             valid_hidden_equal_bits=matched, edges=meta['edges'], aliases=meta['aliases'],
                                             air_port_dtypes=meta['air_dtypes'], air_rms_epsilon=meta['air_rms_epsilon'],
                                             source_air_sha256=meta['source_air'], trace_air_sha256=record['air']['sha256'])
@@ -116,7 +122,8 @@ def compare(baseline, reference, trace, output):
                             path=path.relative_to(root).as_posix(), shape=json.dumps(list(arr.shape)), dtype=arr.dtype.name,
                             bytes=arr.nbytes, source=str(sources[backend]), source_slot=slot if board else '',
                             source_offset_bytes=board_offset if board else 0, source_length_bytes=board_size if board else raw.nbytes,
-                            air_edge=meta['edges'][stage] if board else '', slot_name=key if board else '',
+                            module_edge=meta['edges'][stage] if board else '',
+                            air_edge=record['output_contract']['source_edges'][slot] if board else '', slot_name=key if board else '',
                             fixture_golden=f'{case}/golden_{slot}.bin' if board else ''))
                     if stage == 'effective_length' and any(x.tolist() != [19] for x in values.values()):
                         print(f'L{i} effective_length differs: ' + str({k: v.tolist() for k, v in values.items()}))

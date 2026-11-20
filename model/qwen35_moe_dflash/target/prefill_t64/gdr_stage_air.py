@@ -11,6 +11,7 @@ from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import checked, identity, read_array, save_json, sha
 from .decode_cache_control import graph_message
 from .decode_cache_trace import _add_ports, _project_input, _record
+from .gdr_gamma_readout import add_gamma_readout, index_binding
 from .gdr_stage_data import BASIS, GDR, GROUPS, case_id, logical, shapes
 from .segment_export import MODULE_BASIS, NATIVE_GDR_MODULE_BASIS
 
@@ -159,6 +160,10 @@ def prepare(baseline, reference, output, *, include_baseline=False):
                     taps[primary] = edge
                 enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
                 codes = {enum[n].number: typ for n, typ in [('DT_FLOAT16', 'float16'), ('DT_FLOAT','float32'), ('DT_INT16','int16')]}
+                gamma_readout = None
+                if group == 'norm':
+                    gamma_readout = add_gamma_readout(graph, edges['gamma'])
+                    taps['gamma'] = gamma_readout['output_edge']
                 source_edges = _add_ports(graph, taps, allowed_dtypes=(0, *codes))
                 norm_epsilon = None
                 if group == 'norm':
@@ -176,6 +181,8 @@ def prepare(baseline, reference, output, *, include_baseline=False):
                     path = dest / spec['path']
                     inputs[spec['semantic_name']].tofile(path)
                     source_inputs.append(dict(spec, **identity(path, dest)))
+                if gamma_readout:
+                    source_inputs.append(index_binding(dest, source_inputs))
                 hidden_path = dest / record['golden']['path']
                 hidden.tofile(hidden_path)
                 goldens = [dict(record['golden'], **identity(hidden_path, dest))]
@@ -194,6 +201,9 @@ def prepare(baseline, reference, output, *, include_baseline=False):
                         required[str(idx)] = 'int16'
                 contract = dict(order=[s['name'] for s in goldens], source_edges=source_edges, required_dtypes=required,
                                 stage_views={k: shapes(k) for k in taps})
+                if gamma_readout:
+                    contract['gamma_readout'] = gamma_readout
+                    required[str(contract['order'].index('gamma'))] = air_dtypes['gamma']
                 meta = dict(module_inputs='CURRENT_310P_CAPTURE', source=orig, source_air=record['air']['sha256'], aliases=aliases, edges=edges,
                             group=group, air_dtypes=air_dtypes, air_rms_epsilon=norm_epsilon, capture=capture_hash, epsilon=native['epsilon'])
                 export = dest / 'export.json'

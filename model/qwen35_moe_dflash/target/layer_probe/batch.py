@@ -322,10 +322,13 @@ def bind_compiled(document, source_inputs, golden, enums, output_contract=None):
         raise ValueError('multi-output graph requires its explicit source tuple/NetOutput order')
     if len(nets) != 1 or len(nets[0].get('input_desc', [])) != len(goldens):
         raise ValueError('compiled output count differs from explicit captured output order')
+    contract = output_contract or {}
+    if 'gamma_readout' in contract:
+        from ..prefill_t64.gdr_gamma_readout import verify_compiled_readout
+        verify_compiled_readout(contract, inputs, nodes, nets[0])
     outputs = []
     for index, item in enumerate(goldens):
         observed = _observed_desc(nets[0]['input_desc'][index], enums)
-        contract = output_contract or {}
         views = contract.get('stage_views', contract.get('first_decode_views', {})).get(item.get('name'), [])
         if ((observed['shape'] != item['shape'] and observed['shape'] not in views)
                 or math.prod(observed['shape']) != math.prod(item['shape']) or observed['dtype'] not in DTYPES):
