@@ -79,13 +79,9 @@ def unroll(raw, length_edge):
             node.attr[key].i = val
         return node.name + ':0'
 
+    # The host verified INT16 [19] before unrolling this fixed fixture. Every
+    # kernel consumes one valid row, including the call at token index 18.
     one = constant('one', [1], i16)
-    consumed = constant('consumed', [18], i32)
-    # Nineteen is the checked fixture length. Preserve its runtime input in the
-    # last call: after 18 updates its remaining valid length is exactly one.
-    wide = unary('valid_length', 'Cast', [length_edge], i32, [1], dst_type=3)
-    remain = unary('remaining', 'Sub', [wide, consumed], i32, [1])
-    last_length = unary('last_length', 'Cast', [remain], i16, [1], dst_type=6)
     sizes = {rank: constant(f'size{rank}', shapes('g' if rank == 3 else 'core', 1)[0], i32) for rank in (3, 4)}
     state = original.input[ports['initial_state']]
     cores = []
@@ -104,7 +100,7 @@ def unroll(raw, length_edge):
             step.input[slot] = unary(f'{role}_{t}', 'Slice', [original.input[slot], offsets[rank], sizes[rank]], half, shape)
             step.input_desc[slot].shape.CopyFrom(desc(half, shape).shape)
         step.input[ports['initial_state']] = state
-        step.input[ports['effective_length']] = one if t < 18 else last_length
+        step.input[ports['effective_length']] = one
         step.output_desc[0].shape.CopyFrom(desc(half, shapes('core', 1)[0]).shape)
         # TorchAir port attributes describe which original operands are constants.
         for slot in ports.values():
@@ -194,7 +190,7 @@ def prepare(group, output):
         # The paired probe owns both SiLU reads; exclude the obsolete direct Swish output.
         save_json(root / 'manifest.json', dict(artifact_kind=manifest['artifact_kind'], status='EXPORTED',
             cases=cases, capture_sha256=capture, golden_source=BASIS, reference_model_layers=4,
-            scope=MODE, gdr_mode=MODE, split_norm_layers=[0]))
+            scope=MODE, gdr_mode=MODE, step_length_source='CONST_INT16_ONE', split_norm_layers=[0]))
         root.rename(target)
     share_for_transfer(target)
     print(f'{target}: {len(cases)} L0 graphs, each with 19 state-linked ChunkGatedDeltaRule S=1 calls', flush=True)

@@ -30,15 +30,15 @@ cat "$G/l0-dump-summary/summary.md"
 ```bash
 conda activate custom_pypto
 G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
-RUN="$G/l0-s1-v1"
+RUN="$G/l0-s1-v2"
 git -C "$REPO_DIR" pull --ff-only origin main &&
 bash "$REPO_DIR/targets/cpro/scripts/check_prefill_gdr_s1.sh" "$RUN" &&
 cat "$RUN/l0-dump-summary/chunk-vs-s1.csv"
 ```
 
-此图专用于整层入口是 T64、有效长度是 19 的首轮 prefill。第 0 步读取原初始 state，第 1–18 步逐次读取上一调用的 FP16 state 输出。每步的五个逐 token 输入都切成一行，`chunk_size=1`，本用例每步的 `effective_length` 为 INT16 [1]。顺序拼回 19 个 core，在末尾补 45 个零行供原 T64 后续计算。`final_state` 取 token 18 的返回值。310P 参考继续使用原来实测的 chunk64。
+此图专用于整层入口是 T64、有效长度是 19 的首轮 prefill。第 0 步读取原初始 state，第 1–18 步逐次读取上一调用的 FP16 state 输出。每步的五个逐 token 输入都切成一行，`chunk_size=1`，导出前先核对实测整层长度为 INT16 [19]，19 次调用都直接读取 INT16 常量 [1]。旧版为最后一步计算 `19 - 18` 时，OMG 在 `l0s1_valid_length` 的 CastT 拒绝 INT16 输入。新版省去了这段长度运算。顺序拼回 19 个 core，在末尾补 45 个零行供原 T64 后续计算。`final_state` 取 token 18 的返回值。310P 参考继续使用原来实测的 chunk64。
 
-`l0-dump-summary/chunk-vs-s1.csv` 并列显示两个 CPro 版本相对同一 310P 的 L2、cosine、精度判定，以及参考 FP16 次正规数在 CPro 变为零的元素数。`summary.md`、`summary.csv` 和 `tensor-map.csv` 给出新版的完整结果和 bin 索引。每个阶段的有效 hidden 都与此次 S=1 未插桩图逐位核对。`ddk-gdr.json` 记录本次编译使用的 DDK 路径、ID 和可按名称识别的 GDR 文件哈希。再次更换算子包时，给 `RUN` 换一个新目录。
+`l0-dump-summary/chunk-vs-s1.csv` 并列显示两个 CPro 版本相对同一 310P 的 L2、cosine、精度判定，以及参考 FP16 次正规数在 CPro 变为零的元素数。`summary.md`、`summary.csv` 和 `tensor-map.csv` 给出新版的完整结果和 bin 索引。每个阶段的有效 hidden 都与此次 S=1 未插桩图逐位核对。若 OMG 裁掉未插桩图的整层长度输入，`entry_effective_length` 在对照表里显示 `NOT_BOUND`。GDR 探针单列读回的整层长度 [19]。`ddk-gdr.json` 记录本次编译使用的 DDK 路径、ID 和可按名称识别的 GDR 文件哈希。再次更换算子包时，给 `RUN` 换一个新目录。
 
 ## 重新采集和执行
 

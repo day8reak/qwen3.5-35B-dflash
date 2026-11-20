@@ -2,7 +2,7 @@
 # Run on the DDK host in custom_pypto. An optional argument selects a fresh run directory.
 set -euo pipefail
 group="${AI_RUN_DIR:?}/target/tests/gdr-stages-t64-valid19-fresh01"
-run="${1:-$group/l0-s1-v1}"
+run="${1:-$group/l0-s1-v2}"
 tools="${REPO_DIR:?}/targets/cpro/tools"
 stages="$tools/gdr_prefill_stages.py"
 ddk="${CPRO_DDK_ROOT:?}"
@@ -32,6 +32,9 @@ import os
 import sys
 from pathlib import Path
 ddk, run = Path(sys.argv[1]).resolve(strict=True), Path(sys.argv[3])
+batch = json.loads((run / 'air/manifest.json').read_text())
+if batch.get('step_length_source') != 'CONST_INT16_ONE':
+    sys.exit(f'{run}/air uses the older length graph. Run this script with a fresh output directory.')
 files = {}
 for directory, _, names in os.walk(ddk):
     for name in names:

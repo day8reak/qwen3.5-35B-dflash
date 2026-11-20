@@ -23,6 +23,9 @@ def compare_dumps(chunk, single):
                 reference[kind, name] = spec['dtype'], spec['shape'], spec['sha256']
         with (dump / 'summary.csv').open() as f:
             rows = {(r['stage'], r['scope']): r for r in csv.DictReader(f) if r['comparison'] == 'cpro_vs_310p'}
+        if 'cpro' not in layer['inputs']['effective_length']:
+            rows.setdefault(('entry_effective_length', 'tensor'), dict(measurement='REFERENCE_INPUT_ONLY',
+                relative_l2='', cosine='', result='NOT_BOUND', reference_fp16_subnormals_with_actual_zero=''))
         return manifest, reference, rows
 
     a, ar, old = scores(chunk)

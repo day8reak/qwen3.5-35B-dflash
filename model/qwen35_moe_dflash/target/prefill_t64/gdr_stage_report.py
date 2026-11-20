@@ -182,6 +182,15 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
         raise ValueError('Use the full split batch as --trace and the indexed SiLU case as --silu-readout')
     from .gdr_s1_air import MODE
     single = trace_batch.get('gdr_mode') == MODE
+    fixed_steps = single and trace_batch.get('step_length_source') == 'CONST_INT16_ONE'
+    # OMG can prune the unused module-length input from the hidden graph
+    # while retaining it in the probe that explicitly returns its value.
+    fixed_inputs = {}
+    if fixed_steps:
+        spec = capture['attention_modules']['0']['inputs']['effective_length']
+        if spec['dtype'] != 'int16' or read_array(reference, spec).tolist() != [19]:
+            raise ValueError('Expected the captured L0 module length INT16 [19]')
+        fixed_inputs['effective_length'] = (spec['dtype'], spec['shape'], spec['sha256'])
     if single and (not combined or baseline.resolve() != trace.resolve() or silu_readout is not None):
         raise ValueError('Use summarize-s1 with the complete single-token L0 stage batch')
     if combined and not single:
@@ -220,6 +229,8 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                 write_inputs(root, i, reference, capture['attention_modules'][str(i)], baseline, orig, base_fixture, info, tensor_map, rows, _score)
                 if single:
                     groups = _s1_groups(trace, trace_air, trace_batch, source)
+                    if fixed_steps:
+                        info['step_length_source'] = trace_batch['step_length_source']
                     info['chunk_baseline_air_sha256'] = source['chunk_air_sha256']
                     info['cpro_gdr'] = dict(chunk_size=1, calls=19, per_call_effective_length=[1],
                                             state_after_token=18, core_padding='45_ZERO_ROWS')
@@ -250,16 +261,19 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                 if base_refs['golden_hidden'][:, :19].tobytes() != refs['golden_hidden'][:, :19].tobytes():
                     raise ValueError(f'{case}: different valid hidden references')
                 matched = actual['golden_hidden'][:, :19].tobytes() == base['golden_hidden'][:, :19].tobytes()
-                qualified = matched and module_inputs == base_inputs
-                if combined and not qualified and (not single or module_inputs != base_inputs):
+                same_inputs = (fixed_inputs | module_inputs) == (fixed_inputs | base_inputs)
+                qualified = matched and same_inputs
+                if combined and not qualified and (not single or not same_inputs):
                     raise ValueError(f'{case}: selected L0 readout differs from the original module inputs or valid hidden')
                 info['graphs'][group] = dict(case=case, module_inputs=meta.get('module_inputs', 'BASELINE_310P_CAPTURE'),
                                             full_inputs_equal_baseline=trace_inputs == base_inputs,
-                                            module_inputs_equal_baseline=module_inputs == base_inputs,
+                                            module_inputs_equal_baseline=same_inputs,
                                             gamma_readout=contract.get('gamma_readout'), silu_output_readout=contract.get('silu_output_readout'),
                                             valid_hidden_equal_bits=matched, edges=meta['edges'], aliases=meta['aliases'],
                                             air_port_dtypes=meta['air_dtypes'], air_rms_epsilon=meta['air_rms_epsilon'],
                                             source_air_sha256=meta['source_air'], trace_air_sha256=record['air']['sha256'])
+                if fixed_steps:
+                    info['graphs'][group]['module_length_input_bound'] = 'effective_length' in module_inputs
                 print(f'L{i} {group} valid hidden equals original CPro run: {matched}')
                 if not matched:
                     print('Diagnostic outputs only: valid hidden differs from the original CPro graph.')
@@ -292,7 +306,9 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                         if single and board and stage == 'core':
                             meaning += '。行 0–18 依次来自每步的 core 输出，行 19–63 补零。'
                         if single and board and stage == 'effective_length':
-                            step, meaning = 'GDR 序列控制', '整层有效长度 [19]。19 次单步调用各使用 [1]，最后一步使用有效长度减去 18。'
+                            step = 'GDR 序列控制'
+                            meaning = ('探针读回的整层有效长度 [19]。19 次单步 GDR 各自使用 INT16 常量 [1]。' if fixed_steps else
+                                       '整层有效长度 [19]。19 次单步调用各使用 [1]，最后一步使用有效长度减去 18。')
                         tensor_map.append(dict(layer=i, backend=backend, tensor=stage, step=step, meaning=meaning,
                             baseline_hidden_reproduced=matched if board else '',
                             path=path.relative_to(root).as_posix(), shape=json.dumps(list(arr.shape)), dtype=arr.dtype.name,
