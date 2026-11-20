@@ -75,7 +75,7 @@ def _product_scope(ref, board, start, end):
 def audit_product(root, layer):
     manifest = json.loads((root / 'manifest.json').read_text())
     if (manifest['physical_rows'], manifest['valid_rows'], manifest['last_valid_index'],
-            manifest['chunk_size'], manifest['reference_backend']) != (64, 19, 18, 64, '310p'):
+            manifest.get('reference_chunk_size', manifest['chunk_size']), manifest['reference_backend']) != (64, 19, 18, 64, '310p'):
         raise ValueError('Expected a native 310P physical64/valid19 prefill dump')
     info = manifest['layers'][str(layer)]
     roles = ('core', 'mul_lhs', 'silu_input', 'mul_output')

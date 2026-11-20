@@ -23,6 +23,23 @@ cat "$G/l0-dump-summary/summary.md"
 
 本次实测 L0 在有效 19 个 token 上，SiLU 输出 CPro/310P 相对 L2 为 **0.00160568**，cosine 为 **0.99999883**。CPro 输出对自身实测输入的 SiLU 公式为 **0.00132394 / 0.999999**。这张图的有效 hidden 与原始 CPro 图逐位相等。后续实测门控乘积为 **0.125974 / 0.992034**，整层输出为 **0.221701 / 0.976573**。汇总另外用两端各自的实测左右操作数重建各自乘积，并在 CSV 中单列检查结果。
 
+## L0 用新版 S=1 重跑
+
+在 10.136.181.35 的 DDK 终端执行。脚本读取原实验的 310P capture 和三组已验证的 AIR 探针。若本机缺少输入，脚本会通过 `pull_artifacts.py` 拉取所需的原始 capture 或整层 AIR，在 DDK 端重建缺失的探针。脚本在新目录生成 9 个 L0 AIR，使用当前 `CPRO_DDK_ROOT` 编译为 OMC，再下板、等待回收、生成两端的 bin 和对照表。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+RUN="$G/l0-s1-v1"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+bash "$REPO_DIR/targets/cpro/scripts/check_prefill_gdr_s1.sh" "$RUN" &&
+cat "$RUN/l0-dump-summary/chunk-vs-s1.csv"
+```
+
+此图专用于整层入口是 T64、有效长度是 19 的首轮 prefill。第 0 步读取原初始 state，第 1–18 步逐次读取上一调用的 FP16 state 输出。每步的五个逐 token 输入都切成一行，`chunk_size=1`，本用例每步的 `effective_length` 为 INT16 [1]。顺序拼回 19 个 core，在末尾补 45 个零行供原 T64 后续计算。`final_state` 取 token 18 的返回值。310P 参考继续使用原来实测的 chunk64。
+
+`l0-dump-summary/chunk-vs-s1.csv` 并列显示两个 CPro 版本相对同一 310P 的 L2、cosine、精度判定，以及参考 FP16 次正规数在 CPro 变为零的元素数。`summary.md`、`summary.csv` 和 `tensor-map.csv` 给出新版的完整结果和 bin 索引。每个阶段的有效 hidden 都与此次 S=1 未插桩图逐位核对。`ddk-gdr.json` 记录本次编译使用的 DDK 路径、ID 和可按名称识别的 GDR 文件哈希。再次更换算子包时，给 `RUN` 换一个新目录。
+
 ## 重新采集和执行
 
 从原始分段推理重新采集同一个 19-token prompt 的首次 prefill，物理 T64，最后一个有效 token 的下标为 18。L0–L2 各执行一次未缩放的 chunk-64 GDR。每层 CPro 图使用本轮 310P 同层入口的完整 hidden、初始 ConvState、recurrent state 和有效长度，在图内连续计算投影、GDR、RMSNorm、SiLU、门控乘法及输出投影。所有参考张量来自这次 310P 执行。

@@ -13,6 +13,10 @@ def main():
     bundle = cmds.add_parser('summarize', help='assemble L0 from the recovered baseline, split probes and paired SiLU run')
     bundle.add_argument('--group', required=True, type=Path, help='original gdr-stages-t64-valid19 experiment directory')
     bundle.add_argument('--output', type=Path, help='new dump directory (default: GROUP/l0-dump-summary)')
+    for action in ('prepare-s1', 'summarize-s1'):
+        s1 = cmds.add_parser(action, help='L0 S=1 state chain from the retained 64/19 stage experiment')
+        s1.add_argument('--group', required=True, type=Path, help='original chunk64 experiment')
+        s1.add_argument('--run', required=True, type=Path, help='separate S=1 batch directory')
     audit = cmds.add_parser('audit-dump', help='check the original nine-case dump against its own recorded operands')
     audit.add_argument('--dump', required=True, type=Path)
     audit.add_argument('--trace', required=True, type=Path, help='recovered nine-case board batch')
@@ -41,6 +45,22 @@ def main():
         cmd.add_argument('--output', required=True, type=Path)
     compare.add_argument('--trace', required=True, type=Path, help='new compiled and recovered batch')
     args = parser.parse_args()
+    if args.action == 'prepare-s1':
+        from qwen35_moe_dflash.target.prefill_t64.gdr_s1_air import prepare
+        prepare(args.group, args.run / 'air')
+        return 0
+    if args.action == 'summarize-s1':
+        from qwen35_moe_dflash.target.prefill_t64.gdr_stage_report import compare
+        from qwen35_moe_dflash.target.prefill_t64.gdr_s1_comparison import compare_dumps
+        g = args.group
+        chunk, single = (r / 'l0-dump-summary' for r in (g, args.run))
+        if not single.exists():
+            compare(args.run, g / 'reference', args.run, single, combined=True)
+        if not chunk.exists():
+            compare(g / 'gamma-readout', g / 'reference', g / 'norm-single-l0', chunk,
+                    silu_readout=g / 'l0-silu-pair', combined=True)
+        compare_dumps(chunk, single)
+        return 0
     if args.action == 'summarize':
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_report import compare
         g = args.group

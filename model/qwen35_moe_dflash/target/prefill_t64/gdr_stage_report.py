@@ -11,7 +11,7 @@ from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import identity, metrics, read_array, save_json, sha
 from .decode_cache_trace import _record
 from .gdr_gamma_readout import verify_index_input
-from .gdr_stage_data import DESCRIPTIONS, GROUPS, STATIC, case_id, logical
+from .gdr_stage_data import DESCRIPTIONS, GROUPS, STATIC, TOKEN_OPERANDS, case_id, logical
 from .gdr_stage_summary import check_measured_product, write_inputs, write_overview
 from .segment_trace_compare import board_case
 
@@ -131,12 +131,40 @@ def _combined_groups(layer, base, split, split_manifest, paired, paired_manifest
     if replaced != set(edges):
         raise ValueError('Incomplete paired SiLU replacement')
     yield pair
+    yield _module_group(orig, base[0], source)
+
+
+def _module_group(orig, run, source):
     role = 'golden_hidden'
     edge, = [e for e in source['output_contract']['source_edges'] if not e.endswith(':-1')]
     meta = dict(aliases={role: role}, edges={role: edge}, capture=source['capture_sha256'],
                 source_air=source['air']['sha256'], air_dtypes={}, air_rms_epsilon=None)
-    yield 'module_hidden', (role,), orig, base[0], dict(source, gdr_stages=meta,
+    return 'module_hidden', (role,), orig, run, dict(source, gdr_stages=meta,
         output_contract=dict(source['output_contract'], source_edges=[edge]))
+
+
+def _s1_groups(run, air, manifest, source):
+    from .gdr_s1_air import BASE, GDR_CASE, GROUPS as batches, MODE, PAIR_CASE
+    names = [name for batch in batches.values() for name in batch]
+    if [c['id'] for c in manifest['cases']] != names or source.get('gdr_mode') != MODE:
+        raise ValueError('Expected L0 hidden, GDR stages, split norm stages and the paired SiLU read')
+    seen = set()
+    for name in names[1:]:
+        _, _, _, record = _record(air, name)
+        roles = record['gdr_stages']['aliases']
+        if record.get('gdr_mode') != MODE or seen.intersection(roles):
+            raise ValueError(f'{name}: unexpected GDR mode or duplicate readout')
+        seen.update(roles)
+        label = name.removeprefix('l00_c00_').removesuffix('_prefill_stages_o0')
+        if name == PAIR_CASE and (set(roles) != {'silu_input', 'silu_output', 'mul_rhs'}
+                or not record['output_contract'].get('silu_output_readout')):
+            raise ValueError('Expected the runtime-indexed same-call SiLU input and output')
+        if name == GDR_CASE and set(roles) != set(GROUPS['gdr']):
+            raise ValueError('Incomplete GDR readout')
+        yield label, roles, name, run, record
+    if seen != set(GROUPS['gdr'] + GROUPS['norm']):
+        raise ValueError('Incomplete L0 GDR and gated norm coverage')
+    yield _module_group(BASE, run, source)
 
 
 def compare(baseline, reference, trace, output, *, silu_readout=None, combined=False):
@@ -152,7 +180,11 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
         raise ValueError('Expected a paired readout for exactly one layer')
     if 'indexed_silu_layer' in trace_batch and not pair:
         raise ValueError('Use the full split batch as --trace and the indexed SiLU case as --silu-readout')
-    if combined:
+    from .gdr_s1_air import MODE
+    single = trace_batch.get('gdr_mode') == MODE
+    if single and (not combined or baseline.resolve() != trace.resolve() or silu_readout is not None):
+        raise ValueError('Use summarize-s1 with the complete single-token L0 stage batch')
+    if combined and not single:
         paired_air = _compiled_air(silu_readout)
         paired_manifest = json.loads((paired_air / 'manifest.json').read_text())
         if (trace_batch.get('split_norm_layers') != [0] or pair or not paired_manifest.get('paired_silu')
@@ -170,7 +202,7 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
         if [c['id'] for c in extra['cases']] != [name] or name not in {c['id'] for c in trace_batch['cases']}:
             raise ValueError('Expected a matching single SiLU case')
         alternate = (name, (silu_readout, extra_air))
-    if 'split_norm_layers' in trace_batch and baseline.resolve() == trace.resolve():
+    if not single and 'split_norm_layers' in trace_batch and baseline.resolve() == trace.resolve():
         raise ValueError('Pass --baseline pointing to the original recovered nine-case batch')
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
@@ -186,8 +218,14 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
             groups = _groups(i, (baseline, source_air), (trace, trace_air), trace_batch, alternate)
             if combined:
                 write_inputs(root, i, reference, capture['attention_modules'][str(i)], baseline, orig, base_fixture, info, tensor_map, rows, _score)
-                groups = _combined_groups(i, (baseline, source_air), (trace, trace_air), trace_batch,
-                                          (silu_readout, paired_air), paired_manifest, orig, source)
+                if single:
+                    groups = _s1_groups(trace, trace_air, trace_batch, source)
+                    info['chunk_baseline_air_sha256'] = source['chunk_air_sha256']
+                    info['cpro_gdr'] = dict(chunk_size=1, calls=19, per_call_effective_length=[1],
+                                            state_after_token=18, core_padding='45_ZERO_ROWS')
+                else:
+                    groups = _combined_groups(i, (baseline, source_air), (trace, trace_air), trace_batch,
+                                              (silu_readout, paired_air), paired_manifest, orig, source)
             for group, stages, case, run, record in groups:
                 meta = record['gdr_stages']
                 if meta['source_air'] != source['air']['sha256'] or meta['capture'] != sha(reference / 'manifest.json'):
@@ -213,7 +251,7 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                     raise ValueError(f'{case}: different valid hidden references')
                 matched = actual['golden_hidden'][:, :19].tobytes() == base['golden_hidden'][:, :19].tobytes()
                 qualified = matched and module_inputs == base_inputs
-                if combined and not qualified:
+                if combined and not qualified and (not single or module_inputs != base_inputs):
                     raise ValueError(f'{case}: selected L0 readout differs from the original module inputs or valid hidden')
                 info['graphs'][group] = dict(case=case, module_inputs=meta.get('module_inputs', 'BASELINE_310P_CAPTURE'),
                                             full_inputs_equal_baseline=trace_inputs == base_inputs,
@@ -249,6 +287,12 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                         records[backend] = dict(identity(path, root), dtype=arr.dtype.name, shape=list(arr.shape),
                                                 original_shape=list(raw.shape))
                         step, meaning = DESCRIPTIONS[stage]
+                        if single and board and stage in TOKEN_OPERANDS:
+                            meaning += '。此 bin 保存切片前的 64 行，第 t 次单步调用读取第 t 行，t=0…18。'
+                        if single and board and stage == 'core':
+                            meaning += '。行 0–18 依次来自每步的 core 输出，行 19–63 补零。'
+                        if single and board and stage == 'effective_length':
+                            step, meaning = 'GDR 序列控制', '整层有效长度 [19]。19 次单步调用各使用 [1]，最后一步使用有效长度减去 18。'
                         tensor_map.append(dict(layer=i, backend=backend, tensor=stage, step=step, meaning=meaning,
                             baseline_hidden_reproduced=matched if board else '',
                             path=path.relative_to(root).as_posix(), shape=json.dumps(list(arr.shape)), dtype=arr.dtype.name,
@@ -259,7 +303,7 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                             fixture_golden=f'{case}/golden_{slot}.bin' if board else ''))
                         if combined:
                             measurement = 'REFERENCE' if not board else (
-                                'BASELINE' if stage == 'golden_hidden' else 'QUALIFIED')
+                                'BASELINE' if stage == 'golden_hidden' else 'QUALIFIED' if matched else 'DIAGNOSTIC')
                             tensor_map[-1].update(measurement=measurement, source_case=case if board else '')
                     if stage == 'effective_length' and any(x.tolist() != [19] for x in values.values()):
                         print(f'L{i} effective_length differs: ' + str({k: v.tolist() for k, v in values.items()}))
@@ -275,18 +319,21 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                     verdict = _check_silu_pair(pair_rows, i, info['graphs'][group], actual, refs)
                     rows[start_row:] = pair_rows
                     save_json(root / 'silu-result.json', verdict)
-                    if combined and verdict['status'] != 'PASSED':
+                    if combined and not single and verdict['status'] != 'PASSED':
                         raise ValueError(f'L{i}: paired SiLU did not pass: {verdict}')
         if combined:
-            check_measured_product(root, layers['0'], rows, _score)
-            write_overview(root, rows, layers)
+            product_taps = [g for g in layers['0']['graphs'].values() if {'mul_lhs', 'mul_rhs', 'mul_output'}.intersection(g['aliases'])]
+            if all(g['valid_hidden_equal_bits'] for g in product_taps):
+                check_measured_product(root, layers['0'], rows, _score)
+            write_overview(root, rows, layers, single_token=single)
         for name, entries in [('summary.csv', rows), ('tensor-map.csv', tensor_map)]:
             with (root / name).open('w', encoding='utf-8', newline='') as stream:
                 writer = csv.DictWriter(stream, fieldnames=list(dict.fromkeys(k for entry in entries for k in entry)))
                 writer.writeheader()
                 writer.writerows(entries)
         save_json(root / 'manifest.json', dict(capture_sha256=sha(reference / 'manifest.json'),
-                  physical_rows=64, valid_rows=19, last_valid_index=18, chunk_size=64,
+                  physical_rows=64, valid_rows=19, last_valid_index=18, chunk_size=1 if single else 64,
+                  reference_chunk_size=64, cpro_gdr_calls=19 if single else 1,
                   input_basis='CAPTURED_310P_MODULE_ENTRY', reference_backend='310p', layers=layers))
         root.rename(target)
     share_for_transfer(target)

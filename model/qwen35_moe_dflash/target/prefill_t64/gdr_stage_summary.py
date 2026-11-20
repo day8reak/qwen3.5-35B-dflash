@@ -63,14 +63,15 @@ def check_measured_product(root, info, rows, score):
                   product[:, idx], expected[:, idx], reproduced=True if backend == 'cpro' else '')
 
 
-def write_overview(root, rows, layers):
+def write_overview(root, rows, layers, *, single_token=False):
     order = [*('entry_' + k for k in ENTRY), *GDR, *NORM, 'golden_hidden']
     rows.sort(key=lambda r: (r['layer'], order.index(r['stage']), r['comparison'] != 'cpro_vs_310p',
                              r['comparison'], r['scope'] == 'token18'))
-    lines = ['# L0 GDN prefill 精度汇总', '', '物理 T64，有效 token 0–18，GDR chunk=64。CPro 使用 L0 的 310P 整层入口。',
+    mode = '310P GDR chunk=64，CPro 串行执行 19 次 S=1。core 的后 45 行补零。' if single_token else 'GDR chunk=64。'
+    lines = ['# L0 GDN prefill 精度汇总', '', f'物理 T64，有效 token 0–18。{mode}CPro 使用 L0 的 310P 整层入口。',
              '逐 token 张量保留全部 64 行。valid19 和 token18 分别评分，状态、权重及长度按整个张量评分。',
              '浮点数显示相对 L2 / cosine。PASS 和 FAIL 按五项指标判定，整数按精确相等判定。',
-             'L0 的 SiLU 输入和输出来自同次调用。其他合格读数来自相同整层输入、复现基线 hidden 的探针。310P 单端入口见文件索引中的 REFERENCE_INPUT_ONLY。',
+             'L0 的 SiLU 输入和输出来自同次调用。QUALIFIED 表示有效 hidden 与本版未插桩图逐位相同。标记 DIAGNOSTIC 的读数仅供排查探针。310P 单端入口见文件索引中的 REFERENCE_INPUT_ONLY。',
              '', '[逐项指标](summary.csv) · [每个 bin 的步骤、dtype、shape 和来源](tensor-map.csv) · [SiLU 同次调用检查](silu-result.json)', '']
     for idx in layers:
         lines.extend([f'## L{idx}', '', '| 计算位置 | 张量或检查 | valid19 或全张量 L2 / cos | token18 L2 / cos | 结果 |',
@@ -80,6 +81,8 @@ def write_overview(root, rows, layers):
             stage = row['stage']
             if stage.startswith('entry_'):
                 measurement = 'MODULE_INPUT'
+            elif row['baseline_hidden_reproduced'] is False:
+                measurement = 'DIAGNOSTIC'
             elif row['comparison'].startswith('310p_'):
                 measurement = 'REFERENCE_CHECK'
             else:
@@ -102,6 +105,8 @@ def write_overview(root, rows, layers):
                       'cpro_product_vs_measured_lhs_times_rhs': 'CPro 实测 / 两侧实测操作数之积'}
             label = checks.get(comparison, stage)
             status = 'PASS' if all(r['passed'] for r in scores) else 'FAIL'
+            if any(r['measurement'] == 'DIAGNOSTIC' for r in scores):
+                status = 'DIAGNOSTIC'
             lines.append(f"| {position} | {label} | {by_scope.get('valid19', by_scope.get('tensor', '—'))} | {by_scope.get('token18', '—')} | {status} |")
         lines.append('')
     (root / 'summary.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
