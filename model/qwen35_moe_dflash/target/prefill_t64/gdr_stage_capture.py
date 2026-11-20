@@ -1,6 +1,7 @@
 """Observe the actual gated norm expression and the adjacent unscaled chunk-64 GDR."""
 import ast
 import csv
+import hashlib
 import json
 from functools import wraps
 import inspect
@@ -8,6 +9,7 @@ import textwrap
 
 from .segment_prefix import tensor_record
 from ..layer_probe.capture import cpu
+from ..layer_probe.common import read_array
 
 from .gdr_stage_data import DESCRIPTIONS, GDR, NORM, logical
 
@@ -95,6 +97,9 @@ def capture_stages(root, manifest, snapshots):
         records[str(layer)] = dict(epsilon=snapshot['epsilon'], attrs=data['attrs'],
             tensors={k: tensor_record(root, str((folder / k).relative_to(root)), v) for k, v in tensors.items()})
     manifest['gdr_stages'] = records
+    ids = read_array(root, manifest['inputs']['input_ids']).astype('<i4', copy=False)
+    manifest['input_ids_i32_sha256'] = hashlib.sha256(ids.tobytes()).hexdigest()
+    print('310P padded input_ids SHA256 (int32):', manifest['input_ids_i32_sha256'], flush=True)
     with (root / 'tensor-map.csv').open('w', encoding='utf-8', newline='') as stream:
         writer = csv.writer(stream)
         writer.writerow(('layer', 'backend', 'tensor', 'step', 'meaning', 'path', 'shape', 'dtype'))

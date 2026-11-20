@@ -12,7 +12,7 @@ from ..layer_probe.common import checked, identity, read_array, save_json, sha
 from .decode_cache_control import graph_message
 from .decode_cache_trace import _add_ports, _project_input, _record
 from .gdr_stage_data import BASIS, GDR, GROUPS, case_id, logical, shapes
-from .segment_export import MODULE_BASIS
+from .segment_export import MODULE_BASIS, NATIVE_GDR_MODULE_BASIS
 
 VIEWS = {'Reshape', 'Identity', 'TensorMove', 'Unsqueeze', 'Squeeze', 'ExpandDims'}
 
@@ -99,7 +99,8 @@ def stage_edges(graph, group):
                 mul_lhs=lhs, mul_rhs=rhs, mul_output=mul.name + ':0', gated_return=proj_input)
 
 
-def prepare(baseline, reference, output):
+def prepare(baseline, reference, output, *, include_baseline=False):
+    capture_hash = sha(reference / 'manifest.json')
     capture = json.loads((reference / 'manifest.json').read_text())
     if (capture['status'], capture['physical_rows'], capture['valid_rows'], capture['output_pos']) != ('CAPTURED', 64, 19, 18):
         raise ValueError('Expected a completed physical64/valid19 prefill')
@@ -113,14 +114,18 @@ def prepare(baseline, reference, output):
         for i in range(3):
             orig = f'l{i:02}_c00_gdn_layer_hidden_o0'
             manifest, case, folder, record = _record(baseline / 'air', orig)
-            if (record['reference_basis'] != MODULE_BASIS
+            if (record['reference_basis'] not in (MODULE_BASIS, NATIVE_GDR_MODULE_BASIS)
                     or (record['physical_rows'], record['valid_rows'], record['reference_position']) != (64, 19, 18)):
                 raise ValueError(f'{orig}: expected original standalone valid19 hidden AIR')
+            if include_baseline and (record['reference_basis'] != NATIVE_GDR_MODULE_BASIS
+                    or record['capture_sha256'] != capture_hash or manifest['capture_sha256'] != capture_hash):
+                raise ValueError(f'{orig}: re-export the whole module from this native GDR stage capture')
             info = capture['attention_modules'][str(i)]
             gold = read_array(folder, record['golden'])
             hidden = read_array(reference, info['golden_hidden'])
-            if gold.shape != hidden.shape or gold.dtype != hidden.dtype or gold[:, :19].tobytes() != hidden[:, :19].tobytes():
-                raise ValueError(f'{orig}: traced 310P valid hidden changed')
+            rows = slice(None) if include_baseline else slice(0, 19)
+            if gold.shape != hidden.shape or gold.dtype != hidden.dtype or gold[:, rows].tobytes() != hidden[:, rows].tobytes():
+                raise ValueError(f'{orig}: traced 310P hidden changed')
             inputs = {}
             for spec in record['source_inputs']:
                 role = spec['semantic_name']
@@ -132,11 +137,15 @@ def prepare(baseline, reference, output):
                 bound = live.astype(old.dtype, copy=False)
                 if bound.dtype != live.dtype and not np.array_equal(bound.astype(live.dtype), live):
                     raise ValueError(f'{orig}: CPro input ABI loses values for {role}')
-                baseline_values, current_values = (old[:, :19], bound[:, :19]) if role == 'hidden' else (old, bound)
+                baseline_values, current_values = (old[:, rows], bound[:, rows]) if role == 'hidden' else (old, bound)
                 if baseline_values.tobytes() != current_values.tobytes():
                     raise ValueError(f'{orig}: captured {role} changed')
                 inputs[role] = bound
             raw = checked(folder, record['air']).read_bytes()
+            if include_baseline:
+                dest = root / 'models' / orig
+                shutil.copytree(folder, dest)
+                cases.append(dict(case, export=identity(dest / 'export.json', root)))
             native = capture['gdr_stages'][str(i)]
             for group in GROUPS:
                 msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
@@ -186,7 +195,7 @@ def prepare(baseline, reference, output):
                 contract = dict(order=[s['name'] for s in goldens], source_edges=source_edges, required_dtypes=required,
                                 stage_views={k: shapes(k) for k in taps})
                 meta = dict(module_inputs='CURRENT_310P_CAPTURE', source=orig, source_air=record['air']['sha256'], aliases=aliases, edges=edges,
-                            group=group, air_dtypes=air_dtypes, air_rms_epsilon=norm_epsilon, capture=sha(reference / 'manifest.json'), epsilon=native['epsilon'])
+                            group=group, air_dtypes=air_dtypes, air_rms_epsilon=norm_epsilon, capture=capture_hash, epsilon=native['epsilon'])
                 export = dest / 'export.json'
                 save_json(export, dict(record, source_inputs=source_inputs, golden=goldens[0], goldens=goldens, air=identity(air, dest), reference_basis=BASIS,
                                        output_contract=contract, gdr_stages=meta))

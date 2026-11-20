@@ -11,26 +11,32 @@ from ..layer_probe.common import KIND, checked, identity, read_array, save_json,
 from ..layer_probe.replay import export_input_identity, source_bindings
 from ..layer_probe.steps import working_directory
 
-from .segment_export import DECODE_MODULE_BASIS, MODULE_BASIS
+from .segment_export import DECODE_MODULE_BASIS, MODULE_BASIS, NATIVE_GDR_MODULE_BASIS
 from .segment_gdn_trace import BASIS as TRACE_BASIS, TAPS
 
 
 def prepare_modules(fixture, capture, job):
     from ..layer_probe.common import metrics
     cpu_root = fixture / 'module-cpu'
-    audit = json.loads((cpu_root / 'report.json').read_text())
     capture_hash = sha(fixture / 'manifest.json')
     decode = capture.get('phase') == 'decode'
     rows, valid = (1, 1) if decode else (64, 19)
-    scope = 'SEGMENT_DECODE_AFTER_VALID19_FIXED_INPUT_MODULE_HIDDEN' if decode else 'SEGMENT_VALID19_FIXED_INPUT_ATTENTION_MODULE_HIDDEN'
-    if (audit['scope'] != scope
-            or audit['capture_sha256'] != capture_hash):
-        raise ValueError('Expected the fixed-input module CPU audit for this same capture')
-    cases = []
     trace = capture.get('linear_trace')
-    if trace is not None and trace['layer'] not in (0, 1, 2):
-        raise ValueError('Expected a linear attention layer')
-    for i in ([trace['layer']] if trace is not None else range(4)):
+    native_stages = 'gdr_stages' in capture
+    if native_stages:
+        if decode or trace is not None or set(capture['gdr_stages']) != {'0', '1', '2'}:
+            raise ValueError('Expected native prefill GDR stage measurements for L0–L2')
+        layers = range(3)
+    else:
+        scope = 'SEGMENT_DECODE_AFTER_VALID19_FIXED_INPUT_MODULE_HIDDEN' if decode else 'SEGMENT_VALID19_FIXED_INPUT_ATTENTION_MODULE_HIDDEN'
+        audit = json.loads((cpu_root / 'report.json').read_text())
+        if audit['scope'] != scope or audit['capture_sha256'] != capture_hash:
+            raise ValueError('Expected the fixed-input module CPU audit for this same capture')
+        if trace is not None and trace['layer'] not in (0, 1, 2):
+            raise ValueError('Expected a linear attention layer')
+        layers = [trace['layer']] if trace is not None else range(4)
+    cases = []
+    for i in layers:
         record = capture['attention_modules'][str(i)]
         expected_member = 'linear_attn' if i < 3 else 'self_attn'
         if record['module'] != expected_member:
@@ -43,12 +49,15 @@ def prepare_modules(fixture, capture, job):
         if trace is not None:
             case.update(kind='segment_gdn_trace', id=f'l{i:02}_c00_gdn_trace_o0')
         native = read_array(fixture, record['golden_hidden'])
-        cpu = read_array(cpu_root, audit['layers'][str(i)]['cpu_hidden'])
-        if native.shape != (1, rows, 2048) or native.dtype != np.float16 or cpu.shape != (1, valid, 2048):
-            raise ValueError(f'L{i}: unexpected module hidden geometry')
-        if not (metrics(native[:, :valid], cpu)['passed'] and metrics(native[:, valid-1], cpu[:, -1])['passed']):
-            cases.append(dict(case, status='CPU_REFERENCE_MISMATCH', error='See module-cpu/report.json'))
-            continue
+        if native.shape != (1, rows, 2048) or native.dtype != np.float16:
+            raise ValueError(f'L{i}: unexpected native module hidden geometry')
+        if not native_stages:
+            cpu = read_array(cpu_root, audit['layers'][str(i)]['cpu_hidden'])
+            if cpu.shape != (1, valid, 2048):
+                raise ValueError(f'L{i}: unexpected CPU module hidden geometry')
+            if not (metrics(native[:, :valid], cpu)['passed'] and metrics(native[:, valid-1], cpu[:, -1])['passed']):
+                cases.append(dict(case, status='CPU_REFERENCE_MISMATCH', error='See module-cpu/report.json'))
+                continue
         folder = job / 'module-inputs' / case['id']
         folder.mkdir(parents=True)
         specs = {}
@@ -92,7 +101,11 @@ def prepare_modules(fixture, capture, job):
                 shutil.copyfile(checked(origin, spec), dest)
                 control[key] = dict(spec, **identity(dest, job))
         cases.append(case)
-    segment = dict(attention_modules=cases, capture_sha256=capture_hash, cpu_audit_sha256=sha(cpu_root / 'report.json'))
+    segment = dict(attention_modules=cases, capture_sha256=capture_hash)
+    if native_stages:
+        segment['reference_basis'] = NATIVE_GDR_MODULE_BASIS
+    else:
+        segment['cpu_audit_sha256'] = sha(cpu_root / 'report.json')
     if decode:
         segment['phase'] = 'decode'
     save_json(job / 'segment.json', segment)
@@ -142,6 +155,8 @@ def export_modules(job, segment, layers, exporter):
         rows = 1 if decode else 64
         if decode:
             basis = DECODE_MODULE_BASIS
+        elif segment.get('reference_basis') == NATIVE_GDR_MODULE_BASIS:
+            basis = NATIVE_GDR_MODULE_BASIS
         for entry in segment['attention_modules']:
             case = {k: v for k, v in entry.items() if k not in ('inputs', 'golden', 'taps', 'replay')}
             cases.append(case)
@@ -203,7 +218,7 @@ def export_modules(job, segment, layers, exporter):
             save_json(record, dict(air=identity(air, folder), source_inputs=bindings, golden=goldens[0], goldens=goldens,
                       reference_basis=basis, physical_rows=rows, valid_rows=1 if decode else 19, reference_position=19 if decode else 18,
                       quantized_projections=projections, length_edge=edges[arg],
-                      capture_sha256=segment['capture_sha256'], cpu_audit_sha256=segment['cpu_audit_sha256'],
+                      capture_sha256=segment['capture_sha256'], cpu_audit_sha256=segment.get('cpu_audit_sha256'),
                       output_contract=output_contract, **({'trace_replay': replay} if traced else {})))
             case.update(status='EXPORTED', export=identity(record, root))
         complete = all(c['status'] == 'EXPORTED' for c in cases)

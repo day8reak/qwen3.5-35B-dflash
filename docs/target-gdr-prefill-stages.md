@@ -1,6 +1,6 @@
 # 310P 与 CPro 的 GDR、RMSNorm 和门控乘法逐张量对比
 
-复用 19 个有效 token 的首次 prefill，物理 T64，L0–L2 各执行一次未缩放的 chunk-64 GDR。310P 采集原始分段推理的模块入口和中间张量。CPro 的每层用本次 310P 捕获的完整 hidden、初始 ConvState、recurrent state 和有效长度启动，在图内连续执行投影、GDR、RMSNorm、SiLU 和门控乘法。CPro 在原来三张整层 hidden AIR 上读出算子边，每层两张诊断图，分别读 GDR 和归一化/门控张量。
+从原始分段推理重新采集同一个 19-token prompt 的首次 prefill，物理 T64，最后一个有效 token 的下标为 18。L0–L2 各执行一次未缩放的 chunk-64 GDR。每层 CPro 图使用本轮 310P 同层入口的完整 hidden、初始 ConvState、recurrent state 和有效长度，在图内连续计算投影、GDR、RMSNorm、SiLU、门控乘法及输出投影。所有参考张量来自这次 310P 执行。
 
 | 位置 | 保存的张量 |
 |---|---|
@@ -8,41 +8,43 @@
 | RMSNorm | rms_input、gamma、rms_output；epsilon 在清单里。输出取源代码后续使用的归一化激活 |
 | 门控 | gate、silu_input、silu_output、mul_lhs、mul_rhs、mul_output、gated_return。mul_output 在返回值转型前采集 |
 
-**1. 在 10.136.180.78 采集 310P 参考张量**
+**1. 10.136.180.78，重新采集 310P 参考**
+
+两台机器使用相同的实验目录名。本次使用 `gdr-stages-t64-valid19-fresh01`。如需再次完整重跑，两边同时换一个新后缀。下列命令使用已有的模型权重、DDK、板端 runtime 和传输账号配置。
 
 ```bash
 conda activate qwen3_5_w4
-G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19"
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
 git -C "$REPO_DIR" pull --ff-only origin main &&
 python "$REPO_DIR/targets/cpro/tools/check_segment_prefill.py" \
   --source-root "$TARGET_SOURCE" --gdr-stages --output "$G/reference"
 ```
 
-已有完整的 `reference/manifest.json` 且含有 L0–L2 的 `gdr_stages` 时可以直接复用采集。新采集只跑 310P 分段推理。`reference/tensor-map.csv` 逐文件给出计算步骤和 dtype。采集目录自动设置传输权限 0777。
+看到 `CAPTURED`、`physical_rows=64`、`valid_rows=19`、`output_pos=18` 后继续。本例补齐后的 64 个 int32 token ID 的 SHA256 为 `ec5119e4b49de3c9e0cd48b7cff7faf13b18a0a10dda89c2a5180b194f05eaf7`，可核对采集日志。`reference/tensor-map.csv` 说明模块入口和每个 310P 观测点。
 
-**2. 在同一台 10.136.180.78 生成 6 个 CPro AIR**
-
-`prepare` 读取 `$PAIR/air` 下已有的 L0–L2 整层基线和刚采集的 `$G/reference`，为每层生成 GDR、RMSNorm/门控两张诊断图。输入和参考输出也随 AIR 一起写入新批次。
+**2. 同一台 10.136.180.78，生成整层 AIR 和中间张量诊断 AIR**
 
 ```bash
 conda activate qwen3_5_cpro
-G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19"
-PAIR="$AI_RUN_DIR/target/tests/attention-layers-t64-valid19"
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+TOOLS="$REPO_DIR/targets/cpro/tools"
 
-git -C "$REPO_DIR" pull --ff-only origin main &&
-python "$REPO_DIR/targets/cpro/tools/gdr_prefill_stages.py" prepare \
-  --baseline "$PAIR" --reference "$G/reference" --output "$G/air" &&
+python "$TOOLS/prepare_cpro_prefill_t64.py" \
+  --source-root "$CPRO_SOURCE" --config "$TARGET_CONFIG" \
+  --fixture "$G/reference" --attention-layers --output "$G/export" --export &&
+python "$TOOLS/gdr_prefill_stages.py" prepare \
+  --baseline "$G/export" --reference "$G/reference" \
+  --include-baseline --output "$G/air" &&
 ls -lh "$G"/air/models/*/export.air
 ```
 
-输出应列出 6 个 `export.air`。脚本会给生成的 `$G/air` 设置传输权限 0777。
+第一条命令用本轮采集重新导出三个原始整层 hidden 图。第二条从这些图增加实际算子输出端口，把三张整层图、三张 GDR 图和三张 RMSNorm/门控图写入 `air/manifest.json`。最后应列出九个 `export.air`。采集和导出脚本已将待传输的 `reference`、`air` 目录及内容设为 0777。
 
-**3. 在 10.136.181.35 拉取 AIR、编译 OMC 并下发**
+**3. 10.136.181.35，传输并编译这九个 AIR**
 
 ```bash
 conda activate custom_pypto
-G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19"
-PAIR="$AI_RUN_DIR/target/tests/attention-layers-t64-valid19"
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
 TOOLS="$REPO_DIR/targets/cpro/tools"
 
 git -C "$REPO_DIR" pull --ff-only origin main &&
@@ -51,24 +53,36 @@ python "$TOOLS/target_layer_probe.py" compile \
   --batch "$G/air" --output "$G/omc" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
   --compiler-profile isolated-kirinx90 \
-  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" --use-origin-format &&
-python "$TOOLS/validate_draft_vector.py" \
-  --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
-  --compiled "$G/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$G/execution" --apply
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" --use-origin-format
 ```
 
-**在同一 DDK 终端回收并对比**。板端执行完成后运行。诊断图里的数值超阈值会使 recover 返回非零，取得实际输出后仍可生成两端报告。
+**4. 同一台 10.136.181.35，执行板端模型并回收**
+
+九个 case 均编译成功后，在同一终端执行。首次命令下发九个模型，第二条等待并回收同一次执行。
 
 ```bash
 conda activate custom_pypto
-python "$TOOLS/validate_draft_vector.py" --recover "$G/execution" --output "$G/recovery"
+python "$TOOLS/validate_draft_vector.py" \
+  --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --compiled "$G/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$G/execution" --apply &&
+python "$TOOLS/validate_draft_vector.py" \
+  --recover "$G/execution" --wait --output "$G/recovery"
+```
+
+**5. 同一台 10.136.181.35，导出两端 bin 并逐张量对比**
+
+回收结果中 `device_execution=EXECUTED_OUTPUTS_RETRIEVED` 表示已经取得板端计算结果。即使此时 `numerical_validation=FAILED`，仍可执行下面的命令定位误差。
+
+```bash
+conda activate custom_pypto
 python "$TOOLS/gdr_prefill_stages.py" compare \
-  --baseline "$PAIR" --reference "$G/reference" --trace "$G" --output "$G/dump"
+  --reference "$G/reference" --trace "$G" --output "$G/dump" &&
+head -n 8 "$G/dump/tensor-map.csv"
 ```
 
 `dump/l0/{310p,cpro}/mul_output.bin` 等文件按后端保留实际 dtype，统一为清单中声明的逻辑形状。这些 .bin 按 C 连续顺序写入，无文件头。CPro 使用回读包中的第一次调用，校验各次调用有效区的稳定性。两个设备的逐 token 张量保留完整 64 行。`dump/summary.csv` 用 310P 对照 CPro 的各个浮点张量，分别给出 relative L2、cosine、最大绝对误差、RMSE、KL 和平均相对误差，也统计参考 FP16 次正规数在对端变为零的个数。逐 token 张量分别统计 0–18 和 token 18。状态和 gamma 使用全张量，effective_length 按整数精确比较。
 
-`dump/manifest.json` 记录数组的路径、shape、dtype 和 SHA256、CPro 的实际取数边，同一条边的别名，以及每张诊断图的有效区 hidden 是否与之前未缩放的板端结果逐位相同。解释原图误差时使用 `valid_hidden_equal_bits=true` 的图。
+`dump/manifest.json` 记录数组的路径、shape、dtype 和 SHA256、CPro 的实际取数边，同一条边的别名，以及每张诊断图的有效区 hidden 是否与本次同批整层基线的 19 行有效输出逐位相同。解释原图误差时使用 `valid_hidden_equal_bits=true` 的图。
 
 ### 如何辨认一个 bin
 

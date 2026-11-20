@@ -11,6 +11,7 @@ import shlex
 import shutil
 import sys
 import tarfile
+import time
 import uuid
 
 sys.dont_write_bytecode = True
@@ -849,7 +850,7 @@ def pending_progress(hdc, board, token, requested):
     return result
 
 
-def recover(root, out):
+def recover(root, out, *, wait=False):
     root = Path(root).resolve()
     if root == out or root in out.parents or out in root.parents:
         raise ValueError('recovery needs a separate output slot')
@@ -879,8 +880,14 @@ def recover(root, out):
         if (serial, server) != (plan['serial'], plan['hdc_server']):
             raise ValueError('recover requires the same board')
         hdc = Hdc(exe, serial, server, out, 180)
-        _, done = hdc.shell(_guard(board, token)+' && if test -f '+q(str(board/'complete'))
-            +'; then cat '+q(str(board/'complete'))+'; else echo PENDING; fi', 'vector-completion')
+        completion = (_guard(board, token)+' && if test -f '+q(str(board/'complete'))
+                      +'; then cat '+q(str(board/'complete'))+'; else echo PENDING; fi')
+        _, done = hdc.shell(completion, 'vector-completion')
+        if wait and done == 'PENDING':
+            progress.update('wait-for-completion', 'Waiting for this board request to complete')
+            while done == 'PENDING':
+                time.sleep(10)
+                _, done = hdc.shell(completion, 'vector-completion')
         if done == 'PENDING':
             state.update(status='VECTOR_VALIDATION_PENDING', stage='completion-unconfirmed',
                          board_progress=pending_progress(hdc, board, token, requested),
@@ -970,12 +977,15 @@ def main():
     parser.add_argument('--config')
     parser.add_argument('--ddk-root', default=os.environ.get('CPRO_DDK_ROOT'))
     parser.add_argument('--recover')
+    parser.add_argument('--wait', action='store_true', help='with --recover, wait for this same board request to finish')
     parser.add_argument('--status', help='Inspect local launcher state and last transport receipt; no HDC, writes or locks')
     parser.add_argument('--analyze', help='Read an existing recovery directory and print numerical details; no board access')
     parser.add_argument('--air-export', help='With --analyze: replay bound layer0 Q/RoPE math on CPU using retained snapshots')
     parser.add_argument('--output')
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
+    if args.wait and not args.recover:
+        parser.error('--wait requires --recover')
     if args.external_weights and (not args.compiled or args.recover or args.analyze or args.status or args.top1_semantics):
         parser.error('--external-weights requires a Target prefill --compiled start')
     if args.air_export and not args.analyze:
@@ -1001,7 +1011,7 @@ def main():
     out = output_path(args.output); out.parent.mkdir(parents=True, exist_ok=True)
     with (out.parent/('.'+out.name+'.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        result = recover(args.recover, out) if args.recover else start(args, out)
+        result = recover(args.recover, out, wait=args.wait) if args.recover else start(args, out)
     shown = {k: v for k, v in result.items() if k != 'cases'}
     if 'cases' in result and not result.get('top1_semantics') and not result.get('offline_weight_layouts'):
         shown['cases'] = [{k: v for k, v in c.items() if k not in ('tensors', 'api_us')} for c in result['cases']]
@@ -1019,6 +1029,7 @@ def main():
                 row.pop('output_sha256', None)
                 row.update(relative_l2=first['relative_l2'], cosine=first['cosine'], failed_metrics=first['failed_metrics'])
             if row.get('reference_basis') in ('CPU_CHECKED_310P_SEGMENT_WHOLE_ATTENTION_MODULE_HIDDEN_VALID19',
+                                              'MEASURED_310P_SEGMENT_GDN_MODULE_HIDDEN_VALID19',
                                               'SEGMENT_310P_SAME_CALL_GDN_TRACE_VALID19') and row.get('invocations'):
                 first = row.pop('invocations')[0]
                 row.pop('output_sha256', None)

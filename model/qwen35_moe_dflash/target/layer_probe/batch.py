@@ -468,9 +468,12 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
                 raise ValueError('Unexpected chunk GDR trace outputs or reference')
             cases[-1]['reference_basis'] = BASIS
         if case['kind'] == 'segment_module_hidden':
-            from ..prefill_t64.segment_export import DECODE_MODULE_BASIS, MODULE_BASIS
+            from ..prefill_t64.segment_export import DECODE_MODULE_BASIS, MODULE_BASIS, NATIVE_GDR_MODULE_BASIS
             decode = case['phase'] == 'decode'
             basis = DECODE_MODULE_BASIS if decode else MODULE_BASIS
+            if (case['phase'] == 'prefill' and case['point'] == 'gdn_layer' and case['layer'] in (0, 1, 2)
+                    and exported['reference_basis'] == NATIVE_GDR_MODULE_BASIS):
+                basis = NATIVE_GDR_MODULE_BASIS
             geometry = (1, 1, 19) if decode else (64, 19, 18)
             if (exported['reference_basis'] != basis or exported['capture_sha256'] != manifest['capture_sha256']
                     or [s['semantic_name'] for s in io['outputs']] != ['golden_hidden']

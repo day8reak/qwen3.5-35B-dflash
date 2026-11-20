@@ -12,18 +12,20 @@ def main():
     cmds = parser.add_subparsers(dest='action', required=True)
     prepare = cmds.add_parser('prepare', help='expose the measured stage edges in the baseline AIRs')
     compare = cmds.add_parser('compare', help='write per-backend raw binary tensors, a file map and CPro-vs-310P CSV metrics')
+    prepare.add_argument('--baseline', required=True, type=Path, help='export job containing the whole-module AIR batch')
+    prepare.add_argument('--include-baseline', action='store_true', help='include the three fresh whole modules for a single nine-case board run')
+    compare.add_argument('--baseline', type=Path, help='whole-module board batch (default: same batch as --trace)')
     for cmd in (prepare, compare):
-        cmd.add_argument('--baseline', required=True, type=Path, help='original unscaled whole-module board batch')
         cmd.add_argument('--reference', required=True, type=Path, help='310P prefill capture with measured GDR and norm stages')
         cmd.add_argument('--output', required=True, type=Path)
     compare.add_argument('--trace', required=True, type=Path, help='new compiled and recovered batch')
     args = parser.parse_args()
     if args.action == 'prepare':
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_air import prepare
-        prepare(args.baseline, args.reference, args.output)
+        prepare(args.baseline, args.reference, args.output, include_baseline=args.include_baseline)
     else:
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_report import compare
-        compare(args.baseline, args.reference, args.trace, args.output)
+        compare(args.baseline or args.trace, args.reference, args.trace, args.output)
 
 
 if __name__ == '__main__':
