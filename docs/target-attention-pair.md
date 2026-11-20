@@ -59,6 +59,54 @@ python "$PROBE" compare --fixture "$BATCH_ROOT/execution/fixture" \
 cat "$BATCH_ROOT/comparison/summary.csv"
 ```
 
+### 首步 Decode 的 L3 CacheUpdate 对照
+
+同一次真实 19-token prefill 后，四层分别使用 310P 模块输入和已有状态运行首步 decode。L0–L2 的 hidden 通过五项指标，相对 L2 分别为 0.02777、0.03046、0.02620，cosine 分别为 0.999616、0.999539、0.999662。L3 hidden 相对 L2 为 757.9691，cosine 为 −0.052076，十次输出稳定。早期独立 Decode CacheUpdate 的 V 样本在应保留区有 130,966 个差异，golden 变化区有 0 个差异。[历史单测记录](target-accuracy-status.md#decode-cache-原因分析)
+
+在 AIR 机的 `qwen3_5_w4` 环境，CPU 用本次 L3 输入和原始 W4 权重计算第 19 号位置的新 K、V，拷贝调用前的真实分页缓存并写入该位置。脚本核对逻辑位置、物理页、所有未写位置的位值及本次 CPU/310P hidden 参考，然后把输出目录设为 0777。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only origin main
+D="$AI_RUN_DIR/target/tests/decode-t1-after-valid19"
+python "$REPO_DIR/targets/cpro/tools/decode_cache_control.py" cpu \
+  --fixture "$D/reference" --output "$D/cache-control/cpu"
+```
+
+在 DDK 机的 `custom_pypto` 环境拉取 CPU 结果，复用已传入的原 L3 AIR。三个新 case 分别绕过 K、V 或两路 CacheUpdate，选中的缓存输入改为 CPU 写好的完整缓存。Q、attention、gate、o_proj 继续在板端执行。hidden 参考沿用原 310P 输出。
+
+```bash
+git -C "$REPO_DIR" pull --ff-only origin main
+D="$AI_RUN_DIR/target/tests/decode-t1-after-valid19"
+C="$D/cache-control"
+PROBE="$REPO_DIR/targets/cpro/tools/target_layer_probe.py"
+VALIDATE="$REPO_DIR/targets/cpro/tools/validate_draft_vector.py"
+python3 "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" "$C/cpu" &&
+python "$REPO_DIR/targets/cpro/tools/decode_cache_control.py" prepare \
+  --batch "$D/cpro/air" --cpu "$C/cpu" --output "$C/air" &&
+python "$PROBE" compile --batch "$C/air" --output "$C/omc" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile isolated-kirinx90 --use-origin-format \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+```
+
+三项均为 `COMPILED` 后启动一次板端执行。
+
+```bash
+python "$VALIDATE" --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --compiled "$C/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$C/execution" --apply
+```
+
+启动得到确认后，回收并打印各组的 relative L2、cosine 和其他指标。
+
+```bash
+python "$VALIDATE" --recover "$C/execution" --output "$C/recovery"
+python "$PROBE" compare --fixture "$C/execution/fixture" \
+  --native "$C/recovery/native" --output "$C/comparison"
+cat "$C/comparison/summary.csv"
+```
+
+若只换 V 即恢复，说明相同 query 和原 K 下替换 V 路径足以消除本例的 hidden 超差；只换 K 的解释对称。若仅同时替换通过，需联合检查两路。CPU 也计算了当前 token 的投影行，要进一步区分投影与写回，可在原图测量实际写入行，以及更新后 0–18 号位置与输入历史是否逐位一致。若两路都换仍失败，继续检查 query、有效长度、mask、core 和 o_proj 输入。
+
 ## 1. 导出两组 AIR
 
 切到此前成功导出 CPro AIR 的 Python 环境。`CPRO_SOURCE` 指向原私有 CPro 源码根目录；GDN 导出器在进程内将原 `linear_attention_convstate_update` 展开为已验证的 concat/tail，因此应使用保留该原调用的源码副本。不要指向已手工应用整网 ConvState patch 的副本。权重 YAML 使用原 checkpoint／量化权重，路径规则见采集文档。
