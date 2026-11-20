@@ -49,7 +49,7 @@ def _score(rows, layer, stage, label, scope, a, ref, *, reproduced):
     return 'equal' if row['passed'] else 'different'
 
 
-def _groups(layer, baseline, trace, trace_batch):
+def _groups(layer, baseline, trace, trace_batch, silu_readout):
     split = 'split_norm_layers' in trace_batch
     def load(case, batch):
         run, air = batch
@@ -66,6 +66,13 @@ def _groups(layer, baseline, trace, trace_batch):
             continue
         name = case['id']
         _, run, record = load(name, trace)
+        if silu_readout and name == silu_readout[0]:
+            _, run, replacement = load(name, silu_readout[1])
+            if (not replacement['output_contract'].get('silu_output_readout') or
+                    any(replacement['gdr_stages'][k] != record['gdr_stages'][k]
+                        for k in ('aliases', 'edges', 'capture', 'source_air'))):
+                raise ValueError(f'{name}: indexed readout does not observe the same source operands')
+            record = replacement
         stages = record['gdr_stages']['aliases']
         if (record['gdr_stages']['group'] != 'norm' or len(record['goldens']) != 2
                 or set(stages.values()) != {record['goldens'][1]['name']} or seen.intersection(stages)):
@@ -76,13 +83,26 @@ def _groups(layer, baseline, trace, trace_batch):
         raise ValueError(f'L{layer}: incomplete norm operand coverage')
 
 
-def compare(baseline, reference, trace, output):
+def compare(baseline, reference, trace, output, *, silu_readout=None):
     target = output_path(output)
     if target.exists():
         raise FileExistsError(target)
     capture = json.loads((reference / 'manifest.json').read_text())
     source_air, trace_air = _compiled_air(baseline), _compiled_air(trace)
     trace_batch = json.loads((trace_air / 'manifest.json').read_text())
+    alternate = None
+    if 'indexed_silu_layer' in trace_batch:
+        raise ValueError('Use the full split batch as --trace and the indexed SiLU case as --silu-readout')
+    if silu_readout:
+        extra_air = _compiled_air(silu_readout)
+        extra = json.loads((extra_air / 'manifest.json').read_text())
+        layer = extra.get('indexed_silu_layer')
+        if layer not in trace_batch.get('split_norm_layers', []):
+            raise ValueError('The indexed SiLU graph must belong to a selected split layer')
+        name = case_id(layer, 'norm_silu_output')
+        if [c['id'] for c in extra['cases']] != [name] or name not in {c['id'] for c in trace_batch['cases']}:
+            raise ValueError('Expected a matching single SiLU case')
+        alternate = (name, (silu_readout, extra_air))
     if 'split_norm_layers' in trace_batch and baseline.resolve() == trace.resolve():
         raise ValueError('Pass --baseline pointing to the original recovered nine-case batch')
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -96,7 +116,7 @@ def compare(baseline, reference, trace, output):
             base_inputs, base_refs, base, _ = board_case(baseline, orig)
             native = capture['gdr_stages'][str(i)]
             info = layers[str(i)] = dict(epsilon=native['epsilon'], gdr_attributes=native['attrs'], graphs={}, tensors={})
-            groups = _groups(i, (baseline, source_air), (trace, trace_air), trace_batch)
+            groups = _groups(i, (baseline, source_air), (trace, trace_air), trace_batch, alternate)
             for group, stages, case, run, record in groups:
                 meta = record['gdr_stages']
                 if meta['source_air'] != source['air']['sha256'] or meta['capture'] != sha(reference / 'manifest.json'):
@@ -108,9 +128,11 @@ def compare(baseline, reference, trace, output):
                     offsets[spec['semantic_name']] = (spec['index'], offset, spec['bytes'])
                     offset += spec['bytes']
                 module_inputs = trace_inputs.copy()
-                readout = record['output_contract'].get('gamma_readout')
-                if readout:
-                    verify_index_input(module_inputs.pop(readout['index_input'], None))
+                contract = record['output_contract']
+                for role in ('gamma', 'silu_output'):
+                    readout = contract.get(role + '_readout')
+                    if readout:
+                        verify_index_input(module_inputs.pop(readout['index_input'], None), role)
                 for role, (dtype, shape, digest) in module_inputs.items():
                     live = read_array(reference, capture['attention_modules'][str(i)]['inputs'][role])
                     bound = live.astype(dtype, copy=False)
@@ -121,7 +143,8 @@ def compare(baseline, reference, trace, output):
                 matched = actual['golden_hidden'][:, :19].tobytes() == base['golden_hidden'][:, :19].tobytes()
                 info['graphs'][group] = dict(case=case, module_inputs=meta.get('module_inputs', 'BASELINE_310P_CAPTURE'),
                                             full_inputs_equal_baseline=trace_inputs == base_inputs,
-                                            module_inputs_equal_baseline=module_inputs == base_inputs, gamma_readout=readout,
+                                            module_inputs_equal_baseline=module_inputs == base_inputs,
+                                            gamma_readout=contract.get('gamma_readout'), silu_output_readout=contract.get('silu_output_readout'),
                                             valid_hidden_equal_bits=matched, edges=meta['edges'], aliases=meta['aliases'],
                                             air_port_dtypes=meta['air_dtypes'], air_rms_epsilon=meta['air_rms_epsilon'],
                                             source_air_sha256=meta['source_air'], trace_air_sha256=record['air']['sha256'])
@@ -150,6 +173,7 @@ def compare(baseline, reference, trace, output):
                         board = backend == 'cpro'
                         step, meaning = DESCRIPTIONS[stage]
                         tensor_map.append(dict(layer=i, backend=backend, tensor=stage, step=step, meaning=meaning,
+                            baseline_hidden_reproduced=matched if board else '',
                             path=path.relative_to(root).as_posix(), shape=json.dumps(list(arr.shape)), dtype=arr.dtype.name,
                             bytes=arr.nbytes, source=str(sources[backend]), source_slot=slot if board else '',
                             source_offset_bytes=board_offset if board else 0, source_length_bytes=board_size if board else raw.nbytes,

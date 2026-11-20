@@ -14,6 +14,9 @@ def main():
     audit.add_argument('--dump', required=True, type=Path)
     audit.add_argument('--trace', required=True, type=Path, help='recovered nine-case board batch')
     audit.add_argument('--layers', nargs='+', type=int, choices=range(3), default=[0, 1, 2])
+    product = cmds.add_parser('audit-product', help='attribute the measured gated product gap from qualified split probes')
+    product.add_argument('--dump', required=True, type=Path)
+    product.add_argument('--layer', type=int, choices=range(3), default=0)
     inspect = cmds.add_parser('inspect-abi', help='print the retained AIR and compiled OMC output slots without running the model')
     inspect.add_argument('--compiled', required=True, type=Path, help='OMC batch directory')
     inspect.add_argument('--ddk-root', required=True, type=Path)
@@ -24,12 +27,19 @@ def main():
     prepare.add_argument('--include-baseline', action='store_true', help='include the three fresh whole modules for a single nine-case board run')
     prepare.add_argument('--split-norm-layers', type=int, nargs='+', choices=range(3),
                          help='read one distinct RMSNorm/gate edge per graph alongside the original hidden')
+    prepare.add_argument('--indexed-silu-layer', type=int, choices=range(3),
+                         help='export just the indicated layer with a runtime identity gather on the SiLU output')
+    compare.add_argument('--silu-readout', type=Path, help='use a recovered indexed SiLU case in the split dump')
     compare.add_argument('--baseline', type=Path, help='whole-module board batch (default: same batch as --trace)')
     for cmd in (prepare, compare):
         cmd.add_argument('--reference', required=True, type=Path, help='310P prefill capture with measured GDR and norm stages')
         cmd.add_argument('--output', required=True, type=Path)
     compare.add_argument('--trace', required=True, type=Path, help='new compiled and recovered batch')
     args = parser.parse_args()
+    if args.action == 'audit-product':
+        from qwen35_moe_dflash.target.prefill_t64.gdr_product_audit import audit_product
+        audit_product(args.dump, args.layer)
+        return 0
     if args.action == 'audit-dump':
         from qwen35_moe_dflash.target.prefill_t64.gdr_readback_audit import audit_dump
         audit_dump(args.dump, args.trace, args.layers)
@@ -40,10 +50,10 @@ def main():
     if args.action == 'prepare':
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_air import prepare
         prepare(args.baseline, args.reference, args.output, include_baseline=args.include_baseline,
-                split_norm_layers=args.split_norm_layers)
+                split_norm_layers=args.split_norm_layers, indexed_silu_layer=args.indexed_silu_layer)
     else:
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_report import compare
-        compare(args.baseline or args.trace, args.reference, args.trace, args.output)
+        compare(args.baseline or args.trace, args.reference, args.trace, args.output, silu_readout=args.silu_readout)
 
 
 if __name__ == '__main__':

@@ -11,7 +11,7 @@ from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import checked, identity, read_array, save_json, sha
 from .decode_cache_control import graph_message
 from .decode_cache_trace import _add_ports, _project_input, _record
-from .gdr_gamma_readout import add_gamma_readout, index_binding
+from .gdr_gamma_readout import add_indexed_readout, index_binding
 from .gdr_stage_data import BASIS, GDR, GROUPS, case_id, logical, shapes
 from .segment_export import MODULE_BASIS, NATIVE_GDR_MODULE_BASIS
 
@@ -100,14 +100,15 @@ def stage_edges(graph, group):
                 mul_lhs=lhs, mul_rhs=rhs, mul_output=mul.name + ':0', gated_return=proj_input)
 
 
-def _trace_graphs(raw, split_norm):
+def _trace_graphs(raw, split_norm, only_role=None):
     for group in (('norm',) if split_norm else GROUPS):
         msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
         edges = stage_edges(graph, group)
         if split_norm:
             # Each readout starts from the original AIR. Aliases of the same
             # operand share one diagnostic output and one invocation.
-            for edge in dict.fromkeys(edges.values()):
+            selected = [edges[only_role]] if only_role else dict.fromkeys(edges.values())
+            for edge in selected:
                 roles = {name: e for name, e in edges.items() if e == edge}
                 label = 'norm_' + next(iter(roles))
                 msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
@@ -116,7 +117,11 @@ def _trace_graphs(raw, split_norm):
             yield group, group, msg, graph, edges
 
 
-def prepare(baseline, reference, output, *, include_baseline=False, split_norm_layers=None):
+def prepare(baseline, reference, output, *, include_baseline=False, split_norm_layers=None, indexed_silu_layer=None):
+    if indexed_silu_layer is not None:
+        if split_norm_layers is not None:
+            raise ValueError('Select either the split norm batch or the indexed SiLU readout')
+        split_norm_layers = [indexed_silu_layer]
     split_norm = split_norm_layers is not None
     layers = list(split_norm_layers) if split_norm else list(range(3))
     if split_norm and (include_baseline or not layers or len(set(layers)) != len(layers) or set(layers) - {0, 1, 2}):
@@ -168,7 +173,8 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
                 shutil.copytree(folder, dest)
                 cases.append(dict(case, export=identity(dest / 'export.json', root)))
             native = capture['gdr_stages'][str(i)]
-            for group, label, msg, graph, edges in _trace_graphs(raw, split_norm):
+            only_role = 'silu_output' if indexed_silu_layer is not None else None
+            for group, label, msg, graph, edges in _trace_graphs(raw, split_norm, only_role):
                 # Two boundaries may read exactly the same producer. Read it once
                 # and retain the alias explicitly instead of relying on OMC duplicate-output handling.
                 slots, taps, aliases = {}, {}, {}
@@ -178,10 +184,11 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
                     taps[primary] = edge
                 enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
                 codes = {enum[n].number: typ for n, typ in [('DT_FLOAT16', 'float16'), ('DT_FLOAT','float32'), ('DT_INT16','int16')]}
-                gamma_readout = None
-                if 'gamma' in taps:
-                    gamma_readout = add_gamma_readout(graph, edges['gamma'])
-                    taps['gamma'] = gamma_readout['output_edge']
+                readout_role = only_role or 'gamma'
+                readout = None
+                if readout_role in taps:
+                    readout = add_indexed_readout(graph, edges[readout_role], readout_role)
+                    taps[readout_role] = readout['output_edge']
                 source_edges = _add_ports(graph, taps, allowed_dtypes=(0, *codes))
                 norm_epsilon = None
                 if 'rms_output' in edges:
@@ -199,8 +206,8 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
                     path = dest / spec['path']
                     inputs[spec['semantic_name']].tofile(path)
                     source_inputs.append(dict(spec, **identity(path, dest)))
-                if gamma_readout:
-                    source_inputs.append(index_binding(dest, source_inputs))
+                if readout:
+                    source_inputs.append(index_binding(dest, source_inputs, readout_role))
                 hidden_path = dest / record['golden']['path']
                 hidden.tofile(hidden_path)
                 goldens = [dict(record['golden'], **identity(hidden_path, dest))]
@@ -219,9 +226,9 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
                         required[str(idx)] = 'int16'
                 contract = dict(order=[s['name'] for s in goldens], source_edges=source_edges, required_dtypes=required,
                                 stage_views={k: shapes(k) for k in taps})
-                if gamma_readout:
-                    contract['gamma_readout'] = gamma_readout
-                    required[str(contract['order'].index('gamma'))] = air_dtypes['gamma']
+                if readout:
+                    contract[readout_role + '_readout'] = readout
+                    required[str(contract['order'].index(readout_role))] = air_dtypes[readout_role]
                 meta = dict(module_inputs='CURRENT_310P_CAPTURE', source=orig, source_air=record['air']['sha256'], aliases=aliases, edges=edges,
                             group=group, air_dtypes=air_dtypes, air_rms_epsilon=norm_epsilon, capture=capture_hash, epsilon=native['epsilon'])
                 export = dest / 'export.json'
@@ -232,6 +239,10 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
         batch = dict(manifest, cases=cases, scope='THREE_LAYER_GDR_AND_GATED_NORM_DIAGNOSTIC', golden_source=BASIS)
         if split_norm:
             batch.update(scope='ONE_NORM_OPERAND_PORT_PLUS_ORIGINAL_HIDDEN', split_norm_layers=layers)
+        if indexed_silu_layer is not None:
+            if len(cases) != 1:
+                raise ValueError('Expected one isolated SiLU readout')
+            batch.update(scope='INDEXED_SILU_OUTPUT_PLUS_ORIGINAL_HIDDEN', indexed_silu_layer=indexed_silu_layer)
         save_json(root / 'manifest.json', batch)
         root.rename(target)
     share_for_transfer(target)

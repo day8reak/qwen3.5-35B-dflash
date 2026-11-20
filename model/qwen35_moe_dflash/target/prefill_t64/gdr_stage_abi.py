@@ -51,8 +51,9 @@ def inspect_abi(compiled, ddk, case):
             ref = record['goldens'][i]
             slot.update(tensor=ref['name'], golden_shape=ref['shape'], golden_dtype=ref['dtype'],
                         air_edge=edge, air_op=src.type, allowed_views=contract.get('stage_views', {}).get(ref['name'], []))
-            if ref['name'] == 'gamma' and 'gamma_readout' in contract:
-                slot['gamma_readout'] = contract['gamma_readout']
+            readout_key = ref['name'] + '_readout'
+            if readout_key in contract:
+                slot[readout_key] = contract[readout_key]
             if int(port) < len(src.output_desc):
                 raw = src.output_desc[int(port)]
                 slot.update(air_shape=list(raw.shape.dim) or None, air_dtype=air_types[raw.dtype].name,

@@ -187,3 +187,52 @@ python "$TOOLS/validate_draft_vector.py" \
 python "$TOOLS/gdr_prefill_stages.py" compare \
   --baseline "$FIX" --reference "$G/reference" --trace "$S" --output "$S/dump"
 ```
+
+### 单独读出 SiLU 仍改变原始 hidden
+
+L0 单输出测量中，GDR core、RMSNorm 输出和门控乘积在有效 19 行的相对 L2 / cosine 分别为 0.00234627 / 0.999999、0.013495 / 0.999909 和 0.125974 / 0.992034。这些图与原始 CPro 整层图有效 hidden 逐位相同。直接导出 SiLU 输出的图未复现 hidden。该图的 SiLU 和共用此边的 mul_rhs 文件只描述该诊断图。
+
+先在 10.136.181.35 离线核对现有分拆数据。该命令校验 dump 中文件的长度和 SHA256，只用复现 hidden、模块输入相同的 CPro 图做乘积分解。310P 使用实测乘法右操作数，CPro 使用实测 silu_input 计算公式值。这个值只用于分析，原始 bin 保留实测来源。分析打印 valid19 和 token18 的 L2/cos，报告只替换左操作数、只替换门值、两者交互及重建残差在实测误差方向上的投影，以及 310P FP16 core 为次正规数且 CPro 为零的位置占乘积平方误差的份额。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+FIX="$G/gamma-readout"
+S="$G/norm-single-l0"
+TOOLS="$REPO_DIR/targets/cpro/tools"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+python "$TOOLS/gdr_prefill_stages.py" audit-product --dump "$S/dump" --layer 0
+```
+
+为取得直接的板端 SiLU 输出，可在同一 DDK 终端再编译一张 L0 图。该图从同一原始 AIR 引出 Swish 的输出，reshape 成 [2048,128]，用动态索引 0 到 2047 沿第 0 维逐行 Gather，保持数据类型和元素顺序。观察分支以外的原始门控乘法继续读取原来的数据边。
+
+```bash
+conda activate custom_pypto
+T="$G/l0-silu-gather"
+CASE=l00_c00_norm_silu_output_prefill_stages_o0
+(
+  set -e
+  python "$TOOLS/gdr_prefill_stages.py" prepare \
+    --baseline "$G" --reference "$G/reference" --indexed-silu-layer 0 --output "$T/air"
+  python "$TOOLS/target_layer_probe.py" compile \
+    --batch "$T/air" --output "$T/omc" \
+    --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+    --compiler-profile isolated-kirinx90 \
+    --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" --use-origin-format
+  python "$TOOLS/gdr_prefill_stages.py" inspect-abi \
+    --compiled "$T/omc" --ddk-root "$CPRO_DDK_ROOT" --case "$CASE"
+  python "$TOOLS/validate_draft_vector.py" \
+    --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+    --compiled "$T/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$T/execution" --apply
+  python "$TOOLS/validate_draft_vector.py" --recover "$T/execution" --wait --output "$T/recovery"
+)
+```
+
+回收显示 `EXECUTED_OUTPUTS_RETRIEVED` 后运行下面两条命令。在新目录汇总原 GDR、已有单输出图和本次测得的 SiLU。检查 `norm_silu_output valid hidden equals original CPro run`。若为 True，audit-product 额外比较实测 CPro 右操作数与 SiLU 公式、两侧实测操作数的乘积与板端实测乘积。若为 False，审计继续使用公式门值，并保留该图的诊断标记。`summary.csv` 记录误差，`tensor-map.csv` 说明各个 bin 的计算步骤、来源及原始输出槽。
+
+```bash
+python "$TOOLS/gdr_prefill_stages.py" compare \
+  --baseline "$FIX" --reference "$G/reference" --trace "$S" \
+  --silu-readout "$T" --output "$T/dump" &&
+python "$TOOLS/gdr_prefill_stages.py" audit-product --dump "$T/dump" --layer 0
+```

@@ -323,9 +323,10 @@ def bind_compiled(document, source_inputs, golden, enums, output_contract=None):
     if len(nets) != 1 or len(nets[0].get('input_desc', [])) != len(goldens):
         raise ValueError('compiled output count differs from explicit captured output order')
     contract = output_contract or {}
-    if 'gamma_readout' in contract:
-        from ..prefill_t64.gdr_gamma_readout import verify_compiled_readout
-        verify_compiled_readout(contract, inputs, nodes, nets[0])
+    for role in ('gamma', 'silu_output'):
+        if role + '_readout' in contract:
+            from ..prefill_t64.gdr_gamma_readout import verify_compiled_readout
+            verify_compiled_readout(contract, inputs, nodes, nets[0], role)
     outputs = []
     for index, item in enumerate(goldens):
         observed = _observed_desc(nets[0]['input_desc'][index], enums)
