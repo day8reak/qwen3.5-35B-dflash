@@ -116,24 +116,21 @@ def _groups(layer, baseline, trace, trace_batch, silu_readout):
 
 
 def _combined_groups(layer, base, split, split_manifest, paired, paired_manifest, orig, source):
-    if layer in split_manifest['split_norm_layers']:
-        pair, = _groups(layer, base, paired, paired_manifest, None)
-        edges = pair[-1]['gdr_stages']['edges']
-        replaced = set()
-        for group in _groups(layer, base, split, split_manifest, None):
-            roles = set(group[1])
-            if roles & edges.keys():
-                old = group[-1]['gdr_stages']['edges']
-                if not roles <= edges.keys() or any(old[r] != edges[r] for r in roles):
-                    raise ValueError('Split and paired probes observe different SiLU operands')
-                replaced.update(roles)
-            else:
-                yield group
-        if replaced != set(edges):
-            raise ValueError('Incomplete paired SiLU replacement')
-        yield pair
-    else:
-        yield from _groups(layer, base, base, {}, None)
+    pair, = _groups(layer, base, paired, paired_manifest, None)
+    edges = pair[-1]['gdr_stages']['edges']
+    replaced = set()
+    for group in _groups(layer, base, split, split_manifest, None):
+        roles = set(group[1])
+        if roles & edges.keys():
+            old = group[-1]['gdr_stages']['edges']
+            if not roles <= edges.keys() or any(old[r] != edges[r] for r in roles):
+                raise ValueError('Split and paired probes observe different SiLU operands')
+            replaced.update(roles)
+        else:
+            yield group
+    if replaced != set(edges):
+        raise ValueError('Incomplete paired SiLU replacement')
+    yield pair
     role = 'golden_hidden'
     edge, = [e for e in source['output_contract']['source_edges'] if not e.endswith(':-1')]
     meta = dict(aliases={role: role}, edges={role: edge}, capture=source['capture_sha256'],
@@ -159,8 +156,8 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
         paired_air = _compiled_air(silu_readout)
         paired_manifest = json.loads((paired_air / 'manifest.json').read_text())
         if (trace_batch.get('split_norm_layers') != [0] or pair or not paired_manifest.get('paired_silu')
-                or paired_manifest.get('split_norm_layers') != [0] or set(capture['gdr_stages']) != {'0','1','2'}):
-            raise ValueError('Expected L0 split and paired SiLU runs plus a three-layer 310P capture')
+                or paired_manifest.get('split_norm_layers') != [0] or '0' not in capture['gdr_stages']):
+            raise ValueError('Expected L0 split and paired SiLU runs with a matching L0 310P capture')
     elif silu_readout:
         if pair:
             raise ValueError('Paired SiLU uses the input and output from a single invocation')
@@ -180,7 +177,7 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
         root = Path(tmp) / 'dump'
         root.mkdir()
         rows, tensor_map, layers = [], [], {}
-        for i in (range(3) if combined else trace_batch.get('split_norm_layers', range(3))):
+        for i in trace_batch.get('split_norm_layers', range(3)):
             orig = f'l{i:02}_c00_gdn_layer_hidden_o0'
             _, _, _, source = _record(source_air, orig)
             base_inputs, base_refs, base, base_fixture = board_case(baseline, orig)
@@ -216,7 +213,7 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                     raise ValueError(f'{case}: different valid hidden references')
                 matched = actual['golden_hidden'][:, :19].tobytes() == base['golden_hidden'][:, :19].tobytes()
                 qualified = matched and module_inputs == base_inputs
-                if combined and i == 0 and not qualified:
+                if combined and not qualified:
                     raise ValueError(f'{case}: selected L0 readout differs from the original module inputs or valid hidden')
                 info['graphs'][group] = dict(case=case, module_inputs=meta.get('module_inputs', 'BASELINE_310P_CAPTURE'),
                                             full_inputs_equal_baseline=trace_inputs == base_inputs,
@@ -246,8 +243,7 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                         arr = logical(raw, stage)
                         values[backend] = arr
                         board = backend == 'cpro'
-                        folder = root / 'diagnostic' if combined and board and not qualified else root
-                        path = folder / f'l{i}' / backend / (stage + '.bin')
+                        path = root / f'l{i}' / backend / (stage + '.bin')
                         path.parent.mkdir(parents=True, exist_ok=True)
                         arr.tofile(path)
                         records[backend] = dict(identity(path, root), dtype=arr.dtype.name, shape=list(arr.shape),
@@ -263,7 +259,7 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                             fixture_golden=f'{case}/golden_{slot}.bin' if board else ''))
                         if combined:
                             measurement = 'REFERENCE' if not board else (
-                                'BASELINE' if stage == 'golden_hidden' else ('QUALIFIED' if qualified else 'DIAGNOSTIC_ONLY'))
+                                'BASELINE' if stage == 'golden_hidden' else 'QUALIFIED')
                             tensor_map[-1].update(measurement=measurement, source_case=case if board else '')
                     if stage == 'effective_length' and any(x.tolist() != [19] for x in values.values()):
                         print(f'L{i} effective_length differs: ' + str({k: v.tolist() for k, v in values.items()}))
