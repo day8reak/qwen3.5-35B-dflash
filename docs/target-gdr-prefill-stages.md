@@ -1,6 +1,6 @@
-# GDR、RMSNorm 和门控乘法的三端逐张量对比
+# 310P 与 CPro 的 GDR、RMSNorm 和门控乘法逐张量对比
 
-复用 19 个有效 token 的首次 prefill，物理 T64，L0–L2 各执行一次未缩放的 chunk-64 GDR。CPU 使用每层各自捕获的 310P 模块入口 hidden 和初始状态，独立计算该层的投影、卷积、GDR 递推及后续门控。310P 采集原始分段推理的实参、返回值和表达式中间值。CPro 在原来三张整层 hidden AIR 上读出算子边，每层两张诊断图，分别读 GDR 和归一化/门控张量。
+复用 19 个有效 token 的首次 prefill，物理 T64，L0–L2 各执行一次未缩放的 chunk-64 GDR。310P 采集原始分段推理的模块入口和中间张量。CPro 的每层用本次 310P 捕获的完整 hidden、初始 ConvState、recurrent state 和有效长度启动，在图内连续执行投影、GDR、RMSNorm、SiLU 和门控乘法。CPro 在原来三张整层 hidden AIR 上读出算子边，每层两张诊断图，分别读 GDR 和归一化/门控张量。
 
 | 位置 | 保存的张量 |
 |---|---|
@@ -18,7 +18,7 @@ python "$REPO_DIR/targets/cpro/tools/check_segment_prefill.py" \
   --source-root "$TARGET_SOURCE" --gdr-stages --output "$G/reference"
 ```
 
-此命令先跑真实 310P，再在另一个进程跑 CPU。完成后，`reference/tensor-map.csv` 已列出 310P 和 CPU 实际导出的各个 bin，目录自动设置传输权限 0777。
+已有完整的 `reference/manifest.json` 且含有 L0–L2 的 `gdr_stages` 时可以直接复用采集。新采集只跑 310P 分段推理。`reference/tensor-map.csv` 逐文件给出计算步骤和 dtype。采集目录自动设置传输权限 0777。
 
 **DDK 编译和板端下发**（10.136.181.35）
 
@@ -42,7 +42,7 @@ python "$TOOLS/validate_draft_vector.py" \
   --compiled "$G/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$G/execution" --apply
 ```
 
-**在同一 DDK 终端回收并对比**。板端执行完成后运行。诊断图里的数值超阈值会使 recover 返回非零，取得实际输出后仍可生成三端报告。
+**在同一 DDK 终端回收并对比**。板端执行完成后运行。诊断图里的数值超阈值会使 recover 返回非零，取得实际输出后仍可生成两端报告。
 
 ```bash
 conda activate custom_pypto
@@ -51,7 +51,7 @@ python "$TOOLS/gdr_prefill_stages.py" compare \
   --baseline "$PAIR" --reference "$G/reference" --trace "$G" --output "$G/dump"
 ```
 
-`dump/l0/{cpu,310p,cpro}/mul_output.bin` 等文件按后端保留实际 dtype，统一为清单中声明的逻辑形状。这些 .bin 按 C 连续顺序写入，无文件头。CPro 使用回读包中的第一次调用，校验各次调用有效区的稳定性。CPU 保留 64 行输入投影，仅推进 19 步状态；逐 token 计算输出保留 19 行，两个设备的完整输出保留 64 行。`dump/summary.csv` 对所有浮点张量报告三组两两比较，分别给出 relative L2、cosine、最大绝对误差、RMSE、KL 和平均相对误差，也统计参考 FP16 次正规数在对端变为零的个数。逐 token 张量分别统计 0–18 和 token 18。状态和 gamma 使用全张量，effective_length 按整数精确比较。
+`dump/l0/{310p,cpro}/mul_output.bin` 等文件按后端保留实际 dtype，统一为清单中声明的逻辑形状。这些 .bin 按 C 连续顺序写入，无文件头。CPro 使用回读包中的第一次调用，校验各次调用有效区的稳定性。两个设备的逐 token 张量保留完整 64 行。`dump/summary.csv` 用 310P 对照 CPro 的各个浮点张量，分别给出 relative L2、cosine、最大绝对误差、RMSE、KL 和平均相对误差，也统计参考 FP16 次正规数在对端变为零的个数。逐 token 张量分别统计 0–18 和 token 18。状态和 gamma 使用全张量，effective_length 按整数精确比较。
 
 `dump/manifest.json` 记录数组的路径、shape、dtype 和 SHA256、CPro 的实际取数边，同一条边的别名，以及每张诊断图的有效区 hidden 是否与之前未缩放的板端结果逐位相同。解释原图误差时使用 `valid_hidden_equal_bits=true` 的图。
 

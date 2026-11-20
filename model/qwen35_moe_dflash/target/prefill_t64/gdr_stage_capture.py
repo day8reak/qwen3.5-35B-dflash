@@ -1,14 +1,15 @@
 """Observe the actual gated norm expression and the adjacent unscaled chunk-64 GDR."""
 import ast
+import csv
+import json
 from functools import wraps
 import inspect
 import textwrap
 
-from .segment_gdr import audit_operands
 from .segment_prefix import tensor_record
 from ..layer_probe.capture import cpu
 
-from .gdr_stage_data import NORM
+from .gdr_stage_data import DESCRIPTIONS, GDR, NORM, logical
 
 
 def _retain(name, expr):
@@ -81,14 +82,33 @@ def capture_stages(root, manifest, snapshots):
     for layer, snapshot in snapshots.items():
         call, = manifest[f'l{layer}_gdr']['calls']
         data = snapshot['gdr']
-        if (call.get('error') or call['chunk_size'] != 64 or call['effective_length'] != [19]
+        if (call.get('error') or call['physical_q_rows'] != 64 or call['chunk_size'] != 64 or call['effective_length'] != [19]
+                or call['length_dtype'] != 'torch.int16'
                 or not data['attrs']['use_qk_l2norm_in_kernel'] or not data['attrs']['output_final_state']):
             raise ValueError(f'Unexpected L{layer} GDR call {call}')
         core, state = data['outputs']
-        audit, _ = audit_operands(data['inputs'], core, state)
         tensors = dict(**data['inputs'], core=core, final_state=state, **snapshot['norm'])
         folder = root / 'stages' / f'l{layer}'
         folder.mkdir(parents=True)
-        records[str(layer)] = dict(epsilon=snapshot['epsilon'], attrs=data['attrs'], cpu_on_310p_operands=audit,
+        for k in (*GDR, *NORM):
+            logical(tensors[k].numpy(), k)
+        records[str(layer)] = dict(epsilon=snapshot['epsilon'], attrs=data['attrs'],
             tensors={k: tensor_record(root, str((folder / k).relative_to(root)), v) for k, v in tensors.items()})
     manifest['gdr_stages'] = records
+    with (root / 'tensor-map.csv').open('w', encoding='utf-8', newline='') as stream:
+        writer = csv.writer(stream)
+        writer.writerow(('layer', 'backend', 'tensor', 'step', 'meaning', 'path', 'shape', 'dtype'))
+        module_roles = {
+            'hidden': '本层的 64 行 hidden，CPro 投影的输入',
+            'conv': '本层进入 prefill 前的卷积历史',
+            'state': '本层进入 prefill 前的 recurrent state',
+            'effective_length': '本层的有效长度 INT16 [19]',
+            'linear_update_tensor': '分段推理提供给本层的卷积更新输入',
+        }
+        for layer, record in records.items():
+            for name, spec in manifest['attention_modules'][layer]['inputs'].items():
+                writer.writerow((layer, '310p', name, '整层入口', module_roles[name], spec['path'],
+                                 json.dumps(spec['shape']), spec['dtype']))
+            for name, spec in record['tensors'].items():
+                writer.writerow((layer, '310p', name, *DESCRIPTIONS[name], spec['path'],
+                                 json.dumps(spec['shape']), spec['dtype']))

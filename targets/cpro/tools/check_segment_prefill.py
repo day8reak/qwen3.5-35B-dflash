@@ -96,7 +96,7 @@ def main():
                    help='capture standalone attention-module inputs/hidden and compare 310P with fixed-input CPU math')
     p.add_argument('--trace-linear', type=int, choices=range(3), metavar='LAYER',
                    help='observe one whole linear attention module and its chunk GDR boundaries on the same call')
-    p.add_argument('--gdr-stages', action='store_true', help='capture L0-L2 chunk, RMSNorm and SiLU product tensors')
+    p.add_argument('--gdr-stages', action='store_true', help='capture native 310P L0-L2 chunk, RMSNorm and SiLU tensors for CPro replay')
     a = p.parse_args()
     if a.gdr_stages:
         if a.decode_after or a.compare_cpu or a.diagnose_cpu or a.trace_linear is not None:
@@ -157,19 +157,19 @@ def main():
         command.extend(['--decode-after', str(a.decode_after.resolve(strict=True))])
     if a.attention_layers:
         command.append('--attention-layers')
-    if a.gdr_stages:
-        command.append('--gdr-stages')
     if a.trace_linear is not None:
         command.extend(['--trace-linear', str(a.trace_linear)])
+    if a.gdr_stages:
+        command.append('--gdr-stages')
     subprocess.run(command, cwd=entry.parent, check=True)
+    if a.gdr_stages:
+        from qwen35_moe_dflash.common.artifacts import share_for_transfer
+        share_for_transfer(out)
+        return 0
     cpu_command = [sys.executable, script, '--compare-cpu', str(out)]
     if a.attention_layers:
         cpu_command.append('--attention-layers')
-    status = subprocess.run([*cpu_command, '--output', str(out / ('module-cpu' if a.attention_layers else 'cpu'))]).returncode
-    if a.gdr_stages and (out / 'module-cpu/report.json').is_file():
-        from qwen35_moe_dflash.common.artifacts import share_for_transfer
-        share_for_transfer(out)
-    return status
+    return subprocess.run([*cpu_command, '--output', str(out / ('module-cpu' if a.attention_layers else 'cpu'))]).returncode
 
 
 if __name__ == '__main__':

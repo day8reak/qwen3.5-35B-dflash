@@ -118,16 +118,24 @@ def prepare(baseline, reference, output):
                 raise ValueError(f'{orig}: expected original standalone valid19 hidden AIR')
             info = capture['attention_modules'][str(i)]
             gold = read_array(folder, record['golden'])
-            if gold[:, :19].tobytes() != read_array(reference, info['golden_hidden'])[:, :19].tobytes():
+            hidden = read_array(reference, info['golden_hidden'])
+            if gold.shape != hidden.shape or gold.dtype != hidden.dtype or gold[:, :19].tobytes() != hidden[:, :19].tobytes():
                 raise ValueError(f'{orig}: traced 310P valid hidden changed')
-            for s in record['source_inputs']:
-                role = s['semantic_name']
-                old = read_array(folder, s)
+            inputs = {}
+            for spec in record['source_inputs']:
+                role = spec['semantic_name']
+                old = read_array(folder, spec)
                 live = read_array(reference, info['inputs'][role])
-                if role == 'hidden':
-                    old, live = old[:, :19], live[:, :19]
-                if old.shape != live.shape or old.tobytes() != live.astype(old.dtype).tobytes() or not np.array_equal(old, live):
+                if old.shape != live.shape:
+                    raise ValueError(f'{orig}: captured {role} shape changed')
+                # The original CPro graph carries the fresh zero state in FP16.
+                bound = live.astype(old.dtype, copy=False)
+                if bound.dtype != live.dtype and not np.array_equal(bound.astype(live.dtype), live):
+                    raise ValueError(f'{orig}: CPro input ABI loses values for {role}')
+                baseline_values, current_values = (old[:, :19], bound[:, :19]) if role == 'hidden' else (old, bound)
+                if baseline_values.tobytes() != current_values.tobytes():
                     raise ValueError(f'{orig}: captured {role} changed')
+                inputs[role] = bound
             raw = checked(folder, record['air']).read_bytes()
             native = capture['gdr_stages'][str(i)]
             for group in GROUPS:
@@ -154,7 +162,14 @@ def prepare(baseline, reference, output):
                 shutil.copytree(folder, dest)
                 air = dest / record['air']['path']
                 air.write_bytes(msg.SerializeToString())
-                goldens = [record['golden']]
+                source_inputs = []
+                for spec in record['source_inputs']:
+                    path = dest / spec['path']
+                    inputs[spec['semantic_name']].tofile(path)
+                    source_inputs.append(dict(spec, **identity(path, dest)))
+                hidden_path = dest / record['golden']['path']
+                hidden.tofile(hidden_path)
+                goldens = [dict(record['golden'], **identity(hidden_path, dest))]
                 required = {'0': 'float16'}
                 air_dtypes = {}
                 for idx, role in enumerate(taps, 1):
@@ -170,10 +185,10 @@ def prepare(baseline, reference, output):
                         required[str(idx)] = 'int16'
                 contract = dict(order=[s['name'] for s in goldens], source_edges=source_edges, required_dtypes=required,
                                 stage_views={k: shapes(k) for k in taps})
-                meta = dict(source=orig, source_air=record['air']['sha256'], aliases=aliases, edges=edges,
+                meta = dict(module_inputs='CURRENT_310P_CAPTURE', source=orig, source_air=record['air']['sha256'], aliases=aliases, edges=edges,
                             group=group, air_dtypes=air_dtypes, air_rms_epsilon=norm_epsilon, capture=sha(reference / 'manifest.json'), epsilon=native['epsilon'])
                 export = dest / 'export.json'
-                save_json(export, dict(record, goldens=goldens, air=identity(air, dest), reference_basis=BASIS,
+                save_json(export, dict(record, source_inputs=source_inputs, golden=goldens[0], goldens=goldens, air=identity(air, dest), reference_basis=BASIS,
                                        output_contract=contract, gdr_stages=meta))
                 cases.append(dict(case, id=name, kind='gdr_stages', point=group + '_stages', output_name='stages',
                                   export=identity(export, root)))

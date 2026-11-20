@@ -1,6 +1,6 @@
 # Target Prefill：分别验证 Linear Attention 与 Full Attention
 
-L0–L2 的逐张量三端对比见 [GDR、RMSNorm 和门控乘法](target-gdr-prefill-stages.md)。
+L0–L2 的 310P 与 CPro 逐张量对比见 [GDR、RMSNorm 和门控乘法](target-gdr-prefill-stages.md)。
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。
 

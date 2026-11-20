@@ -1,5 +1,6 @@
-"""Export measured first-prefill tensors and compare all three backend pairs."""
+"""Export measured first-prefill tensors and compare CPro to the same prefill on 310P."""
 import csv
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -9,7 +10,7 @@ import numpy as np
 from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import identity, metrics, read_array, save_json, sha
 from .decode_cache_trace import _record
-from .gdr_stage_data import DESCRIPTIONS, GROUPS, STATIC, TOKEN_OPERANDS, case_id, logical
+from .gdr_stage_data import DESCRIPTIONS, GROUPS, STATIC, case_id, logical
 from .segment_trace_compare import board_case
 
 
@@ -52,10 +53,6 @@ def compare(baseline, reference, trace, output):
     if target.exists():
         raise FileExistsError(target)
     capture = json.loads((reference / 'manifest.json').read_text())
-    cpu_root = reference / 'module-cpu'
-    audit = json.loads((cpu_root / 'report.json').read_text())
-    if audit.get('capture_sha256') != sha(reference / 'manifest.json'):
-        raise ValueError('CPU results are from a different capture')
     source_air, trace_air = _compiled_air(baseline), _compiled_air(trace)
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
@@ -80,33 +77,33 @@ def compare(baseline, reference, trace, output):
                 for spec in fixture_case['outputs']:
                     offsets[spec['semantic_name']] = (spec['index'], offset, spec['bytes'])
                     offset += spec['bytes']
-                if trace_inputs != base_inputs:
-                    raise ValueError(f'{case}: executed inputs differ from the unscaled baseline')
+                for role, (dtype, shape, digest) in trace_inputs.items():
+                    live = read_array(reference, capture['attention_modules'][str(i)]['inputs'][role])
+                    bound = live.astype(dtype, copy=False)
+                    if list(bound.shape) != shape or hashlib.sha256(bound.tobytes()).hexdigest() != digest:
+                        raise ValueError(f'{case}: executed {role} differs from this 310P capture')
                 if base_refs['golden_hidden'][:, :19].tobytes() != refs['golden_hidden'][:, :19].tobytes():
                     raise ValueError(f'{case}: different valid hidden references')
                 matched = actual['golden_hidden'][:, :19].tobytes() == base['golden_hidden'][:, :19].tobytes()
-                info['graphs'][group] = dict(valid_hidden_equal_bits=matched, edges=meta['edges'], aliases=meta['aliases'],
+                info['graphs'][group] = dict(module_inputs=meta.get('module_inputs', 'BASELINE_310P_CAPTURE'),
+                                            full_inputs_equal_baseline=trace_inputs == base_inputs,
+                                            valid_hidden_equal_bits=matched, edges=meta['edges'], aliases=meta['aliases'],
                                             air_port_dtypes=meta['air_dtypes'], air_rms_epsilon=meta['air_rms_epsilon'],
                                             source_air_sha256=meta['source_air'], trace_air_sha256=record['air']['sha256'])
                 print(f'L{i} {group} valid hidden equals original CPro run: {matched}')
-                print('stage                 scope     CPro/310P L2/cos       CPro/CPU L2/cos         310P/CPU L2/cos')
+                print('stage                 scope     CPro/310P L2/cos')
                 for stage in stages:
                     key = meta['aliases'][stage]
-                    # CPU computes all 64 input projections and only the 19 defined recurrence/readout steps.
-                    cpu_spec = audit['gdr_stages'][str(i)][stage]
                     native_spec = native['tensors'][stage]
-                    values = {'cpu': read_array(cpu_root, cpu_spec),
-                              '310p': read_array(reference, native_spec), 'cpro': actual[key]}
+                    values = {'310p': read_array(reference, native_spec), 'cpro': actual[key]}
                     slot, board_offset, board_size = offsets[key]
                     sources = {
-                        'cpu': cpu_root / cpu_spec['path'],
                         '310p': reference / native_spec['path'],
                         'cpro': trace / 'recovery/native' / case / '0.bin',
                     }
                     records = info['tensors'][stage] = {}
                     for backend, raw in values.items():
-                        length = 19 if backend == 'cpu' and stage not in (*TOKEN_OPERANDS, *STATIC) else 64
-                        arr = logical(raw, stage, length)
+                        arr = logical(raw, stage)
                         values[backend] = arr
                         path = root / f'l{i}' / backend / (stage + '.bin')
                         path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,14 +122,11 @@ def compare(baseline, reference, trace, output):
                         print(f'L{i} effective_length differs: ' + str({k: v.tolist() for k, v in values.items()}))
                     scopes = [('tensor', None)] if stage in STATIC else [('valid19', slice(0, 19)), ('token18', 18)]
                     for scope, selection in scopes:
-                        scores = []
-                        for device, ref in [('cpro', '310p'), ('cpro', 'cpu'), ('310p', 'cpu')]:
-                            a, b = values[device], values[ref]
-                            if selection is not None:
-                                a, b = a[:, selection], b[:, selection]
-                            scores.append(_score(rows, i, stage, f'{device}_vs_{ref}', scope, a, b,
-                                                 reproduced=matched if device == 'cpro' else None))
-                        print(f'{stage:20s}  {scope:8s}  ' + '  '.join(f'{x:22s}' for x in scores))
+                        observed, golden = values['cpro'], values['310p']
+                        if selection is not None:
+                            observed, golden = observed[:, selection], golden[:, selection]
+                        score = _score(rows, i, stage, 'cpro_vs_310p', scope, observed, golden, reproduced=matched)
+                        print(f'{stage:20s}  {scope:8s}  {score}')
         for name, entries in [('summary.csv', rows), ('tensor-map.csv', tensor_map)]:
             with (root / name).open('w', encoding='utf-8', newline='') as stream:
                 writer = csv.DictWriter(stream, fieldnames=list(entries[0]))
@@ -140,7 +134,7 @@ def compare(baseline, reference, trace, output):
                 writer.writerows(entries)
         save_json(root / 'manifest.json', dict(capture_sha256=sha(reference / 'manifest.json'),
                   physical_rows=64, valid_rows=19, last_valid_index=18, chunk_size=64,
-                  cpu_basis='INDEPENDENT_CPU_ON_SAME_LAYER_INPUT', layers=layers))
+                  input_basis='CAPTURED_310P_MODULE_ENTRY', reference_backend='310p', layers=layers))
         root.rename(target)
     share_for_transfer(target)
     print(target / 'summary.csv')

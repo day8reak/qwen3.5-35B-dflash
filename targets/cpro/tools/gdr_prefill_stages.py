@@ -11,10 +11,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     cmds = parser.add_subparsers(dest='action', required=True)
     prepare = cmds.add_parser('prepare', help='expose the measured stage edges in the baseline AIRs')
-    compare = cmds.add_parser('compare', help='write per-backend raw binary tensors, a file map and three-way CSV metrics')
+    compare = cmds.add_parser('compare', help='write per-backend raw binary tensors, a file map and CPro-vs-310P CSV metrics')
     for cmd in (prepare, compare):
         cmd.add_argument('--baseline', required=True, type=Path, help='original unscaled whole-module board batch')
-        cmd.add_argument('--reference', required=True, type=Path, help='310P capture with module-cpu stage results')
+        cmd.add_argument('--reference', required=True, type=Path, help='310P prefill capture with measured GDR and norm stages')
         cmd.add_argument('--output', required=True, type=Path)
     compare.add_argument('--trace', required=True, type=Path, help='new compiled and recovered batch')
     args = parser.parse_args()
