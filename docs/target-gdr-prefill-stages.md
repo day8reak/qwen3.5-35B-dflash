@@ -8,7 +8,7 @@
 | RMSNorm | rms_input、gamma、rms_output；epsilon 在清单里。输出取源代码后续使用的归一化激活 |
 | 门控 | gate、silu_input、silu_output、mul_lhs、mul_rhs、mul_output、gated_return。mul_output 在返回值转型前采集 |
 
-**310P 采集机**（10.136.180.78）
+**1. 在 10.136.180.78 采集 310P 参考张量**
 
 ```bash
 conda activate qwen3_5_w4
@@ -20,7 +20,24 @@ python "$REPO_DIR/targets/cpro/tools/check_segment_prefill.py" \
 
 已有完整的 `reference/manifest.json` 且含有 L0–L2 的 `gdr_stages` 时可以直接复用采集。新采集只跑 310P 分段推理。`reference/tensor-map.csv` 逐文件给出计算步骤和 dtype。采集目录自动设置传输权限 0777。
 
-**DDK 编译和板端下发**（10.136.181.35）
+**2. 在同一台 10.136.180.78 生成 6 个 CPro AIR**
+
+`prepare` 读取 `$PAIR/air` 下已有的 L0–L2 整层基线和刚采集的 `$G/reference`，为每层生成 GDR、RMSNorm/门控两张诊断图。输入和参考输出也随 AIR 一起写入新批次。
+
+```bash
+conda activate qwen3_5_cpro
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19"
+PAIR="$AI_RUN_DIR/target/tests/attention-layers-t64-valid19"
+
+git -C "$REPO_DIR" pull --ff-only origin main &&
+python "$REPO_DIR/targets/cpro/tools/gdr_prefill_stages.py" prepare \
+  --baseline "$PAIR" --reference "$G/reference" --output "$G/air" &&
+ls -lh "$G"/air/models/*/export.air
+```
+
+输出应列出 6 个 `export.air`。脚本会给生成的 `$G/air` 设置传输权限 0777。
+
+**3. 在 10.136.181.35 拉取 AIR、编译 OMC 并下发**
 
 ```bash
 conda activate custom_pypto
@@ -29,9 +46,7 @@ PAIR="$AI_RUN_DIR/target/tests/attention-layers-t64-valid19"
 TOOLS="$REPO_DIR/targets/cpro/tools"
 
 git -C "$REPO_DIR" pull --ff-only origin main &&
-python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" "$G/reference" &&
-python "$TOOLS/gdr_prefill_stages.py" prepare \
-  --baseline "$PAIR" --reference "$G/reference" --output "$G/air" &&
+python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" "$G/reference" "$G/air" &&
 python "$TOOLS/target_layer_probe.py" compile \
   --batch "$G/air" --output "$G/omc" \
   --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
