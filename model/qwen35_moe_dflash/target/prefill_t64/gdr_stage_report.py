@@ -49,12 +49,43 @@ def _score(rows, layer, stage, label, scope, a, ref, *, reproduced):
     return 'equal' if row['passed'] else 'different'
 
 
+def _check_silu_pair(rows, layer, graph_info, board, reference):
+    for backend, tensors in [('cpro', board), ('310p', reference)]:
+        z = logical(tensors['silu_input'], 'silu_input').astype(np.float64)
+        formula = z * np.exp(-np.logaddexp(0., -z))
+        measured = logical(tensors['silu_output'], 'silu_output')
+        for scope, idx in [('valid19', slice(0, 19)), ('token18', 18)]:
+            score = _score(rows, layer, 'silu_output', backend + '_vs_silu_of_own_input', scope,
+                           measured[:, idx], formula[:, idx],
+                           reproduced=graph_info['valid_hidden_equal_bits'] if backend == 'cpro' else '')
+            print(f'{backend} measured SiLU / SiLU({backend} input)  {scope:8s}  {score}')
+    failed = [dict(stage=r['stage'], comparison=r['comparison'], scope=r['scope'], failed_metrics=r['failed_metrics'])
+              for r in rows if not r['passed'] and r['stage'] != 'mul_rhs']
+    status = 'PASSED' if not failed else 'NUMERICAL_FAILED'
+    if not (graph_info['valid_hidden_equal_bits'] and graph_info['module_inputs_equal_baseline']):
+        status = 'READOUT_NOT_REPRESENTATIVE'
+    return dict(status=status, layer=layer, valid_hidden_equal_bits=graph_info['valid_hidden_equal_bits'],
+                module_inputs_equal_baseline=graph_info['module_inputs_equal_baseline'], failed_checks=failed)
+
+
 def _groups(layer, baseline, trace, trace_batch, silu_readout):
     split = 'split_norm_layers' in trace_batch
     def load(case, batch):
         run, air = batch
         _, _, _, record = _record(air, case)
         return case, run, record
+
+    if trace_batch.get('paired_silu'):
+        name = case_id(layer, 'norm_silu_pair')
+        case, run, record = load(name, trace)
+        aliases = {'silu_input': 'silu_input', 'silu_output': 'silu_output', 'mul_rhs': 'silu_output'}
+        if (trace_batch['indexed_silu_layer'] != layer or [c['id'] for c in trace_batch['cases']] != [name]
+                or record['gdr_stages']['aliases'] != aliases
+                or record['output_contract']['order'] != ['golden_hidden', 'silu_input', 'silu_output']
+                or not record['output_contract'].get('silu_output_readout')):
+            raise ValueError('Expected one indexed SiLU input/output pair and the original hidden')
+        yield 'norm_silu_pair', aliases, case, run, record
+        return
 
     yield 'gdr', GROUPS['gdr'], *load(case_id(layer, 'gdr'), baseline if split else trace)
     if not split:
@@ -91,9 +122,14 @@ def compare(baseline, reference, trace, output, *, silu_readout=None):
     source_air, trace_air = _compiled_air(baseline), _compiled_air(trace)
     trace_batch = json.loads((trace_air / 'manifest.json').read_text())
     alternate = None
-    if 'indexed_silu_layer' in trace_batch:
+    pair = trace_batch.get('paired_silu', False)
+    if pair and trace_batch.get('split_norm_layers') != [trace_batch['indexed_silu_layer']]:
+        raise ValueError('Expected a paired readout for exactly one layer')
+    if 'indexed_silu_layer' in trace_batch and not pair:
         raise ValueError('Use the full split batch as --trace and the indexed SiLU case as --silu-readout')
     if silu_readout:
+        if pair:
+            raise ValueError('Paired SiLU uses the input and output from a single invocation')
         extra_air = _compiled_air(silu_readout)
         extra = json.loads((extra_air / 'manifest.json').read_text())
         layer = extra.get('indexed_silu_layer')
@@ -156,6 +192,8 @@ def compare(baseline, reference, trace, output, *, silu_readout=None):
                     key = meta['aliases'][stage]
                     native_spec = native['tensors'][stage]
                     values = {'310p': read_array(reference, native_spec), 'cpro': actual[key]}
+                    if pair and logical(values['310p'], stage).tobytes() != logical(refs[key], stage).tobytes():
+                        raise ValueError(f'{case}/{stage}: fixture reference differs from the measured 310P tensor')
                     slot, board_offset, board_size = offsets[key]
                     sources = {
                         '310p': reference / native_spec['path'],
@@ -189,6 +227,9 @@ def compare(baseline, reference, trace, output, *, silu_readout=None):
                             observed, golden = observed[:, selection], golden[:, selection]
                         score = _score(rows, i, stage, 'cpro_vs_310p', scope, observed, golden, reproduced=matched)
                         print(f'{stage:20s}  {scope:8s}  {score}')
+                if pair:
+                    verdict = _check_silu_pair(rows, i, info['graphs'][group], actual, refs)
+                    save_json(root / 'silu-result.json', verdict)
         for name, entries in [('summary.csv', rows), ('tensor-map.csv', tensor_map)]:
             with (root / name).open('w', encoding='utf-8', newline='') as stream:
                 writer = csv.DictWriter(stream, fieldnames=list(entries[0]))
@@ -200,3 +241,6 @@ def compare(baseline, reference, trace, output, *, silu_readout=None):
         root.rename(target)
     share_for_transfer(target)
     print(target / 'summary.csv')
+    if pair:
+        print('SiLU:', json.dumps(verdict, ensure_ascii=False))
+        return verdict['status'] == 'PASSED'

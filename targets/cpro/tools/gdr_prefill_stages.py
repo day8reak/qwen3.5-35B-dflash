@@ -29,6 +29,8 @@ def main():
                          help='read one distinct RMSNorm/gate edge per graph alongside the original hidden')
     prepare.add_argument('--indexed-silu-layer', type=int, choices=range(3),
                          help='export just the indicated layer with a runtime identity gather on the SiLU output')
+    prepare.add_argument('--paired-silu', action='store_true',
+                         help='also return the actual SiLU input from the same indexed graph for a direct formula check')
     compare.add_argument('--silu-readout', type=Path, help='use a recovered indexed SiLU case in the split dump')
     compare.add_argument('--baseline', type=Path, help='whole-module board batch (default: same batch as --trace)')
     for cmd in (prepare, compare):
@@ -50,10 +52,12 @@ def main():
     if args.action == 'prepare':
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_air import prepare
         prepare(args.baseline, args.reference, args.output, include_baseline=args.include_baseline,
-                split_norm_layers=args.split_norm_layers, indexed_silu_layer=args.indexed_silu_layer)
+                split_norm_layers=args.split_norm_layers, indexed_silu_layer=args.indexed_silu_layer, paired_silu=args.paired_silu)
     else:
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_report import compare
-        compare(args.baseline or args.trace, args.reference, args.trace, args.output, silu_readout=args.silu_readout)
+        result = compare(args.baseline or args.trace, args.reference, args.trace, args.output, silu_readout=args.silu_readout)
+        if result is False:
+            return 1
 
 
 if __name__ == '__main__':

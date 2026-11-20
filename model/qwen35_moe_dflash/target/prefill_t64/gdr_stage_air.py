@@ -100,10 +100,15 @@ def stage_edges(graph, group):
                 mul_lhs=lhs, mul_rhs=rhs, mul_output=mul.name + ':0', gated_return=proj_input)
 
 
-def _trace_graphs(raw, split_norm, only_role=None):
+def _trace_graphs(raw, split_norm, only_role=None, paired_silu=False):
     for group in (('norm',) if split_norm else GROUPS):
         msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
         edges = stage_edges(graph, group)
+        if paired_silu:
+            if edges['mul_rhs'] != edges['silu_output'] or edges['silu_input'] == edges['silu_output']:
+                raise ValueError('Expected the gated product to consume the observed SiLU output directly')
+            yield group, 'norm_silu_pair', msg, graph, {k: edges[k] for k in ('silu_input', 'silu_output', 'mul_rhs')}
+            continue
         if split_norm:
             # Each readout starts from the original AIR. Aliases of the same
             # operand share one diagnostic output and one invocation.
@@ -117,7 +122,9 @@ def _trace_graphs(raw, split_norm, only_role=None):
             yield group, group, msg, graph, edges
 
 
-def prepare(baseline, reference, output, *, include_baseline=False, split_norm_layers=None, indexed_silu_layer=None):
+def prepare(baseline, reference, output, *, include_baseline=False, split_norm_layers=None, indexed_silu_layer=None, paired_silu=False):
+    if paired_silu and indexed_silu_layer is None:
+        raise ValueError('--paired-silu requires --indexed-silu-layer')
     if indexed_silu_layer is not None:
         if split_norm_layers is not None:
             raise ValueError('Select either the split norm batch or the indexed SiLU readout')
@@ -174,7 +181,7 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
                 cases.append(dict(case, export=identity(dest / 'export.json', root)))
             native = capture['gdr_stages'][str(i)]
             only_role = 'silu_output' if indexed_silu_layer is not None else None
-            for group, label, msg, graph, edges in _trace_graphs(raw, split_norm, only_role):
+            for group, label, msg, graph, edges in _trace_graphs(raw, split_norm, only_role, paired_silu):
                 # Two boundaries may read exactly the same producer. Read it once
                 # and retain the alias explicitly instead of relying on OMC duplicate-output handling.
                 slots, taps, aliases = {}, {}, {}
@@ -222,6 +229,10 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
                     op, port = taps[role].rsplit(':', 1)
                     typ = next(n for n in graph.op if n.name == op).output_desc[int(port)].dtype
                     air_dtypes[role] = codes.get(typ, 'unspecified')
+                    if paired_silu:
+                        if air_dtypes[role] != 'float32' or tensor.dtype != np.float32:
+                            raise ValueError(f'{role}: expected FP32 at the measured SiLU boundary')
+                        required[str(idx)] = 'float32'
                     if role == 'effective_length':
                         required[str(idx)] = 'int16'
                 contract = dict(order=[s['name'] for s in goldens], source_edges=source_edges, required_dtypes=required,
@@ -243,6 +254,8 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
             if len(cases) != 1:
                 raise ValueError('Expected one isolated SiLU readout')
             batch.update(scope='INDEXED_SILU_OUTPUT_PLUS_ORIGINAL_HIDDEN', indexed_silu_layer=indexed_silu_layer)
+            if paired_silu:
+                batch.update(scope='SAME_CALL_SILU_INPUT_AND_INDEXED_OUTPUT_PLUS_ORIGINAL_HIDDEN', paired_silu=True)
         save_json(root / 'manifest.json', batch)
         root.rename(target)
     share_for_transfer(target)

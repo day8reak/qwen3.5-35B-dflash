@@ -223,6 +223,18 @@ python "$TOOLS/gdr_prefill_stages.py" audit-product --dump "$S/dump" --layer 0
 
 ### 直接读出板端 SiLU 的补充实验
 
+要验证 L0 的 SiLU，在 DDK 主机 10.136.181.35 上执行下列命令。脚本从该机现有的原始 AIR 和 310P 采集生成一张整层图，一次调用返回原始 hidden、Swish 的 FP32 输入和经过恒等索引 Gather 的 FP32 输出。图内原始乘法仍直接消费同一个 Swish 输出。中断后用同一命令回收已有请求。
+
+```bash
+conda activate custom_pypto
+git -C "$REPO_DIR" pull --ff-only origin main &&
+bash "$REPO_DIR/targets/cpro/scripts/check_prefill_silu.sh"
+```
+
+结果在 `gdr-stages-t64-valid19-fresh01/l0-silu-pair/dump/`。两端实测的门输入和输出在 `l0/{310p,cpro}/{silu_input,silu_output}.bin`，`tensor-map.csv` 记录文件含义和源槽。公式只用于校验实测输出。`silu-result.json` 的 `PASSED` 要求模块输入与基线一致、有效 hidden 与原 CPro 图逐位相同，并且 valid19 和 token18 的跨端输入、输出及各端对自身输入的 SiLU 公式检查都通过五项指标。`NUMERICAL_FAILED` 可从 `failed_checks` 区分失败的比较。`READOUT_NOT_REPRESENTATIVE` 表示读出图未复现基线条件，原图的 SiLU 精度仍待核实。
+
+#### 只增加 SiLU 输出端口的实验
+
 为取得直接的板端 SiLU 输出，可在同一 DDK 终端再编译一张 L0 图。该图从同一原始 AIR 引出 Swish 的输出，reshape 成 [2048,128]，用动态索引 0 到 2047 沿第 0 维逐行 Gather，保持数据类型和元素顺序。观察分支以外的原始门控乘法继续读取原来的数据边。
 
 ```bash
