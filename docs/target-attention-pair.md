@@ -34,6 +34,7 @@ python "$REPO_DIR/targets/cpro/tools/prepare_cpro_prefill_t64.py" \
 在 DDK 机的 `custom_pypto` 环境执行传输和编译。
 
 ```bash
+conda activate custom_pypto
 export BATCH_ROOT="$AI_RUN_DIR/target/tests/decode-t1-after-valid19/cpro"
 export PROBE="$REPO_DIR/targets/cpro/tools/target_layer_probe.py"
 python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" "$BATCH_ROOT/air" &&
@@ -45,6 +46,7 @@ python "$PROBE" compile --batch "$BATCH_ROOT/air" --output "$BATCH_ROOT/omc" \
 四张图均为 `COMPILED` 后，使用同一个 `BATCH_ROOT` 上板。
 
 ```bash
+conda activate custom_pypto
 VALIDATE="$REPO_DIR/targets/cpro/tools/validate_draft_vector.py"
 python "$VALIDATE" --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
   --compiled "$BATCH_ROOT/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$BATCH_ROOT/execution" --apply
@@ -53,6 +55,7 @@ python "$VALIDATE" --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}
 启动后回收同一次执行。即使出现数值超差，成功取回的张量仍可用 `compare` 输出逐层结果。
 
 ```bash
+conda activate custom_pypto
 python "$VALIDATE" --recover "$BATCH_ROOT/execution" --output "$BATCH_ROOT/recovery"
 python "$PROBE" compare --fixture "$BATCH_ROOT/execution/fixture" \
   --native "$BATCH_ROOT/recovery/native" --output "$BATCH_ROOT/comparison"
@@ -66,6 +69,7 @@ cat "$BATCH_ROOT/comparison/summary.csv"
 在 AIR 机的 `qwen3_5_w4` 环境，CPU 用本次 L3 输入和原始 W4 权重计算第 19 号位置的新 K、V，拷贝调用前的真实分页缓存并写入该位置。脚本核对逻辑位置、物理页、所有未写位置的位值及本次 CPU/310P hidden 参考，然后把输出目录设为 0777。
 
 ```bash
+conda activate qwen3_5_w4
 git -C "$REPO_DIR" pull --ff-only origin main
 D="$AI_RUN_DIR/target/tests/decode-t1-after-valid19"
 python "$REPO_DIR/targets/cpro/tools/decode_cache_control.py" cpu \
@@ -75,6 +79,7 @@ python "$REPO_DIR/targets/cpro/tools/decode_cache_control.py" cpu \
 在 DDK 机的 `custom_pypto` 环境拉取 CPU 结果，复用已传入的原 L3 AIR。三个新 case 分别绕过 K、V 或两路 CacheUpdate，选中的缓存输入改为 CPU 写好的完整缓存。Q、attention、gate、o_proj 继续在板端执行。hidden 参考沿用原 310P 输出。
 
 ```bash
+conda activate custom_pypto
 git -C "$REPO_DIR" pull --ff-only origin main
 D="$AI_RUN_DIR/target/tests/decode-t1-after-valid19"
 C="$D/cache-control"
@@ -92,6 +97,7 @@ python "$PROBE" compile --batch "$C/air" --output "$C/omc" \
 三项均为 `COMPILED` 后启动一次板端执行。
 
 ```bash
+conda activate custom_pypto
 python "$VALIDATE" --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
   --compiled "$C/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$C/execution" --apply
 ```
@@ -99,6 +105,7 @@ python "$VALIDATE" --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}
 启动得到确认后，回收并打印各组的 relative L2、cosine 和其他指标。
 
 ```bash
+conda activate custom_pypto
 python "$VALIDATE" --recover "$C/execution" --output "$C/recovery"
 python "$PROBE" compare --fixture "$C/execution/fixture" \
   --native "$C/recovery/native" --output "$C/comparison"
