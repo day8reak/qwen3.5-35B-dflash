@@ -17,7 +17,7 @@ def main():
     parser.add_argument('--output', required=True, type=Path, help='Prepared job directory')
     parser.add_argument('--export', action='store_true', help='Run the prepared AIR export in this Python environment')
     parser.add_argument('--attention-layers', action='store_true',
-                        help='export independent whole attention modules on their captured valid19 inputs')
+                        help='export independent whole modules for valid19 prefill or the first T1 decode after it')
     args = parser.parse_args()
     from qwen35_moe_dflash.target.prefill_t64.prepare import prepare
     job = prepare(args.source_root, args.config, args.fixture, args.output, REPO, attention_layers=args.attention_layers)

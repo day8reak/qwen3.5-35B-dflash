@@ -181,6 +181,9 @@ def main():
             qlinear_scales=a.qlinear_scales, cache_indexing=a.cache_indexing, rope_precision=a.rope_precision,
             gdn_state_dtype=a.gdn_state_dtype, gdn_convstate=a.gdn_convstate, gdr_mode=a.gdr_mode,
             full_attention_reference=a.full_attention_reference, gdn_trace_layer=a.gdn_trace_layer, gdr_inputs=a.gdr_inputs)
+        if result['status'] == 'EXPORTED':
+            from qwen35_moe_dflash.common.artifacts import share_for_transfer
+            share_for_transfer(a.output)
     elif a.command == 'export-one':
         from qwen35_moe_dflash.target.layer_probe.replay import export_one
         result = export_one(a.capture, a.region, a.output_index, a.output, a.source_root, a.converter_script, a.torchair_pb2, a.target_config,

@@ -3,6 +3,7 @@ import ast
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 
 import numpy as np
@@ -102,7 +103,16 @@ def prepare(source, config, fixture, output, repo, *, attention_layers=False):
             staged = transform(original) if transform else original
             ast.parse(staged, filename=name)
             (job / name).write_text(staged)
-        if segmented:
+        if manifest.get('phase') == 'decode':
+            from .module_export import prepare_modules
+            from ..layer_probe.common import save_json
+            if (not attention_layers or manifest['status'] != 'CAPTURED' or manifest['layers'] != [0, 1, 2, 3]
+                    or (manifest['physical_rows'], manifest['valid_rows'], manifest['position'], manifest['allQLen']) != (1, 1, 19, 20)):
+                raise ValueError('Expected first decode standalone attention modules after physical64/valid19 prefill')
+            shutil.copyfile(checked(fixture, manifest['block_table']), job / 'block_table.bin')
+            save_json(job / 'inputs.json', {'block_table': dict(manifest['block_table'], path='block_table.bin')})
+            prepare_modules(fixture, manifest, job)
+        elif segmented:
             from .segment_export import prepare_segment
             prepare_segment(fixture, manifest, job, attention_layers=attention_layers)
         else:

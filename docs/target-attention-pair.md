@@ -8,6 +8,57 @@
 
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。保留完整 fixture，确认 `capture/manifest.json` 的状态为 `CAPTURED`。Full 的 `captured-audited` 模式还要求同次 core 审计为 `PASSED`。本次 T64 使用[模块数学重放](#t64-full)。
 
+<a id="first-decode-valid19"></a>
+
+## 19-token 用例的首步 Decode
+
+在 AIR 机的 310P 环境执行原 `inference_segment.py`。采集器核对 64 行输入与保留的 Prefill 逐 token 一致，第一步 Decode 使用该模型生成的 token、位置 19、`effective_length=[1]` 和 `allQLen=[20]`。报告逐项列出本步真实输入状态与历史 Prefill 输出是否逐位一致。L0–L2 使用各自的模块输入、ConvState 和 recurrent state，L3 使用自己的模块输入和已填充的分页 KV。CPU 在相同输入上独立计算四个模块的投影后 hidden，逐层报告相对 L2 和 cosine。
+
+```bash
+conda activate qwen3_5_w4
+export DECODE="$AI_RUN_DIR/target/tests/decode-t1-after-valid19"
+python "$REPO_DIR/targets/cpro/tools/check_segment_prefill.py" \
+  --source-root "$TARGET_SOURCE" --decode-after "$AI_RUN_DIR/target/tests/prefill-4l-t64-valid19" \
+  --output "$DECODE/reference"
+```
+
+在同一台 AIR 机切换到导出环境。每层有独立 AIR 和 `golden_hidden[1,1,2048]`，参考取自通过固定输入 CPU 检查的 310P 模块。这里使用原 Decode 分支，GDR 单次处理一个 token。导出成功后脚本将 AIR 目录和文件设为 `0777`，并为运行目录内的祖先目录补齐进入权限。
+
+```bash
+conda activate qwen3_5_cpro
+python "$REPO_DIR/targets/cpro/tools/prepare_cpro_prefill_t64.py" \
+  --source-root "$CPRO_SOURCE" --config "$TARGET_CONFIG" --attention-layers \
+  --fixture "$DECODE/reference" --output "$DECODE/cpro" --export
+```
+
+在 DDK 机的 `custom_pypto` 环境执行传输和编译。
+
+```bash
+export BATCH_ROOT="$AI_RUN_DIR/target/tests/decode-t1-after-valid19/cpro"
+export PROBE="$REPO_DIR/targets/cpro/tools/target_layer_probe.py"
+python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" "$BATCH_ROOT/air" &&
+python "$PROBE" compile --batch "$BATCH_ROOT/air" --output "$BATCH_ROOT/omc" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" --compiler-profile isolated-kirinx90 \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" --use-origin-format
+```
+
+四张图均为 `COMPILED` 后，使用同一个 `BATCH_ROOT` 上板。
+
+```bash
+VALIDATE="$REPO_DIR/targets/cpro/tools/validate_draft_vector.py"
+python "$VALIDATE" --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --compiled "$BATCH_ROOT/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$BATCH_ROOT/execution" --apply
+```
+
+启动后回收同一次执行。即使出现数值超差，成功取回的张量仍可用 `compare` 输出逐层结果。
+
+```bash
+python "$VALIDATE" --recover "$BATCH_ROOT/execution" --output "$BATCH_ROOT/recovery"
+python "$PROBE" compare --fixture "$BATCH_ROOT/execution/fixture" \
+  --native "$BATCH_ROOT/recovery/native" --output "$BATCH_ROOT/comparison"
+cat "$BATCH_ROOT/comparison/summary.csv"
+```
+
 ## 1. 导出两组 AIR
 
 切到此前成功导出 CPro AIR 的 Python 环境。`CPRO_SOURCE` 指向原私有 CPro 源码根目录；GDN 导出器在进程内将原 `linear_attention_convstate_update` 展开为已验证的 concat/tail，因此应使用保留该原调用的源码副本。不要指向已手工应用整网 ConvState patch 的副本。权重 YAML 使用原 checkpoint／量化权重，路径规则见采集文档。
@@ -79,6 +130,13 @@ python "$REPO_DIR/targets/cpro/tools/target_layer_probe.py" export \
 
 ```bash
 python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" --init "$AIR_HOST" "$OMC_HOST"
+```
+
+新导出的 AIR 已设置传输权限。以前由 Docker 的 root 生成的目录，可以在导出机补设权限。此操作只需本地 Python 和 chmod。
+
+```bash
+python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" --prepare \
+  "$PAIR_ROOT/linear/air" "$PAIR_ROOT/full/air"
 ```
 
 每次导出完成后，在编译机将 `PAIR_ROOT` 设为与导出机相同的路径，再传本轮生成的目录。只测 Full 时，命令只传 `"$PAIR_ROOT/full/air"`。
@@ -153,6 +211,8 @@ cat "$BATCH_ROOT/comparison/summary.csv"
 | 在相同 CPro 输入上用 CPU 重算的 core | 1.93% | 4.75% | 通过 |
 
 **L0 最明显的数值特征是 FP16 次正规数对应的板端输出大量为零。** CPU 在相同输入上重算的 core 中有 37,424 个 FP16 次正规数，其中 37,371 个（99.86%）在 CPro 回读中为零。仅将 CPU core 输出中的次正规数置零，再用同一门控值归一化，CPU 与板端 core 所得归一化结果之间的 L2 差距降至置零前的 10.90%；单看 token 18，仍剩 41.62%。具体在哪一步变零、token 18 的剩余误差来自哪里，以及 L1、L2 是否具有相同机制，仍待验证。[离线回读与 core 替换工具](../targets/cpro/tools/inspect_segment_gdn_trace.py)
+
+算子侧可用 L0 的相同 Q/K/V、g、beta、初态和 `effective_length=[19]` 复现。优先检查 GDR 读出累加到 FP16 core 写回之间的小值，逐项对比 CPU 次正规数与板端零值，再用原 gate 和 out_proj 检查整层 hidden。外部归一化的 q1/q16 对照在编译阶段遇到 `ReduceSumCpro_1` 的 tiling 限制，最近一次二维图报 `innerSize>16`，此次没有板端缩放精度结果。
 
 ConvState 另有一项已观察到的差异。310P 返回物理 64 行末尾 4 行的卷积历史，CPU 的有效序列参考取截至 token 18 的末尾 4 行。本轮独立 prefill 从零状态开始；上面的 L0 core 替换对照使用同一份板端输入。
 

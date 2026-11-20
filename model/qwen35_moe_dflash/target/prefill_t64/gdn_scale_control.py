@@ -196,7 +196,7 @@ def export_control(baseline, output, *, readout_scale=None):
                            kernel_qk_normalization=False, value_scale=1, initial_state_scale=1, state_writeback_scale=1)
         save_json(job / 'inputs.json', inputs)
         save_json(job / 'segment.json', dict(segment, attention_modules=[dict(case, gdr_scale_control=control)]))
-        env = dict(os.environ, REPO_DIR=str(Path(__file__).resolve().parents[4]))
+        env = dict(os.environ, REPO_DIR=str(Path(__file__).resolve().parents[4]), AI_RUN_DIR=str(job))
         subprocess.run([sys.executable, str(job / 'export_t64.py')], cwd=job, env=env, check=True)
         new_manifest = json.loads((job / 'air/manifest.json').read_text())
         new_case, = new_manifest['cases']
@@ -232,5 +232,7 @@ def export_control(baseline, output, *, readout_scale=None):
         if not before['weights'] or after['weights'] != before['weights']:
             raise ValueError('Weights or non-scalar constants changed between baseline and scaled AIR')
         (job / 'air').rename(output / 'air')
+    from qwen35_moe_dflash.common.artifacts import share_for_transfer
+    share_for_transfer(output / 'air')
     return dict(status='EXPORTED', case=CASE, scale=scale, scaled_operand=(
         'normalized_query' if readout_scale is not None else 'value_and_initial_state'), manifest=str(output / 'air/manifest.json'))

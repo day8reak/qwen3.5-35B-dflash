@@ -80,12 +80,18 @@ def main():
     offline.add_argument('--diagnose-cpu', type=Path, metavar='CAPTURE', help='use saved four-layer inputs and cpu/report.json for fixed-input controls')
     offline.add_argument('--compare-cpu', type=Path, metavar='CAPTURE', help='reuse a completed capture for CPU comparison')
     p.add_argument('--gdr-capture', type=Path, help='match the exact token IDs to the previously qualified GDR case')
+    p.add_argument('--decode-after', type=Path, metavar='PREFILL_FIXTURE',
+                   help='capture the first T1 decode attention modules after this segmented physical64/valid19 case')
     p.add_argument('--capture-only', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--attention-layers', action='store_true',
                    help='capture standalone attention-module inputs/hidden and compare 310P with fixed-input CPU math')
     p.add_argument('--trace-linear', type=int, choices=range(3), metavar='LAYER',
                    help='observe one whole linear attention module and its chunk GDR boundaries on the same call')
     a = p.parse_args()
+    if a.decode_after:
+        if a.trace_linear is not None or a.gdr_capture or a.compare_cpu or a.diagnose_cpu:
+            p.error('--decode-after selects first decode capture and fixed-input module comparison')
+        a.attention_layers = True
     if a.trace_linear is not None:
         if a.compare_cpu or a.diagnose_cpu:
             p.error('--trace-linear is a capture option')
@@ -109,10 +115,22 @@ def main():
     if not a.source_root:
         p.error('--source-root is required for capture')
     entry = (a.source_root / 'inference_segment.py').resolve(strict=True)
-    config = (entry.parent / a.config).resolve(strict=True)
+    config = (entry.parent / a.config).resolve(strict=not a.decode_after)
     prior = a.gdr_capture.resolve(strict=True) if a.gdr_capture else None
     if a.capture_only:
-        capture(new_output(a.output), entry, config, prior, a.attention_layers, a.trace_linear)
+        if a.decode_after:
+            from qwen35_moe_dflash.target.prefill_t64.segment_decode import capture_decode
+            root = new_output(a.output)
+            try:
+                capture_decode(root, entry, a.decode_after.resolve(strict=True))
+            except Exception as exc:
+                from qwen35_moe_dflash.target.layer_probe.common import save_json
+                path = root / 'manifest.json'
+                report = json.loads(path.read_text()) if path.is_file() else {'phase': 'decode'}
+                save_json(path, dict(report, status='FAILED', error=f'{type(exc).__name__}: {exc}'))
+                raise
+        else:
+            capture(new_output(a.output), entry, config, prior, a.attention_layers, a.trace_linear)
         return 0
     # Release both segmented NPU models before loading the independent CPU prefix.
     out = a.output.resolve()
@@ -121,6 +139,8 @@ def main():
                '--output', str(out), '--capture-only']
     if prior:
         command.extend(['--gdr-capture', str(prior)])
+    if a.decode_after:
+        command.extend(['--decode-after', str(a.decode_after.resolve(strict=True))])
     if a.attention_layers:
         command.append('--attention-layers')
     if a.trace_linear is not None:

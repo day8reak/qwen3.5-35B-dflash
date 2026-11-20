@@ -11,7 +11,7 @@ from ..layer_probe.common import KIND, checked, identity, read_array, save_json,
 from ..layer_probe.replay import export_input_identity, source_bindings
 from ..layer_probe.steps import working_directory
 
-from .segment_export import MODULE_BASIS
+from .segment_export import DECODE_MODULE_BASIS, MODULE_BASIS
 from .segment_gdn_trace import BASIS as TRACE_BASIS, TAPS
 
 
@@ -20,7 +20,10 @@ def prepare_modules(fixture, capture, job):
     cpu_root = fixture / 'module-cpu'
     audit = json.loads((cpu_root / 'report.json').read_text())
     capture_hash = sha(fixture / 'manifest.json')
-    if (audit['scope'] != 'SEGMENT_VALID19_FIXED_INPUT_ATTENTION_MODULE_HIDDEN'
+    decode = capture.get('phase') == 'decode'
+    rows, valid = (1, 1) if decode else (64, 19)
+    scope = 'SEGMENT_DECODE_AFTER_VALID19_FIXED_INPUT_MODULE_HIDDEN' if decode else 'SEGMENT_VALID19_FIXED_INPUT_ATTENTION_MODULE_HIDDEN'
+    if (audit['scope'] != scope
             or audit['capture_sha256'] != capture_hash):
         raise ValueError('Expected the fixed-input module CPU audit for this same capture')
     cases = []
@@ -33,16 +36,17 @@ def prepare_modules(fixture, capture, job):
         if record['module'] != expected_member:
             raise ValueError(f'Unexpected attention module at L{i}')
         point = 'gdn_layer' if i < 3 else 'full_attention_layer'
-        name = f'l{i:02}_c00_{point}_hidden_o0'
-        case = dict(id=name, layer=i, call=0, point=point, kind='segment_module_hidden',
-                    ordinal=i, phase='prefill', output_name='golden_hidden')
+        call = int(decode)
+        name = f'l{i:02}_c{call:02}_{point}_hidden_o0'
+        case = dict(id=name, layer=i, call=call, point=point, kind='segment_module_hidden',
+                    ordinal=i, phase='decode' if decode else 'prefill', output_name='golden_hidden')
         if trace is not None:
             case.update(kind='segment_gdn_trace', id=f'l{i:02}_c00_gdn_trace_o0')
         native = read_array(fixture, record['golden_hidden'])
         cpu = read_array(cpu_root, audit['layers'][str(i)]['cpu_hidden'])
-        if native.shape != (1, 64, 2048) or native.dtype != np.float16 or cpu.shape != (1, 19, 2048):
+        if native.shape != (1, rows, 2048) or native.dtype != np.float16 or cpu.shape != (1, valid, 2048):
             raise ValueError(f'L{i}: unexpected module hidden geometry')
-        if not (metrics(native[:, :19], cpu)['passed'] and metrics(native[:, 18], cpu[:, 18])['passed']):
+        if not (metrics(native[:, :valid], cpu)['passed'] and metrics(native[:, valid-1], cpu[:, -1])['passed']):
             cases.append(dict(case, status='CPU_REFERENCE_MISMATCH', error='See module-cpu/report.json'))
             continue
         folder = job / 'module-inputs' / case['id']
@@ -51,13 +55,17 @@ def prepare_modules(fixture, capture, job):
         for key, spec in record['inputs'].items():
             x = read_array(fixture, spec)
             if key in ('conv', 'state', 'key', 'value'):
-                if np.any(x):
+                if not decode and np.any(x):
                     raise ValueError(f'L{i}: expected a fresh zero {key}')
-                x = x.astype('<f2')
+                half = x.astype('<f2')
+                if decode and not np.array_equal(half.astype(x.dtype), x):
+                    raise ValueError(f'L{i}: {key} cannot be carried losslessly in the CPro FP16 input')
+                x = half
             if key in ('positions', 'cache_positions'):
-                if x.dtype.kind not in 'iu' or not np.array_equal(x.reshape(-1), np.arange(64)):
+                expected = [19] if decode else np.arange(64)
+                if x.dtype.kind not in 'iu' or not np.array_equal(x.reshape(-1), expected):
                     raise ValueError(f'L{i}: unexpected {key}')
-                x = x.astype('<i4') if key == 'positions' else x.reshape(64, 1).astype('<f4')
+                x = x.astype('<i4') if key == 'positions' else x.reshape(rows, 1).astype('<f4')
             path = folder / (key + '.bin')
             x.tofile(path)
             specs[key] = dict(identity(path, job), dtype=x.dtype.name, shape=list(x.shape))
@@ -84,8 +92,10 @@ def prepare_modules(fixture, capture, job):
                 shutil.copyfile(checked(origin, spec), dest)
                 control[key] = dict(spec, **identity(dest, job))
         cases.append(case)
-    save_json(job / 'segment.json', dict(attention_modules=cases, capture_sha256=capture_hash,
-                                         cpu_audit_sha256=sha(cpu_root / 'report.json')))
+    segment = dict(attention_modules=cases, capture_sha256=capture_hash, cpu_audit_sha256=sha(cpu_root / 'report.json'))
+    if decode:
+        segment['phase'] = 'decode'
+    save_json(job / 'segment.json', segment)
 
 
 class _LinearHidden(torch.nn.Module):
@@ -128,6 +138,10 @@ def export_modules(job, segment, layers, exporter):
         root = Path(tmp) / 'air'
         root.mkdir()
         basis = TRACE_BASIS if any(c['kind'] == 'segment_gdn_trace' for c in segment['attention_modules']) else MODULE_BASIS
+        decode = segment.get('phase') == 'decode'
+        rows = 1 if decode else 64
+        if decode:
+            basis = DECODE_MODULE_BASIS
         for entry in segment['attention_modules']:
             case = {k: v for k, v in entry.items() if k not in ('inputs', 'golden', 'taps', 'replay')}
             cases.append(case)
@@ -150,7 +164,7 @@ def export_modules(job, segment, layers, exporter):
             torch._dynamo.reset()
             print('export', case['id'], flush=True)
             with working_directory(folder), export_input_identity(list(args.values())) as evidence:
-                with exporter.cpro_export_contracts(True, chunk_size=64, gdn_layers=int(linear)):
+                with exporter.cpro_export_contracts(True, chunk_size=rows, gdn_layers=int(linear), sequence_rows=rows):
                     exporter.torchair.dynamo_export(model=model.eval(), export_path='weight', dynamic=False, **args)
             air = folder / 'export.air'
             (folder / 'weight/export.air').replace(air)
@@ -166,7 +180,7 @@ def export_modules(job, segment, layers, exporter):
             attrs = _attributes(op)
             slot, = [j for j, name in port_names(attrs, 'input').items() if name == port]
             if (_data_edges(op)[slot] != edges[arg] or 'hidden' not in edges
-                    or (linear and attrs['chunk_size']['i'] != 64)):
+                    or (linear and attrs['chunk_size']['i'] != rows)):
                 raise ValueError(f'L{i}: invalid hidden or valid-length binding')
             goldens = []
             for ref in refs:
@@ -187,14 +201,14 @@ def export_modules(job, segment, layers, exporter):
                     replay[key] = dict(spec, **identity(dest, folder))
             record = folder / 'export.json'
             save_json(record, dict(air=identity(air, folder), source_inputs=bindings, golden=goldens[0], goldens=goldens,
-                      reference_basis=basis, physical_rows=64, valid_rows=19, reference_position=18,
+                      reference_basis=basis, physical_rows=rows, valid_rows=1 if decode else 19, reference_position=19 if decode else 18,
                       quantized_projections=projections, length_edge=edges[arg],
                       capture_sha256=segment['capture_sha256'], cpu_audit_sha256=segment['cpu_audit_sha256'],
                       output_contract=output_contract, **({'trace_replay': replay} if traced else {})))
             case.update(status='EXPORTED', export=identity(record, root))
         complete = all(c['status'] == 'EXPORTED' for c in cases)
         save_json(root / 'manifest.json', dict(artifact_kind=KIND, status='EXPORTED' if complete else 'PARTIAL',
-                  cases=cases, scope='ISOLATED_WHOLE_ATTENTION_MODULES_PHYSICAL64_VALID19', golden_source=basis,
+                  cases=cases, scope=('ISOLATED_DECODE_MODULES_AFTER_VALID19' if decode else 'ISOLATED_WHOLE_ATTENTION_MODULES_PHYSICAL64_VALID19'), golden_source=basis,
                   reference_model_layers=4, capture_sha256=segment['capture_sha256']))
         root.rename(job / 'air')
     print('Standalone module AIR batch:', job / 'air/manifest.json', flush=True)

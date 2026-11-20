@@ -3,6 +3,8 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import stat
+import subprocess
 from qwen35_moe_dflash.common.hashing import sha256_file
 
 
@@ -14,6 +16,24 @@ def output_path(path):
     if path == root or root not in path.parents:
         raise ValueError("generated output must be below AI_RUN_DIR")
     return path
+
+
+def share_for_transfer(path):
+    """Publish a generated tree to the transfer account on the Linux export host."""
+    path = Path(path)
+    if path.is_symlink():
+        raise ValueError(f'Expected a generated artifact, got a symbolic link: {path}')
+    root = os.environ.get('AI_RUN_DIR')
+    if root:
+        path = output_path(path)
+    subprocess.run(['chmod', '-R', '--', '00777', str(path.resolve(strict=True))], check=True)
+    if root:
+        for parent in path.parents:
+            mode = stat.S_IMODE(parent.stat().st_mode)
+            if (mode & 0o111) != 0o111:
+                parent.chmod(mode | 0o111)
+            if parent == Path(root).resolve():
+                break
 
 
 def save_json(path, value):

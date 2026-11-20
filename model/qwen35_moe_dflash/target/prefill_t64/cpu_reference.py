@@ -122,9 +122,15 @@ class CpuPrefill:
             after[pages, :, offsets, :] = dense.reshape(t, kv*d//16, 16).to(after.dtype)
             states.append(after)
         q = q.transpose(1, 2).double()
+        length = args.get('kv_length', t)
+        if 'kv_length' in args:
+            # Decode attends through the current position in the updated paged caches.
+            logical = torch.arange(length)
+            pages = layer.block_table[0, logical // layer.block_size].long()
+            k, v = [cache[pages, :, logical % layer.block_size, :].reshape(b, length, kv, d) for cache in states]
         k, v = [a.transpose(1, 2).repeat_interleave(heads//kv, dim=1).double() for a in (k, v)]
         logits = (q @ k.transpose(-1, -2)) * layer.scaling
-        prob = torch.softmax(logits + args['attention_mask'][..., :t].double(), dim=-1)
+        prob = torch.softmax(logits + args['attention_mask'][..., :length].double(), dim=-1)
         core = (prob @ v).to(torch.float16).transpose(1, 2)
         y = (core * gate.sigmoid()).reshape(b, t, heads*d)
         return self.project(y, prefix + '.o_proj', layer.o_proj), states

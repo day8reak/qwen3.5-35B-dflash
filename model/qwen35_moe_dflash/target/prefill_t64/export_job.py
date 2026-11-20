@@ -14,6 +14,8 @@ from ..layer_probe.steps import working_directory
 def export_air(job):
     with working_directory(job):
         _export_air(job)
+    from qwen35_moe_dflash.common.artifacts import share_for_transfer
+    share_for_transfer(job / 'air')
 
 
 def _segment_wrapper(base):
@@ -84,6 +86,10 @@ def _export_air(job):
         table = data['block_table'] if segment else torch.arange(64, dtype=torch.int32).reshape(1, 64)
         if not torch.equal(layers[3].self_attn.block_table.cpu(), table):
             raise ValueError('L3 page table differs from fresh sequential Prefill')
+        if segment and segment.get('phase') == 'decode':
+            from .module_export import export_modules
+            export_modules(job, segment, layers, exporter)
+            return
         states = [(data[f'conv_state_{i}'], data[f'recurrent_state_{i}']) for i in range(3)]
         states.append((data['key_cache_3'], data['value_cache_3']))
         if segment:

@@ -98,7 +98,9 @@ def pull(sftp, path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument('--init', nargs=2, metavar=('AIR_HOST', 'OMC_HOST'),
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--prepare', action='store_true', help='on the producer, grant mode 0777 to the selected run artifacts')
+    mode.add_argument('--init', nargs=2, metavar=('AIR_HOST', 'OMC_HOST'),
                         help='create private SSH settings on the receiving machine')
     parser.add_argument('--from', dest='source', choices=('air', 'omc'), default='air')
     parser.add_argument('paths', nargs='*', help='absolute artifact paths or paths relative to AI_RUN_DIR')
@@ -111,6 +113,19 @@ def main():
         return
     if not args.paths:
         parser.error('supply the files or directories to receive')
+    if args.prepare:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
+        from qwen35_moe_dflash.common.artifacts import share_for_transfer
+        root = Path(os.environ.get('AI_RUN_DIR', ''))
+        if not root.is_absolute():
+            parser.error('--prepare requires an absolute AI_RUN_DIR')
+        for name in args.paths:
+            path = destination(name, [root])
+            if path.resolve() == config.resolve() or path.resolve() in config.resolve().parents:
+                parser.error('selected output includes the private SSH settings')
+            share_for_transfer(path)
+            print(f'Transfer permissions ready: {path}')
+        return
     if config.stat().st_mode & 0o077:
         raise ValueError(f'Settings contain SSH credentials. Set permissions with chmod 600 {config}')
     with config.open() as stream:

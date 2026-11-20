@@ -460,12 +460,16 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
                 raise ValueError('Unexpected chunk GDR trace outputs or reference')
             cases[-1]['reference_basis'] = BASIS
         if case['kind'] == 'segment_module_hidden':
-            from ..prefill_t64.segment_export import MODULE_BASIS
-            if (exported['reference_basis'] != MODULE_BASIS or exported['capture_sha256'] != manifest['capture_sha256']
+            from ..prefill_t64.segment_export import DECODE_MODULE_BASIS, MODULE_BASIS
+            decode = case['phase'] == 'decode'
+            basis = DECODE_MODULE_BASIS if decode else MODULE_BASIS
+            geometry = (1, 1, 19) if decode else (64, 19, 18)
+            if (exported['reference_basis'] != basis or exported['capture_sha256'] != manifest['capture_sha256']
                     or [s['semantic_name'] for s in io['outputs']] != ['golden_hidden']
-                    or (exported['physical_rows'], exported['valid_rows'], exported['reference_position']) != (64, 19, 18)):
-                raise ValueError('Unexpected valid19 standalone module reference')
-            cases[-1]['reference_basis'] = MODULE_BASIS
+                    or tuple(io['outputs'][0]['shape']) != (1, geometry[0], 2048)
+                    or (exported['physical_rows'], exported['valid_rows'], exported['reference_position']) != geometry):
+                raise ValueError('Unexpected standalone module reference or output shape')
+            cases[-1]['reference_basis'] = basis
         if case['kind'] == 'segment_prefill':
             from ..prefill_t64.segment_export import OUTPUTS
             if [s['semantic_name'] for s in io['outputs']] != list(OUTPUTS):
@@ -573,7 +577,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     if valid_rows is not None:
                         actual = unpack(actual, attention['num_heads'])[:, :, :valid_rows]
                         valid_hashes.append(hashlib.sha256(actual.tobytes()).hexdigest())
-                    if case['kind'] == 'segment_module_hidden' or (case['kind'] == 'segment_gdn_trace' and spec['index'] == 0):
+                    if (case['kind'] == 'segment_module_hidden' and case['phase'] == 'prefill') or (case['kind'] == 'segment_gdn_trace' and spec['index'] == 0):
                         from ..prefill_t64.segment_export import score_module_hidden
                         metric = score_module_hidden(actual, golden, atol, rtol)
                         valid_hashes.append(hashlib.sha256(actual[:, :19].tobytes()).hexdigest())
