@@ -10,6 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     cmds = parser.add_subparsers(dest='action', required=True)
+    inspect = cmds.add_parser('inspect-abi', help='print the retained AIR and compiled OMC output slots without running the model')
+    inspect.add_argument('--compiled', required=True, type=Path, help='OMC batch directory')
+    inspect.add_argument('--ddk-root', required=True, type=Path)
+    inspect.add_argument('--case', default='l00_c00_norm_prefill_stages_o0')
     prepare = cmds.add_parser('prepare', help='expose the measured stage edges in the baseline AIRs')
     compare = cmds.add_parser('compare', help='write per-backend raw binary tensors, a file map and CPro-vs-310P CSV metrics')
     prepare.add_argument('--baseline', required=True, type=Path, help='export job containing the whole-module AIR batch')
@@ -20,6 +24,9 @@ def main():
         cmd.add_argument('--output', required=True, type=Path)
     compare.add_argument('--trace', required=True, type=Path, help='new compiled and recovered batch')
     args = parser.parse_args()
+    if args.action == 'inspect-abi':
+        from qwen35_moe_dflash.target.prefill_t64.gdr_stage_abi import inspect_abi
+        return 0 if inspect_abi(args.compiled, args.ddk_root, args.case) else 1
     if args.action == 'prepare':
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_air import prepare
         prepare(args.baseline, args.reference, args.output, include_baseline=args.include_baseline)
@@ -29,4 +36,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

@@ -69,6 +69,16 @@ python "$TOOLS/validate_draft_vector.py" \
   --recover "$G/execution" --wait --output "$G/recovery"
 ```
 
+若在 `stage=prepare` 收到 `compiled output … shape or dtype is incompatible`，先在 DDK 服务器读取本次产物的输出槽。下面以 L0 的 RMSNorm/门控图为例。命令列出每个槽的 310P 参考、AIR 源边和 OMC NetOutput 描述，以及能从 OMC 元数据追溯的直接生产者。末行给出与下发流程相同的绑定检查结果。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+python "$REPO_DIR/targets/cpro/tools/gdr_prefill_stages.py" inspect-abi \
+  --compiled "$G/omc" --ddk-root "$CPRO_DDK_ROOT" \
+  --case l00_c00_norm_prefill_stages_o0
+```
+
 **5. 同一台 10.136.181.35，导出两端 bin 并逐张量对比**
 
 回收结果中 `device_execution=EXECUTED_OUTPUTS_RETRIEVED` 表示已经取得板端计算结果。即使此时 `numerical_validation=FAILED`，仍可执行下面的命令定位误差。

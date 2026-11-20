@@ -329,7 +329,10 @@ def bind_compiled(document, source_inputs, golden, enums, output_contract=None):
         views = contract.get('stage_views', contract.get('first_decode_views', {})).get(item.get('name'), [])
         if ((observed['shape'] != item['shape'] and observed['shape'] not in views)
                 or math.prod(observed['shape']) != math.prod(item['shape']) or observed['dtype'] not in DTYPES):
-            raise ValueError(f'compiled output {index} shape or dtype is incompatible with captured boundary')
+            raise ValueError(f'compiled output {index} ({item.get("name", "unnamed")}) shape or dtype is incompatible '
+                             f'with captured boundary: golden={item["dtype"]} {item["shape"]}, '
+                             f'compiled={observed["dtype"]} {observed["shape"]} (raw_dtype={observed["raw_dtype"]}), '
+                             f'allowed_views={views}')
         if 'stage_views' in contract and item['dtype'].startswith('float') and observed['dtype'] not in ('float16', 'float32'):
             raise ValueError(f'compiled floating stage {index} has incompatible dtype {observed["dtype"]}')
         required = contract.get('required_dtypes', {})
