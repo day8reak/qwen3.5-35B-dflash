@@ -1,5 +1,31 @@
 # 310P 与 CPro 的 GDR、RMSNorm 和门控乘法逐张量对比
 
+## 将现有板端结果整理成一份完整 dump
+
+在 10.136.181.35 的 DDK 终端执行。命令只读取已回收的三个批次 `gamma-readout`、`norm-single-l0`、`l0-silu-pair` 和原始 310P capture，重新校验张量并写入新的 `dump-summary/`。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+python "$REPO_DIR/targets/cpro/tools/gdr_prefill_stages.py" summarize --group "$G" &&
+cat "$G/dump-summary/summary.md"
+```
+
+| 文件 | 内容 |
+|---|---|
+| `summary.md` | 按 L0、L1、L2 和计算顺序排列。每行同时显示 valid19、token18 或全张量的相对 L2 / cosine 和精度判定 |
+| `summary.csv` | 每项检查的全部指标、非有限值和零值计数、FP16 次正规数对端变零计数。先看 `measurement` 和 `result`，`passed` 只表示该读数与参考的数值比较 |
+| `tensor-map.csv`、`manifest.json` | 每个 bin 的步骤、两端 dtype、shape、文件位置、板端 case、槽位和偏移；清单另含 SHA256、AIR 来源及有效 hidden 复现标志 |
+| `l*/{310p,cpro}/inputs/` | 实际整层入口，包括 hidden、卷积历史、初始 state 和有效长度。若 310P 的某个参数被编译器裁掉，只保存采集侧文件 |
+| `l*/{310p,cpro}/*.bin` | GDR、RMSNorm、SiLU、门控乘积、转型后的 out_proj 输入，以及未经探针修改的整层 `golden_hidden` |
+| `diagnostic/l*/cpro/` | 未复现原图有效 hidden 或模块入口的历史探针输出 |
+| `silu-result.json` | L0 同次调用的直接 SiLU 校验。汇总中的 `silu_input`、`silu_output`、`mul_rhs` 都来自这张图，后两个名字共享一个板端槽 |
+
+本次实测 L0 在有效 19 个 token 上，SiLU 输出 CPro/310P 相对 L2 为 **0.00160568**，cosine 为 **0.99999883**。CPro 输出对自身实测输入的 SiLU 公式为 **0.00132394 / 0.999999**。这张图的有效 hidden 与原始 CPro 图逐位相等。后续实测门控乘积为 **0.125974 / 0.992034**，整层输出为 **0.221701 / 0.976573**。汇总另外用两端各自的实测左右操作数重建各自乘积，并在 CSV 中单列检查结果。L1、L2 的 SiLU 尚缺同样的合格回读。
+
+## 重新采集和执行
+
 从原始分段推理重新采集同一个 19-token prompt 的首次 prefill，物理 T64，最后一个有效 token 的下标为 18。L0–L2 各执行一次未缩放的 chunk-64 GDR。每层 CPro 图使用本轮 310P 同层入口的完整 hidden、初始 ConvState、recurrent state 和有效长度，在图内连续计算投影、GDR、RMSNorm、SiLU、门控乘法及输出投影。所有参考张量来自这次 310P 执行。
 
 | 位置 | 保存的张量 |

@@ -10,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     cmds = parser.add_subparsers(dest='action', required=True)
+    bundle = cmds.add_parser('summarize', help='assemble all three layers from the recovered baseline, split L0 and paired SiLU runs')
+    bundle.add_argument('--group', required=True, type=Path, help='original gdr-stages-t64-valid19 experiment directory')
+    bundle.add_argument('--output', type=Path, help='new dump directory (default: GROUP/dump-summary)')
     audit = cmds.add_parser('audit-dump', help='check the original nine-case dump against its own recorded operands')
     audit.add_argument('--dump', required=True, type=Path)
     audit.add_argument('--trace', required=True, type=Path, help='recovered nine-case board batch')
@@ -38,6 +41,12 @@ def main():
         cmd.add_argument('--output', required=True, type=Path)
     compare.add_argument('--trace', required=True, type=Path, help='new compiled and recovered batch')
     args = parser.parse_args()
+    if args.action == 'summarize':
+        from qwen35_moe_dflash.target.prefill_t64.gdr_stage_report import compare
+        g = args.group
+        compare(g / 'gamma-readout', g / 'reference', g / 'norm-single-l0', args.output or g / 'dump-summary',
+                silu_readout=g / 'l0-silu-pair', combined=True)
+        return 0
     if args.action == 'audit-product':
         from qwen35_moe_dflash.target.prefill_t64.gdr_product_audit import audit_product
         audit_product(args.dump, args.layer)

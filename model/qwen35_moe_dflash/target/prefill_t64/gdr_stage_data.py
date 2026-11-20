@@ -34,6 +34,7 @@ def case_id(layer, group):
 
 # Names describe the value at the consumer boundary, including casts in the source graph.
 DESCRIPTIONS = {
+    'golden_hidden': ('GDN 整层输出', '门控结果经 out_proj 后的整层输出，在 decoder 残差加法之前'),
     'query': ('GDR 输入', '当前 token 的 Q，送入 chunk GDR 的读出向量'),
     'key': ('GDR 输入', '当前 token 的 K，参与状态预测与更新'),
     'value': ('GDR 输入', '当前 token 的 V，参与计算状态更新的残差'),
