@@ -12,7 +12,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / 'model'))
 
 
-def capture(root, entry, config, prior, attention_layers=False, trace_linear=None):
+def capture(root, entry, config, prior, attention_layers=False, trace_linear=None, gdr_stages=False):
     from qwen35_moe_dflash.target.layer_probe.common import save_json
     from qwen35_moe_dflash.target.prefill_t64.segment_prefix import arm_prefix
 
@@ -28,7 +28,13 @@ def capture(root, entry, config, prior, attention_layers=False, trace_linear=Non
                 manifest = arm_prefix(frame, root, cleanup, attention_layers=attention_layers, trace_linear=trace_linear)
                 from trace_segment_attention import observe_l1_gdr_length
                 wrapper = frame.f_locals['model_wrapper']
-                if trace_linear != 1:
+                if gdr_stages:
+                    from qwen35_moe_dflash.target.prefill_t64.gdr_stage_capture import observe_norm
+                    for i in range(3):
+                        snapshot[i] = {}
+                        observe_norm(wrapper.model.model.layers[i].linear_attn, snapshot[i], cleanup)
+                        observe_l1_gdr_length(wrapper, manifest, cleanup, snapshot[i], layer_index=i)
+                elif trace_linear != 1:
                     observe_l1_gdr_length(wrapper, manifest, cleanup)
                 if trace_linear is not None:
                     from qwen35_moe_dflash.target.prefill_t64.segment_gdn_trace import observe_tail
@@ -65,6 +71,9 @@ def capture(root, entry, config, prior, attention_layers=False, trace_linear=Non
         trace = manifest['linear_trace'] = save_trace(root, manifest, trace_linear, snapshot)
         for name, metric in trace['cpu_audit'].items():
             print(f"L{trace_linear} 310P vs CPU {name}: rel_L2={metric['relative_l2']} passed={metric['passed']}", flush=True)
+    if gdr_stages:
+        from qwen35_moe_dflash.target.prefill_t64.gdr_stage_capture import capture_stages
+        capture_stages(root, manifest, snapshot)
     manifest['status'] = 'CAPTURED'
     save_json(root / 'manifest.json', manifest)
     print(json.dumps(dict(status='CAPTURED', physical_rows=64, valid_rows=19, output_pos=18,
@@ -87,7 +96,12 @@ def main():
                    help='capture standalone attention-module inputs/hidden and compare 310P with fixed-input CPU math')
     p.add_argument('--trace-linear', type=int, choices=range(3), metavar='LAYER',
                    help='observe one whole linear attention module and its chunk GDR boundaries on the same call')
+    p.add_argument('--gdr-stages', action='store_true', help='capture L0-L2 chunk, RMSNorm and SiLU product tensors')
     a = p.parse_args()
+    if a.gdr_stages:
+        if a.decode_after or a.compare_cpu or a.diagnose_cpu or a.trace_linear is not None:
+            p.error('--gdr-stages selects the physical64/valid19 prefill capture')
+        a.attention_layers = True
     if a.decode_after:
         if a.trace_linear is not None or a.gdr_capture or a.compare_cpu or a.diagnose_cpu:
             p.error('--decode-after selects first decode capture and fixed-input module comparison')
@@ -130,7 +144,7 @@ def main():
                 save_json(path, dict(report, status='FAILED', error=f'{type(exc).__name__}: {exc}'))
                 raise
         else:
-            capture(new_output(a.output), entry, config, prior, a.attention_layers, a.trace_linear)
+            capture(new_output(a.output), entry, config, prior, a.attention_layers, a.trace_linear, a.gdr_stages)
         return 0
     # Release both segmented NPU models before loading the independent CPU prefix.
     out = a.output.resolve()
@@ -143,13 +157,19 @@ def main():
         command.extend(['--decode-after', str(a.decode_after.resolve(strict=True))])
     if a.attention_layers:
         command.append('--attention-layers')
+    if a.gdr_stages:
+        command.append('--gdr-stages')
     if a.trace_linear is not None:
         command.extend(['--trace-linear', str(a.trace_linear)])
     subprocess.run(command, cwd=entry.parent, check=True)
     cpu_command = [sys.executable, script, '--compare-cpu', str(out)]
     if a.attention_layers:
         cpu_command.append('--attention-layers')
-    return subprocess.run([*cpu_command, '--output', str(out / ('module-cpu' if a.attention_layers else 'cpu'))]).returncode
+    status = subprocess.run([*cpu_command, '--output', str(out / ('module-cpu' if a.attention_layers else 'cpu'))]).returncode
+    if a.gdr_stages and (out / 'module-cpu/report.json').is_file():
+        from qwen35_moe_dflash.common.artifacts import share_for_transfer
+        share_for_transfer(out)
+    return status
 
 
 if __name__ == '__main__':

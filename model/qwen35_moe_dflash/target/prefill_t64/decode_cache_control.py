@@ -81,7 +81,7 @@ def make_cpu_cache(fixture, root, *, stages=False):
     return report
 
 
-def graph_message(raw):
+def graph_message(raw, required_op='AdnFusedInferAttention'):
     from google.protobuf import descriptor_pool, message_factory
     from google.protobuf.message import DecodeError
     descriptor = (Path(__file__).resolve().parents[4] / 'specs/torchair-ge-ir.pb').read_bytes()
@@ -96,9 +96,9 @@ def graph_message(raw):
         except DecodeError:
             continue
         graphs = message.graph if typename == 'ModelDef' else [message]
-        if len(graphs) == 1 and any(op.type == 'AdnFusedInferAttention' for op in graphs[0].op):
+        if len(graphs) == 1 and any(op.type == required_op for op in graphs[0].op):
             return message, graphs[0]
-    raise ValueError('Expected an L3 AIR with one attention graph')
+    raise ValueError(f'Expected an AIR with one graph containing {required_op}')
 
 
 def replace_updates(raw, bindings, selected):

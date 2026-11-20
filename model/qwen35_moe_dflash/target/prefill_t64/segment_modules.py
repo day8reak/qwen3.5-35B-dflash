@@ -1,4 +1,5 @@
 """Same-call module inputs and post-projection hidden from the real valid19 segment."""
+import csv
 import json
 from pathlib import Path
 
@@ -75,14 +76,26 @@ def compare_cpu(root, output):
     if decode:
         report.update(scope='SEGMENT_DECODE_AFTER_VALID19_FIXED_INPUT_MODULE_HIDDEN', capture_sha256=sha(root / 'manifest.json'))
     valid = 1 if decode else 19
+    if 'gdr_stages' in capture:
+        report['capture_sha256'] = sha(root / 'manifest.json')
     trace = capture.get('linear_trace')
-    for i in ([trace['layer']] if trace is not None else range(4)):
+    indices = [trace['layer']] if trace is not None else range(3 if 'gdr_stages' in capture else 4)
+    for i in indices:
         layer = cpu_model.model.model.layers[i]
         record = capture['attention_modules'][str(i)]
         values = {k: torch.from_numpy(read_array(root, spec)) for k, spec in record['inputs'].items()}
         x = values['hidden'][:, :valid]
         prefix = f'layers.{i}.' + record['module']
-        if i < 3:
+        if 'gdr_stages' in capture and i < 3:
+            from .gdr_stage_data import GDR, NORM
+            stages = {}
+            result, _ = cpu_model.gdn(values['hidden'], layer.linear_attn, prefix, (values['conv'], values['state']),
+                                      valid_length=valid, stages=stages)
+            folder = output / 'stages' / f'l{i}'
+            folder.mkdir(parents=True)
+            report.setdefault('gdr_stages', {})[str(i)] = {
+                k: tensor_record(output, str((folder / k).relative_to(output)), stages[k]) for k in (*GDR, *NORM)}
+        elif i < 3:
             result, _ = cpu_model.gdn(x, layer.linear_attn, prefix, (values['conv'], values['state']))
         else:
             args = dict(position_ids=values['positions'][:, :valid], new_kv_cache_pos=values['cache_positions'].reshape(-1)[:valid],
@@ -110,4 +123,14 @@ def compare_cpu(root, output):
               f"token18 rel_L2={last['relative_l2']} failed={row['failed_metrics']}/{last['failed_metrics']}", flush=True)
     report['status'] = 'PASSED' if all(r['passed'] for r in report['layers'].values()) else 'NUMERICAL_FAILED'
     save_json(output / 'report.json', report)
+    if 'gdr_stages' in capture:
+        from .gdr_stage_data import DESCRIPTIONS
+        with (root / 'tensor-map.csv').open('w', encoding='utf-8', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(('layer', 'backend', 'tensor', 'step', 'meaning', 'path', 'shape', 'dtype'))
+            for i, native in capture['gdr_stages'].items():
+                for backend, folder, specs in [('310p', root, native['tensors']), ('cpu', output, report['gdr_stages'][i])]:
+                    for name, spec in specs.items():
+                        writer.writerow((i, backend, name, *DESCRIPTIONS[name], str(folder / spec['path']),
+                                         json.dumps(spec['shape']), spec['dtype']))
     return dict(status=report['status'], report=str(output / 'report.json'))

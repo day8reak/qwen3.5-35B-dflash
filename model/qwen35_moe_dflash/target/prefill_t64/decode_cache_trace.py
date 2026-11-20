@@ -29,7 +29,7 @@ def _record(batch, name):
     return manifest, case, path.parent, json.loads(path.read_text())
 
 
-def _add_ports(graph, taps):
+def _add_ports(graph, taps, *, allowed_dtypes=(0, 2)):
     """Extend GE's existing NetOutput without changing the hidden producer or its control edges."""
     nodes = {n.name: n for n in graph.op}
     net, = [n for n in graph.op if n.type == 'NetOutput']
@@ -47,8 +47,8 @@ def _add_ports(graph, taps):
         desc = net.input_desc.add()
         desc.CopyFrom(nodes[owner].output_desc[index])
         desc.name = f'input{slot}'
-        if desc.dtype not in (0, 2):  # GE DT_UNDEFINED or DT_FLOAT16
-            raise ValueError(f'{name}: expected an FP16 stage at {edge}, observed GE dtype {desc.dtype}')
+        if desc.dtype not in allowed_dtypes:
+            raise ValueError(f'{name}: unexpected stage type at {edge}, GE dtype {desc.dtype}')
         if net.input_name:
             net.input_name.append(desc.name)
         if net.is_input_const:

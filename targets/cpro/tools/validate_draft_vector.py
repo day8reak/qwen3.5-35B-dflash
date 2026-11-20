@@ -1006,6 +1006,13 @@ def main():
     if 'cases' in result and not result.get('top1_semantics') and not result.get('offline_weight_layouts'):
         shown['cases'] = [{k: v for k, v in c.items() if k not in ('tensors', 'api_us')} for c in result['cases']]
         for row in shown['cases']:
+            if row.get('reference_basis') == 'SEGMENT_310P_MEASURED_GDR_RMS_SILU_64_VALID19' and row.get('invocations'):
+                first = row.pop('invocations')[0]
+                row.pop('output_sha256', None)
+                row.pop('valid_output_sha256', None)
+                row.update(relative_l2=first.get('relative_l2'), cosine=first.get('cosine'),
+                           token18_relative_l2=first.get('token_18', {}).get('relative_l2'),
+                           token18_cosine=first.get('token_18', {}).get('cosine'))
             if row.get('reference_basis') in ('CPU_CHECKED_310P_SEGMENT_WHOLE_ATTENTION_MODULE_HIDDEN_DECODE_AFTER_VALID19',
                                               'FIXED_INPUT_CPU_FIRST_DECODE_STAGE') and row.get('invocations'):
                 first = row.pop('invocations')[0]

@@ -59,7 +59,7 @@ class CpuPrefill:
         weight, scale = self.weights.logical('target.' + name + '.weight', tuple(module.weight.shape))
         return linear(x, weight, scale)
 
-    def gdn(self, x, layer, prefix, pair, *, stages=None):
+    def gdn(self, x, layer, prefix, pair, *, stages=None, valid_length=None):
         def project(name):
             y = self.project(x, prefix + '.' + name, getattr(layer, name))
             if stages is not None:
@@ -80,14 +80,27 @@ class CpuPrefill:
         v = v.reshape(1, x.size(1), layer.num_v_heads, layer.head_v_dim)
         g = -layer.A_log.float().exp() * F.softplus(project('in_proj_a').float() + layer.dt_bias.float())
         beta = project('in_proj_b').sigmoid()
-        core, final = compute(*(t.contiguous().numpy() for t in (q, k, v, g, beta, state)))
+        valid = x.size(1) if valid_length is None else valid_length
+        if not 0 < valid <= x.size(1):
+            raise ValueError('Invalid GDR effective length')
+        args = [t[:, :valid].contiguous().numpy() for t in (q, k, v, g, beta)]
+        core, final = compute(*args, state.contiguous().numpy())
         core = torch.from_numpy(core)
-        z = project('in_proj_z').reshape_as(core)
-        gated = (norm(core, layer.norm, gated=True) * F.silu(z.float())).to(core.dtype)
+        z = project('in_proj_z').reshape_as(v)[:, :valid]
+        rms = norm(core, layer.norm, gated=True)
+        silu_input = z.float()
+        silu = F.silu(silu_input)
+        product = rms * silu
+        gated = product.to(core.dtype)
         y = self.project(gated.flatten(2), prefix + '.out_proj', layer.out_proj)
         if stages is not None:
             stages.update(conv=conv.transpose(1, 2), query=q, key=k, value=v, g=g, beta=beta,
                           core=core, out_proj_input=gated.flatten(2), hidden=y)
+            if valid_length is not None:
+                stages.update(initial_state=state, effective_length=torch.tensor([valid], dtype=torch.int16),
+                              final_state=torch.from_numpy(final), rms_input=core.float(), gamma=layer.norm.weight.detach().float(),
+                              rms_output=rms, gate=z, silu_input=silu_input, silu_output=silu, mul_lhs=rms, mul_rhs=silu,
+                              mul_output=product, gated_return=gated)
         return y, (next_history, torch.from_numpy(final).to(state.dtype))
 
     def attention(self, x, layer, prefix, pair, args, *, stages=None):

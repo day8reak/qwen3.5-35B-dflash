@@ -325,11 +325,14 @@ def bind_compiled(document, source_inputs, golden, enums, output_contract=None):
     outputs = []
     for index, item in enumerate(goldens):
         observed = _observed_desc(nets[0]['input_desc'][index], enums)
-        views = (output_contract or {}).get('first_decode_views', {}).get(item.get('name'), [])
+        contract = output_contract or {}
+        views = contract.get('stage_views', contract.get('first_decode_views', {})).get(item.get('name'), [])
         if ((observed['shape'] != item['shape'] and observed['shape'] not in views)
                 or math.prod(observed['shape']) != math.prod(item['shape']) or observed['dtype'] not in DTYPES):
             raise ValueError(f'compiled output {index} shape or dtype is incompatible with captured boundary')
-        required = (output_contract or {}).get('required_dtypes', {})
+        if 'stage_views' in contract and item['dtype'].startswith('float') and observed['dtype'] not in ('float16', 'float32'):
+            raise ValueError(f'compiled floating stage {index} has incompatible dtype {observed["dtype"]}')
+        required = contract.get('required_dtypes', {})
         dtype = required.get(str(index), required.get(index))
         if dtype is not None and observed['dtype'] != dtype:
             raise ValueError(f'compiled output {index} must remain {dtype}, observed {observed["dtype"]}')
@@ -422,7 +425,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
                                exported.get('output_contract'))
         except ValueError as exc:
             raise ValueError(f'{name}: {exc}') from exc
-        check_io_budget(name, io, max_slots=16 if case['kind'] in ('segment_prefill', 'segment_gdn_trace') else 8)
+        check_io_budget(name, io, max_slots=16 if case['kind'] in ('segment_prefill', 'segment_gdn_trace', 'gdr_stages') else 8)
         fixture = out/'fixture'/name
         fixture.mkdir(parents=True)
         plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']
@@ -454,6 +457,9 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
             cases[-1]['compiled_state_contract'] = state_contract
             cases[-1]['gdr_mode'] = exported.get('candidate', {}).get('gdr_mode', 'chunk')
             cases[-1]['convstate_mode'] = exported.get('candidate', {}).get('convstate_mode', 'kernel')
+        if case['kind'] == 'gdr_stages':
+            from ..prefill_t64.gdr_stage_data import BASIS
+            cases[-1]['reference_basis'] = BASIS
         if case['kind'] == 'segment_gdn_trace':
             from ..prefill_t64.segment_gdn_trace import BASIS, TAPS
             if (exported['reference_basis'] != BASIS or exported['capture_sha256'] != manifest['capture_sha256']
@@ -585,6 +591,19 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                         from ..prefill_t64.segment_export import score_module_hidden
                         metric = score_module_hidden(actual, golden, atol, rtol)
                         valid_hashes.append(hashlib.sha256(actual[:, :19].tobytes()).hexdigest())
+                    elif case['kind'] == 'gdr_stages':
+                        from ..prefill_t64.gdr_stage_data import STATIC, logical
+                        role = spec['semantic_name']
+                        if role in STATIC:
+                            metric = metrics(actual, golden, atol=atol, rtol=rtol)
+                        else:
+                            a, b = (logical(x, role)[:, :19] for x in (actual, golden))
+                            valid_hashes.append(hashlib.sha256(a.tobytes()).hexdigest())
+                            metric = metrics(a, b, atol=atol, rtol=rtol)
+                            metric['token_18'] = metrics(a[:, 18], b[:, 18], atol=atol, rtol=rtol)
+                            if not metric['token_18']['passed']:
+                                metric['passed'] = False
+                                metric['failed_metrics'].extend('token_18_' + k for k in metric['token_18']['failed_metrics'])
                     elif case['kind'] == 'segment_gdn_trace':
                         metric = metrics(actual, golden, atol=atol, rtol=rtol)
                         last = metrics(actual[:, 18], golden[:, 18], atol=atol, rtol=rtol)
