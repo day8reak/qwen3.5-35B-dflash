@@ -49,30 +49,59 @@ def _score(rows, layer, stage, label, scope, a, ref, *, reproduced):
     return 'equal' if row['passed'] else 'different'
 
 
+def _groups(layer, baseline, trace, trace_batch):
+    split = 'split_norm_layers' in trace_batch
+    def load(case, batch):
+        run, air = batch
+        _, _, _, record = _record(air, case)
+        return case, run, record
+
+    yield 'gdr', GROUPS['gdr'], *load(case_id(layer, 'gdr'), baseline if split else trace)
+    if not split:
+        yield 'norm', GROUPS['norm'], *load(case_id(layer, 'norm'), trace)
+        return
+    seen = set()
+    for case in trace_batch['cases']:
+        if case['layer'] != layer:
+            continue
+        name = case['id']
+        _, run, record = load(name, trace)
+        stages = record['gdr_stages']['aliases']
+        if (record['gdr_stages']['group'] != 'norm' or len(record['goldens']) != 2
+                or set(stages.values()) != {record['goldens'][1]['name']} or seen.intersection(stages)):
+            raise ValueError(f'{name}: expected one distinct norm probe output and original hidden')
+        seen.update(stages)
+        yield 'norm_' + record['goldens'][1]['name'], stages, name, run, record
+    if seen != set(GROUPS['norm']):
+        raise ValueError(f'L{layer}: incomplete norm operand coverage')
+
+
 def compare(baseline, reference, trace, output):
     target = output_path(output)
     if target.exists():
         raise FileExistsError(target)
     capture = json.loads((reference / 'manifest.json').read_text())
     source_air, trace_air = _compiled_air(baseline), _compiled_air(trace)
+    trace_batch = json.loads((trace_air / 'manifest.json').read_text())
+    if 'split_norm_layers' in trace_batch and baseline.resolve() == trace.resolve():
+        raise ValueError('Pass --baseline pointing to the original recovered nine-case batch')
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
         root = Path(tmp) / 'dump'
         root.mkdir()
         rows, tensor_map, layers = [], [], {}
-        for i in range(3):
+        for i in trace_batch.get('split_norm_layers', range(3)):
             orig = f'l{i:02}_c00_gdn_layer_hidden_o0'
             _, _, _, source = _record(source_air, orig)
             base_inputs, base_refs, base, _ = board_case(baseline, orig)
             native = capture['gdr_stages'][str(i)]
             info = layers[str(i)] = dict(epsilon=native['epsilon'], gdr_attributes=native['attrs'], graphs={}, tensors={})
-            for group, stages in GROUPS.items():
-                case = case_id(i, group)
-                _, _, _, record = _record(trace_air, case)
+            groups = _groups(i, (baseline, source_air), (trace, trace_air), trace_batch)
+            for group, stages, case, run, record in groups:
                 meta = record['gdr_stages']
                 if meta['source_air'] != source['air']['sha256'] or meta['capture'] != sha(reference / 'manifest.json'):
                     raise ValueError(f'{case}: source AIR or 310P capture changed')
-                trace_inputs, refs, actual, fixture_case = board_case(trace, case)
+                trace_inputs, refs, actual, fixture_case = board_case(run, case)
                 offsets = {}
                 offset = 0
                 for spec in fixture_case['outputs']:
@@ -90,13 +119,15 @@ def compare(baseline, reference, trace, output):
                 if base_refs['golden_hidden'][:, :19].tobytes() != refs['golden_hidden'][:, :19].tobytes():
                     raise ValueError(f'{case}: different valid hidden references')
                 matched = actual['golden_hidden'][:, :19].tobytes() == base['golden_hidden'][:, :19].tobytes()
-                info['graphs'][group] = dict(module_inputs=meta.get('module_inputs', 'BASELINE_310P_CAPTURE'),
+                info['graphs'][group] = dict(case=case, module_inputs=meta.get('module_inputs', 'BASELINE_310P_CAPTURE'),
                                             full_inputs_equal_baseline=trace_inputs == base_inputs,
                                             module_inputs_equal_baseline=module_inputs == base_inputs, gamma_readout=readout,
                                             valid_hidden_equal_bits=matched, edges=meta['edges'], aliases=meta['aliases'],
                                             air_port_dtypes=meta['air_dtypes'], air_rms_epsilon=meta['air_rms_epsilon'],
                                             source_air_sha256=meta['source_air'], trace_air_sha256=record['air']['sha256'])
                 print(f'L{i} {group} valid hidden equals original CPro run: {matched}')
+                if not matched:
+                    print('Diagnostic outputs only: valid hidden differs from the original CPro graph.')
                 print('stage                 scope     CPro/310P L2/cos')
                 for stage in stages:
                     key = meta['aliases'][stage]
@@ -105,7 +136,7 @@ def compare(baseline, reference, trace, output):
                     slot, board_offset, board_size = offsets[key]
                     sources = {
                         '310p': reference / native_spec['path'],
-                        'cpro': trace / 'recovery/native' / case / '0.bin',
+                        'cpro': run / 'recovery/native' / case / '0.bin',
                     }
                     records = info['tensors'][stage] = {}
                     for backend, raw in values.items():

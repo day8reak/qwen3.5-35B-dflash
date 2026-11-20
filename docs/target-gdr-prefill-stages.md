@@ -144,3 +144,46 @@ print(row['step'], row['meaning'], x.shape, x.dtype)
 print(x[0, 18])
 PYTHON
 ```
+
+### RMSNorm 诊断图的 hidden 与原图不同
+
+先用同批九个模型已有的回收数据，量化每个诊断图的 hidden 与原 CPro 图在有效区的差异。命令核验已导出的 CPro 张量与回收包一致，并在各后端内部用已保存的操作数核对 RMSNorm、SiLU 和乘法。用于 CPro 的 core 与 rms_input 来自两张图，这项对比单独标星。其它公式使用同一张 norm 图内的张量。统计量包括相对 L2、cosine、非零和非有限元素数。模型参考继续使用 310P。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+FIX="$G/gamma-readout"
+TOOLS="$REPO_DIR/targets/cpro/tools"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+python "$TOOLS/gdr_prefill_stages.py" audit-dump --dump "$FIX/dump" --trace "$FIX"
+```
+
+如果需要重新取得 L0 的 RMSNorm/门控读数，在当前 DDK 服务器直接用已有原始整层 AIR 构建对照。每张图返回原 hidden 和一个被观测张量。使用同一条边的乘法输入复用该槽。仅观测 gamma 的图会添加顺序索引输入。每个诊断图仍然从同一份 310P 层入口计算到输出投影。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+FIX="$G/gamma-readout"
+S="$G/norm-single-l0"
+TOOLS="$REPO_DIR/targets/cpro/tools"
+
+python "$TOOLS/gdr_prefill_stages.py" prepare \
+  --baseline "$G" --reference "$G/reference" --split-norm-layers 0 --output "$S/air" &&
+python "$TOOLS/target_layer_probe.py" compile \
+  --batch "$S/air" --output "$S/omc" \
+  --ddk-root "$CPRO_DDK_ROOT" --ddk-id "$CPRO_DDK_ID" \
+  --compiler-profile isolated-kirinx90 \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" --use-origin-format &&
+python "$TOOLS/validate_draft_vector.py" \
+  --config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --compiled "$S/omc" --ddk-root "$CPRO_DDK_ROOT" --output "$S/execution" --apply &&
+python "$TOOLS/validate_draft_vector.py" \
+  --recover "$S/execution" --wait --output "$S/recovery"
+```
+
+回收显示 `EXECUTED_OUTPUTS_RETRIEVED` 后执行下面的命令。GDR 张量与整层基线使用前一次九图测量，每个 norm 读数使用对应的新图。先看每项 `baseline_hidden_reproduced`，再看通过复现检查的张量在 valid19 和 token18 的精度。L0 验证后，可另设目录并用 `--split-norm-layers 1 2` 处理其余两层。
+
+```bash
+python "$TOOLS/gdr_prefill_stages.py" compare \
+  --baseline "$FIX" --reference "$G/reference" --trace "$S" --output "$S/dump"
+```

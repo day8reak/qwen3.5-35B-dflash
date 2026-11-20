@@ -100,7 +100,27 @@ def stage_edges(graph, group):
                 mul_lhs=lhs, mul_rhs=rhs, mul_output=mul.name + ':0', gated_return=proj_input)
 
 
-def prepare(baseline, reference, output, *, include_baseline=False):
+def _trace_graphs(raw, split_norm):
+    for group in (('norm',) if split_norm else GROUPS):
+        msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
+        edges = stage_edges(graph, group)
+        if split_norm:
+            # Each readout starts from the original AIR. Aliases of the same
+            # operand share one diagnostic output and one invocation.
+            for edge in dict.fromkeys(edges.values()):
+                roles = {name: e for name, e in edges.items() if e == edge}
+                label = 'norm_' + next(iter(roles))
+                msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
+                yield group, label, msg, graph, roles
+        else:
+            yield group, group, msg, graph, edges
+
+
+def prepare(baseline, reference, output, *, include_baseline=False, split_norm_layers=None):
+    split_norm = split_norm_layers is not None
+    layers = list(split_norm_layers) if split_norm else list(range(3))
+    if split_norm and (include_baseline or not layers or len(set(layers)) != len(layers) or set(layers) - {0, 1, 2}):
+        raise ValueError('Single-output norm probes need distinct layers within 0..2 and a separate original baseline')
     capture_hash = sha(reference / 'manifest.json')
     capture = json.loads((reference / 'manifest.json').read_text())
     if (capture['status'], capture['physical_rows'], capture['valid_rows'], capture['output_pos']) != ('CAPTURED', 64, 19, 18):
@@ -112,19 +132,19 @@ def prepare(baseline, reference, output, *, include_baseline=False):
     with tempfile.TemporaryDirectory(dir=target.parent) as tmp:
         root = Path(tmp) / 'air'
         cases = []
-        for i in range(3):
+        for i in layers:
             orig = f'l{i:02}_c00_gdn_layer_hidden_o0'
             manifest, case, folder, record = _record(baseline / 'air', orig)
             if (record['reference_basis'] not in (MODULE_BASIS, NATIVE_GDR_MODULE_BASIS)
                     or (record['physical_rows'], record['valid_rows'], record['reference_position']) != (64, 19, 18)):
                 raise ValueError(f'{orig}: expected original standalone valid19 hidden AIR')
-            if include_baseline and (record['reference_basis'] != NATIVE_GDR_MODULE_BASIS
+            if (include_baseline or split_norm) and (record['reference_basis'] != NATIVE_GDR_MODULE_BASIS
                     or record['capture_sha256'] != capture_hash or manifest['capture_sha256'] != capture_hash):
                 raise ValueError(f'{orig}: re-export the whole module from this native GDR stage capture')
             info = capture['attention_modules'][str(i)]
             gold = read_array(folder, record['golden'])
             hidden = read_array(reference, info['golden_hidden'])
-            rows = slice(None) if include_baseline else slice(0, 19)
+            rows = slice(None) if include_baseline or split_norm else slice(0, 19)
             if gold.shape != hidden.shape or gold.dtype != hidden.dtype or gold[:, rows].tobytes() != hidden[:, rows].tobytes():
                 raise ValueError(f'{orig}: traced 310P hidden changed')
             inputs = {}
@@ -148,9 +168,7 @@ def prepare(baseline, reference, output, *, include_baseline=False):
                 shutil.copytree(folder, dest)
                 cases.append(dict(case, export=identity(dest / 'export.json', root)))
             native = capture['gdr_stages'][str(i)]
-            for group in GROUPS:
-                msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
-                edges = stage_edges(graph, group)
+            for group, label, msg, graph, edges in _trace_graphs(raw, split_norm):
                 # Two boundaries may read exactly the same producer. Read it once
                 # and retain the alias explicitly instead of relying on OMC duplicate-output handling.
                 slots, taps, aliases = {}, {}, {}
@@ -161,17 +179,17 @@ def prepare(baseline, reference, output, *, include_baseline=False):
                 enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
                 codes = {enum[n].number: typ for n, typ in [('DT_FLOAT16', 'float16'), ('DT_FLOAT','float32'), ('DT_INT16','int16')]}
                 gamma_readout = None
-                if group == 'norm':
+                if 'gamma' in taps:
                     gamma_readout = add_gamma_readout(graph, edges['gamma'])
                     taps['gamma'] = gamma_readout['output_edge']
                 source_edges = _add_ports(graph, taps, allowed_dtypes=(0, *codes))
                 norm_epsilon = None
-                if group == 'norm':
+                if 'rms_output' in edges:
                     owner = edges['rms_output'].rsplit(':', 1)[0]
                     norm_op = next(n for n in graph.op if n.name == owner)
                     if 'epsilon' in norm_op.attr:
                         norm_epsilon = norm_op.attr['epsilon'].f
-                name = case_id(i, group)
+                name = case_id(i, label)
                 dest = root / 'models' / name
                 shutil.copytree(folder, dest)
                 air = dest / record['air']['path']
@@ -211,7 +229,10 @@ def prepare(baseline, reference, output, *, include_baseline=False):
                                        output_contract=contract, gdr_stages=meta))
                 cases.append(dict(case, id=name, kind='gdr_stages', point=group + '_stages', output_name='stages',
                                   export=identity(export, root)))
-        save_json(root / 'manifest.json', dict(manifest, cases=cases, scope='THREE_LAYER_GDR_AND_GATED_NORM_DIAGNOSTIC', golden_source=BASIS))
+        batch = dict(manifest, cases=cases, scope='THREE_LAYER_GDR_AND_GATED_NORM_DIAGNOSTIC', golden_source=BASIS)
+        if split_norm:
+            batch.update(scope='ONE_NORM_OPERAND_PORT_PLUS_ORIGINAL_HIDDEN', split_norm_layers=layers)
+        save_json(root / 'manifest.json', batch)
         root.rename(target)
     share_for_transfer(target)
     print(target, flush=True)
