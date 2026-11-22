@@ -4,6 +4,7 @@ GDR = (*TOKEN_OPERANDS, 'initial_state', 'effective_length', 'core', 'final_stat
 NORM = ('rms_input', 'gamma', 'rms_output', 'gate', 'silu_input', 'silu_output', 'mul_lhs', 'mul_rhs', 'mul_output', 'gated_return')
 STATIC = ('initial_state', 'effective_length', 'final_state', 'gamma')
 GROUPS = {'gdr': GDR, 'norm': NORM}
+L0_GDR_SCOPE = 'L0_GDR_AND_MODULE_HIDDEN_VALID19'
 BASIS = 'SEGMENT_310P_MEASURED_GDR_RMS_SILU_64_VALID19'
 
 

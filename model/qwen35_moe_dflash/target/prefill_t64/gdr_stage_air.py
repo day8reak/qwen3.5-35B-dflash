@@ -12,7 +12,7 @@ from ..layer_probe.common import checked, identity, read_array, save_json, sha
 from .decode_cache_control import graph_message
 from .decode_cache_trace import _add_ports, _project_input, _record
 from .gdr_gamma_readout import add_indexed_readout, index_binding
-from .gdr_stage_data import BASIS, GDR, GROUPS, case_id, logical, shapes
+from .gdr_stage_data import BASIS, GDR, GROUPS, L0_GDR_SCOPE, case_id, logical, shapes
 from .segment_export import MODULE_BASIS, NATIVE_GDR_MODULE_BASIS
 
 VIEWS = {'Reshape', 'Identity', 'TensorMove', 'Unsqueeze', 'Squeeze', 'ExpandDims'}
@@ -100,8 +100,8 @@ def stage_edges(graph, group):
                 mul_lhs=lhs, mul_rhs=rhs, mul_output=mul.name + ':0', gated_return=proj_input)
 
 
-def _trace_graphs(raw, split_norm, only_role=None, paired_silu=False):
-    for group in (('norm',) if split_norm else GROUPS):
+def _trace_graphs(raw, groups, split_norm, only_role=None, paired_silu=False):
+    for group in groups:
         msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
         edges = stage_edges(graph, group)
         if paired_silu:
@@ -122,7 +122,8 @@ def _trace_graphs(raw, split_norm, only_role=None, paired_silu=False):
             yield group, group, msg, graph, edges
 
 
-def prepare(baseline, reference, output, *, include_baseline=False, split_norm_layers=None, indexed_silu_layer=None, paired_silu=False):
+def prepare(baseline, reference, output, *, include_baseline=False, split_norm_layers=None,
+            indexed_silu_layer=None, paired_silu=False, l0_gdr_only=False):
     if paired_silu and indexed_silu_layer is None:
         raise ValueError('--paired-silu requires --indexed-silu-layer')
     if indexed_silu_layer is not None:
@@ -133,6 +134,12 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
     layers = list(split_norm_layers) if split_norm else list(range(3))
     if split_norm and (include_baseline or not layers or len(set(layers)) != len(layers) or set(layers) - {0, 1, 2}):
         raise ValueError('Single-output norm probes need distinct layers within 0..2 and a separate original baseline')
+    groups = ('norm',) if split_norm else GROUPS
+    if l0_gdr_only:
+        if split_norm:
+            raise ValueError('L0 GDR and split norm probes use separate batches')
+        include_baseline = True
+        layers, groups = [0], ('gdr',)
     capture_hash = sha(reference / 'manifest.json')
     capture = json.loads((reference / 'manifest.json').read_text())
     if (capture['status'], capture['physical_rows'], capture['valid_rows'], capture['output_pos']) != ('CAPTURED', 64, 19, 18):
@@ -181,7 +188,7 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
                 cases.append(dict(case, export=identity(dest / 'export.json', root)))
             native = capture['gdr_stages'][str(i)]
             only_role = 'silu_output' if indexed_silu_layer is not None else None
-            for group, label, msg, graph, edges in _trace_graphs(raw, split_norm, only_role, paired_silu):
+            for group, label, msg, graph, edges in _trace_graphs(raw, groups, split_norm, only_role, paired_silu):
                 # Two boundaries may read exactly the same producer. Read it once
                 # and retain the alias explicitly instead of relying on OMC duplicate-output handling.
                 slots, taps, aliases = {}, {}, {}
@@ -248,6 +255,8 @@ def prepare(baseline, reference, output, *, include_baseline=False, split_norm_l
                 cases.append(dict(case, id=name, kind='gdr_stages', point=group + '_stages', output_name='stages',
                                   export=identity(export, root)))
         batch = dict(manifest, cases=cases, scope='THREE_LAYER_GDR_AND_GATED_NORM_DIAGNOSTIC', golden_source=BASIS)
+        if l0_gdr_only:
+            batch['scope'] = L0_GDR_SCOPE
         if split_norm:
             batch.update(scope='ONE_NORM_OPERAND_PORT_PLUS_ORIGINAL_HIDDEN', split_norm_layers=layers)
         if indexed_silu_layer is not None:

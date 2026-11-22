@@ -11,7 +11,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     cmds = parser.add_subparsers(dest='action', required=True)
     pack = cmds.add_parser('pack-gdr', help='extract the L0 GDR operator inputs and outputs from an existing chunk64 stage dump')
-    pack.add_argument('--dump', type=Path, required=True, help='completed l0-dump-summary containing manifest.json')
+    pack.add_argument('--dump', type=Path, required=True, help='completed L0 chunk64 stage dump containing manifest.json')
+    pack.add_argument('--cpu-golden', action='store_true', help='also compute CPU GDR outputs on the measured 310P inputs')
     pack.add_argument('--output', type=Path, help='destination archive under AI_RUN_DIR (default: next to the dump)')
     bundle = cmds.add_parser('summarize', help='assemble L0 from the recovered baseline, split probes and paired SiLU run')
     bundle.add_argument('--group', required=True, type=Path, help='original gdr-stages-t64-valid19 experiment directory')
@@ -34,6 +35,7 @@ def main():
     prepare = cmds.add_parser('prepare', help='expose the measured stage edges in the baseline AIRs')
     compare = cmds.add_parser('compare', help='write per-backend raw binary tensors, a file map and CPro-vs-310P CSV metrics')
     prepare.add_argument('--baseline', required=True, type=Path, help='export job containing the whole-module AIR batch')
+    prepare.add_argument('--l0-gdr-only', action='store_true', help='prepare only the L0 whole-module baseline and its GDR readout')
     prepare.add_argument('--include-baseline', action='store_true', help='include the three fresh whole modules for a single nine-case board run')
     prepare.add_argument('--split-norm-layers', type=int, nargs='+', choices=range(3),
                          help='read one distinct RMSNorm/gate edge per graph alongside the original hidden')
@@ -51,7 +53,7 @@ def main():
     if args.action == 'pack-gdr':
         from qwen35_moe_dflash.target.prefill_t64.gdr_io_bundle import package
         dump = args.dump.resolve()
-        package(dump, args.output or dump.with_name(dump.name + '-gdr-io.tar.gz'))
+        package(dump, args.output or dump.with_name(dump.name + '-gdr-io.tar.gz'), cpu_golden=args.cpu_golden)
         return 0
     if args.action == 'prepare-s1':
         from qwen35_moe_dflash.target.prefill_t64.gdr_s1_air import prepare
@@ -89,7 +91,8 @@ def main():
     if args.action == 'prepare':
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_air import prepare
         prepare(args.baseline, args.reference, args.output, include_baseline=args.include_baseline,
-                split_norm_layers=args.split_norm_layers, indexed_silu_layer=args.indexed_silu_layer, paired_silu=args.paired_silu)
+                split_norm_layers=args.split_norm_layers, indexed_silu_layer=args.indexed_silu_layer, paired_silu=args.paired_silu,
+                l0_gdr_only=args.l0_gdr_only)
     else:
         from qwen35_moe_dflash.target.prefill_t64.gdr_stage_report import compare
         result = compare(args.baseline or args.trace, args.reference, args.trace, args.output, silu_readout=args.silu_readout)

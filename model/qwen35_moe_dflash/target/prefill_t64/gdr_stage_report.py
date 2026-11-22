@@ -12,7 +12,7 @@ from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import identity, metrics, read_array, save_json, sha
 from .decode_cache_trace import _record
 from .gdr_gamma_readout import verify_index_input
-from .gdr_stage_data import DESCRIPTIONS, GROUPS, STATIC, TOKEN_OPERANDS, case_id, logical
+from .gdr_stage_data import DESCRIPTIONS, GROUPS, L0_GDR_SCOPE, STATIC, TOKEN_OPERANDS, case_id, logical
 from .gdr_stage_summary import check_measured_product, write_inputs, write_overview
 from .segment_trace_compare import board_case
 
@@ -90,6 +90,8 @@ def _groups(layer, baseline, trace, trace_batch, silu_readout):
         return
 
     yield 'gdr', GROUPS['gdr'], *load(case_id(layer, 'gdr'), baseline if split else trace)
+    if trace_batch.get('scope') == L0_GDR_SCOPE:
+        return
     if not split:
         yield 'norm', GROUPS['norm'], *load(case_id(layer, 'norm'), trace)
         return
@@ -219,7 +221,9 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
         root = Path(tmp) / 'dump'
         root.mkdir()
         rows, tensor_map, layers = [], [], {}
-        for i in trace_batch.get('split_norm_layers', range(3)):
+        gdr_only = trace_batch.get('scope') == L0_GDR_SCOPE
+        selected_layers = [0] if gdr_only else trace_batch.get('split_norm_layers', range(3))
+        for i in selected_layers:
             orig = f'l{i:02}_c00_gdn_layer_hidden_o0'
             _, _, _, source = _record(source_air, orig)
             base_inputs, base_refs, base, base_fixture = board_case(baseline, orig)
@@ -284,7 +288,7 @@ def compare(baseline, reference, trace, output, *, silu_readout=None, combined=F
                     key = meta['aliases'][stage]
                     native_spec = capture['attention_modules'][str(i)]['golden_hidden'] if stage == 'golden_hidden' else native['tensors'][stage]
                     values = {'310p': read_array(reference, native_spec), 'cpro': actual[key]}
-                    if (group == 'norm_silu_pair' or (combined and key == stage)) and logical(values['310p'], stage).tobytes() != logical(refs[key], stage).tobytes():
+                    if (gdr_only or group == 'norm_silu_pair' or (combined and key == stage)) and logical(values['310p'], stage).tobytes() != logical(refs[key], stage).tobytes():
                         raise ValueError(f'{case}/{stage}: fixture reference differs from the measured 310P tensor')
                     slot, board_offset, board_size = offsets[key]
                     sources = {

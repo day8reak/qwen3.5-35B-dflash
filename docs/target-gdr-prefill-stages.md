@@ -23,6 +23,38 @@ cat "$G/l0-dump-summary/summary.md"
 
 本次实测 L0 在有效 19 个 token 上，SiLU 输出 CPro/310P 相对 L2 为 **0.00160568**，cosine 为 **0.99999883**。CPro 输出对自身实测输入的 SiLU 公式为 **0.00132394 / 0.999999**。这张图的有效 hidden 与原始 CPro 图逐位相等。后续实测门控乘积为 **0.125974 / 0.992034**，整层输出为 **0.221701 / 0.976573**。汇总另外用两端各自的实测左右操作数重建各自乘积，并在 CSV 中单列检查结果。
 
+## 从零生成 L0 GDR 输入输出和 CPU golden
+
+本例只依赖原模型源码、权重和现有 DDK、TBE、板端及传输配置。两台机器的 `REPO_DIR`、`AI_RUN_DIR` 指向各自相同的绝对路径。以下目录可从空目录开始；保留上次结果时可在两端改成同一个新名字。
+
+**10.136.180.78** 的 310P 环境采集原始 valid19 样本。沿用此前的 `TARGET_SOURCE`（含 inference_segment.py），默认采集 YAML 是该目录下的 `config/qwen3_5_moe.yaml`。有自定义采集 YAML 时用 `NZ_CONFIG` 指定。导出环境使用原 `CPRO_SOURCE` 和 `TARGET_CONFIG`。
+
+```bash
+conda activate qwen3_5_w4
+G="$AI_RUN_DIR/target/tests/l0-gdr-io-t64-valid19-01"
+RUN="$REPO_DIR/targets/cpro/scripts/check_l0_gdr_io.sh"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+bash "$RUN" capture "$G" &&
+conda activate qwen3_5_cpro &&
+bash "$RUN" air "$G"
+```
+
+整层 AIR 仍沿用原采集和导出入口。传输批次仅含 L0 原始 hidden 图和同时返回 hidden、七个 GDR 输入、两个输出的探针图。**10.136.181.35** 在 `custom_pypto` 环境拉取并编译。脚本校验编译前后两处 DDK GDR 源码的 SHA256，保存在本轮的 `gdr-source.sha256`。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/l0-gdr-io-t64-valid19-01"
+RUN="$REPO_DIR/targets/cpro/scripts/check_l0_gdr_io.sh"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+python "$REPO_DIR/targets/cpro/scripts/pull_artifacts.py" --from air "$G/reference" "$G/air" &&
+bash "$RUN" compile "$G" &&
+bash "$RUN" run "$G" &&
+python "$REPO_DIR/targets/cpro/tools/gdr_prefill_stages.py" pack-gdr \
+  --dump "$G/dump" --cpu-golden --output "$G/l0-gdr-valid19.tar.gz"
+```
+
+两个 case 完整执行且回读成功即可分析数值超差。打包还会验证探针与未插桩图的入口和有效 hidden 一致。包内 `cpu/valid19/output/core.bin` 为 FP16 [1,19,32,128]，`cpu/tensor/output/final_state.bin` 为 FP32 [1,32,128,128]。二者使用 310P 的算子入口与初态，在 CPU 上用 FP32 归一化、逐 token 递推，core 按 query dtype 返回。每端实测相对 CPU 的结果在 `cpu-comparison.csv`。CPro 与 310P 使用各自产生的 Q、K、V、g、beta，CPro 对 CPU 的差异可能含上游误差。
+
 ## 从已保存的 L0 dump 打包 GDR 算子输入和输出
 
 在保存了 `l0-dump-summary` 的 OMC 服务器上执行。归档使用所选 dump 的历史读数，脚本会校验 GDR 探针的整层入口和有效 hidden 复现记录，以及每个源 bin 的 SHA256。
