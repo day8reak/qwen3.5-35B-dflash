@@ -1,11 +1,15 @@
 """Export original CPro embedding, individual complete W4 decoder blocks and LM head."""
 from collections import Counter
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+import faulthandler
+import fcntl
 import json
 import shutil
 from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
 
 import numpy as np
 import torch
@@ -53,8 +57,35 @@ class Embedding(torch.nn.Module):
         return self.embed(ids).to(torch.float16)
 
 
+@contextmanager
+def export_progress(case_id, weight_dir):
+    stop = threading.Event()
+    started = time.monotonic()
+
+    def observe():
+        while not stop.wait(30):
+            try:
+                sizes = [p.stat().st_size for p in weight_dir.glob('*') if p.is_file()]
+            except OSError:
+                continue
+            print(f'{case_id}: TorchAir active for {time.monotonic() - started:.0f}s; '
+                  f'weight directory has {len(sizes)} files, {sum(sizes):,} bytes', flush=True)
+
+    watcher = threading.Thread(target=observe, daemon=True)
+    watcher.start()
+    faulthandler.dump_traceback_later(180)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+        stop.set()
+        watcher.join(timeout=1)
+
+
 def _export(root, exporter, schema, index, role, module, args, golden, linear=False):
-    from ..original_air_roundtrip import _attributes, _decode
+    from ...draft.incremental.torch_weight_export import external_weight_export, validate_external_weights
+    from ..export_inventory import _file_constants
+    from ..original_air_roundtrip import _attributes, _decode, _read_air
     from ..operator_air_review import _data_edges, port_names
 
     case_id = f'l{index:02d}_c00_{role}_o0'
@@ -62,7 +93,7 @@ def _export(root, exporter, schema, index, role, module, args, golden, linear=Fa
     output = 'logits' if role == 'head' else 'hidden'
     if not dest.exists():
         print('export', case_id, flush=True)
-        with tempfile.TemporaryDirectory(dir=root / 'models', prefix='.export-') as tmp:
+        with tempfile.TemporaryDirectory(dir=root.parent, prefix=f'.{root.name}-case-') as tmp:
             folder = Path(tmp) / 'case'
             folder.mkdir()
             def tensor(key, array):
@@ -72,14 +103,27 @@ def _export(root, exporter, schema, index, role, module, args, golden, linear=Fa
             specs = [dict(tensor(key, x.numpy()), semantic_name=key) for key, x in args.items()]
             ref = dict(tensor('golden', golden), name=output)
             torch._dynamo.reset()
-            with working_directory(folder), export_input_identity(list(args.values())) as evidence:
+            # Select storage before wrapping the converter for argument identity.
+            # Both hooks must see the original Data slots before they become FileConstants.
+            with external_weight_export() as weights, working_directory(folder), export_input_identity(list(args.values())) as evidence:
                 adapter = (nullcontext() if role == 'embedding' else
                            exporter.cpro_export_contracts(True, chunk_size=64, gdn_layers=int(linear)))
-                with adapter:
+                print(f'{case_id}: TorchAir export with external weights', flush=True)
+                with adapter, export_progress(case_id, folder / 'weight'):
                     exporter.torchair.dynamo_export(model=module.eval(), export_path='weight', dynamic=False, **args)
             air = folder / 'export.air'
             (folder / 'weight/export.air').replace(air)
-            _, _, graph = _decode(schema, air.read_bytes())
+            print(f"{case_id}: checking AIR ({air.stat().st_size:,} bytes), "
+                  f"{weights['weight_files']} weight files ({weights['weight_bytes']:,} bytes)", flush=True)
+            raw, _ = _read_air(air)
+            _, _, graph = _decode(schema, raw)
+            # Check exact GE references against the original tensors and their on-disk extents.
+            expected = {r['node']: r['path'] for r in weights['files']}
+            observed = {n['name']: str(Path(_attributes(n)['file_path']['s'])) for n in _file_constants(graph)}
+            if observed != expected:
+                raise ValueError(f'{case_id}: FileConstant names or paths differ from the selected weights')
+            sizes = {path: (folder / path).stat().st_size for path in observed.values()}
+            validate_external_weights({'weight_files': sizes}, weights)
             bindings = source_bindings(graph, specs, evidence['nodes'], 1)
             edges = {s['semantic_name']: s['name'] + ':0' for s in bindings}
             if set(edges) != set(args):
@@ -99,17 +143,29 @@ def _export(root, exporter, schema, index, role, module, args, golden, linear=Fa
             # that preserve the original token/feature ordering.
             views = [[1, golden.shape[-1]], [golden.shape[-1]]] if role == 'head' else [[64, 2048]]
             save_json(folder / 'export.json', dict(air=identity(air, folder), source_inputs=bindings, golden=ref,
+                weight_files=sizes,
                 output_contract=dict(required_dtypes={'0': ref['dtype']}, stage_views={output: views}), graph_ops=dict(counts)))
             folder.rename(dest)
+            print(f'{case_id}: AIR ready', flush=True)
     return dict(id=case_id, layer=index, call=0, point=role, ordinal=index, phase='prefill',
                 status='EXPORTED', kind='prefill_chain', output_name=output, export=identity(dest / 'export.json', root))
 
 
-@torch.no_grad()
 def export(source, config, reference, output):
+    root = output_path(output)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    with (root.parent / f'.{root.name}-export.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f'an AIR export is already active for {root}') from exc
+        _export_batch(source, config, reference, root)
+
+
+@torch.no_grad()
+def _export_batch(source, config, reference, root):
     from ...draft.incremental.torch_export import _producer_schema, _schema
 
-    root = output_path(output)
     reference = reference.resolve(strict=True)
     config = (source / config).resolve(strict=True)
     cfg = yaml.safe_load(config.read_text())
@@ -140,16 +196,28 @@ def export(source, config, reference, output):
     (root / 'models').mkdir(exist_ok=True)
     binding = dict(reference=sha(reference / 'manifest.json'), sources={n: sha(source / n)
         for n in (MODELING, WRAPPER, EXPORTER, NZ, 'utils.py')}, exporter=sha(__file__))
+    binding['weight_storage'] = 'native-torchair-fileconstant-v1'
     binding_path = root / 'source.json'
-    if binding_path.exists() and json.loads(binding_path.read_text()) != binding:
-        raise ValueError('export sources changed; choose a new output directory')
+    if binding_path.exists():
+        previous = json.loads(binding_path.read_text())
+        if previous != binding:
+            # The original export can be interrupted before the first case is published.
+            # Move the whole attempt outside the transmitted tree, including any orphaned scratch.
+            if (set(previous) != {'reference', 'sources', 'exporter'}
+                    or any(previous[k] != binding[k] for k in ('reference', 'sources'))
+                    or (root / 'manifest.json').exists() or any((root / 'models').glob('l*'))):
+                raise ValueError('export sources changed; choose a new output directory')
+            backup = Path(tempfile.mkdtemp(dir=root.parent, prefix=f'.{root.name}-interrupted-'))
+            root.rename(backup / root.name)
+            (root / 'models').mkdir(parents=True)
+            print(f'Preserved interrupted AIR attempt in {backup}', flush=True)
     save_json(binding_path, binding)
     def array(spec):
         return read_array(reference, spec)
     def tensor(key):
         return torch.from_numpy(array(ref['inputs'][key]))
     cases = []
-    with tempfile.TemporaryDirectory(dir=root, prefix='.private-source-') as tmp:
+    with tempfile.TemporaryDirectory(dir=root.parent, prefix=f'.{root.name}-private-source-') as tmp:
         stage = Path(tmp)
         (stage / 'models').mkdir()
         (stage / 'models/__init__.py').touch()
@@ -163,6 +231,7 @@ def export(source, config, reference, output):
             from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
             schema = _schema(*_producer_schema())
             for base in range(0, LAYERS, 4):
+                print(f'Preparing CPro weights for L{base}–L{base + 3}', flush=True)
                 model = load_npu_model(str(paths['model_file']), 'cpu', torch.float16, variant='cpro',
                                        layer_num=4, start_layer_idx=base, quant_enable=True)
                 exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.config.num_experts,
