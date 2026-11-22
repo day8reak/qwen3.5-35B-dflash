@@ -14,8 +14,9 @@ from google.protobuf import descriptor_pool, message_factory
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / 'model'))
 from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
-from qwen35_moe_dflash.target.layer_probe.common import identity, read_array, save_json
+from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.gdr_math import compute
+from qwen35_moe_dflash.target.prefill_t64.gdr_norm_replay import save_context
 from qwen35_moe_dflash.target.prefill_t64.gdr_stage_data import DESCRIPTIONS, GDR, TOKEN_OPERANDS, logical, shapes
 
 INPUTS = GDR[:-2]
@@ -68,6 +69,16 @@ def describe_inputs(root):
         lines.extend(['', '## 310P 采集来源', '',
                       'input_ids 用于复现模型输入。source_310p 保存转为 CPro 输入 dtype 之前的原始张量。', '',
                       *header, *map(row, originals)])
+    context = root / 'norm-context'
+    if context.is_dir():
+        meta = json.loads((context / 'manifest.json').read_text())
+        if meta['bundle_manifest_sha256'] != sha(root / 'manifest.json'):
+            raise ValueError('Norm context and GDR manifest differ')
+        lines.extend(['', '## GDR 后的 gated RMSNorm', '', f"epsilon = {meta['epsilon']}", '', *header])
+        for name, meaning in (('z', 'SiLU 前的原始门控输入'), ('gamma', '按最后一维使用的 RMSNorm 权重')):
+            spec = meta[name]
+            checked(context, spec)
+            lines.append(f"| `norm-context/{spec['path']}` | {meaning} | {spec['dtype']} | `{spec['shape']}` |")
 
     report = root / 'input-description.md'
     with tempfile.NamedTemporaryFile(dir=root, mode='w', encoding='utf-8', delete=False) as out:
@@ -143,7 +154,62 @@ def reference_inputs(root_ref):
         raise ValueError('310P input_ids or GDR length differs from the stage manifest')
     source = dict(kind='measured_l0_310p', input_ids_source='310p_capture',
                   manifest=identity(root_ref / 'manifest.json', root_ref))
-    return values, ids, source
+    context = None
+    if {'gate', 'gamma'} <= record['tensors'].keys() and 'epsilon' in record:
+        context = (read_array(root_ref, record['tensors']['gate']), read_array(root_ref, record['tensors']['gamma']),
+                   record['epsilon'])
+    return values, ids, source, context
+
+
+def dump_inputs(root):
+    manifest = json.loads((root / 'manifest.json').read_text())
+    layer = manifest['layers']['0']
+    if manifest['physical_rows'] != 64 or manifest['chunk_size'] != 64:
+        raise ValueError('Expected a T64 chunk64 L0 dump')
+    specs = layer['tensors']
+    values = {n: logical(read_array(root, specs[n]['cpro']), n) for n in INPUTS}
+    context = None
+    if 'epsilon' in layer and all('cpro' in specs.get(n, {}) for n in ('gate', 'gamma')):
+        context = (read_array(root, specs['gate']['cpro']), read_array(root, specs['gamma']['cpro']), layer['epsilon'])
+    return values, None, dict(kind='measured_l0_cpro', manifest=identity(root / 'manifest.json', root)), context
+
+
+def add_norm_context(args):
+    root = output_path(args.add_norm_context)
+    manifest = json.loads((root / 'manifest.json').read_text())
+    folder = root / 'norm-context'
+    if folder.exists():
+        meta = json.loads((folder / 'manifest.json').read_text())
+        if meta['bundle_manifest_sha256'] != sha(root / 'manifest.json'):
+            raise ValueError('Existing norm context differs from the selected bundle')
+        for name in ('z', 'gamma'):
+            checked(folder, meta[name])
+        describe_inputs(root)
+        print(folder / 'z.bin')
+        return
+    if args.reference:
+        values, ids, source, context = reference_inputs(args.reference)
+    elif args.cpro_dump:
+        values, ids, source, context = dump_inputs(args.cpro_dump)
+    else:
+        from capture_gdr_inputs import capture
+        ids_spec = manifest['source'].get('input_ids')
+        if not ids_spec or manifest['source']['kind'] != 'measured_l0_310p':
+            raise ValueError('Live backfill requires the saved 310P input_ids; supply a matching stage capture otherwise')
+        requested = np.fromfile(checked(root, ids_spec), dtype=ids_spec['dtype'])
+        values, ids, source, context = capture(args.source_root, args.config, requested, manifest['effective_length'])
+    if context is None or source['kind'] != manifest['source']['kind']:
+        raise ValueError('No matching measured L0 gated norm in the supplied capture')
+    if ids is not None and hashlib.sha256(ids.astype('<i4').tobytes()).hexdigest() != manifest['source']['input_ids_i32_sha256']:
+        raise ValueError('Norm capture used different physical input_ids')
+    for spec in manifest['inputs']:
+        checked(root, spec)
+        tensor = logical(values[spec['name']], spec['name']).astype(spec['dtype'], copy=False)
+        if hashlib.sha256(tensor.tobytes()).hexdigest() != spec['sha256']:
+            raise ValueError(f"Norm capture differs from the original GDR input {spec['name']}")
+    save_context(root, context, source['kind'])
+    describe_inputs(root)
+    print(folder / 'z.bin')
 
 
 def live_inputs(args, length):
@@ -167,6 +233,7 @@ def generate(args):
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise ValueError(f'Choose an empty output directory: {root}')
     ids = None
+    context = None
     originals = {}
     length = args.effective_length
     if args.effective_length_bin:
@@ -177,13 +244,7 @@ def generate(args):
         raise ValueError('effective length must be in [0, 64]')
 
     if args.cpro_dump:
-        manifest = json.loads((args.cpro_dump / 'manifest.json').read_text())
-        layer = manifest['layers']['0']
-        if manifest['physical_rows'] != 64 or manifest['chunk_size'] != 64:
-            raise ValueError('Expected a T64 chunk64 L0 dump')
-        specs = layer['tensors']
-        values = {n: logical(read_array(args.cpro_dump, specs[n]['cpro']), n) for n in INPUTS}
-        source = dict(kind='measured_l0_cpro', manifest=identity(args.cpro_dump / 'manifest.json', args.cpro_dump))
+        values, ids, source, context = dump_inputs(args.cpro_dump)
     elif args.synthetic:
         from qwen35_moe_dflash.target.gdn_probe import fixture
         values = dict(zip(INPUTS[:-1], fixture(64, nonzero_state=False)))
@@ -191,9 +252,9 @@ def generate(args):
         source = dict(kind='synthetic', seed=35064)
     else:
         if args.reference:
-            values, ids, source = reference_inputs(args.reference)
+            values, ids, source, context = reference_inputs(args.reference)
         else:
-            values, ids, source = live_inputs(args, length)
+            values, ids, source, context = live_inputs(args, length)
         if ids.shape != (1, 64) or ids.dtype not in (np.int32, np.int64):
             raise ValueError('expected the actual padded integer input_ids at the 310P wrapper')
         # These ports enter the original 310P call in FP32. Preserve the raw
@@ -244,6 +305,8 @@ def generate(args):
         save_json(stage / 'manifest.json', dict(operator='ChunkGatedDeltaRule', physical_rows=64,
                   chunk_size=64, effective_length=valid, source=source, air=identity(air, stage),
                   inputs=inputs, outputs=outputs, cpu_golden=cpu))
+        if context is not None:
+            save_context(stage, context, source['kind'])
         describe_inputs(stage)
         share_for_transfer(stage)
         stage.rename(root)
@@ -251,6 +314,8 @@ def generate(args):
         print(f'310P padded input_ids SHA256 (int32): {source["input_ids_i32_sha256"]}')
     print(f'{root / air.name}  ·  7 inputs  ·  2 outputs  ·  T64  ·  effective_length={valid}  ·  {source["kind"]}')
     print(root / 'input-description.md')
+    if context is not None:
+        print(root / 'norm-context/z.bin')
 
 
 if __name__ == '__main__':
@@ -259,6 +324,8 @@ if __name__ == '__main__':
     target.add_argument('--output', type=Path, help='empty directory under AI_RUN_DIR')
     target.add_argument('--describe-existing', type=Path, metavar='CASE_DIR',
                         help='write input-description.md from the existing manifest and input bins')
+    target.add_argument('--add-norm-context', type=Path, metavar='CASE_DIR',
+                        help='save measured L0 norm z, gamma and epsilon for an existing GDR bundle')
     group = cli.add_mutually_exclusive_group()
     group.add_argument('--cpro-dump', type=Path, help='use all seven inputs from an L0 stage dump')
     group.add_argument('--source-root', type=Path, help='original 310P source with inference_segment.py (default: TARGET_SOURCE)')
@@ -271,6 +338,18 @@ if __name__ == '__main__':
     sizes.add_argument('--effective-length-bin', type=Path, help='one little-endian INT16; supply for already padded file inputs')
     sizes.add_argument('--effective-length', type=int, help='valid count for file inputs, or expected length for a captured prompt')
     args = cli.parse_args()
+    if args.add_norm_context:
+        if args.synthetic or args.input_ids or args.ids_dtype or args.effective_length is not None or args.effective_length_bin:
+            cli.error('--add-norm-context uses the existing inputs and length')
+        if not (args.reference or args.cpro_dump or args.source_root):
+            args.source_root = Path(os.environ['TARGET_SOURCE']) if os.environ.get('TARGET_SOURCE') else None
+            if not args.source_root and not (args.add_norm_context / 'norm-context').is_dir():
+                cli.error('set TARGET_SOURCE, or pass --reference / --cpro-dump for a matching stage capture')
+        try:
+            add_norm_context(args)
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            cli.exit(1, f'gdr-t64: {exc}\n')
+        sys.exit(0)
     if args.describe_existing:
         try:
             print(describe_inputs(output_path(args.describe_existing)))

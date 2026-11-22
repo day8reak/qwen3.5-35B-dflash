@@ -44,7 +44,7 @@ def _unpack_i4zn(packed, k, n):
     return logical
 
 
-def _gate_norm(x, z, weight, eps, dtype):
+def gated_norm_stages(x, z, weight, eps):
     if not np.isfinite(eps) or eps <= 0:
         raise ValueError('Invalid captured gated RMSNorm epsilon')
     a, gate = x.astype(np.float32), z.astype(np.float32)
@@ -56,7 +56,13 @@ def _gate_norm(x, z, weight, eps, dtype):
     exp_neg_abs = np.exp(-np.abs(gate))
     sigmoid = np.where(gate >= 0, 1., exp_neg_abs) / (1. + exp_neg_abs)
     rms = np.sqrt(np.mean(a * a, axis=-1, keepdims=True) + np.float32(eps))
-    return ((a / rms) * w * (gate * sigmoid)).astype(dtype)
+    norm = (a / rms) * w
+    return norm, norm * (gate * sigmoid)
+
+
+def _gate_norm(x, z, weight, eps, dtype):
+    _, product = gated_norm_stages(x, z, weight, eps)
+    return product.astype(dtype)
 
 
 def _summary(a, b):

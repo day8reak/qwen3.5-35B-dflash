@@ -148,7 +148,7 @@ def score_core(actual, golden, atol, rtol):
     return score
 
 
-def summarize(recovery):
+def summarize(recovery, norm_context=None):
     report = read(recovery / 'result.json')
     if report.get('stage') != 'complete' or report.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED':
         raise ValueError(f"{report.get('error') or report.get('device_execution')}; see {recovery / 'result.json'}")
@@ -174,4 +174,6 @@ def summarize(recovery):
                         print(row['output_name'], scope, 'call=0', 'stable=' + str(row['stable']), json.dumps(values))
     Path(stream.name).replace(destination)
     print(f"Numerical validation: {report['numerical_validation']}\n{destination}")
+    from .gdr_norm_replay import replay
+    replay(recovery, report, norm_context)
     return report['numerical_validation']

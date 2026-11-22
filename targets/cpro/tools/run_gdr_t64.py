@@ -23,9 +23,10 @@ def main():
     build.add_argument('--tbe-diagnosis', type=Path, help='run-local TBE diagnosis used with the selected DDK')
     report = commands.add_parser('report', help='write accuracy.csv for all measured calls and valid tokens')
     report.add_argument('--recovery', type=Path, required=True)
+    report.add_argument('--norm-context', type=Path, help='measured norm-context folder; default: original bundle/norm-context')
     args = cli.parse_args()
     if args.action == 'report':
-        return int(gdr.summarize(output_path(args.recovery)) == 'FAILED')
+        return int(gdr.summarize(output_path(args.recovery), args.norm_context) == 'FAILED')
     if not args.ddk_root:
         cli.error('set CPRO_DDK_ROOT or pass --ddk-root')
     gdr.compile_case(args.case_dir.resolve(), output_path(args.output), args.ddk_root.resolve(),

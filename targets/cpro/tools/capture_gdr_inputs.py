@@ -14,6 +14,7 @@ def capture(source_root, config, requested, length):
     import torch
     from qwen35_moe_dflash.target.layer_probe.capture import cpu
     from qwen35_moe_dflash.target.layer_probe.steps import working_directory
+    from qwen35_moe_dflash.target.prefill_t64.segment_gdn_trace import observe_tail
     from trace_segment_attention import observe_l1_gdr_length
 
     root = source_root.resolve(strict=True)
@@ -69,6 +70,7 @@ def capture(source_root, config, requested, length):
             cleanup.callback(wrapper.register_forward_pre_hook(read_ids, with_kwargs=True).remove)
             observe_l1_gdr_length(wrapper, report, cleanup, snapshot, layer_index=0)
             linear = wrapper.model.model.layers[0].linear_attn
+            observe_tail(linear, snapshot, cleanup)
             cleanup.callback(linear.register_forward_hook(stop).remove)
             return chunk(wrapper, prompt, attention_mask, past_kv_1, max_len=max_len, chunk_size=chunk_size, device=device)
 
@@ -87,6 +89,11 @@ def capture(source_root, config, requested, length):
             or call['attrs']['chunk_size'] != 64 or not call['attrs']['output_final_state']
             or not call['attrs']['use_qk_l2norm_in_kernel']):
         raise ValueError('captured GDR attributes or length differ from the standalone AIR contract')
+    core = call['outputs'][0]
+    valid = snapshot['valid']
+    if not torch.equal(core[:, :valid], snapshot['norm_input'].reshape_as(core)[:, :valid]):
+        raise ValueError('Gated RMSNorm did not consume this L0 GDR core')
+    context = (snapshot['norm_gate'].reshape_as(core).numpy(), snapshot['gamma'].numpy(), snapshot['epsilon'])
     return inputs, snapshot['input_ids'].numpy(), dict(kind='measured_l0_310p', device=call['device'],
         input_ids_source='file' if requested is not None else 'original_segment_prompt',
-        driver_sha256=sha(entry), config_sha256=sha(config), layer_source_sha256=sha(Path(call['source'])))
+        driver_sha256=sha(entry), config_sha256=sha(config), layer_source_sha256=sha(Path(call['source']))), context
