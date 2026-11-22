@@ -101,7 +101,18 @@ def run(compiled, output, config, ddk):
                     raise RuntimeError(f"{name}: {launched.get('error', launched['status'])}")
             if not (execution/'request.json').exists():
                 raise RuntimeError(f'{name}: no detached request, inspect {execution}/result.json')
-            if not (recovery/'result.json').is_file() or load(recovery/'result.json').get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED':
+            result_file = recovery / 'result.json'
+            recovered = load(result_file) if result_file.is_file() else {}
+            failure = recovered.get('execution_diagnostics', {}).get('first_failure', {})
+            final_native_failure = (
+                recovered.get('device_execution') == 'FAILED_OUTPUTS_RETRIEVED'
+                and failure.get('case') == name and failure.get('exitcode') not in (None, 0)
+                and recovered.get('lock_state') == 'NO_OWNED_LOCK_AFTER_KNOWN_COMPLETION'
+                and recovered.get('recovery_source') == str(execution)
+                and recovered.get('board_attempt')
+                and recovered['board_attempt'] == load(execution/'request.json').get('board_attempt')
+            )
+            if recovered.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED' and not final_native_failure:
                 # Recover the existing launch, including after an interrupted recovery.
                 if recovery.exists():
                     attempt = 1
@@ -109,8 +120,15 @@ def run(compiled, output, config, ddk):
                         attempt += 1
                     recovery.rename(base/f'recovery-retry-{attempt}')
                 recovered = api.recover(execution, recovery, wait=True)
-                if recovered.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED':
-                    raise RuntimeError(f"{name}: {recovered.get('error', recovered['status'])}")
+            if recovered.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED':
+                failure = recovered.get('execution_diagnostics', {}).get('first_failure', {})
+                message = [f"{name}: {recovered.get('error') or recovered['status']}", f"Recovery report: {result_file}"]
+                if failure.get('case') == name:
+                    for stream in ('stderr', 'stdout'):
+                        tail = failure.get(stream + '_tail')
+                        if tail:
+                            message.append(f"{name}.{stream}\n{tail}")
+                raise RuntimeError('\n'.join(message))
             inputs, refs, actual, case = board_case(base, name)
             if case['model']['sha256'] != build['cases'][name]['omc']['sha256']:
                 raise ValueError(f'{name}: recovered another model')
