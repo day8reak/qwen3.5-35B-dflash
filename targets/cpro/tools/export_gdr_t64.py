@@ -41,39 +41,26 @@ def describe_inputs(root):
         raise ValueError('effective_length.bin and manifest disagree or length is outside 0..64')
     source = manifest['source']
     lines = ['# L0 GDR 单算子输入说明', '',
-             f"数据来源 `{source['kind']}`。序列维有 64 个 token 位置，`inputs/effective_length.bin` 的值为 {valid}。",
-             f'行号从 0 开始，按 `x[:, {valid}:64, ...]` 统计 padding。正零和负零都计为零。', '']
-    header = ['| 文件 | 含义 | dtype | shape | padding 情况 | 零元素数 | 非零元素数 |',
-              '|---|---|---|---|---|---:|---:|']
+             f"数据来源 `{source['kind']}`。序列维有 64 个 token 位置，`inputs/effective_length.bin` 的值为 {valid}。"]
+    if valid < 64:
+        lines.append(f'第 {valid}～63 行为 padding（行号从 0 开始），保留各输入在这些位置的原值，不统一补零。')
+    else:
+        lines.append('全部 64 行均有效，无 padding。')
+    lines.append('')
+    header = ['| 文件 | 含义 | dtype | shape |', '|---|---|---|---|']
 
     def row(spec):
         name = spec['name']
         x = length if name == 'effective_length' else load(spec)
-        zeros = nonzeros = '—'
         if name in (*TOKEN_OPERANDS, 'input_ids'):
             meaning = '310P 模型入口的 token ID' if name == 'input_ids' else DESCRIPTIONS[name][1]
             if x.shape[:2] != (1, 64):
                 raise ValueError(f'{name}: expected [1, 64, ...], got {x.shape}')
-            tail = x[:, valid:]
-            nonzeros = int(np.count_nonzero(tail))
-            zeros = tail.size - nonzeros
-            if not tail.size:
-                status = '无 padding'
-            elif zeros == 0:
-                status = '全非零'
-            elif nonzeros == 0:
-                status = '全零'
-            else:
-                status = '零和非零混合'
-            if name == 'input_ids' and tail.size and np.all(tail == tail.flat[0]):
-                status += f'（ID 均为 {tail.flat[0]}）'
         elif name == 'initial_state':
             meaning = '进入 GDR 时的递归状态'
-            status = f'无序列维，整张量非零 {np.count_nonzero(x)}/{x.size}'
         else:
             meaning = 'GDR 有效 token 数'
-            status = f'无序列维，值为 {valid}'
-        return f"| `{spec['path']}` | {meaning} | {x.dtype.name} | `{list(x.shape)}` | {status} | {zeros} | {nonzeros} |"
+        return f"| `{spec['path']}` | {meaning} | {x.dtype.name} | `{list(x.shape)}` |"
 
     lines.extend(['## 单算子的七个输入（AIR 端口顺序）', '', *header, *map(row, inputs)])
     originals = ([source['input_ids']] if 'input_ids' in source else []) + source.get('fp32_before_cpro_cast', [])
