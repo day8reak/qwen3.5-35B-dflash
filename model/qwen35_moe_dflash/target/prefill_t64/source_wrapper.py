@@ -7,12 +7,21 @@ _SOURCE_DIGEST = "adffc184d14b606641ceb61db2628c886608996ead4f0abc21c9e9aa36903c
 _STAGED_DIGEST = "5d641ec2e050220f4c64fb934d24b57b939e99e25751ff2def141dea3ea44df7"
 
 
-def stage_wrapper(text: str, *, segmented=False) -> str:
+def stage_wrapper(text: str, *, segmented=False, layers=4) -> str:
     source = _stage_base_wrapper(text)
-    if segmented:
+    if segmented or layers != 4:
         from .source_model import use_position_gathers
         tree = ast.parse(source)
-        use_position_gathers(tree, 'Qwen3_5MoeForCausalLMCproWrapper', ('hidden_states',), 'output_pos')
+        if layers != 4:
+            if layers != 40:
+                raise ValueError('Supported CPro wrapper sizes are 4 and 40')
+            wrapper, = (n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Qwen3_5MoeForCausalLMCproWrapper')
+            init, = (n for n in wrapper.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
+            loader, = (n for n in ast.walk(init) if isinstance(n, ast.Call) and ast.unparse(n.func) == 'load_npu_model')
+            count, = (kw for kw in loader.keywords if kw.arg == 'layer_num')
+            count.value = ast.Constant(layers)
+        if segmented:
+            use_position_gathers(tree, 'Qwen3_5MoeForCausalLMCproWrapper', ('hidden_states',), 'output_pos')
         return ast.unparse(ast.fix_missing_locations(tree)) + '\n'
     return source
 

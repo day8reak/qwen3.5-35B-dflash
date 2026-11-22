@@ -1,5 +1,6 @@
 """Observe complete decoder blocks and the actual vocab head in segmented 310P prefill."""
 from contextlib import ExitStack
+import hashlib
 import json
 from pathlib import Path
 import runpy
@@ -12,6 +13,7 @@ from ..layer_probe.common import identity, new_output, read_array, save_json, sh
 BASIS = 'MEASURED_310P_40_DECODER_BLOCKS_T64_VALID19'
 HIDDEN = (1, 64, 2048)
 LAYERS = 40
+VALID19_IDS_SHA256 = 'ec5119e4b49de3c9e0cd48b7cff7faf13b18a0a10dda89c2a5180b194f05eaf7'
 
 
 def capture(source, config, baseline, output):
@@ -22,14 +24,14 @@ def capture(source, config, baseline, output):
 
     entry = (source / 'inference_segment.py').resolve(strict=True)
     config = (source / config).resolve(strict=True)
-    prior = json.loads((baseline / 'manifest.json').read_text())
-    ids = read_array(baseline, prior['inputs']['input_ids'])
-    if (prior['status'] != 'CAPTURED' or ids.shape != (1, 64)
-            or (prior['valid_rows'], prior['output_pos']) != (19, 18)):
+    prior = json.loads((baseline / 'manifest.json').read_text()) if baseline else None
+    ids = read_array(baseline, prior['inputs']['input_ids']) if prior else None
+    if prior and (prior['status'] != 'CAPTURED' or ids.shape != (1, 64)
+                  or (prior['valid_rows'], prior['output_pos']) != (19, 18)):
         raise ValueError('expected the retained T64 valid19 prefill reference')
     root = new_output(output)
     report = dict(status='CAPTURING', reference=BASIS, physical_rows=64, valid_rows=19, output_pos=18,
-                  baseline_sha256=sha(baseline / 'manifest.json'), source_sha256=sha(entry),
+                  baseline_sha256=sha(baseline / 'manifest.json') if prior else None, source_sha256=sha(entry),
                   config_sha256=sha(config), inputs={}, blocks=[], outputs={})
     save_json(root / 'manifest.json', report)
     seen = []
@@ -71,14 +73,19 @@ def capture(source, config, baseline, output):
                         raise ValueError(f'wrong prefill length or readout at segment {start}')
                     for name in ('position_ids', 'new_kv_cache_pos', 'attention_mask', 'effective_length'):
                         value = cpu(v[name])
-                        if not np.array_equal(value.numpy(), read_array(baseline, prior['inputs'][name])):
-                            raise ValueError(f'changed prefill control {name} at segment {start}')
+                        if prior or start:
+                            ref_dir, spec = (baseline, prior['inputs'][name]) if prior else (root, report['inputs'][name])
+                            if not np.array_equal(value.numpy(), read_array(ref_dir, spec)):
+                                raise ValueError(f'changed prefill control {name} at segment {start}')
                         if start == 0:
                             report['inputs'][name] = tensor_record(root, name, value)
                     if start == 0:
                         value = cpu(v['input_ids'])
-                        if not np.array_equal(value.numpy(), ids):
+                        if ids is not None and not np.array_equal(value.numpy(), ids):
                             raise ValueError('prompt differs from retained valid19 token IDs')
+                        if ids is None and (tuple(value.shape) != (1, 64) or hashlib.sha256(
+                                value.numpy().astype('<i4').tobytes()).hexdigest() != VALID19_IDS_SHA256):
+                            raise ValueError('original driver prompt differs from the measured T64/valid19 case')
                         report['inputs']['input_ids'] = tensor_record(root, 'input_ids', value)
                 hook(wrapper, controls, True)
 
@@ -158,6 +165,7 @@ def capture(source, config, baseline, output):
                 mapping[i] = piece
         if mapping[report['top1']] != report['token_text']:
             raise ValueError('portable single-token decode differs from original tokenizer')
+        ids = read_array(root, report['inputs']['input_ids'])
         token_map = root / 'token-text.json'
         save_json(token_map, dict(pieces=mapping, special_ids=tokenizer.all_special_ids,
                                   prompt=tokenizer.decode(ids[0, :19].tolist(), skip_special_tokens=False)))

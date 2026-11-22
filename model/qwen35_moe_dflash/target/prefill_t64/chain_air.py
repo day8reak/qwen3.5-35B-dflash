@@ -162,17 +162,16 @@ def export(source, config, reference, output):
         _export_batch(source, config, reference, root)
 
 
-@torch.no_grad()
-def _export_batch(source, config, reference, root):
-    from ...draft.incremental.torch_export import _producer_schema, _schema
+def stage_cpro_source(source, stage, adapt_wrapper):
+    (stage / 'models').mkdir()
+    (stage / 'models/__init__.py').touch()
+    for name, transform in ((MODELING, lambda t: stage_model(t, single_token=False)), (WRAPPER, adapt_wrapper),
+                            (EXPORTER, stage_exporter), ('utils.py', stage_utils), (NZ, lambda t: t)):
+        (stage / name).write_text(transform((source / name).read_text()))
 
-    reference = reference.resolve(strict=True)
-    config = (source / config).resolve(strict=True)
+
+def checkpoint_paths(source, config, ref):
     cfg = yaml.safe_load(config.read_text())
-    ref = json.loads((reference / 'manifest.json').read_text())
-    if (ref['reference'] != BASIS or ref['status'] != 'CAPTURED'
-            or [r['layer'] for r in ref['blocks']] != list(range(LAYERS))):
-        raise ValueError('expected the completed 40-layer 310P reference')
     if sha(config) == ref['config_sha256']:
         # The two private source trees can have different roots. The reference recorded
         # how the exact YAML resolved relative paths in the original 310P working directory.
@@ -192,6 +191,20 @@ def _export_batch(source, config, reference, root):
                 for i in range(LAYERS) for proj in ('gate_up_proj', 'down_proj') for part in ('weight', 'scale')}
     if required - keys:
         raise ValueError(f'40-layer W4 pack is incomplete; first missing keys: {sorted(required - keys)[:4]}')
+    return paths
+
+
+@torch.no_grad()
+def _export_batch(source, config, reference, root):
+    from ...draft.incremental.torch_export import _producer_schema, _schema
+
+    reference = reference.resolve(strict=True)
+    config = (source / config).resolve(strict=True)
+    ref = json.loads((reference / 'manifest.json').read_text())
+    if (ref['reference'] != BASIS or ref['status'] != 'CAPTURED'
+            or [r['layer'] for r in ref['blocks']] != list(range(LAYERS))):
+        raise ValueError('expected the completed 40-layer 310P reference')
+    paths = checkpoint_paths(source, config, ref)
     root.mkdir(parents=True, exist_ok=True)
     (root / 'models').mkdir(exist_ok=True)
     binding = dict(reference=sha(reference / 'manifest.json'), sources={n: sha(source / n)
@@ -219,11 +232,7 @@ def _export_batch(source, config, reference, root):
     cases = []
     with tempfile.TemporaryDirectory(dir=root.parent, prefix=f'.{root.name}-private-source-') as tmp:
         stage = Path(tmp)
-        (stage / 'models').mkdir()
-        (stage / 'models/__init__.py').touch()
-        for name, transform in ((MODELING, lambda t: stage_model(t, single_token=False)), (WRAPPER, stage_wrapper),
-                                (EXPORTER, stage_exporter), ('utils.py', stage_utils), (NZ, lambda t: t)):
-            (stage / name).write_text(transform((source / name).read_text()))
+        stage_cpro_source(source, stage, stage_wrapper)
         sys.path.insert(0, tmp)
         try:
             import export_glm_model_qwen3_5_moe as exporter
