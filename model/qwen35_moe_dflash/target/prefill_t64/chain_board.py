@@ -155,4 +155,14 @@ def run(compiled, output, config, ddk):
                       f" token18={last['relative_l2']:.4%}/{last['cosine']:.7f} passed={rows[-1]['passed']}", flush=True)
             if not (base/'upload-released').exists():
                 discard_board_weight_copies(api, base, name)
+            # The detached request and recovered outputs are already verified.
+            # A following layer builds its own tar. Keep the OMC and fixture for replay.
+            if build.get('storage') == 'per-layer-v1':
+                archive = execution / 'payload.tar'
+                if archive.exists():
+                    receipt = load(execution/'request.json')['payload']
+                    if (archive.resolve() != archive or receipt['local'] != str(archive)
+                            or archive.stat().st_size != receipt['bytes'] or sha(archive) != receipt['sha256']):
+                        raise ValueError(f'{name}: local upload archive differs from the completed request')
+                    archive.unlink()
             predecessor = name
