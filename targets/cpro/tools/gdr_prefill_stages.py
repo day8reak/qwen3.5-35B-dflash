@@ -10,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     cmds = parser.add_subparsers(dest='action', required=True)
+    pack = cmds.add_parser('pack-gdr', help='extract the L0 GDR operator inputs and outputs from an existing chunk64 stage dump')
+    pack.add_argument('--dump', type=Path, required=True, help='completed l0-dump-summary containing manifest.json')
+    pack.add_argument('--output', type=Path, help='destination archive under AI_RUN_DIR (default: next to the dump)')
     bundle = cmds.add_parser('summarize', help='assemble L0 from the recovered baseline, split probes and paired SiLU run')
     bundle.add_argument('--group', required=True, type=Path, help='original gdr-stages-t64-valid19 experiment directory')
     bundle.add_argument('--output', type=Path, help='new dump directory (default: GROUP/l0-dump-summary)')
@@ -45,6 +48,11 @@ def main():
         cmd.add_argument('--output', required=True, type=Path)
     compare.add_argument('--trace', required=True, type=Path, help='new compiled and recovered batch')
     args = parser.parse_args()
+    if args.action == 'pack-gdr':
+        from qwen35_moe_dflash.target.prefill_t64.gdr_io_bundle import package
+        dump = args.dump.resolve()
+        package(dump, args.output or dump.with_name(dump.name + '-gdr-io.tar.gz'))
+        return 0
     if args.action == 'prepare-s1':
         from qwen35_moe_dflash.target.prefill_t64.gdr_s1_air import prepare
         prepare(args.group, args.run / 'air')

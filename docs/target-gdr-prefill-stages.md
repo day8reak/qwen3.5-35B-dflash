@@ -23,6 +23,21 @@ cat "$G/l0-dump-summary/summary.md"
 
 本次实测 L0 在有效 19 个 token 上，SiLU 输出 CPro/310P 相对 L2 为 **0.00160568**，cosine 为 **0.99999883**。CPro 输出对自身实测输入的 SiLU 公式为 **0.00132394 / 0.999999**。这张图的有效 hidden 与原始 CPro 图逐位相等。后续实测门控乘积为 **0.125974 / 0.992034**，整层输出为 **0.221701 / 0.976573**。汇总另外用两端各自的实测左右操作数重建各自乘积，并在 CSV 中单列检查结果。
 
+## 从已保存的 L0 dump 打包 GDR 算子输入和输出
+
+在保存了 `l0-dump-summary` 的 OMC 服务器上执行。归档使用所选 dump 的历史读数，脚本会校验 GDR 探针的整层入口和有效 hidden 复现记录，以及每个源 bin 的 SHA256。
+
+```bash
+conda activate custom_pypto
+G="$AI_RUN_DIR/target/tests/gdr-stages-t64-valid19-fresh01"
+git -C "$REPO_DIR" pull --ff-only origin main &&
+python "$REPO_DIR/targets/cpro/tools/gdr_prefill_stages.py" pack-gdr \
+  --dump "$G/l0-dump-summary" --output "$G/l0-gdr-valid19.tar.gz" &&
+tar -xOzf "$G/l0-gdr-valid19.tar.gz" gdr-l0-valid19/README.md
+```
+
+每端 15 个 bin。`full64/` 和 `valid19/` 各含 query、key、value、g、beta 和 core。`tensor/` 含完整 initial_state、effective_length 和 final_state。每个目录再按 input、output 分开。用 full64 与 tensor 复现物理调用，用 valid19 分析有效区间。两端各自的算子输入可能已有差异。包内 `comparison.csv` 含前 19 个 token 的汇总、每个有效位置的误差以及 FP16 次正规数在另一端为零的计数。
+
 ## L0 用新版 S=1 重跑
 
 在 10.136.181.35 的 DDK 终端执行。脚本读取原实验的 310P capture 和三组已验证的 AIR 探针。若本机缺少输入，脚本会通过 `pull_artifacts.py` 拉取所需的原始 capture 或整层 AIR，在 DDK 端重建缺失的探针。脚本在新目录生成 9 个 L0 AIR，使用当前 `CPRO_DDK_ROOT` 编译为 OMC，再下板、等待回收、生成两端的 bin 和对照表。
