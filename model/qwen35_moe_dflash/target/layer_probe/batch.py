@@ -396,6 +396,24 @@ def _external_prefill_files(root, case, compiled):
     return model, weights
 
 
+def write_case_fixture(fixture, folder, io, goldens, external_weights=False):
+    fixture.mkdir(parents=True)
+    plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']
+    if external_weights:
+        plan.append('model_load file-v2-external')
+    for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
+        for spec in io[direction]:
+            source = checked(folder, goldens[spec['index']]
+                             if direction == 'outputs' else spec)
+            destination = fixture/f'{prefix}_{spec["index"]}.bin'
+            shutil.copyfile(source, destination)
+            spec['fixture_sha256'] = sha(destination)
+            spec['fixture_bytes'] = destination.stat().st_size
+            spec['name'] = prefix + '_' + str(spec['index'])
+            plan.append(' '.join((direction[:-1], str(spec['index']), spec['name'], spec['dtype'], ','.join(map(str, spec['shape'])))))
+    (fixture/'plan.txt').write_text('\n'.join(plan)+'\n')
+
+
 def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=False):
     from qwen35_moe_dflash.toolchain.omc_container import read_container, read_partition
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
@@ -444,21 +462,7 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
             raise ValueError(f'{name}: {exc}') from exc
         check_io_budget(name, io, max_slots=16 if case['kind'] in ('segment_prefill', 'segment_gdn_trace', 'gdr_stages') else 8)
         fixture = out/'fixture'/name
-        fixture.mkdir(parents=True)
-        plan = ['QWEN35_TENSOR_PROBE 1', 'iterations 3 10', 'input_reset copy-each-call']
-        if external_weights:
-            plan.append('model_load file-v2-external')
-        for direction, prefix in (('inputs', 'input'), ('outputs', 'golden')):
-            for spec in io[direction]:
-                source = checked(folder, exported.get('goldens', [exported['golden']])[spec['index']]
-                                 if direction == 'outputs' else spec)
-                destination = fixture/f'{prefix}_{spec["index"]}.bin'
-                shutil.copyfile(source, destination)
-                spec['fixture_sha256'] = sha(destination)
-                spec['fixture_bytes'] = destination.stat().st_size
-                spec['name'] = prefix + '_' + str(spec['index'])
-                plan.append(' '.join((direction[:-1], str(spec['index']), spec['name'], spec['dtype'], ','.join(map(str, spec['shape'])))))
-        (fixture/'plan.txt').write_text('\n'.join(plan)+'\n')
+        write_case_fixture(fixture, folder, io, exported.get('goldens', [exported['golden']]), external_weights)
         observed = _compiled_observation(model, ddk)
         state_contract = None
         if case['kind'] == 'gdn_layer':
@@ -578,7 +582,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                     output_row['reference_basis'] = spec['reference_basis']
                 if len(case['outputs']) > 1:
                     output_row.update(output_index=spec['index'], output_name=spec['semantic_name'])
-                golden = np.fromfile(fixture/case['case']/f'golden_{spec["index"]}.bin', dtype=DTYPES[spec['golden_dtype']]).reshape(spec['shape'])
+                golden = np.fromfile(fixture/case['case']/f'golden_{spec["index"]}.bin', dtype=DTYPES[spec['golden_dtype']]).reshape(spec.get('golden_shape', spec['shape']))
                 captured_golden = None
                 if case['kind'] == 'full_attention_layer':
                     captured_golden = read_array(fixture, case['captured_goldens'][spec['index']])
@@ -611,6 +615,11 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                         from ..prefill_t64.segment_export import score_module_hidden
                         metric = score_module_hidden(actual, golden, atol, rtol)
                         valid_hashes.append(hashlib.sha256(actual[:, :19].tobytes()).hexdigest())
+                    elif case['kind'] == 'standalone_gdr' and spec['semantic_name'] == 'core_attn':
+                        from ..prefill_t64.standalone_gdr import score_core
+                        active = actual[:, :case['effective_length']]
+                        valid_hashes.append(hashlib.sha256(active.tobytes()).hexdigest())
+                        metric = score_core(active, golden, atol, rtol)
                     elif case['kind'] == 'gdr_stages':
                         from ..prefill_t64.gdr_stage_data import STATIC, logical
                         role = spec['semantic_name']
@@ -719,7 +728,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
         cases=rows, first_failed_boundary=failed[0]['case'] if failed else None,
         uncompiled_cases=meta.get('uncompiled_cases', []), all_model_layers_passed=False,
         reference=meta.get('reference', {}),
-        scope='CPro boundary replay with 310P inputs; isolated failures are not proof of full-graph root cause',
+        scope=meta.get('comparison_scope', 'CPro boundary replay with 310P inputs; isolated failures are not proof of full-graph root cause'),
         first_failure_order='CALL_LAYER_CPRO_DEPENDENCY_ORDER; INDEPENDENT_BRANCHES_HAVE_NO_UNIQUE_FIRST_CAUSE',
         cpro_continuous_state_feedback='NOT_TESTED', numerical_policy=POLICY,
         thresholds=dict(metrics=THRESHOLDS, atol=atol, rtol=rtol),

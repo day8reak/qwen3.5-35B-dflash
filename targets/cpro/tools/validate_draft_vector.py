@@ -186,6 +186,11 @@ def prepare(compiled, out, ddk, ddk_id, selection=None, *, external_weights=Fals
     from qwen35_moe_dflash.toolchain.omc_wire import load_schema
     from qwen35_moe_dflash.draft.ir_inspect import _enum_fields
     root = Path(compiled).resolve()
+    if (root/'standalone-gdr.json').is_file():
+        from qwen35_moe_dflash.target.prefill_t64.standalone_gdr import prepare_fixture
+        if external_weights:
+            raise ValueError('The standalone GDR OMC has no external weights')
+        return prepare_fixture(root, out, ddk, ddk_id, selection)
     if (root/'manifest.json').is_file() and read_json(root/'manifest.json').get('artifact_kind') == TARGET_LAYER_KIND:
         return target_layer_probe.prepare_fixture(root, out, ddk, ddk_id, selection, external_weights=external_weights)
     if external_weights:
@@ -1028,13 +1033,16 @@ def main():
                 for prefix, scope in [('', sample), ('token18_', sample.get('token_18', {}))]:
                     if 'error_ratio' in scope:
                         row.update({prefix + k: scope[k] for k in ERROR_RATIO_FIELDS})
-            if row.get('reference_basis') == 'SEGMENT_310P_MEASURED_GDR_RMS_SILU_64_VALID19' and row.get('invocations'):
+            if row.get('reference_basis') in ('SEGMENT_310P_MEASURED_GDR_RMS_SILU_64_VALID19',
+                                              'CPU_GDR_RECURRENCE_ON_EXPORTED_INPUTS') and row.get('invocations'):
                 first = row.pop('invocations')[0]
                 row.pop('output_sha256', None)
                 row.pop('valid_output_sha256', None)
-                row.update(relative_l2=first.get('relative_l2'), cosine=first.get('cosine'),
-                           token18_relative_l2=first.get('token_18', {}).get('relative_l2'),
-                           token18_cosine=first.get('token_18', {}).get('cosine'))
+                row.update(relative_l2=first.get('relative_l2'), cosine=first.get('cosine'))
+                token18 = first.get('token_18', {})
+                if len(first.get('per_token', [])) > 18:
+                    token18 = first['per_token'][18]
+                row.update(token18_relative_l2=token18.get('relative_l2'), token18_cosine=token18.get('cosine'))
             if row.get('reference_basis') in ('CPU_CHECKED_310P_SEGMENT_WHOLE_ATTENTION_MODULE_HIDDEN_DECODE_AFTER_VALID19',
                                               'FIXED_INPUT_CPU_FIRST_DECODE_STAGE') and row.get('invocations'):
                 first = row.pop('invocations')[0]
