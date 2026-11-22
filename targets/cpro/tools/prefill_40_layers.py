@@ -19,6 +19,9 @@ def main():
     for flag in ('run', 'ddk-root', 'tbe-diagnosis'):
         compile_cmd.add_argument('--' + flag, type=Path, required=True)
     compile_cmd.add_argument('--ddk-id', required=True)
+    probe = actions.add_parser('diagnose', help='inspect the failed decoder request in device HiLog')
+    probe.add_argument('--case-dir', type=Path, required=True)
+    probe.add_argument('--hilog', type=Path, help='use an existing hilog -x snapshot')
     board = actions.add_parser('run')
     for flag in ('compiled', 'config', 'ddk-root', 'output'):
         board.add_argument('--' + flag, type=Path, required=True)
@@ -32,6 +35,9 @@ def main():
     elif a.action == 'compile':
         from qwen35_moe_dflash.target.prefill_t64.chain_compile import compile_chain
         compile_chain(a.run, a.ddk_root, a.ddk_id, a.tbe_diagnosis)
+    elif a.action == 'diagnose':
+        from qwen35_moe_dflash.target.prefill_t64.chain_hilog import diagnose
+        diagnose(a.case_dir, a.hilog)
     elif a.action == 'run':
         from qwen35_moe_dflash.target.prefill_t64.chain_board import run
         run(a.compiled.resolve(), a.output, a.config.resolve(), a.ddk_root.resolve())
