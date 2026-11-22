@@ -16,10 +16,83 @@ sys.path.insert(0, str(REPO / 'model'))
 from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
 from qwen35_moe_dflash.target.layer_probe.common import identity, read_array, save_json
 from qwen35_moe_dflash.target.prefill_t64.gdr_math import compute
-from qwen35_moe_dflash.target.prefill_t64.gdr_stage_data import GDR, TOKEN_OPERANDS, logical, shapes
+from qwen35_moe_dflash.target.prefill_t64.gdr_stage_data import DESCRIPTIONS, GDR, TOKEN_OPERANDS, logical, shapes
 
 INPUTS = GDR[:-2]
 OUTPUTS = ('core_attn', 'last_recurrent_state')
+
+
+def describe_inputs(root):
+    manifest = json.loads((root / 'manifest.json').read_text())
+    if manifest['operator'] != 'ChunkGatedDeltaRule' or manifest['physical_rows'] != 64:
+        raise ValueError('expected a standalone T64 GDR export')
+    inputs = manifest['inputs']
+    if [s['name'] for s in inputs] != list(INPUTS):
+        raise ValueError('unexpected GDR input order in manifest')
+
+    def load(spec):
+        return read_array(root, dict(spec, dtype=np.dtype(spec['dtype']).name))
+
+    length = load(inputs[-1])
+    if length.dtype != np.int16 or length.shape != (1,):
+        raise ValueError('expected INT16 [1] for effective_length')
+    valid = int(length.item())
+    if valid != manifest['effective_length'] or not 0 <= valid <= 64:
+        raise ValueError('effective_length.bin and manifest disagree or length is outside 0..64')
+    source = manifest['source']
+    lines = ['# L0 GDR 单算子输入说明', '',
+             f"数据来源 `{source['kind']}`。序列维有 64 个 token 位置，`inputs/effective_length.bin` 的值为 {valid}。",
+             f'行号从 0 开始，按 `x[:, {valid}:64, ...]` 统计 padding。正零和负零都计为零。', '']
+    header = ['| 文件 | 含义 | dtype | shape | padding 情况 | 零元素数 | 非零元素数 |',
+              '|---|---|---|---|---|---:|---:|']
+
+    def row(spec):
+        name = spec['name']
+        x = length if name == 'effective_length' else load(spec)
+        zeros = nonzeros = '—'
+        if name in (*TOKEN_OPERANDS, 'input_ids'):
+            meaning = '310P 模型入口的 token ID' if name == 'input_ids' else DESCRIPTIONS[name][1]
+            if x.shape[:2] != (1, 64):
+                raise ValueError(f'{name}: expected [1, 64, ...], got {x.shape}')
+            tail = x[:, valid:]
+            nonzeros = int(np.count_nonzero(tail))
+            zeros = tail.size - nonzeros
+            if not tail.size:
+                status = '无 padding'
+            elif zeros == 0:
+                status = '全非零'
+            elif nonzeros == 0:
+                status = '全零'
+            else:
+                status = '零和非零混合'
+            if name == 'input_ids' and tail.size and np.all(tail == tail.flat[0]):
+                status += f'（ID 均为 {tail.flat[0]}）'
+        elif name == 'initial_state':
+            meaning = '进入 GDR 时的递归状态'
+            status = f'无序列维，整张量非零 {np.count_nonzero(x)}/{x.size}'
+        else:
+            meaning = 'GDR 有效 token 数'
+            status = f'无序列维，值为 {valid}'
+        return f"| `{spec['path']}` | {meaning} | {x.dtype.name} | `{list(x.shape)}` | {status} | {zeros} | {nonzeros} |"
+
+    lines.extend(['## 单算子的七个输入（AIR 端口顺序）', '', *header, *map(row, inputs)])
+    originals = ([source['input_ids']] if 'input_ids' in source else []) + source.get('fp32_before_cpro_cast', [])
+    if originals:
+        lines.extend(['', '## 310P 采集来源', '',
+                      'input_ids 用于复现模型输入。source_310p 保存转为 CPro 输入 dtype 之前的原始张量。', '',
+                      *header, *map(row, originals)])
+
+    report = root / 'input-description.md'
+    with tempfile.NamedTemporaryFile(dir=root, mode='w', encoding='utf-8', delete=False) as out:
+        temp = Path(out.name)
+        try:
+            out.write('\n'.join(lines) + '\n')
+            out.flush()
+            temp.chmod(0o777)
+            temp.replace(report)
+        finally:
+            temp.unlink(missing_ok=True)
+    return report
 
 
 def build_air():
@@ -184,16 +257,21 @@ def generate(args):
         save_json(stage / 'manifest.json', dict(operator='ChunkGatedDeltaRule', physical_rows=64,
                   chunk_size=64, effective_length=valid, source=source, air=identity(air, stage),
                   inputs=inputs, outputs=outputs, cpu_golden=cpu))
+        describe_inputs(stage)
         share_for_transfer(stage)
         stage.rename(root)
     if ids is not None:
         print(f'310P padded input_ids SHA256 (int32): {source["input_ids_i32_sha256"]}')
     print(f'{root / air.name}  ·  7 inputs  ·  2 outputs  ·  T64  ·  effective_length={valid}  ·  {source["kind"]}')
+    print(root / 'input-description.md')
 
 
 if __name__ == '__main__':
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument('--output', required=True, type=Path, help='empty directory under AI_RUN_DIR')
+    target = cli.add_mutually_exclusive_group(required=True)
+    target.add_argument('--output', type=Path, help='empty directory under AI_RUN_DIR')
+    target.add_argument('--describe-existing', type=Path, metavar='CASE_DIR',
+                        help='write input-description.md from the existing manifest and input bins')
     group = cli.add_mutually_exclusive_group()
     group.add_argument('--cpro-dump', type=Path, help='use all seven inputs from an L0 stage dump')
     group.add_argument('--source-root', type=Path, help='original 310P source with inference_segment.py (default: TARGET_SOURCE)')
@@ -206,6 +284,12 @@ if __name__ == '__main__':
     sizes.add_argument('--effective-length-bin', type=Path, help='one little-endian INT16; supply for already padded file inputs')
     sizes.add_argument('--effective-length', type=int, help='valid count for file inputs, or expected length for a captured prompt')
     args = cli.parse_args()
+    if args.describe_existing:
+        try:
+            print(describe_inputs(output_path(args.describe_existing)))
+        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+            cli.exit(1, f'gdr-t64: {exc}\n')
+        sys.exit(0)
     if bool(args.input_ids) != bool(args.ids_dtype):
         cli.error('supply --input-ids and --ids-dtype together')
     if args.input_ids and (args.cpro_dump or args.synthetic or args.reference):
