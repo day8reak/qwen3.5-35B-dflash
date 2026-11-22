@@ -119,11 +119,26 @@ def results(run):
     if sha(path) != request['fixture_sha256']:
         raise ValueError(f'{run}: the fixture changed after launch')
     manifest = load(path)
+    receipt = run/'compiled-gdr.json'
+    if receipt.is_file() and load(receipt)['compile_sha256'] != manifest['source_evidence']['compile_sha256']:
+        raise ValueError(f'{run}: executed fixture and GDR compilation receipt differ')
     cases = {c['case']: c for c in manifest['cases']}
     return {r['case']: (r, cases[r['case']]) for r in report['cases'] if r.get('output_name') == 'golden_hidden'}
 
 
-def summary(run, csv_path=None):
+def hidden_scores(observed, golden):
+    scores = {'valid19': metrics(observed, golden)}
+    scores.update({f'token{j}': metrics(a, g) for j, (a, g) in enumerate(zip(observed, golden, strict=True))})
+    return scores
+
+
+def fmt_score(m):
+    l2 = 'n/a' if m['relative_l2'] is None else f"{m['relative_l2']:7.3%}"
+    cosine = 'n/a' if m['cosine'] is None else f"{m['cosine']:.7f}"
+    return f'{l2} / {cosine}'
+
+
+def summary(run, csv_path=None, *, label='Q-scale moved', baseline_run=None):
     from qwen35_moe_dflash.target.prefill_t64.segment_trace_compare import board_case
     new = results(run)
     detail = []
@@ -132,12 +147,17 @@ def summary(run, csv_path=None):
     if set(new) != set(CASES):
         raise ValueError('Expected retrieved golden_hidden for all four cases')
     tests = Path(os.environ['AI_RUN_DIR'])/'target/tests'
+    if baseline_run is not None:
+        if baseline_run.resolve() == run.resolve():
+            raise ValueError('Choose a previous run distinct from the current run')
+        print(f'Comparison baseline: {baseline_run}')
     for i, name in enumerate(CASES):
         # The historical v1024 batch contained only L0-L2. Label the independent L3 control separately.
-        base = tests/('linear-l0-l2-chunk64-v1024-01' if i < 3 else 'attention-layers-t64-valid19')
+        base = baseline_run or tests/('linear-l0-l2-chunk64-v1024-01' if i < 3 else 'attention-layers-t64-valid19')
         row, case = new[name]
         print(f'L{i}     source             valid19 L2 / cos       token18 L2 / cos      stable  verdict')
         versions = []
+        old_observed = None
         if all((base/file).is_file() for file in ('execution/request.json', 'execution/fixture/manifest.json',
                                                    'recovery/result.json')):
             try:
@@ -146,27 +166,45 @@ def summary(run, csv_path=None):
                 print(f'        Could not verify historical recovery: {exc}')
                 old = None
             if old and signature(old[1]) == signature(case):
-                versions.append(('v1024' if i < 3 else 'prior full-attn', old[0]))
+                prior_label = 'baseline' if baseline_run else ('v1024' if i < 3 else 'prior full-attn')
+                versions.append((prior_label, old[0]))
+                if baseline_run and old[0].get('stable'):
+                    try:
+                        _, _, actual, _ = board_case(base, name)
+                        old_observed = actual['golden_hidden'][0, :19]
+                    except (OSError, ValueError, KeyError) as exc:
+                        print(f'        Baseline per-token outputs unavailable: {exc}')
             else:
                 print('        Historical comparison unavailable: missing case or differing inputs/golden.')
         else:
             print(f'        Historical fixture unavailable at {base}')
-        for label, record in [*versions, ('Q-scale moved' if i < 3 else 'full-attn control', row)]:
+        for version, record in [*versions, (label if i < 3 else 'full-attn control', row)]:
             if not record.get('invocations'):
                 raise ValueError(f"{name}: {record.get('error', 'missing board invocation metrics')}")
             m = record['invocations'][0]
             t = m['token_18']
-            print(f"        {label:16} {m['relative_l2']:7.3%} / {m['cosine']:.7f}   "
-                  f"{t['relative_l2']:7.3%} / {t['cosine']:.7f}   {record['stable']}   {record['status']}")
+            print(f"        {version:16} {fmt_score(m)}   {fmt_score(t)}   {record['stable']}   {record['status']}")
         if not row['stable']:
             print('        Per-token comparison skipped: the repeated outputs differ.')
             continue
         _, refs, actual, _ = board_case(run, name)
         observed, golden = actual['golden_hidden'][0, :19], refs['golden_hidden'][0, :19]
-        valid = metrics(observed, golden)
-        token_metrics = [metrics(a, g) for a, g in zip(observed, golden)]
-        for scope, score in [('valid19', valid), *((f'token{j}', t) for j, t in enumerate(token_metrics))]:
-            detail.append(dict(layer=i, case=name, scope=scope, **{k: score[k] for k in fields}))
+        current_scores = hidden_scores(observed, golden)
+        token_metrics = [current_scores[f'token{j}'] for j in range(19)]
+        baseline_scores = {}
+        if old_observed is not None:
+            baseline_scores = hidden_scores(old_observed, golden)
+            if i == 3:
+                print('        L3 full-attention valid19 bytes equal to baseline:', old_observed.tobytes() == observed.tobytes())
+        for scope, score in current_scores.items():
+            item = dict(layer=i, case=name, scope=scope, **{k: score[k] for k in fields})
+            if scope in baseline_scores:
+                for metric in ('relative_l2', 'cosine', 'error_ratio'):
+                    before = baseline_scores[scope][metric]
+                    after = score[metric]
+                    item['baseline_' + metric] = before
+                    item['delta_' + metric] = after - before if before is not None and after is not None else None
+            detail.append(item)
             if scope in ('valid19', 'token18'):
                 verdict = 'PASS' if score['error_ratio_passed'] else 'FAIL'
                 print(f"        {scope:7} mismatched={score['mismatched_elements']}/{score['total_elements']}  "
@@ -178,7 +216,9 @@ def summary(run, csv_path=None):
         path = output_path(csv_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode='w', newline='', dir=path.parent, delete=False) as stream:
-            writer = csv.DictWriter(stream, fieldnames=['layer', 'case', 'scope', *fields])
+            comparison_fields = [prefix + key for key in ('relative_l2', 'cosine', 'error_ratio')
+                                 for prefix in ('baseline_', 'delta_')] if baseline_run else []
+            writer = csv.DictWriter(stream, fieldnames=['layer', 'case', 'scope', *fields, *comparison_fields])
             writer.writeheader()
             for row in detail:
                 writer.writerow(dict(row, failed_metrics=','.join(row['failed_metrics'])))
@@ -187,7 +227,7 @@ def summary(run, csv_path=None):
     return all(row['stable'] and row['status'] == 'PASSED' for row, _ in new.values())
 
 
-def board(run, source=None):
+def board(run, source=None, *, csv_path=None, label='Q-scale moved', baseline_run=None):
     """Compile the staged AIR, then launch or recover the same board request."""
     ddk = Path(os.environ['CPRO_DDK_ROOT']).resolve(strict=True)
     config = Path(os.environ.get('RUNTIME_CONFIG') or Path(os.environ['AI_RUN_DIR'])/'runtime/runtime.json')
@@ -227,7 +267,7 @@ def board(run, source=None):
         done = subprocess.run([*validate, '--recover', run/'execution', '--wait', '--output', run/'recovery'])
         if done.returncode and not recovery.is_file():
             done.check_returncode()
-    return summary(run)
+    return summary(run, csv_path, label=label, baseline_run=baseline_run)
 
 
 if __name__ == '__main__':
@@ -238,13 +278,17 @@ if __name__ == '__main__':
     device = commands.add_parser('board')
     device.add_argument('--gdr-source', type=Path, help='compare both DDK copies with the intended local kernel')
     report = commands.add_parser('report')
-    report.add_argument('--csv', type=Path, help='write valid19 and individual-token metrics from the retained outputs')
+    for cmd in (device, report):
+        cmd.add_argument('--csv', type=Path, help='write valid19 and individual-token metrics from the retained outputs')
+        cmd.add_argument('--label', default='Q-scale moved', help='display name of this GDR implementation')
+        cmd.add_argument('--baseline-run', type=Path, help='previous four-layer run to compare after checking inputs and golden')
     for cmd in (air, device, report):
         cmd.add_argument('--run', type=Path, required=True)
     args = parser.parse_args()
     if args.action == 'stage-air':
         stage(output_path(args.run), args.source_air)
     elif args.action == 'board':
-        sys.exit(0 if board(output_path(args.run), args.gdr_source) else 1)
+        sys.exit(0 if board(output_path(args.run), args.gdr_source, csv_path=args.csv,
+                            label=args.label, baseline_run=args.baseline_run) else 1)
     else:
-        sys.exit(0 if summary(args.run.resolve(), args.csv) else 1)
+        sys.exit(0 if summary(args.run.resolve(), args.csv, label=args.label, baseline_run=args.baseline_run) else 1)

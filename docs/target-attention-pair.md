@@ -10,6 +10,30 @@ L0–L2 的 310P 与 CPro 逐张量对比见 [GDR、RMSNorm 和门控乘法](tar
 
 先按[Prefill 输入与参考生成](target-prefill-fixture.md)完成环境配置和 `--capture-boundaries` 采集，复用其中的 `REPO_DIR`、`AI_RUN_DIR`、`TARGET_CONFIG`、`PREFILL_FIXTURE`。保留完整 fixture，确认 `capture/manifest.json` 的状态为 `CAPTURED`。Full 的 `captured-audited` 模式还要求同次 core 审计为 `PASSED`。本次 T64 使用[模块数学重放](#t64-full)。
 
+## 用纯 T-matrix 版 GDR 复测四层 prefill
+
+L0–L2 分别重放 linear attention，L3 full attention 用作对照。沿用环境中的 `REPO_DIR`、`AI_RUN_DIR`，本轮目录为 `target/tests/attention4-t64-valid19-tmatrix-01`。脚本优先使用上次 Q 缩放后移的四图 AIR。若 OMC 机保留了该 AIR，可直接执行板端步骤。
+
+AIR 机（10.136.180.78）缺少原 AIR 时，用原来的 `TARGET_SOURCE`、`CPRO_SOURCE`、`TARGET_CONFIG` 从同一提示词重新采集 310P、进行 CPU 检查并导出。复用和新导出的四图批次均会校验文件哈希并准备传输权限。
+
+```bash
+conda activate qwen3_5_w4
+git -C "$REPO_DIR" pull --ff-only origin main &&
+bash "$REPO_DIR/targets/cpro/scripts/check_attention4_tmatrix.sh" capture &&
+conda activate qwen3_5_cpro &&
+bash "$REPO_DIR/targets/cpro/scripts/check_attention4_tmatrix.sh" air
+```
+
+OMC 机（10.136.181.35）将 `GDR_SOURCE` 指向改好的 `allops/op_kernel/chunk_gated_delta_rule.cpp`。板端步骤按需调用 `pull_artifacts.py --from air`，检查本地源码与两份 DDK 源码一致，再重新编译并执行。
+
+```bash
+conda activate custom_pypto
+git -C "$REPO_DIR" pull --ff-only origin main &&
+bash "$REPO_DIR/targets/cpro/scripts/check_attention4_tmatrix.sh" board
+```
+
+输出 `tmatrix-accuracy.csv`。每个稳定层有 valid19 汇总和 token0–18，共 20 行。上次 Q 后移的 fixture 和回读仍在且输入、golden 匹配时，`baseline_*` 记录历史指标，`delta_*` 为本次减去历史值。逐元素超差比例使用 rtol=1e-3、atol=1e-5。任何层数值失败时，命令以非零状态结束，已计算的 CSV 可直接查看。
+
 <a id="first-decode-valid19"></a>
 
 ## 19-token 用例的首步 Decode
