@@ -214,6 +214,10 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
     if manifest.get('artifact_kind') != KIND or manifest.get('status') not in ('EXPORTED', 'PARTIAL'):
         raise ValueError('requires region AIR batch')
     known = [c['id'] for c in manifest['cases']]
+    chain = any(c.get('kind') == 'prefill_chain' for c in manifest['cases'])
+    if chain:
+        from ..prefill_t64.chain_reference import installed_vscale
+        gdr_source = installed_vscale(ddk)
     selected = known if cases is None else list(cases)
     if (not selected or len(set(known)) != len(known) or len(set(selected)) != len(selected)
             or set(selected) - set(known)):
@@ -235,6 +239,8 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
         status_scope='SELECTED_CASES', diagnostic_only=diagnostic,
         manifest_sha256=sha(output/'manifest.json'),
         source_batch=os.path.relpath(root, output))
+    if chain:
+        report['gdr_source_sha256'] = gdr_source
     save_json(output/'compile.json', report)
     for case in manifest['cases']:
         row = report['cases'][case['id']] = dict(status='NOT_EXPORTED')
@@ -246,6 +252,8 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
                        source_log=os.path.relpath(root/(case['id']+'.log'), output))
             continue
         try:
+            if chain and installed_vscale(ddk) != gdr_source:
+                raise ValueError('DDK chunk GDR changed since the start of this compilation')
             exported = json.loads(checked(root, case['export']).read_text())
             folder = root/'models'/case['id']
             air = checked(folder, exported['air'])
@@ -276,6 +284,8 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
                 row.update(stage='complete', weight_storage='embedded-stream', weight_packing=identity(receipt, output))
             else:
                 model_record = identity(model, output)
+            if chain and installed_vscale(ddk) != gdr_source:
+                raise ValueError('DDK chunk GDR changed during OMG compilation')
             row.update(status='COMPILED', omc=model_record)
         except Exception as exc:
             row.update(status='FAILED', error=f'{type(exc).__name__}: {exc}')

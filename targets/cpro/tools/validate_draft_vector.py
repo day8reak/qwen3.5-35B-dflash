@@ -622,7 +622,7 @@ def _check_probe_dtypes(meta, built):
                              'OMC recompilation is not required.')
 
 
-def start(args, out):
+def start(args, out, *, bind_inputs=None):
     config = Path(args.config).resolve(); source = Path(args.compiled).resolve()
     for path in (config, source):
         if path == out or out in path.parents or source in out.parents:
@@ -642,6 +642,9 @@ def start(args, out):
             selection = top1_semantics.BASE_CASES if getattr(args, 'top1_semantics', False) else args.cases
             meta = prepare(source, out, args.ddk_root, env['ddk_id'], selection,
                            external_weights=getattr(args, 'external_weights', False))
+            if bind_inputs is not None:
+                bind_inputs(out / 'fixture', meta)
+                _save(out / 'fixture/manifest.json', meta)
             if meta.get('artifact_kind') == attention_validation.KIND:
                 mode = getattr(args, 'output_initialization', 'zero')
                 if mode not in ('zero', 'untouched'):
