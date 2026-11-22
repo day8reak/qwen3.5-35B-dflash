@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from ...common.accuracy import ERROR_RATIO_FIELDS
 from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import checked, metrics, save_json, sha
 from .chain_reference import BASIS, HIDDEN, LAYERS
@@ -160,7 +161,9 @@ def run(compiled, output, config, ddk):
                 rows.append(dict(role=role, layer=i, valid19_relative_l2=valid['relative_l2'], valid19_cosine=valid['cosine'],
                     token18_relative_l2=last['relative_l2'], token18_cosine=last['cosine'],
                     passed=valid['passed'] and last['passed'], valid19_failed=','.join(valid['failed_metrics']),
-                    token18_failed=','.join(last['failed_metrics'])))
+                    token18_failed=','.join(last['failed_metrics']),
+                    **{f'{scope}_{k}': score[k] for scope, score in [('valid19', valid), ('token18', last)]
+                       for k in ERROR_RATIO_FIELDS}))
                 report_dir = output/'report'
                 report_dir.mkdir(exist_ok=True)
                 temp = report_dir/'layers.csv.tmp'

@@ -81,6 +81,8 @@ DDK 二进制定位已取得更强证据：libgraph_host.so 含 GE 注册及 Ver
 
 MeanRelativeError 为 `mean(abs(actual/golden-1))`；按 [MindStudio 定义](https://github.com/Ascend/msprobe/blob/4729e4e9b31a6f997e6f24e64dddd3fd9ec248ab/python/msprobe/msaccucmp/algorithm_manager/builtin_algorithm/alg_MeanRelativeError.py)，`abs(golden) <= float64 epsilon` 的项贡献 0，仍计入元素总数，报告另列此类元素数。全部使用 float64 归约。非空全零对照约定 cosine=1、relative_l2=0；仅一边为零、空张量、NaN/Inf 或必需指标不可用均不能通过。没有修改张量布局、裁剪有效区或改变 golden。
 
+浮点比较同时按原始数组 dtype 运行 `np.isclose(actual, golden, rtol=1e-3, atol=1e-5, equal_nan=True)`。`mismatched_elements / total_elements` 给出 `error_ratio`，比例 ≤ 0.001 时 `error_ratio_passed` 为真。五项整体验收与逐元素门限分别记录。T64 prefill 的 valid19 统计位置 0–18，token18 另算。四层执行已保留输出时，可用 `attention4_qscale.py report --run "$R" --csv "$R/elementwise.csv"` 重新计算。
+
 比较报告记录 `numerical_policy=DEVICE_FIVE_METRICS_V1`、阈值、各次调用的 `metric_checks` 和 `failed_metrics`。显式 `--atol/--rtol` 作为额外 AND 条件；Cache 逐位和重复稳定性检查也不会被五项门槛放宽。CSV 数值来自第一次调用，失败项合并全部调用，最终状态要求每次都通过。
 
 历史 8 项 out_proj 满足旧 L2<2%，RoPE 四项数值零误差、Prefill Cache 四项逐位一致的观测保留；旧 CSV 缺少其余指标，不据此批量改成“五项通过”。有原始 fixture/native 时仅重新执行 compare 到新的输出目录即可，不需要导出、编译或上板。当前仓库只有 CPro 执行入口，公共指标实现不依赖后端；CHS 使用同一技能标准，不声称已有 CHS 实机验证。

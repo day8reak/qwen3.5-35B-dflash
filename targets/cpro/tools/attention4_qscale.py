@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stage and compare the four independent T64/valid19 attention modules."""
 import argparse
+import csv
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import tempfile
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 
+from qwen35_moe_dflash.common.accuracy import ERROR_RATIO_FIELDS
 from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
 from qwen35_moe_dflash.target.layer_probe.common import KIND, checked, metrics, save_json, sha
 
@@ -121,9 +123,12 @@ def results(run):
     return {r['case']: (r, cases[r['case']]) for r in report['cases'] if r.get('output_name') == 'golden_hidden'}
 
 
-def summary(run):
+def summary(run, csv_path=None):
     from qwen35_moe_dflash.target.prefill_t64.segment_trace_compare import board_case
     new = results(run)
+    detail = []
+    fields = ('relative_l2', 'cosine', 'rmse', 'mean_abs', 'max_abs', 'kl_divergence',
+              'mean_relative_error', *ERROR_RATIO_FIELDS, 'passed', 'failed_metrics')
     if set(new) != set(CASES):
         raise ValueError('Expected retrieved golden_hidden for all four cases')
     tests = Path(os.environ['AI_RUN_DIR'])/'target/tests'
@@ -157,8 +162,28 @@ def summary(run):
             print('        Per-token comparison skipped: the repeated outputs differ.')
             continue
         _, refs, actual, _ = board_case(run, name)
-        token_metrics = [metrics(actual['golden_hidden'][0, j], refs['golden_hidden'][0, j]) for j in range(19)]
+        observed, golden = actual['golden_hidden'][0, :19], refs['golden_hidden'][0, :19]
+        valid = metrics(observed, golden)
+        token_metrics = [metrics(a, g) for a, g in zip(observed, golden)]
+        for scope, score in [('valid19', valid), *((f'token{j}', t) for j, t in enumerate(token_metrics))]:
+            detail.append(dict(layer=i, case=name, scope=scope, **{k: score[k] for k in fields}))
+            if scope in ('valid19', 'token18'):
+                verdict = 'PASS' if score['error_ratio_passed'] else 'FAIL'
+                print(f"        {scope:7} mismatched={score['mismatched_elements']}/{score['total_elements']}  "
+                      f"error_ratio={score['error_ratio']:.4%} ({verdict})  RMSE={score['rmse']}  "
+                      f"MAE={score['mean_abs']}  max_abs={score['max_abs']}")
+        print('        New per-token error_ratio > 0.1%:', [j for j, m in enumerate(token_metrics) if not m['error_ratio_passed']])
         print('        New per-token five-metric failures:', [j for j, m in enumerate(token_metrics) if not m['passed']])
+    if csv_path is not None:
+        path = output_path(csv_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode='w', newline='', dir=path.parent, delete=False) as stream:
+            writer = csv.DictWriter(stream, fieldnames=['layer', 'case', 'scope', *fields])
+            writer.writeheader()
+            for row in detail:
+                writer.writerow(dict(row, failed_metrics=','.join(row['failed_metrics'])))
+        Path(stream.name).replace(path)
+        print(f'Recomputed metrics for stable module outputs: {path}')
     return all(row['stable'] and row['status'] == 'PASSED' for row, _ in new.values())
 
 
@@ -212,7 +237,9 @@ if __name__ == '__main__':
     air.add_argument('--source-air', type=Path)
     device = commands.add_parser('board')
     device.add_argument('--gdr-source', type=Path, help='compare both DDK copies with the intended local kernel')
-    for cmd in (air, device, commands.add_parser('report')):
+    report = commands.add_parser('report')
+    report.add_argument('--csv', type=Path, help='write valid19 and individual-token metrics from the retained outputs')
+    for cmd in (air, device, report):
         cmd.add_argument('--run', type=Path, required=True)
     args = parser.parse_args()
     if args.action == 'stage-air':
@@ -220,4 +247,4 @@ if __name__ == '__main__':
     elif args.action == 'board':
         sys.exit(0 if board(output_path(args.run), args.gdr_source) else 1)
     else:
-        sys.exit(0 if summary(args.run.resolve()) else 1)
+        sys.exit(0 if summary(args.run.resolve(), args.csv) else 1)

@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-from qwen35_moe_dflash.common.accuracy import POLICY, THRESHOLDS, floating_metrics
+from qwen35_moe_dflash.common.accuracy import ERROR_RATIO_FIELDS, POLICY, THRESHOLDS, floating_metrics
 
 from .layer_probe.common import KIND, identity, new_output, save_json, sha
 
@@ -346,7 +346,7 @@ def compare(plan_path, golden_root, actual_root, output):
         writer = csv.writer(f)
         keys = ['status', 'gate', 'max_abs', 'rmse', 'relative_l2', 'cosine', 'kl_divergence', 'mean_relative_error',
                 'failed_metrics', 'exact_mismatch_count', 'bitwise_mismatch_count',
-                'nonfinite_actual', 'nonfinite_golden', 'error']
+                'nonfinite_actual', 'nonfinite_golden', 'error', *ERROR_RATIO_FIELDS]
         writer.writerow(['region', 'layer', 'call', 'phase', 'direction', 'tensor', 'diagnosis'] + keys)
         for row in rows:
             for direction in ('inputs', 'outputs'):

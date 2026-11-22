@@ -22,6 +22,30 @@ KL_EPSILON = float(np.finfo(np.float32).eps)
 RELATIVE_EPSILON = float(np.finfo(np.float64).eps)
 
 
+ELEMENTWISE_TOLERANCE = dict(rtol=1e-3, atol=1e-5, equal_nan=True)
+ERROR_RATIO_LIMIT = 1e-3
+ERROR_RATIO_FIELDS = ('mismatched_elements', 'total_elements', 'error_ratio', 'error_ratio_passed')
+
+
+def elementwise_error_ratio(actual, golden, *, chunk=65536):
+    """Count mismatches with NumPy isclose in the original operand dtypes."""
+    actual, golden = np.asarray(actual), np.asarray(golden)
+    if actual.shape != golden.shape:
+        raise ValueError('comparison shape mismatch')
+    if type(chunk) is not int or chunk <= 0:
+        raise ValueError('chunk must be a positive integer')
+    mismatches = 0
+    with np.errstate(invalid='ignore', over='ignore', under='ignore'):
+        for a, g in np.nditer([actual, golden], flags=['external_loop', 'buffered', 'zerosize_ok'],
+                              op_flags=[['readonly'], ['readonly']], order='C', buffersize=chunk):
+            close = np.isclose(a, g, **ELEMENTWISE_TOLERANCE)
+            mismatches += close.size - int(np.count_nonzero(close))
+    total = actual.size
+    ratio = mismatches / total if total else None
+    return dict(mismatched_elements=mismatches, total_elements=total, error_ratio=ratio,
+                error_ratio_passed=ratio is not None and ratio <= ERROR_RATIO_LIMIT)
+
+
 def evaluate(values):
     """Strict inequalities on unrounded values; missing metrics never pass."""
     checks = {}
@@ -61,6 +85,7 @@ def floating_metrics(actual, golden, *, chunk=65536):
     if type(chunk) is not int or chunk <= 0:
         raise ValueError('chunk must be a positive integer')
     result = dict.fromkeys(THRESHOLDS)
+    result.update(elementwise_error_ratio(actual, golden, chunk=chunk))
     result.update(max_abs=None, mean_abs=None, golden_l2=None, error_l2=None,
                   kl_normalization='PER_TENSOR_MINMAX_THEN_SUM; D_KL(ACTUAL||GOLDEN)',
                   kl_epsilon=KL_EPSILON, mean_relative_epsilon=RELATIVE_EPSILON,

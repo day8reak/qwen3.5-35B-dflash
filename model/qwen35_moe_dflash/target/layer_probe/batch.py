@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 import numpy as np
-from qwen35_moe_dflash.common.accuracy import POLICY, THRESHOLDS
+from qwen35_moe_dflash.common.accuracy import ELEMENTWISE_TOLERANCE, ERROR_RATIO_LIMIT, POLICY, THRESHOLDS
 from .common import KIND, DTYPES, checked, identity, metrics, new_output, read_array, save_json, sha
 from qwen35_moe_dflash.toolchain.compiler_entry import (
     DEFAULT_PROFILE, SOURCED_PROFILE, UNSPECIFIED_PLATFORM,
@@ -722,4 +722,5 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
         scope='CPro boundary replay with 310P inputs; isolated failures are not proof of full-graph root cause',
         first_failure_order='CALL_LAYER_CPRO_DEPENDENCY_ORDER; INDEPENDENT_BRANCHES_HAVE_NO_UNIQUE_FIRST_CAUSE',
         cpro_continuous_state_feedback='NOT_TESTED', numerical_policy=POLICY,
-        thresholds=dict(metrics=THRESHOLDS, atol=atol, rtol=rtol))
+        thresholds=dict(metrics=THRESHOLDS, atol=atol, rtol=rtol),
+        elementwise_tolerance=dict(**ELEMENTWISE_TOLERANCE, max_error_ratio=ERROR_RATIO_LIMIT))

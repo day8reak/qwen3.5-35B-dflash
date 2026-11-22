@@ -7,6 +7,7 @@ import tempfile
 
 import numpy as np
 
+from ...common.accuracy import ERROR_RATIO_FIELDS
 from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import identity, metrics, read_array, save_json, sha
 from .decode_cache_trace import _record
@@ -37,7 +38,7 @@ def _score(rows, layer, stage, label, scope, a, ref, *, reproduced):
     rows.append(dict(layer=layer, stage=stage, comparison=label, scope=scope,
                      actual_dtype=a.dtype.name, reference_dtype=ref.dtype.name,
                      baseline_hidden_reproduced=reproduced, relative_l2=row.get('relative_l2'),
-                     cosine=row.get('cosine'), rmse=row.get('rmse'), max_abs=row.get('max_abs'),
+                     cosine=row.get('cosine'), **{k: row.get(k) for k in ERROR_RATIO_FIELDS}, rmse=row.get('rmse'), max_abs=row.get('max_abs'),
                      mean_relative_error=row.get('mean_relative_error'), kl_divergence=row.get('kl_divergence'),
                      actual_zeros=int(np.count_nonzero(a == 0)), reference_zeros=int(np.count_nonzero(ref == 0)),
                      reference_fp16_subnormals_with_actual_zero=ref_subnormals,

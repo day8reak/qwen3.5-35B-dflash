@@ -27,6 +27,7 @@ from qwen35_moe_dflash.execution.lock import _acquire_global, _release_global, _
 from qwen35_moe_dflash.draft.profile_board import GLOBAL_LOCK, _guard, _identity_guard
 from qwen35_moe_dflash.draft.board import _receive
 from qwen35_moe_dflash.common.hashing import sha256_file
+from qwen35_moe_dflash.common.accuracy import ERROR_RATIO_FIELDS, elementwise_error_ratio
 from qwen35_moe_dflash.draft.incremental.embedding_probe import CASE as EMBEDDING_CASE, KIND as EMBEDDING_KIND, DTYPES, STAGES
 from qwen35_moe_dflash.draft.incremental.attention_probe import CASES as ATTENTION_CASES, KIND as ATTENTION_KIND
 from qwen35_moe_dflash.draft.incremental.attention_matrix import CASES as MATRIX_CASES, KIND as MATRIX_KIND
@@ -332,10 +333,12 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
             for spec in case['outputs']:
                 dtype = np.dtype(DTYPES[spec['dtype']])
                 observed_bytes = raw[offset:offset+spec['bytes']]
-                actual = np.frombuffer(observed_bytes, dtype=dtype).astype(np.float64)
+                actual_native = np.frombuffer(observed_bytes, dtype=dtype)
+                actual = actual_native.astype(np.float64)
                 offset += spec['bytes']
                 expected_bytes = (fixture/name/f'golden_{spec["index"]}.bin').read_bytes()
-                expected = np.frombuffer(expected_bytes, dtype=dtype).astype(np.float64)
+                expected_native = np.frombuffer(expected_bytes, dtype=dtype)
+                expected = expected_native.astype(np.float64)
                 if expected.size*dtype.itemsize != spec['bytes'] or not np.isfinite(expected).all():
                     raise ValueError('invalid retained reference')
                 finite = bool(np.isfinite(actual).all())
@@ -365,6 +368,7 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False):
                             actual_hex=observed_bytes[index*width:(index+1)*width].hex()))
                 tensors.append(dict(iteration=iteration, name=spec['name'], passed=passed, finite=finite,
                     bytes_equal=exact,
+                    **(elementwise_error_ratio(actual_native, expected_native) if dtype.kind == 'f' else {}),
                     max_abs_error=float(np.max(np.abs(delta))) if finite else None,
                     relative_l2_error=float(np.linalg.norm(delta)/max(float(np.linalg.norm(expected)), 1e-30)) if finite else None))
         passed = all(r['passed'] for r in tensors)
@@ -1019,6 +1023,11 @@ def main():
     if 'cases' in result and not result.get('top1_semantics') and not result.get('offline_weight_layouts'):
         shown['cases'] = [{k: v for k, v in c.items() if k not in ('tensors', 'api_us')} for c in result['cases']]
         for row in shown['cases']:
+            if row.get('invocations'):
+                sample = row['invocations'][0]
+                for prefix, scope in [('', sample), ('token18_', sample.get('token_18', {}))]:
+                    if 'error_ratio' in scope:
+                        row.update({prefix + k: scope[k] for k in ERROR_RATIO_FIELDS})
             if row.get('reference_basis') == 'SEGMENT_310P_MEASURED_GDR_RMS_SILU_64_VALID19' and row.get('invocations'):
                 first = row.pop('invocations')[0]
                 row.pop('output_sha256', None)

@@ -281,13 +281,17 @@ def main():
         root = new_output(a.output)
         save_json(root/'report.json', result)
         import csv
+        from qwen35_moe_dflash.common.accuracy import ERROR_RATIO_FIELDS
         with (root/'summary.csv').open('w', newline='') as f:
             writer = csv.writer(f)
             metric_keys = ['max_abs', 'relative_l2', 'cosine', 'kl_divergence', 'rmse', 'mean_relative_error']
+            extra_keys = ['mean_abs', *ERROR_RATIO_FIELDS]
+            last_keys = [*metric_keys, *extra_keys]
             writer.writerow(['layer', 'call', 'phase', 'point', 'output', 'status'] + metric_keys
                             + ['failed_metrics', 'dtype_preserved', 'stable', 'error', 'actual_dtype', 'golden_dtype',
                                'reference_basis', 'captured_relative_l2', 'captured_cosine',
-                               'active_cache_relative_l2', 'untouched_cache_equal_bits'])
+                               'active_cache_relative_l2', 'untouched_cache_equal_bits']
+                            + extra_keys + ['token18_' + k for k in last_keys])
             for row in result['cases']:
                 metric = row.get('invocations', [{}])[0]
                 writer.writerow([row.get(k) for k in ('layer', 'call', 'phase', 'point', 'output_name', 'status')]
@@ -298,7 +302,8 @@ def main():
                        metric.get('original_capture_comparison', {}).get('relative_l2'),
                        metric.get('original_capture_comparison', {}).get('cosine'),
                        metric.get('full_attention_cache', {}).get('active_metrics', {}).get('relative_l2'),
-                       metric.get('full_attention_cache', {}).get('untouched_equal_input_bits')])
+                       metric.get('full_attention_cache', {}).get('untouched_equal_input_bits')]
+                    + [metric.get(k) for k in extra_keys] + [metric.get('token_18', {}).get(k) for k in last_keys])
         result = dict(status=result['status'], first_failed_boundary=result['first_failed_boundary'], report=str(root/'report.json'), csv=str(root/'summary.csv'))
     else:
         manifest = json.loads((Path(a.capture)/'manifest.json').read_text())
