@@ -46,7 +46,24 @@ L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --spl
 | `cpu_silu` | 接收同一对输入，在 CPUCL 上执行两处 FP32 `x * sigmoid(x)`，返回各自原有的输出类型。 |
 | `suffix` | 两次使用同一张 NPU OMC，按原图接入两路 SiLU 结果以及其余所需的原始输入，执行 GDR、门控 RMSNorm 和 out_proj。 |
 
-每个 OMC 用板上的 `model_run_tool_internal` 运行。脚本按工具日志中的输出槽号回收中间数据，校验哈希并按编译后的输入顺序回灌，不裁掉 padding。每张模型的输入输出和计算位置在 `boundaries.json`。分段控制组与原整图的 valid19 差异见 `comparison.csv` 的 `split_native_vs_whole`。精度改善看 `split_native_vs_310p` 和 `split_cpu_vs_310p`，另有两条分段路线之间的直接比较。每组均包含 valid19 汇总及 19 个 token 的指标。
+同一运行目录内已有四张匹配的 OMC 时，上述命令校验并复用编译产物，重新执行两条分支。各段先用已有的 HIAI 描述查询工具读取该 OMC 的板端槽位、类型和形状，再用板上的 `model_run_tool_internal` 执行推理。每次执行的 `slots.json` 记录实际槽位与张量的对应关系。脚本按 V2 日志的输出槽号回收完整 T64 数据并校验哈希。每张模型的输入输出和计算位置在 `boundaries.json`。分段控制组与原整图的 valid19 差异见 `comparison.csv` 的 `split_native_vs_whole`。精度改善看 `split_native_vs_310p` 和 `split_cpu_vs_310p`，另有两条分段路线之间的直接比较。每组均包含 valid19 汇总及 19 个 token 的指标。
+
+### 导出自定义算子 `silu_patch` 的单算子 AIR
+
+在仓库根目录运行以下命令，会在 `$AI_RUN_DIR/target/tests/silu_patch/` 生成 8 个静态 AIR 和 `contracts.csv`。每个模型只有 `Data(x) → silu_patch → NetOutput`，端口映射为输入 `x`、输出 `y`，格式均为 ND。OMG 编译需要在所用 DDK 注册同名算子及对应 dtype 的实现。
+
+```bash
+python targets/cpro/tools/export_silu_patch_air.py
+```
+
+| 当前 W4 模型的调用位置 | 输入和输出 dtype | Prefill B=1、T=64 | Decode B=1、T=1 | 每次前向的源码调用次数 |
+|---|---|---|---|---:|
+| GDN 卷积后的 SiLU | FP16 | `[1,8192,64]` | `[1,8192,1]` | 30 |
+| GDN 的 `SiLU(z.float())` | FP32 | `[2048,128]` | `[32,128]` | 30 |
+| 共享专家 gate 投影后的 SiLU | FP16 | `[64,512]` | `[1,512]` | 40 |
+| 路由专家第一次分组矩阵乘、切出 gate 后的 SiLU | FP16 | `[512,512]` | `[8,512]` | 40 |
+
+输入输出形状相同，表内是原 CPro PyTorch 调用边界的逻辑 shape。模型规格取自 `specs/target-config.json`。卷积的通道数来自两路 16 × 128 的 Q/K 和一路 32 × 128 的 V。门控在转 FP32 前将 z 展平为 `[B*T*32,128]`；共享专家接收展平的 token；W4 路由路径按每 token 8 个专家展开，再批量对 gate 的 512 列做 SiLU。Full Attention 的输出门使用 sigmoid。valid19 用于评估前 19 个位置，AIR 保留 T64。上述次数按源码统计，编译器可以融合节点。
 
 L0–L2 的 310P 与 CPro 逐张量对比见 [GDR、RMSNorm 和门控乘法](target-gdr-prefill-stages.md)。
 

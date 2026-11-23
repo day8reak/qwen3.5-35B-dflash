@@ -24,16 +24,22 @@ from .silu_split import STAGES, VIEWS, cut
 from .whole_run import kernel_identity
 
 
-def compile_stage(work, stage, air, spec, ddk, ddk_id, diagnosis, shapes):
+def compile_stage(work, stage, air, spec, ddk, ddk_id, diagnosis, shapes, *, reuse=None):
     def transform(snapshot):
         if sha(snapshot) != spec['air']['sha256']:
             raise ValueError('Original L0 AIR changed before compilation')
         return cut(snapshot.read_bytes(), stage, spec['source_inputs'], spec['golden'], prefix_shapes=shapes)
 
-    folder = work/stage
-    build = compile_existing_air(air, folder, ddk, ddk_id=ddk_id, air_transform=transform,
-                                 tbe_diagnosis=diagnosis, use_origin_format=True,
-                                 save_weights_as_external_data=False)
+    folder = (reuse or work)/stage
+    if reuse is None:
+        build = compile_existing_air(air, folder, ddk, ddk_id=ddk_id, air_transform=transform,
+                                     tbe_diagnosis=diagnosis, use_origin_format=True,
+                                     save_weights_as_external_data=False)
+    else:
+        build = read_json(folder/'report.json')
+        if (build['air']['sha256'] != spec['air']['sha256'] or build['ddk_id'] != ddk_id
+                or build['ddk_root'] != str(ddk) or build['air_preparation']['stage'] != stage):
+            raise ValueError(f'{stage}: saved compile report differs from this experiment: {folder}')
     if build['status'] != 'COMPILED':
         log = folder/'compile.log'
         raise RuntimeError(f'{stage}: {build.get("error")}\n{log}\n{log_excerpt(log)}')
@@ -65,11 +71,12 @@ def compile_stage(work, stage, air, spec, ddk, ddk_id, diagnosis, shapes):
         raise ValueError(f'{stage}: compiled input set differs from AIR')
     print(f"{stage}: {dict(owners)}, GDR nodes={meta['gdr_nodes']}, "
           f"outputs={[(s['name'], s['shape'], s['dtype']) for s in io['outputs']]}", flush=True)
-    save_json(folder/'boundaries.json', dict(io=io, placement=placement))
+    save_json(work/stage/'boundaries.json', dict(io=io, placement=placement, model=str(model),
+                                                omc_sha256=build['omc']['sha256']))
     return model, io
 
 
-def execute_stage(out, name, build, feeds, runtime):
+def execute_stage(out, name, build, feeds, runtime, config):
     model, io = build
     inputs, files = [], []
     for spec in io['inputs']:
@@ -80,7 +87,7 @@ def execute_stage(out, name, build, feeds, runtime):
         files.append(path)
         inputs.append(dict(spec, sha256=source['sha256']))
     out.mkdir()
-    receipt = run_v2(out, name, model, inputs, files, io['outputs'], runtime)
+    receipt = run_v2(out, name, model, inputs, files, io['outputs'], runtime, slot_config=config)
     return {spec['name']: (checked(out, saved), dict(spec, sha256=saved['sha256'], bytes=saved['bytes']))
             for spec, saved in zip(io['outputs'], receipt['outputs'], strict=True)}
 
@@ -144,22 +151,30 @@ def split_run(run, ddk, source, stamp, config, diagnosis):
     golden = read_array(folder, spec['golden'])
     if golden.tobytes() != refs['golden_hidden'].tobytes():
         raise ValueError('Golden does not match the original whole L0 execution fixture')
+    provenance = dict(**stamp, original_v2_sha256=sha(original/'v2/result.json'))
+    # Earlier versions saved all four compile reports before the first board call.
+    previous = sorted(run.glob('split-silu-*/source.json'), key=lambda p: p.stat().st_mtime_ns, reverse=True)
+    reuse = next((p.parent for p in previous if read_json(p) == provenance
+                  and all((p.parent/s/'report.json').is_file()
+                          and read_json(p.parent/s/'report.json').get('status') == 'COMPILED' for s in STAGES)), None)
+    if reuse:
+        print('Reusing compiled split OMCs:', reuse, flush=True)
     work = Path(tempfile.mkdtemp(dir=run, prefix='split-silu-'))
     print('L0 split experiment:', work, flush=True)
-    save_json(work/'source.json', dict(**stamp, original_v2_sha256=sha(original/'v2/result.json')))
+    save_json(work/'source.json', provenance)
     builds, shapes = {}, None
     for stage in STAGES:
         builds[stage] = compile_stage(work, stage, checked(folder, spec['air']), spec, ddk,
-                                      stamp['ddk_id'], diagnosis, shapes)
+                                      stamp['ddk_id'], diagnosis, shapes, reuse=reuse)
         if stage == 'prefix':
             shapes = {site: row['shape'] for site, row in zip(('conv', 'gate'), builds[stage][1]['outputs'], strict=True)}
     if kernel_identity(ddk, source) != stamp['gdr_source_sha256']:
         raise ValueError('Installed GDR changed during compilation')
-    cut_inputs = execute_stage(work/'run-prefix', 'prefix', builds['prefix'], feeds, runtime)
+    cut_inputs = execute_stage(work/'run-prefix', 'prefix', builds['prefix'], feeds, runtime, config)
     output = {'whole': baseline['golden_hidden']}
     for middle in ('native_silu', 'cpu_silu'):
-        middle_outputs = execute_stage(work/('run-' + middle), middle, builds[middle], cut_inputs, runtime)
+        middle_outputs = execute_stage(work/('run-' + middle), middle, builds[middle], cut_inputs, runtime, config)
         tail = work/('run-suffix-' + middle)
-        path, record = execute_stage(tail, 'suffix', builds['suffix'], {**feeds, **middle_outputs}, runtime)['golden_hidden']
+        path, record = execute_stage(tail, 'suffix', builds['suffix'], {**feeds, **middle_outputs}, runtime, config)['golden_hidden']
         output[middle] = read_array(tail, dict(record, path=path.name)).reshape(golden.shape)
     compare(work, output, golden)

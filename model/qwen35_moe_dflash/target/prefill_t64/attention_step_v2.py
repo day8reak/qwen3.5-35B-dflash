@@ -1,9 +1,12 @@
 """Run one independent attention step with the X90 board's existing HIAI V2 tool."""
 from pathlib import Path, PurePosixPath
+import math
 import re
 import shlex
 import tempfile
 import uuid
+
+import numpy as np
 
 from ...common.command_trace import note
 from ...draft.profile_board import GLOBAL_LOCK
@@ -13,9 +16,10 @@ from ...execution.runtime_config import read_json
 from ...execution.serial_transport import _environment
 from ..board_tool_inspect import DEFAULT_TOOL
 from ..layer_probe.batch import prepare_fixture
-from ..layer_probe.common import checked, read_array, save_json, sha
+from ..layer_probe.common import DTYPES, checked, read_array, save_json, sha
 from ..original_target_board import _board_path
-from ..prefill_smoke_plan import _TOOL_TYPES
+from ..prefill_smoke_plan import _TOOL_TYPES, _nd_view_key, _shape
+from .whole_slots import observe_model_io
 
 
 def execute(run, name, ddk, config):
@@ -47,7 +51,40 @@ def execute(run, name, ddk, config):
                   fixture_sha256=sha(fixture/'manifest.json'))
 
 
-def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None):
+def runtime_slots(native, direction, specs):
+    """Bind each observed slot to its tensor by name and typed view, or by a unique typed view."""
+    descs = native[direction]
+    if len(descs) != len(specs) or native[direction[:-1] + '_count'] != len(specs):
+        raise ValueError(f'HIAI {direction} count differs from compiled ABI')
+    names = {s['name']: i for i, s in enumerate(specs)}
+    if len(names) != len(specs):
+        raise ValueError(f'Duplicate compiled {direction} names')
+    types = native['dtype_enum_values']
+    keys = [_nd_view_key((types[s['dtype'].upper()], _shape(s))) for s in specs]
+    slots = []
+    used = set()
+    for slot, desc in enumerate(descs):
+        if desc['index'] != slot or desc['raw_format'] != native['format_enum_values']['ND']:
+            raise ValueError(f'HIAI {direction}[{slot}] has an unexpected index or format: {desc}')
+        key = _nd_view_key((desc['raw_dtype'], _shape(desc)))
+        matches = [i for i, expected in enumerate(keys) if expected == key]
+        name = desc.get('tensor_name') if desc.get('tensor_name_status') == 'OBSERVED' else None
+        if name in names:
+            matches = [i for i in matches if i == names[name]]
+        if len(matches) != 1 or matches[0] in used:
+            raise ValueError(f'Cannot bind HIAI {direction}[{slot}] {desc} to a unique compiled tensor: '
+                             f'candidates={[specs[i]["name"] for i in matches]}')
+        index, = matches
+        used.add(index)
+        spec = specs[index]
+        size = math.prod(spec['shape']) * np.dtype(DTYPES[spec['dtype']]).itemsize
+        slots.append(dict(slot=slot, compiled_index=index, name=spec['name'], runtime_name=name,
+                          binding='name_and_typed_shape' if name in names else 'unique_typed_shape',
+                          dtype=spec['dtype'], shape=spec['shape'], bytes=size))
+    return slots
+
+
+def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -57,22 +94,10 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
     token = uuid.uuid4().hex
     remote = PurePosixPath('/data/local/tmp') / ('qwen35_step_' + token)
     tool = _board_path(DEFAULT_TOOL)
-    argv = [str(tool), f'--model={remote}/model.omc', '--input=' + ','.join(str(remote/n) for n in input_names),
-            '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in operands),
-            '--output_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in outputs), '--times=1', '--modelmanager_itf=V2',
-            '--direct_from_file=true', '--enable_item=1', f'--output_dir={remote}/outputs']
-    command = f'timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
-    script = out/'run.sh'
-    script.write_text(f'cd {remote} || exit 1\n{command} >tool.stdout 2>tool.stderr\n'
-                      'rc=$?\necho "$rc" >tool.exitcode\ntail -n 20 tool.stdout tool.stderr\nexit "$rc"\n')
-    note(f'[V2 board script] {script}\n{script.read_text()}')
-    hashes = out/'files.sha256'
     model_sha = sha(model)
-    hashes.write_text(f"{model_sha}  model.omc\n"
-                      + ''.join(f"{s['sha256']}  {n}\n" for s, n in zip(operands, input_names))
-                      + f"{sha(script)}  run.sh\n")
+    output_order = list(range(len(outputs)))
     receipt = dict(status='PREPARED', case=name, device=env[1], server=env[2], remote=str(remote),
-                   argv=argv, omc_sha256=model_sha, input_hashes=[s['sha256'] for s in operands],
+                   omc_sha256=model_sha, input_hashes=[s['sha256'] for s in operands],
                    fixture_sha256=fixture_sha256)
     if len(operands) == 1:
         receipt['input_sha256'] = operands[0]['sha256']
@@ -84,13 +109,44 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         held = True
         _, fw = hdc.shell('param get const.ohos.fullname', 'firmware')
         if fw.strip() != runtime['firmware_id'].strip():
-            raise ValueError(f'Board firmware differs from {config}')
+            raise ValueError(f"Board firmware {fw.strip()!r} differs from {runtime['firmware_id']!r}")
         _, space = hdc.shell(f'test -x {tool} && df -Pk {remote.parent}', 'preflight')
-        uploads = [(model, 'model.omc'), *zip(files, input_names), (script, 'run.sh'), (hashes, 'files.sha256')]
-        needed = sum(s['bytes'] for s in outputs) + sum(source.stat().st_size for source, _ in uploads)
+        needed = model.stat().st_size + sum(p.stat().st_size for p in files) + sum(s['bytes'] for s in outputs)
         if _space(space) < needed:
             raise OSError(f'Insufficient board storage for {name}: need {needed:,} bytes')
         hdc.shell(f'mkdir {remote} && mkdir {remote}/outputs', 'create-board-dir')
+        hdc.send(model, remote/'model.omc')
+        if slot_config is not None:
+            native = observe_model_io(hdc, slot_config, runtime, remote, out, remote/'model.omc', model_sha, tool.parent)
+            slots = {k: runtime_slots(native, k, v) for k, v in [('inputs', operands), ('outputs', outputs)]}
+            save_json(out/'slots.json', slots)
+            for direction, entries in slots.items():
+                for row in entries:
+                    print(f"{name} {direction}[{row['slot']}] = {row['name']} "
+                          f"{row['dtype']} {row['shape']} ({row['bytes']} bytes)", flush=True)
+            input_order = [s['compiled_index'] for s in slots['inputs']]
+            output_order = [s['compiled_index'] for s in slots['outputs']]
+            operands = [operands[i] for i in input_order]
+            files = [files[i] for i in input_order]
+            outputs = [outputs[i] for i in output_order]
+            for row, path in zip(slots['inputs'], files, strict=True):
+                if path.stat().st_size != row['bytes']:
+                    raise ValueError(f"{name}: {path} differs from the {row['bytes']}-byte {row['name']} input")
+        argv = [str(tool), f'--model={remote}/model.omc', '--input=' + ','.join(str(remote/n) for n in input_names),
+                '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in operands),
+                '--output_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in outputs), '--times=1', '--modelmanager_itf=V2',
+                '--direct_from_file=true', '--enable_item=1', f'--output_dir={remote}/outputs']
+        command = f'timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
+        script = out/'run.sh'
+        script.write_text(f'cd {remote} || exit 1\n{command} >tool.stdout 2>tool.stderr\n'
+                          'rc=$?\necho "$rc" >tool.exitcode\ntail -n 20 tool.stdout tool.stderr\nexit "$rc"\n')
+        note(f'[V2 board script] {script}\n{script.read_text()}')
+        hashes = out/'files.sha256'
+        hashes.write_text(f"{model_sha}  model.omc\n"
+                          + ''.join(f"{s['sha256']}  {n}\n" for s, n in zip(operands, input_names))
+                          + f"{sha(script)}  run.sh\n")
+        receipt.update(argv=argv, input_hashes=[s['sha256'] for s in operands])
+        uploads = [*zip(files, input_names), (script, 'run.sh'), (hashes, 'files.sha256')]
         for source, dest in uploads:
             hdc.send(source, remote/dest)
         hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
@@ -120,13 +176,14 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
             if mapping['status'] != 'BOUND_TO_COMPLETE_EXPLICIT_TOOL_LOG':
                 raise ValueError(f"{name}: {mapping['reason']}; device logs at {remote}/tool.stdout")
             names = [row['path'].removeprefix('outputs/') for row in mapping['entries']]
-        retrieved = []
+        retrieved = [None] * len(outputs)
         for i, (filename, spec) in enumerate(zip(names, outputs, strict=True)):
-            path = 'output.bin' if len(outputs) == 1 else f'output_{i}.bin'
+            compiled = output_order[i]
+            path = 'output.bin' if len(outputs) == 1 else f'output_{compiled}.bin'
             hdc.receive(_board_path(str(remote/'outputs'/filename)), out/path)
             row = dict(path=path, bytes=spec['bytes'], sha256=hash_by_file[filename])
             checked(out, row)
-            retrieved.append(row)
+            retrieved[compiled] = row
         receipt.update(status='EXECUTED', outputs=retrieved)
         if len(outputs) == 1:
             receipt['output'] = retrieved[0]

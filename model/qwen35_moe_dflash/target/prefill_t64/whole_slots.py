@@ -86,6 +86,48 @@ def compare_inputs(supplied, native):
     return dict(status=verdict, slots=rows)
 
 
+def observe_model_io(hdc, config, env, work, out, model, model_sha, tool_lib):
+    """Read V2 descriptors for the uploaded model while the caller holds the board lock."""
+    cfg = read(config)
+    native_dir = (config.parent / cfg.get('native_directory', 'native')).resolve()
+    runner = native_dir / 'build/qwen35_dflash_hiai'
+    runner_sha = read(native_dir / 'result.json')['binary_sha256']
+    if sha(runner) != runner_sha:
+        raise ValueError('Local HIAI runner differs from its native build')
+    files = [(runner, 'draft-runner', runner_sha)]
+    search = list(BOARD_LIBRARY_SEARCH_PATHS)
+    if os.environ.get('BOARD_HIAI_LIB_DIR'):
+        search.insert(0, str(_board_path(os.environ['BOARD_HIAI_LIB_DIR'])))
+    else:
+        for lib in discover_libraries(runner, native_dir)['libraries']:
+            if lib.name not in DDK_HCL_EXCLUDED:
+                files.append((lib, 'lib/' + lib.name, sha(lib)))
+    hdc.shell(f'mkdir {work}/lib', 'create-probe-lib')
+    checks = out/'probe-files.sha256'
+    checks.write_text(''.join(f'{digest}  {name}\n' for _, name, digest in files))
+    for path, name, _ in files:
+        hdc.send(path, work/name)
+    hdc.send(checks, work/checks.name)
+    hdc.shell(f'cd {work} && sha256sum -c {checks.name} && chmod 700 draft-runner', 'verify-probe')
+    cmd = ['env', 'LD_LIBRARY_PATH=' + ':'.join([str(tool_lib), str(work / 'lib'), *search]),
+           str(work / 'draft-runner'), '--model-io-only', str(model), '--descriptor-stage', 'restore-only',
+           '--model-sha256', model_sha, '--expected-runtime-version', env['runtime_version'],
+           '--ddk-id', env['ddk_id'], '--firmware-id', env['firmware_id'].strip(), '--output', str(work / 'model-io.json')]
+    # A native failure can also produce a diagnostic JSON.
+    hdc.shell(f'cd {model.parent} && {{ {shlex.join(cmd)}; test -s {work}/model-io.json; }}', 'restore')
+    _, digest = hdc.shell(f'sha256sum {work}/model-io.json', 'descriptor-hash')
+    local = out / 'model-io.json'
+    hdc.receive(work / local.name, local)
+    if sha(local) != digest.split()[0]:
+        raise ValueError('Retrieved descriptor hash differs from the board')
+    native = read(local)
+    if (native.get('status') != 'IO_DESCRIPTORS_OBSERVED' or native.get('evidence_kind') != 'device-hiai'
+            or native.get('model_sha256') != model_sha or native.get('model_path') != str(model)
+            or native.get('run_called') is not False or native.get('process_called') is not False):
+        raise ValueError(f"Could not observe this model's HIAI descriptors: {native.get('reason', local)}")
+    return native
+
+
 def check_slots(run, config):
     previous = run / 'board'
     attempt = read(previous / 'attempt.json')
@@ -107,23 +149,10 @@ def check_slots(run, config):
         raise ValueError('SN/BIP differ from the board that produced these logits')
     cfg = read(config)
     env = read(config.parent / cfg['assets'])['environment']
-    native_dir = (config.parent / cfg.get('native_directory', 'native')).resolve()
-    runner = native_dir / 'build/qwen35_dflash_hiai'
-    runner_sha = read(native_dir / 'result.json')['binary_sha256']
-    if sha(runner) != runner_sha:
-        raise ValueError('Local HIAI runner differs from its native build')
     token = uuid.uuid4().hex
     out = previous / ('slot-check-' + token)
     out.mkdir()
     print(f'Slot diagnostic: {out}', flush=True)
-    files = [(runner, 'draft-runner', runner_sha)]
-    search = list(BOARD_LIBRARY_SEARCH_PATHS)
-    if os.environ.get('BOARD_HIAI_LIB_DIR'):
-        search.insert(0, str(_board_path(os.environ['BOARD_HIAI_LIB_DIR'])))
-    else:
-        for lib in discover_libraries(runner, native_dir)['libraries']:
-            if lib.name not in DDK_HCL_EXCLUDED:
-                files.append((lib, 'lib/' + lib.name, sha(lib)))
     work = remote / out.name
     hdc = Hdc(exe, sn, bip, out, 180)
     _, fw = hdc.shell('param get const.ohos.fullname', 'firmware')
@@ -132,33 +161,14 @@ def check_slots(run, config):
     lock = remote.parent / '.qwen35-target-model-io-lock'
     _acquire_global(hdc, lock, token, 0)
     try:
-        hdc.shell(f'test "$(cat {remote}/tool.exitcode)" = 0 && mkdir {work} && mkdir {work}/lib', 'retained-run')
-        checks = out / 'checks.sha256'
-        relative = out.name + '/'
-        checks.write_text('\n'.join([*input_checks, sha(previous / 'run.sh') + '  run.sh',
-                          *(digest + '  ' + relative + name for _, name, digest in files)]) + '\n')
-        for path, name, _ in files:
-            hdc.send(path, work / name)
-        hdc.send(checks, work / checks.name)
-        hdc.shell(f'cd {remote} && sha256sum -c {work}/{checks.name} && chmod 700 {work}/draft-runner', 'verify')
-        cmd = ['env', 'LD_LIBRARY_PATH=' + ':'.join([str(tool_lib), str(work / 'lib'), *search]),
-               str(work / 'draft-runner'), '--model-io-only', str(model), '--descriptor-stage', 'restore-only',
-               '--model-sha256', primary['sha256'], '--expected-runtime-version', env['runtime_version'],
-               '--ddk-id', env['ddk_id'], '--firmware-id', fw.strip(), '--output', str(work / 'model-io.json')]
-        # A native failure can also produce a diagnostic JSON.
-        hdc.shell(f'cd {model.parent} && {{ {shlex.join(cmd)}; test -s {work}/model-io.json; }}', 'restore')
-        _, digest = hdc.shell(f'sha256sum {work}/model-io.json', 'descriptor-hash')
-        local = out / 'model-io.json'
-        hdc.receive(work / local.name, local)
-        if sha(local) != digest.split()[0]:
-            raise ValueError('Retrieved descriptor hash differs from the board')
+        hdc.shell(f'test "$(cat {remote}/tool.exitcode)" = 0 && mkdir {work}', 'retained-run')
+        checks = out/'checks.sha256'
+        checks.write_text('\n'.join([*input_checks, sha(previous/'run.sh') + '  run.sh']) + '\n')
+        hdc.send(checks, work/checks.name)
+        hdc.shell(f'cd {remote} && sha256sum -c {work}/{checks.name}', 'verify')
+        native = observe_model_io(hdc, config, env, work, out, model, primary['sha256'], tool_lib)
     finally:
         _release_global(hdc, lock, token)
-    native = read(local)
-    if (native.get('status') != 'IO_DESCRIPTORS_OBSERVED' or native.get('evidence_kind') != 'device-hiai'
-            or native.get('model_sha256') != primary['sha256'] or native.get('model_path') != str(model)
-            or native.get('run_called') is not False or native.get('process_called') is not False):
-        raise ValueError(f"Could not observe this model's HIAI descriptors: {native.get('reason', local)}")
     report = compare_inputs(rows, native)
     save_json(out / 'slots.json', report)
     for s in report['slots']:
