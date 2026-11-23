@@ -33,12 +33,19 @@ def board(run, args, *, stages=None, summarize=None, basis=None):
         raise ValueError(f'{air}: selected {sorted(expected)}, but the fixture contains {actual}')
     ddk = args.ddk_root.resolve(strict=True)
     compile_record = run/'omc/compile.json'
-    if not compile_record.exists():
+    cpu_silu = getattr(args, 'cpu_silu', False)
+    if cpu_silu and not compile_record.exists():
+        from qwen35_moe_dflash.target.layer_probe.batch import compile_batch
+        compile_batch(air, run/'omc', ddk, args.ddk_id, use_origin_format=True,
+                      tbe_diagnosis=args.tbe_diagnosis, cpu_silu=True)
+    elif not compile_record.exists():
         subprocess.run([sys.executable, TOOLS/'target_layer_probe.py', 'compile', '--batch', air,
                         '--output', run/'omc', '--ddk-root', ddk, '--ddk-id', args.ddk_id,
                         '--compiler-profile', 'isolated-kirinx90', '--tbe-diagnosis', args.tbe_diagnosis,
                         '--use-origin-format'], check=True)
     build = json.loads(compile_record.read_text())
+    if bool(build.get('cpu_silu')) != cpu_silu:
+        raise ValueError('Select a fresh run for a different SiLU placement')
     if (build['manifest_sha256'] != sha(air/'manifest.json') or build['ddk_id'] != args.ddk_id
             or set(build['cases']) != expected
             or any(x['status'] != 'COMPILED' for x in build['cases'].values())):

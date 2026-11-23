@@ -6,6 +6,7 @@ usage() {
     cat <<'EOF'
 Usage: conv_silu.sh prepare|board|extract|compile [--step NAME] [--layer 0|3] [run-directory]
        conv_silu.sh list [--layer 0|3]
+For an FP32 CPUCL SiLU control, add --cpu-silu to board.
 Default: L0 qkv_conv_silu. "list" shows which steps have automatic three-backend fixtures.
 78: prepare data for a matrix, or extract just the selected AIR.
 35: board runs the matrix, or compile builds just the selected OMC.
@@ -23,8 +24,10 @@ step=qkv_conv_silu
 layer=
 directory=
 inputs=()
+cpu_silu=()
 while (( $# )); do
     case "$1" in
+        --cpu-silu) cpu_silu=(--cpu-silu); shift ;;
         --step) step="${2:?missing step name}"; shift 2 ;;
         --layer) layer="${2:?missing layer}"; shift 2 ;;
         --input) inputs+=("$1" "${2:?missing edge}" "${3:?missing dtype}" "${4:?missing shape}"); shift 4 ;;
@@ -39,6 +42,11 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$script_dir/../../.." && pwd)"
 export REPO_DIR
 table="$REPO_DIR/specs/attention-step-presets.csv"
+if (( ${#cpu_silu[@]} )) && [[ "$action" != board || "${layer:-0}" != 0 ||
+    ( "$step" != qkv_conv_silu && "$step" != gate_silu && "$step" != silu_output ) ]]; then
+    echo '--cpu-silu requires board and an L0 SiLU step' >&2
+    exit 2
+fi
 if [[ "$action" == list ]]; then
     awk -F, -v layer="$layer" 'NR>1 && (layer=="" || $1==layer) {
         print "L" $1, $2, ($0 ~ /,prepare \/ board,/ ? "[prepare/board]" : "[extract/compile]"), $3
@@ -105,7 +113,7 @@ else
     echo "L$layer $step $action run: $run"
     common=(--step "$step" --run "$run" --ddk-root "$ddk" --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}")
     if [[ "$action" == board ]]; then
-        in_env custom_pypto python "$tool" board "${common[@]}" --remote-air "${AIR_ON_78:-$fixture/air}" \
+        in_env custom_pypto python "$tool" board "${common[@]}" "${cpu_silu[@]}" --remote-air "${AIR_ON_78:-$fixture/air}" \
             --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
     else
         in_env custom_pypto python "$tool" compile "${common[@]}" --layer "$layer" --remote-slice "${SLICE_ON_78:-$fixture/slice}"

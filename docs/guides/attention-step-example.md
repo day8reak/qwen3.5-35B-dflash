@@ -21,6 +21,17 @@ bash targets/cpro/scripts/conv_silu.sh board --step qkv_conv_silu
 
 `prepare` 再次执行会校验并复用已准备的数据。每次 `board` 默认新建运行目录，完整指标写入终端打印的 `matrices.csv`。续跑时在同一条 `board` 命令后加上之前打印的运行目录。原 attention AIR 在自定义位置时，在 78 设置 `ATTENTION_AIR`。两机的运行根目录不同时，在 35 设置 `AIR_ON_78` 为 78 已准备的 `air/` 绝对路径。
 
+## 用同一份输入在板端 CPU 上对照 SiLU
+
+在 35 复用 78 已准备好的对应步骤。卷积分支用 `conv_out.bin`，门控分支用 `tail_z.bin`。
+
+```bash
+bash targets/cpro/scripts/conv_silu.sh board --step qkv_conv_silu --cpu-silu
+bash targets/cpro/scripts/conv_silu.sh board --step gate_silu --cpu-silu
+```
+
+`--cpu-silu` 构建单独的诊断 OMC，沿用原 fixture 的输入类型、形状和字节。该图以 FP32 计算 `x * sigmoid(x)`，按该步骤的输出类型写回。脚本在运行前解码成品并检查两项算术都落在 CPUCL，实际端口类型和执行引擎记录在 `omc/compile.json` 的 `cpu_silu_placement`。这次矩阵的 CPro 行是板端 CPUCL 的结果。
+
 ## 查看其余可截取的步骤
 
 ```bash

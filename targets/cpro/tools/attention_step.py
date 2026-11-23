@@ -122,6 +122,7 @@ def main():
     prep.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
     execute = actions.add_parser('board', help='35: compile and execute the selected L0 operator and print matrices')
     board_arguments(execute)
+    execute.add_argument('--cpu-silu', action='store_true', help='run FP32 CPUCL SiLU with the original input bytes')
     report = actions.add_parser('report', help='35: recompute the selected matrices from retained outputs')
     for sub in (prep, execute, report):
         sub.add_argument('--step', choices=NATIVE_STEPS, default=qkv_silu.STAGE)

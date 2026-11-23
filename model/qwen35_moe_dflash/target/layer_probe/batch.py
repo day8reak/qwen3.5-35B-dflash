@@ -200,7 +200,7 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
 
 
 def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900, use_origin_format=None,
-                  cases=None, compiler_profile=DEFAULT_PROFILE):
+                  cases=None, compiler_profile=DEFAULT_PROFILE, cpu_silu=False):
     """Read an AIR batch and write a fresh, separate compilation batch."""
     from qwen35_moe_dflash.common.artifacts import output_path
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
@@ -239,6 +239,8 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
         status_scope='SELECTED_CASES', diagnostic_only=diagnostic,
         manifest_sha256=sha(output/'manifest.json'),
         source_batch=os.path.relpath(root, output))
+    if cpu_silu:
+        report['cpu_silu'] = True
     if chain:
         report['gdr_source_sha256'] = gdr_source
     save_json(output/'compile.json', report)
@@ -263,13 +265,20 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
             destination = output/'models'/case['id']/'omc'
             stream_weights = case.get('kind') == 'segment_prefill' and not diagnostic
             print('compile', case['id'], flush=True)
+            options = {}
+            if cpu_silu:
+                from ..prefill_t64.cpu_silu import compile_options, inspect
+                options = compile_options(case['point'], exported, destination.parent)
             compiled = compile_existing_air(air, destination, ddk, ddk_id=ddk_id,
                 timeout_seconds=timeout, save_weights_as_external_data=diagnostic or stream_weights,
                 limit_partition_size=False if diagnostic else None, compiler_profile=compiler_profile,
-                use_origin_format=use_origin_format, tbe_diagnosis=tbe_diagnosis)
+                use_origin_format=use_origin_format, tbe_diagnosis=tbe_diagnosis, **options)
             if compiled['status'] != 'COMPILED':
                 raise RuntimeError(compiled.get('error', 'OMG failed; inspect retained omc/report.json'))
             model = destination/compiled['omc']['path']
+            if cpu_silu:
+                row['cpu_silu_placement'] = inspect(model, ddk)
+                print('CPU SiLU:', row['cpu_silu_placement'], flush=True)
             if stream_weights:
                 row.update(stage='pack-weights', compiler_status='COMPILED')
                 print('pack weights', case['id'], flush=True)
