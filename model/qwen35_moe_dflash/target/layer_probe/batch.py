@@ -488,6 +488,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
             if {s['semantic_name'] for s in exported['source_inputs']} != {s['semantic_name'] for s in io['inputs']}:
                 raise ValueError(f'{name}: compiled prefix lost a declared runtime operand')
             cases[-1]['reference_basis'] = exported['reference_basis']
+            if 'token_axis' in exported:
+                cases[-1]['token_axis'] = exported['token_axis']
         if case['kind'] == 'segment_gdn_trace':
             from ..prefill_t64.segment_gdn_trace import BASIS, TAPS
             if (exported['reference_basis'] != BASIS or exported['capture_sha256'] != manifest['capture_sha256']
@@ -630,12 +632,14 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                         valid_hashes.append(hashlib.sha256(active.tobytes()).hexdigest())
                         metric = score_core(active, golden, atol, rtol)
                     elif case['kind'] in ('gdr_stages', 'gdn_tail_prefix'):
-                        from ..prefill_t64.gdr_stage_data import STATIC, logical
+                        from ..prefill_t64.gdr_stage_data import STATIC, logical, token_rows
                         role = spec['semantic_name']
                         if role in STATIC:
                             metric = metrics(actual, golden, atol=atol, rtol=rtol)
                         else:
-                            if case['kind'] == 'gdn_tail_prefix':
+                            if 'token_axis' in case:
+                                a, b = (token_rows(x, case['token_axis'])[None, :19] for x in (actual, golden))
+                            elif case['kind'] == 'gdn_tail_prefix':
                                 a, b = (x.reshape(1, 64, -1)[:, :19] for x in (actual, golden))
                             else:
                                 a, b = (logical(x, role)[:, :19] for x in (actual, golden))

@@ -18,14 +18,14 @@ from .segment_gdn_trace import observe_tail
 
 
 @torch.no_grad()
-def capture_l0(source, config, evaluate):
+def capture_l0(source, config, evaluate, *, observe=None):
     """Call evaluate while the original L0 modules and captured native inputs are available."""
     entry = (source/'inference_segment.py').resolve(strict=True)
     config = (source/config).resolve(strict=True)
     argv = [str(entry), '--config', str(config), '--quant_mode=enable', '--quant_bits=4',
             '--prefill_chunk_size=64', '--max_token=0']
     result = None
-    info = dict(driver_sha256=sha(entry), config_sha256=sha(config))
+    info = dict(driver_sha256=sha(entry), config_sha256=sha(config), driver_argv=argv)
     class PrefixDone(Exception):
         pass
     class BothDone(Exception):
@@ -56,6 +56,8 @@ def capture_l0(source, config, evaluate):
                 original['norm_return'] = cpu(output)
 
             with ExitStack() as cleanup:
+                if observe is not None:
+                    observe(layer, original, cleanup)
                 observe_tail(layer, original, cleanup)
                 cleanup.callback(layer.norm.register_forward_hook(norm_return).remove)
                 cleanup.callback(layer.out_proj.register_forward_hook(projected).remove)

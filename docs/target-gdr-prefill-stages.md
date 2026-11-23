@@ -454,3 +454,90 @@ python "$REPO_DIR/targets/cpro/tools/gdn_op_matrix.py" board \
 ```
 
 `$R/matrices.csv` 每三行是一张矩阵，行是 actual，列是 reference。覆盖 valid19 和每个有效 token。每个方向分别计算 cosine、relative L2、KL、RMSE、平均相对误差、MAE、最大绝对误差、逐元素超差数、总数、超差率和两个判定。超差按 `np.isclose(actual, reference, rtol=1e-3, atol=1e-5, equal_nan=True)`，超差率门限为 0.1%。脚本退出状态沿用 CPro 对 310P 在 valid19 和 token18 的五指标门限。
+
+### 核对本次 310P 输出投影的量化路径
+
+78 的采集器调用原 `inference_segment.py` 时显式传入 `--quant_mode=enable --quant_bits=4`。三端的投影输入都是 310P 捕获的同一份门控输出。在 78 用已有矩阵运行目录复核实际量化操作数，只执行 L0 的 310P 采集和 CPU 对照。
+
+```bash
+R="${AI_RUN_DIR:?}/target/tests/gdn-op-matrix-l0-valid19-01"
+python "${REPO_DIR:?}/targets/cpro/tools/gdn_op_matrix.py" audit-proj \
+  --run "$R" --source-root "${TARGET_SOURCE:?}" --config "${NZ_CONFIG:-config/qwen3_5_moe.yaml}"
+```
+
+先看 `matches_previous_matrix`。三个值为 true 表示完整投影输入和 valid19 的 310P、CPU 输出均复现原批次。`VERIFIED_A8_PACKED_W4` 表示在这次原生矩阵乘入口抓到 INT8 激活，打包权重及分组 scale 与原 checkpoint 的 W4 逐位吻合。`a8_different` 统计 310P 和 CPU 动态量化产生不同 INT8 码的个数，`token_scale_max_abs` 比较两端逐 token scale。`native_vs_cpu_on_native_codes_relative_l2` 用 310P 的实际 A8 码和 scale 在 CPU 重算分组点积，再与 310P 输出比较。新一轮 `prepare` 也会把这组记录保存在 `air/manifest.json` 的 `native_310p.out_proj_quantization` 下。
+
+## L0 卷积后的 SiLU 和 L0/L3 attention 的通用截取
+
+在 78 使用原四层 attention 批次。工具从 GDR 的 Q、K、V 三路共同向上回溯到卷积后的 SiLU，支持 SiLU 节点和 `x * sigmoid(x)` 两种表达。它在原生 310P L0 forward 中抓取实际送入 SiLU 的卷积输出和返回值，CPU 在同一份输入上执行 `F.silu`。核对原生 L0 attention 的 valid19 输出与源 AIR 配套的参考逐位一致后才发布。门控 SiLU 的输入 z 是另一条支路。源图在 SiLU 后附加的 dtype 转换、transpose 和 Q/K/V split 均位于本次输出边之后。
+
+```bash
+conda activate qwen3_5_w4
+git -C "${REPO_DIR:?}" pull --ff-only origin main
+P="$REPO_DIR/targets/cpro/tools/attention_step.py"
+T="${AI_RUN_DIR:?}/target/tests"
+A="${ATTENTION_AIR:-$T/attention4-t64-valid19-v1024-qlate-01/air}"
+R="$T/gdn-l0-qkv-conv-silu-t64-valid19-01"
+python "$P" prepare-qkv --source-air "$A" --run "$R" \
+  --source-root "${TARGET_SOURCE:?}" --config "${NZ_CONFIG:-config/qwen3_5_moe.yaml}"
+cat "$R/air/boundaries.json"
+```
+
+在 35 编译和执行。若两台机上运行根目录不同，增加 `--remote-air /78上的本次运行目录/air`。
+
+```bash
+conda activate custom_pypto
+git -C "${REPO_DIR:?}" pull --ff-only origin main
+P="$REPO_DIR/targets/cpro/tools/attention_step.py"
+R="${AI_RUN_DIR:?}/target/tests/gdn-l0-qkv-conv-silu-t64-valid19-01"
+python "$P" board --run "$R" --ddk-root "${CPRO_DDK_ROOT:?}" \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" \
+  --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+```
+
+`$R/matrices.csv` 覆盖 valid19 和每个有效 token。原生张量形状是 `[1,8192,64]`，沿最后一维选取 `0:19` 和 token18。板端使用输入哈希核对后的真实数值；若 AIR 要求不同 dtype，只允许能够逐值无损往返的转换。在缺少可观察的原生 SiLU 输入（例如 310P 采用融合卷积）时，采集会指出缺少哪个边界。
+
+### 按 GE 端口截取其他步骤
+
+在 78 用 `list` 枚举实际端口。每行列出一个节点、它的输入边、各个输出的 `edge`、dtype 和 shape。层号支持 `0`（linear attention）和 `3`（full attention）。`--match` 可省略。
+
+```bash
+python "$P" list --source-air "$A" --layer 3 --match RmsNorm
+```
+
+例如要独立导出上面列出的某个 RMSNorm，复制该节点第一个激活输入的完整 `上游节点名:端口`，以及该节点归一化输出的完整 `节点名:0`。指定该边实际的 dtype 和静态维度。源 AIR 的空 shape 表示该文件没有声明维度，须按对应模块的实测 shape 填写。下列模板中的变量由选定节点决定。
+
+```bash
+S="${AI_RUN_DIR:?}/target/tests/l3-selected-step-01"
+python "$P" extract --source-air "$A" --layer 3 --run "$S" \
+  --input "${INPUT_EDGE:?}" "${INPUT_DTYPE:?}" "${INPUT_SHAPE:?例如1,64,2048}" \
+  --output-edge "${OUTPUT_EDGE:?}"
+cat "$S/slice/slice.json"
+```
+
+每个 `--input EDGE DTYPE DIMS` 是一个新的运行时输入，多个输入重复给出。保留从输出回溯到这些输入之间的原节点和常量，相关 FileConstant 随 AIR 一起导出。当前接口支持一个输出端口、静态逻辑形状、无嵌套子图的片段。参数控制具体的图边界，所选节点上游的常量参数可以留在模型中。
+
+在 35 用相同的 `S` 相对目录执行，工具会拉取 78 的 `slice/`，编译并打印生成的 OMC 路径。可用 `--remote-slice` 指定 78 上的绝对路径。
+
+```bash
+S="${AI_RUN_DIR:?}/target/tests/l3-selected-step-01"
+python "$P" compile --run "$S" --ddk-root "${CPRO_DDK_ROOT:?}" \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+```
+
+通用入口交付所选步骤的 AIR、边界清单和 OMC。`prepare-qkv` 配有专门的 310P/CPU 采集和三端矩阵；其他自选边界需要各自对应的实测输入和参考输出，才能进行同输入精度对比。
+
+可直接传给 `--step` 的命名步骤见[步骤说明表](../specs/attention-step-presets.csv)。在 78 执行以下命令可导出本次真实 AIR 的完整步骤表，包含两个层的命名片段和按节点输出端口选取的步骤。
+
+```bash
+python "$P" catalog --source-air "$A" --output "$T/attention-l0-l3-steps.csv"
+```
+
+表中的 `runtime_inputs` 给出各输入的边名、dtype、shape，`constant_inputs` 列出保留在图内的常量边，`output` 给出输出规格。每行都有源 AIR 哈希。`ready` 表示截取参数齐全，具体编译结果以 OMG 为准。`supply_input_abi` 表示需要用 `--input EDGE DTYPE DIMS` 补足表中列出的输入规格。`manual_edges` 表示涉及控制依赖，需要审核输入切点。`unresolved_preset` 表示这张 AIR 的结构未匹配到对应预设。
+
+例如在 78 选择 L3 的完整输出投影，或者把 `--step` 换成同层 CSV 的某个 `节点名:输出端口`。若表中提示输入规格缺失，在命令后追加该输入的 `--input` 参数。之后在 35 运行上面的 `compile`。
+
+```bash
+S="${AI_RUN_DIR:?}/target/tests/l3-out-proj-only-01"
+python "$P" extract --source-air "$A" --layer 3 --step out_proj --run "$S"
+```

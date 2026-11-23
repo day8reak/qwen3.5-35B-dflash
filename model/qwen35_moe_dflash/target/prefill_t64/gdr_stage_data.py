@@ -56,3 +56,11 @@ DESCRIPTIONS = {
     'mul_output': ('门控乘法输出', 'hidden_states × SiLU(gate) 的结果，在返回值转换之前'),
     'gated_return': ('门控模块返回', '乘积转回源输入 dtype 后传往 out_proj 的激活'),
 }
+
+
+def token_rows(value, axis):
+    """Canonical T64 rows for probes exposing an explicit sequence axis."""
+    import numpy as np
+    if value.shape[axis] != 64:
+        raise ValueError(f'Expected 64 positions on axis {axis}, got {value.shape}')
+    return np.moveaxis(value, axis, 0).reshape(64, -1)

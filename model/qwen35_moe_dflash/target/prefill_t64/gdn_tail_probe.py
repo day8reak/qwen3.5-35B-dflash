@@ -2,13 +2,13 @@
 import csv
 import json
 from pathlib import Path
-import shutil
 import tempfile
 
 import numpy as np
 
 from ...common.artifacts import output_path, share_for_transfer
 from ..layer_probe.common import KIND, checked, identity, metrics, read_array, save_json, sha
+from .attention_slice import DTYPES, extract
 from .decode_cache_control import graph_message
 from .decode_cache_trace import _record
 from .gdr_stage_air import stage_edges
@@ -68,112 +68,32 @@ def cut(raw, stage, reference, values, dest, source):
     net, = [op for op in graph.op if op.type == 'NetOutput']
     gdr, = [op for op in graph.op if op.type == 'ChunkGatedDeltaRule']
     hidden, = [edge for edge in net.input if not edge.endswith(':-1')]
-    list_output_net = list(graph.output) == [net.name + ':0']
-    if graph.output and not list_output_net and list(graph.output) != [hidden]:
-        raise ValueError('Unexpected original graph output contract')
     project = stage.startswith('out_proj')
     target = hidden if project else edges[stage]
     boundaries = ({edges['gated_return']: 'proj_input'} if stage == 'out_proj_only'
                   else {gdr.name + ':0': 'core', edges['gate']: 'z'})
     required = ({'proj_input'} if stage == 'out_proj_only' else {'z'} if stage == 'silu_output' else
                 {'core'} if stage == 'rms_output' else {'core', 'z'})
-    reached, kept = set(), set()
-
-    def visit(edge):
-        if edge in boundaries:
-            reached.add(boundaries[edge])
-            return
-        node = nodes[edge.rsplit(':', 1)[0]]
-        if node.name in kept:
-            return
-        if node.type in ('Data', 'ChunkGatedDeltaRule') or node.subgraph_name:
-            raise ValueError(f'{stage}: unexpected dependency {node.name} ({node.type})')
-        kept.add(node.name)
-        for arg in node.input:
-            if arg:
-                visit(arg)
-
-    visit(target)
-    projections = sum(nodes[k].type == 'QuantBatchMatmulV4444' for k in kept)
-    if reached != required or projections != int(project):
-        raise ValueError(f'{stage}: unexpected inputs {reached} or W4 projection count {projections}')
-    types = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
-    dtype_code = {'float16': types['DT_FLOAT16'].number, 'float32': types['DT_FLOAT'].number}
-    new_ops, input_specs, replacements = [], [], {}
-    next_id = 1 + max(n.id for n in graph.op)
-    template = next(op for op in graph.op if op.type == 'Data')
+    ports, input_specs = {}, []
     for edge, role in boundaries.items():
-        if role not in reached:
+        if role not in required:
             continue
         owner, slot = edge.rsplit(':', 1)
         shape = _view(nodes[owner], int(slot), values[role].shape, shapes('core'), nodes)
-        desc = nodes[owner].output_desc[int(slot)]
         x = values[role].reshape(shape)
-        if desc.dtype not in (0, dtype_code[x.dtype.name]):
-            raise ValueError(f'{stage}: {role} dtype differs from source edge {edge}')
-        idx = len(input_specs)
         name = 'tail_' + role
-        if name in nodes:
-            raise ValueError('Input name collision: ' + name)
-        data = type(net)(name=name, type='Data', id=next_id+idx)
-        data.attr['index'].i = idx
-        if list(template.input) == ['']:
-            data.input.append('')
-        for ports in (data.input_desc, data.output_desc):
-            port = ports.add(dtype=dtype_code[x.dtype.name], layout='ND', device_type='NPU')
-            port.shape.dim.extend(shape)
-        replacements[edge] = name + ':0'
-        new_ops.append(data)
-        spec = tensor(dest, name, x)
-        input_specs.append(dict(spec, semantic_name=role, fixture_index=idx))
-    weight_files = {}
-    for op in graph.op:
-        if op.name not in kept:
-            continue
-        for i, edge in enumerate(op.input):
-            if edge in replacements:
-                op.input[i] = replacements[edge]
-                if op.src_name:
-                    op.src_name[i] = replacements[edge].rsplit(':', 1)[0]
-                if op.src_index:
-                    op.src_index[i] = 0
-        # src/dst fanout caches are optional in source AIR. Graph edges define retained consumers.
-        del op.dst_name[:]
-        del op.dst_index[:]
-        if op.type == 'FileConstant':
-            rel = Path(op.attr['file_path'].s.decode())
-            if rel.is_absolute() or '..' in rel.parts:
-                raise ValueError(f'{stage}: unsupported external weight path {rel}')
-            weight = source / rel
-            to = dest / rel
-            to.parent.mkdir(parents=True, exist_ok=True)
-            if str(rel) not in weight_files:
-                shutil.copyfile(weight, to)
-                weight_files[str(rel)] = identity(to, dest)
-        new_ops.append(op)
-
-    final = type(net)(name=net.name, type='NetOutput', id=net.id, input=[target])
-    owner, slot = target.rsplit(':', 1)
-    desc = nodes[owner].output_desc[int(slot)]
-    # Let OMG infer this original edge. The ABI binder checks the compiled dtype and extent.
-    final.input_desc.add().CopyFrom(desc)
-    new_ops.append(final)
-    del graph.op[:]
-    graph.op.extend(new_ops)
-    del graph.input[:]
-    graph.input.extend(s['name'] + ':0' for s in input_specs)
-    if graph.output:
-        del graph.output[:]
-        graph.output.append(net.name + ':0' if list_output_net else target)
-    air = dest / 'export.air'
-    air.write_bytes(msg.SerializeToString())
+        ports[edge] = (name, x.dtype.name, list(x.shape))
+        input_specs.append(dict(tensor(dest, name, x), semantic_name=role, fixture_index=len(input_specs)))
+    sliced = extract(msg, graph, source, dest, ports, target)
+    if sum(n['type'] == 'QuantBatchMatmulV4444' for n in sliced['nodes']) != int(project):
+        raise ValueError(f'{stage}: unexpected projection count')
     output = tensor(dest, stage, reference)
     views = [[64, 2048], [1, 64, 2048]] if project else shapes('core')
-    required = {'0': dt for dt, code in dtype_code.items() if code == desc.dtype}
-    return dict(air=identity(air, dest), source_inputs=input_specs, golden=output,
-                output_contract=dict(stage_views={stage: views}, required_dtypes=required),
-                source_edge=target, source_data_edges={role: e for e, role in boundaries.items() if role in reached},
-                weight_evidence=weight_files, reference_basis=BASIS)
+    dtype = {'0': k for k, v in DTYPES.items() if v == sliced['output_desc']['dtype']}
+    return dict(air=sliced['air'], source_inputs=input_specs, golden=output,
+                output_contract=dict(stage_views={stage: views}, required_dtypes=dtype),
+                source_edge=target, source_data_edges={role: e for e, role in boundaries.items() if role in required},
+                weight_evidence=sliced['weight_evidence'], reference_basis=BASIS)
 
 
 def prepare(run, module_air, core_path, ref_path, gate_path, source, config):

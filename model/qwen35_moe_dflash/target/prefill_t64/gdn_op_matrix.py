@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+from unittest.mock import patch
 import shutil
 import tempfile
 
@@ -11,6 +12,7 @@ import numpy as np
 
 from ...common.artifacts import share_for_transfer
 from ..layer_probe.common import KIND, checked, identity, metrics, read_array, save_json, sha
+from .gdr_stage_data import token_rows
 from .decode_cache_control import graph_message
 from .decode_cache_trace import _record
 from .gdn_tail_probe import BASIS as TAIL_BASIS, SOURCE_CASE, case_id, cut, tensor
@@ -50,8 +52,49 @@ def review(air):
     return boundaries
 
 
+def projection_audit(operands, proj, weight, scale, native):
+    """Explain a fixed-input projection using the operands passed to the native fused matmul."""
+    from ..layer_probe.qlinear_golden import _array_identity
+    from ..layer_probe.qlinear_math import dynamic_quant, group_matmul
+    from ..original_quant import pack_i4zn
+
+    if len(operands) != 1:
+        return dict(status='NO_UNIQUE_MATMUL_OBSERVED', calls=len(operands))
+    act, packed, groups, tokens = operands[0]
+    report = dict(activation=_array_identity(act), packed_weight=_array_identity(packed),
+                  group_scale=_array_identity(groups))
+    if tokens is None:
+        return dict(report, status='MISSING_PER_TOKEN_SCALE')
+    report['token_scale'] = _array_identity(tokens)
+    expected_weight = pack_i4zn(weight)
+    expected_scale = scale[:, :, 0].astype(np.float32).T
+    def matches(a, b):
+        return a.shape == b.shape and a.dtype == b.dtype and a.tobytes() == b.tobytes()
+    report['packed_w4_matches_checkpoint'] = matches(packed, expected_weight)
+    report['group_scale_matches_checkpoint'] = matches(groups, expected_scale)
+    rows = proj.reshape(-1, proj.shape[-1])[:19]
+    if (not report['packed_w4_matches_checkpoint'] or not report['group_scale_matches_checkpoint']
+            or act.dtype != np.int8 or act.shape != (64, rows.shape[1]) or tokens.size != 64
+            or tokens.dtype.kind != 'f'):
+        return dict(report, status='OPERAND_MISMATCH')
+    q, ts, _ = dynamic_quant(rows)
+    npu_q = act[:19]
+    npu_ts = tokens.reshape(64, 1)[:19].astype(np.float32)
+    _, y = group_matmul(npu_q, npu_ts, weight, scale)
+    output = native.reshape(64, -1)[:19]
+    report.update(status='VERIFIED_A8_PACKED_W4', group_size=256)
+    for scope, idx in [('valid19', slice(None)), ('token18', slice(18, 19))]:
+        delta = npu_q[idx].astype(np.int16) - q[idx].astype(np.int16)
+        report[scope] = dict(a8_different=int(np.count_nonzero(delta)), a8_total=int(delta.size),
+                             a8_max_abs=int(np.abs(delta).max()),
+                             token_scale_max_abs=float(np.abs(npu_ts[idx] - ts[idx]).max()),
+                             native_vs_cpu_on_native_codes_relative_l2=metrics(output[idx], y[idx])['relative_l2'])
+    return report
+
+
 def native_and_cpu(source, config):
     import torch.nn.functional as F
+    import torch_npu
     import yaml
     from ..layer_probe.capture import cpu
     from ..original_quant import OriginalQuantWeights
@@ -71,13 +114,24 @@ def native_and_cpu(source, config):
             gated = layer.norm(x.to(dev), z.to(dev))
         if cpu(gated).numpy().tobytes() != orig['norm_return'].numpy().tobytes():
             raise ValueError('Tapping RMSNorm and SiLU changed the original 310P gated return')
-        y = cpu(layer.out_proj(proj.to(dev))).numpy()
+        operands = []
+        matmul = torch_npu.npu_quant_matmul
+
+        def tapped(x1, x2, scale, *args, **kwargs):
+            out = matmul(x1, x2, scale, *args, **kwargs)
+            ts = kwargs.get('pertoken_scale')
+            operands.append(tuple(cpu(t).numpy() if t is not None else None for t in (x1, x2, scale, ts)))
+            return out
+
+        with patch.object(torch_npu, 'npu_quant_matmul', tapped):
+            y = cpu(layer.out_proj(proj.to(dev))).numpy()
         if y.tobytes() != orig['output'].tobytes():
             raise ValueError('Replaying the exact projection operand changed the native 310P output')
         # The stage boundary is before the gated product. gamma is the actual L0 gated-norm weight.
         gamma = orig['gamma'].float()
         key = 'target.layers.0.linear_attn.out_proj.weight'
         weight, scale = OriginalQuantWeights(quant_path).logical(key, (2048, 4096))
+        info['out_proj_quantization'] = projection_audit(operands, proj.numpy(), weight, scale, y)
         info.update(cpu_projection=dict(checkpoint=str(quant_path), key=key,
                     weight_sha256=hashlib.sha256(weight.tobytes()).hexdigest(),
                     scale_sha256=hashlib.sha256(scale.tobytes()).hexdigest(),
@@ -91,6 +145,28 @@ def native_and_cpu(source, config):
         }
 
     return capture_l0(source, config, evaluate)
+
+
+def audit_projection(run, source, config):
+    """Attach a fresh 310P operand audit only to a reproducible existing three-backend comparison."""
+    air = run/'air'
+    manifest, _, folder, spec = _record(air, case_id('out_proj_only'))
+    if manifest.get('golden_source') != BASIS:
+        raise ValueError('Select the run used for the independent three-operator matrices')
+    datasets, info = native_and_cpu(source, config)
+    x, native, host = datasets['out_proj_only']
+    operand, = spec['source_inputs']
+    matched = {}
+    for name, data, record, rows in [('input_t64', x, operand, 64), ('native_valid19', native, spec['golden'], 19),
+                                     ('cpu_valid19', host, spec['cpu'], 19)]:
+        old = read_array(folder, record).reshape(64, -1)[:rows]
+        new = data.reshape(64, -1)[:rows]
+        matched[name] = old.dtype == new.dtype and old.shape == new.shape and old.tobytes() == new.tobytes()
+    audit = info['out_proj_quantization']
+    report = dict(driver_argv=info['driver_argv'], proj_class=info['proj_class'],
+                  source_manifest_sha256=sha(air/'manifest.json'), matches_previous_matrix=matched, quantization=audit)
+    print(json.dumps(report, indent=2), flush=True)
+    return all(matched.values()) and audit['status'] == 'VERIFIED_A8_PACKED_W4'
 
 
 def prepare(run, source_air, source, config):
@@ -165,9 +241,12 @@ def prepare(run, source_air, source, config):
     print(target/'boundaries.json', flush=True)
 
 
-def matrix_rows(stage, outputs):
+def matrix_rows(stage, outputs, *, token_axis=None):
     width = 2048 if stage == 'out_proj_only' else 4096
-    values = {k: outputs[k].reshape(64, width)[:19] for k in BACKENDS}
+    if token_axis is None:
+        values = {k: outputs[k].reshape(64, width)[:19] for k in BACKENDS}
+    else:
+        values = {k: token_rows(outputs[k], token_axis)[:19] for k in BACKENDS}
     for token in (None, *range(19)):
         scope = 'valid19' if token is None else f'token{token}'
         scores = {}
@@ -182,13 +261,13 @@ def matrix_rows(stage, outputs):
                            **{ref: scores[actual, ref][field] for ref in BACKENDS})
 
 
-def summarize(run):
+def summarize(run, *, roles=None, basis=BASIS):
     from .segment_trace_compare import board_case
 
     air = run/'air'
     manifest = json.loads((air/'manifest.json').read_text())
     fixture = json.loads((run/'execution/fixture/manifest.json').read_text())
-    if manifest['golden_source'] != BASIS or fixture['source_evidence']['manifest_sha256'] != sha(air/'manifest.json'):
+    if manifest['golden_source'] != basis or fixture['source_evidence']['manifest_sha256'] != sha(air/'manifest.json'):
         raise ValueError('Board execution and native 310P inputs belong to different batches')
     passed = True
     path = run/'matrices.csv'
@@ -197,7 +276,7 @@ def summarize(run):
         with staged.open('w', newline='') as stream:
             writer = csv.DictWriter(stream, fieldnames=['operator','scope','metric','actual', *BACKENDS])
             writer.writeheader()
-            for stage, role in ROLES.items():
+            for stage, role in (roles or ROLES).items():
                 _, _, folder, spec = _record(air, case_id(stage))
                 operand, = spec['source_inputs']
                 inputs, gold, board, _ = board_case(run, case_id(stage))
@@ -208,7 +287,7 @@ def summarize(run):
                 if gold[stage].dtype != native.dtype or gold[stage].tobytes() != native.tobytes():
                     raise ValueError(f'{stage}: board fixture and 310P output disagree')
                 outputs = {'cpu': read_array(folder, spec['cpu']), '310p': native, 'cpro': board[stage]}
-                for row in matrix_rows(stage, outputs):
+                for row in matrix_rows(stage, outputs, token_axis=spec.get('token_axis')):
                     writer.writerow(row)
                     if row['scope'] not in ('valid19', 'token18'):
                         continue

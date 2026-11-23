@@ -1,0 +1,7 @@
+layer,step,步骤说明,运行时输入,输出边界,三端矩阵入口,备注
+0,qkv_conv_silu,卷积后Q/K/V支路的SiLU,"310P卷积结果conv_out，逻辑[1,8192,64]",F.silu(conv_out)，在后续cast、转置及拆分前,prepare-qkv / board,卷积、Q/K/V拆分和GDR均在子图外
+0,gated_rmsnorm,GDR后的门控RMSNorm归一化部分,GDR core_attn，每个head有128个通道,使用原层gamma和epsilon的归一化结果,gdn_op_matrix.py,止于与SiLU(z)相乘之前
+0,gate_silu,门控投影后的SiLU,门控投影z,SiLU(z),gdn_op_matrix.py,原图通往SiLU的Cast保留
+0,out_proj,linear attention输出投影,310P门控乘法和回转dtype后的投影输入,attention投影输出，残差相加前,gdn_op_matrix.py,包含激活动态量化和原W4矩阵乘
+3,out_proj,full attention输出投影,sigmoid门控后的投影输入,full attention投影输出，残差相加前,需提供参照后另测,包含激活动态量化和原W4矩阵乘
+0或3,实际节点名:输出端口,所选GE单节点及静态常量依赖,catalog中runtime_inputs列；常量留在图内,所选节点的一个输出端口,需提供参照后另测,实际节点名和输出端口来自对应AIR的catalog
