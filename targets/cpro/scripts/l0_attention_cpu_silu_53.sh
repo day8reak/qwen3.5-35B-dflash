@@ -8,7 +8,18 @@ tests="${AI_RUN_DIR:?}/target/tests"
 ddk="${CPRO_DDK_ROOT:?}"
 : "${SN:?}" "${BIP:?}"
 mkdir -p "$tests"
-run="${L0_SILU_RUN:-$(mktemp -d "$tests/l0-attention-cpu-silu-ab-XXXXXXXX")}"
+run="${L0_SILU_RUN:-}"
+if [[ -z "$run" && "${1:-}" == --stage-matrices ]]; then
+    newest=""
+    for receipt in "$tests"/l0-attention-cpu-silu-ab-*/split-silu-*/run-suffix-cpu_silu/result.json; do
+        split="${receipt%/run-suffix-cpu_silu/result.json}"
+        if [[ -f "$split/comparison.csv" && -f "$receipt" && "$receipt" -nt "$newest" ]]; then
+            newest="$receipt"
+            run="${split%/*}"
+        fi
+    done
+fi
+if [[ -z "$run" ]]; then run="$(mktemp -d "$tests/l0-attention-cpu-silu-ab-XXXXXXXX")"; fi
 echo "L0 attention A/B: $run"
 env_cmd=()
 if [[ "${CONDA_DEFAULT_ENV:-}" != custom_pypto ]]; then env_cmd=(conda run --no-capture-output -n custom_pypto); fi

@@ -3,6 +3,7 @@
 import argparse
 import csv
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -120,7 +121,7 @@ def audit(run):
                           **audit_graphs(original, candidate)), indent=2), flush=True)
 
 
-def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=False, split_silu=False, cpu_only=False):
+def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=False, split_silu=False, cpu_only=False, stage_matrices=False):
     from qwen35_moe_dflash.target.layer_probe.batch import compile_batch
     from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import execute
     from pull_artifacts import DEFAULT_CONFIG, connection, pull
@@ -144,6 +145,22 @@ def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=F
     if path.exists() and load(path) != stamp:
         raise ValueError(f'Experiment inputs or compiler changed. Select a fresh run: {path}')
     save_json(path, stamp)
+    if stage_matrices:
+        from qwen35_moe_dflash.target.prefill_t64.silu_stage_matrix import run_matrices
+        refs = Path(os.environ.get('L0_SILU_REFS') or Path(os.environ['AI_RUN_DIR'])/'target/tests/l0-silu-stage-refs-01')
+        if not refs.is_absolute():
+            raise ValueError('L0_SILU_REFS must be an absolute directory on the export host')
+        local = refs
+        if not refs.is_dir():
+            key = hashlib.sha256(str(refs).encode()).hexdigest()[:16]
+            local = run/'stage-references'/key
+            missing = [k for k in ('cpu', '310p') if not (local/k/'manifest.json').is_file()]
+            if missing:
+                with connection(DEFAULT_CONFIG, 'air') as client, client.open_sftp() as sftp:
+                    sftp.get_channel().settimeout(120)
+                    for k in missing:
+                        pull(sftp, local/k, refs/k)
+        return run_matrices(run, local, ddk, source, stamp, config, diagnosis)
     if cpu_only:
         from qwen35_moe_dflash.target.prefill_t64.silu_split_run import split_run
         return split_run(run, ddk, source, stamp, config, diagnosis, cpu_only=True)
@@ -242,10 +259,16 @@ def main():
     prepare = sub.add_parser('prepare')
     prepare.add_argument('source', type=Path)
     prepare.add_argument('dest', type=Path)
+    refs = sub.add_parser('stage-reference')
+    refs.add_argument('backend', choices=('cpu', '310p'))
+    for name in ('air', 'dest', 'source', 'config'):
+        refs.add_argument(name, type=Path)
     execute = sub.add_parser('board')
     for name in ('run', 'remote_air', 'ddk', 'gdr_source', 'runtime_config', 'tbe_diagnosis'):
         execute.add_argument(name, type=Path)
     mode = execute.add_mutually_exclusive_group()
+    mode.add_argument('--stage-matrices', action='store_true',
+                      help='reuse the split CPU-SiLU route and compare six boundaries to CPU and 310P')
     mode.add_argument('--cpu-only', action='store_true',
                       help='run the split L0 CPU SiLU route against the recorded 310P out_proj only')
     mode.add_argument('--split-silu', action='store_true', help='run independent board SiLU OMCs with shared NPU prefix and suffix')
@@ -256,6 +279,10 @@ def main():
     a = commands.parse_args()
     if a.action == 'prepare':
         stage(a.source.resolve(), output_path(a.dest))
+    elif a.action == 'stage-reference':
+        from qwen35_moe_dflash.target.prefill_t64.silu_stage_reference import prepare_refs
+        prepare_refs(a.backend, a.air.resolve(), output_path(a.dest), a.source.resolve(), a.config,
+                     Path(os.environ['AI_RUN_DIR'])/'target/tests')
     elif a.action == 'audit':
         audit(a.run.resolve())
     elif a.action == 'board':
@@ -265,7 +292,8 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             board(run, a.remote_air, a.ddk.resolve(), a.gdr_source.resolve(),
                   a.runtime_config.resolve(), a.tbe_diagnosis.resolve(),
-                  retry_failed_compile=a.retry_failed_compile, split_silu=a.split_silu, cpu_only=a.cpu_only)
+                  retry_failed_compile=a.retry_failed_compile, split_silu=a.split_silu, cpu_only=a.cpu_only,
+                  stage_matrices=a.stage_matrices)
     else:
         report(output_path(a.run))
 

@@ -64,8 +64,11 @@ def compile_stage(work, stage, air, spec, ddk, ddk_id, diagnosis, shapes, *, reu
     if stage == 'prefix':
         contract['stage_views'] = {'split_' + k + '_in': [list(shape) for shape in views]
                                    for k, views in VIEWS.items()}
-    elif stage == 'suffix':
+    elif stage in ('suffix', 'suffix_proj_input'):
         contract['stage_views'] = {'golden_hidden': [[64, 2048], [1, 64, 2048], [1, 1, 64, 2048]]}
+        if stage == 'suffix_proj_input':
+            from .gdr_stage_data import shapes as stage_shapes
+            contract['stage_views']['out_proj_input'] = stage_shapes('core') + [[1, 1, 64, 4096]]
     io = bind_compiled(compiled, meta['inputs'], outputs, _enum_fields(schema), contract)
     if {s['name'] for s in io['inputs']} != {s['name'] for s in meta['inputs']}:
         raise ValueError(f'{stage}: compiled input set differs from AIR')

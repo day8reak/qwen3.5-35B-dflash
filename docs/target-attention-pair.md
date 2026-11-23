@@ -56,6 +56,35 @@ L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --spl
 
 同一运行目录内已有四张匹配的 OMC 时，上述命令校验并复用编译产物，重新执行两条分支。各段先用已有的 HIAI 描述查询工具读取该 OMC 的板端槽位、类型和形状，再用板上的 `model_run_tool_internal` 执行推理。每次执行的 `slots.json` 记录实际槽位与张量的对应关系。脚本按 V2 日志的输出槽号回收完整 T64 数据并校验哈希。每张模型的输入输出和计算位置在 `boundaries.json`。分段控制组与原整图的 valid19 差异见 `comparison.csv` 的 `split_native_vs_whole`。精度改善看 `split_native_vs_310p` 和 `split_cpu_vs_310p`，另有两条分段路线之间的直接比较。每组均包含 valid19 汇总及 19 个 token 的指标。
 
+### 对比两处 SiLU 和 out_proj 前后的 CPU、310P、CPro 精度
+
+78 在已有 L0 AIR 对应的输入上准备参考数据。它优先读取能通过原始 L0 导出记录、驱动和配置哈希校验的 310P 单步 bin，缺数据时只执行一次到 L0 out_proj 的原始 W4 prefill。独立 CPU 参考从同一份 L0 hidden 和初始缓存开始，以原权重分别计算各级激活。参考数据首次生成后可复用。
+
+```bash
+cd "${REPO_DIR:?}"
+git pull --ff-only origin main
+bash targets/cpro/scripts/l0_attention_cpu_silu_78.sh --stage-matrices
+```
+
+53 在同一块板、相同的模型和输入上复用已有分段执行。默认选最近完成的 L0 实验，也可以用 `L0_SILU_RUN` 指定实验目录。若 78 的参考包位置与默认不同，两端可设置 `L0_SILU_REFS` 为同一份参考包在 78 的绝对路径。
+
+```bash
+cd "${REPO_DIR:?}"
+git pull --ff-only origin main
+bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --stage-matrices
+```
+
+| 矩阵名 | 张量边界 | 每个有效 token 的元素数 |
+|---|---|---:|
+| `conv_silu_in`、`conv_silu_out` | 卷积分支 `F.silu(conv_out)` 的输入和输出，原张量按通道、时间排列 | 8192 |
+| `gate_silu_in`、`gate_silu_out` | 门控分支实际参与 SiLU 的 gate 和门值，位于与 RMSNorm 输出相乘之前 | 4096 |
+| `out_proj_input` | 门控乘法和返回类型转换后的 FP16 激活，位于 out_proj 的 DynamicQuant 之前 | 4096 |
+| `out_proj_output` | L0 linear attention 经 out_proj 后的 FP16 输出 | 2048 |
+
+CPro 一列代表板端 CPUCL 执行两处 SiLU、NPU 执行其余计算的这条路线。脚本按板端槽位和 SHA-256 匹配已有结果。旧后半图缺少投影输入时，诊断后半图同时输出投影输入和最终输出。若有相同输入的旧后半图输出，脚本对完整 T64 的 FP16 位逐一核对，通过后才将投影输入列入同一次实验的矩阵。
+
+终端打印 valid19 和 token18 的 cosine、relative L2、error_ratio 三方矩阵。`split-silu-matrices-*/matrices.csv` 保存 valid19 和 token0–18 的所有矩阵，包括五项精度指标、MAE、最大绝对误差、超差计数和比例。行是 actual，列是 reference。逐元素检验使用 `np.isclose(actual, reference, rtol=1e-3, atol=1e-5, equal_nan=True)`，超差比例 ≤ 0.1% 为通过。`comparison-inputs.json` 记录板端源文件、类型、形状、哈希和新旧后半图输出核验结果。若新增后半图编译、执行或逐位核对失败，已取得的边界会先写入同目录的 `matrices-available.csv`。
+
 ### 导出自定义算子 `silu_patch` 的单算子 AIR
 
 在 78 的仓库根目录运行下面的脚本。它用仓库内的 GE protobuf 定义生成一张 `Data → silu_patch → NetOutput` 单算子 AIR，输出路径是 `$AI_RUN_DIR/target/tests/silu_patch_fp16_fp32/silu_patch.air`。

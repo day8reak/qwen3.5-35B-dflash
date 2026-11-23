@@ -14,6 +14,13 @@ in_env() {
     if [[ "${CONDA_DEFAULT_ENV:-}" == "$env_name" ]]; then "$@"
     else conda run --no-capture-output -n "$env_name" "$@"; fi
 }
+if (( $# > 1 )) || [[ $# == 1 && "$1" != --stage-matrices ]]; then
+    echo "Usage: $0 [--stage-matrices]" >&2
+    exit 2
+fi
+if [[ "${1:-}" == --stage-matrices && -z "${ATTENTION_AIR:-}" && -s "$dest/manifest.json" ]]; then
+    source_air="$dest"
+fi
 if [[ -z "${ATTENTION_AIR:-}" && ! -s "$source_air/$casefile" ]]; then
     original="$tests/attention4-source-01"
     if [[ -s "$dest/manifest.json" ]]; then
@@ -27,3 +34,10 @@ if [[ -z "${ATTENTION_AIR:-}" && ! -s "$source_air/$casefile" ]]; then
     fi
 fi
 in_env qwen3_5_cpro python -u "$REPO_DIR/targets/cpro/tools/l0_attention_cpu_silu.py" prepare "$source_air" "$dest"
+if [[ "${1:-}" == --stage-matrices ]]; then
+    for backend in 310p cpu; do
+        in_env qwen3_5_w4 python -u "$REPO_DIR/targets/cpro/tools/l0_attention_cpu_silu.py" stage-reference \
+            "$backend" "$dest" "${L0_SILU_REFS:-$tests/l0-silu-stage-refs-01}" "${TARGET_SOURCE:?}" \
+            "${NZ_CONFIG:-config/qwen3_5_moe.yaml}"
+    done
+fi

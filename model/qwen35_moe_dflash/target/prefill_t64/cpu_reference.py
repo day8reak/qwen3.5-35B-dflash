@@ -72,7 +72,8 @@ class CpuPrefill:
         next_history = joined[:, :, -history.size(2):].to(history.dtype).contiguous()
         conv = F.conv1d(joined, layer.conv1d.weight, layer.conv1d.bias, groups=qkv.size(1))
         conv = conv[:, :, -x.size(1):]
-        mixed = F.silu(conv).to(qkv.dtype).transpose(1, 2)
+        conv_silu = F.silu(conv)
+        mixed = conv_silu.to(qkv.dtype).transpose(1, 2)
         q, k, v = mixed.split((layer.key_dim, layer.key_dim, layer.value_dim), dim=-1)
         repeat = layer.num_v_heads // layer.num_k_heads
         q, k = [t.reshape(1, x.size(1), layer.num_k_heads, layer.head_k_dim)
@@ -97,7 +98,8 @@ class CpuPrefill:
             stages.update(conv=conv.transpose(1, 2), query=q, key=k, value=v, g=g, beta=beta,
                           core=core, out_proj_input=gated.flatten(2), hidden=y)
             if valid_length is not None:
-                stages.update(initial_state=state, effective_length=torch.tensor([valid], dtype=torch.int16),
+                stages.update(conv_silu_output=conv_silu.transpose(1, 2), initial_state=state,
+                              effective_length=torch.tensor([valid], dtype=torch.int16),
                               final_state=torch.from_numpy(final), rms_input=core.float(), gamma=layer.norm.weight.detach().float(),
                               rms_output=rms, gate=z, silu_input=silu_input, silu_output=silu, mul_lhs=rms, mul_rhs=silu,
                               mul_output=product, gated_return=gated)

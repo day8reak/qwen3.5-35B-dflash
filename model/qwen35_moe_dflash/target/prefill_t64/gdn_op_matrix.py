@@ -306,6 +306,14 @@ def print_error_ratios(stage, outputs, paths, token_axis):
 
 def matrix_rows(stage, outputs, *, token_axis=None):
     values = {k: step_rows(stage, outputs[k], token_axis)[:19] for k in BACKENDS}
+    yield from valid19_matrix_rows(stage, values)
+
+
+def valid19_matrix_rows(stage, values):
+    if set(values) != set(BACKENDS) or len({x.shape for x in values.values()}) != 1:
+        raise ValueError(f'{stage}: need three equally shaped backend tensors')
+    if values['cpu'].ndim != 2 or values['cpu'].shape[0] != 19:
+        raise ValueError(f'{stage}: expected 19 token-major rows')
     for token in (None, *range(19)):
         scope = 'valid19' if token is None else f'token{token}'
         scores = {}

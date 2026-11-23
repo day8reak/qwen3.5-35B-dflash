@@ -22,6 +22,9 @@ def wire_shape(site, desc):
 
 
 def cut(raw, stage, original_inputs, golden, *, prefix_shapes=None):
+    read_proj_input = stage == 'suffix_proj_input'
+    if read_proj_input:
+        stage = 'suffix'
     if stage not in STAGES:
         raise ValueError(f'Unknown split stage {stage}')
     msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
@@ -136,6 +139,17 @@ def cut(raw, stage, original_inputs, golden, *, prefix_shapes=None):
         via_net = graph.output[0] == net.name + ':0'
         del graph.output[:]
         graph.output.extend([net.name + ':' + str(i) if via_net else edge for i, (edge, _) in enumerate(results)])
+    edges = [e for e, _ in results]
+    if read_proj_input:
+        from .decode_cache_trace import _add_ports, _project_input
+        nodes = {op.name: op for op in graph.op}
+        net, = [op for op in graph.op if op.type == 'NetOutput']
+        if not net.input_desc:
+            net.input_desc.add().CopyFrom(descriptor(nodes, hidden))
+        edge = _project_input(nodes, hidden)
+        edges = _add_ports(graph, {'out_proj_input': edge})
+        outputs.append(dict(name='out_proj_input', dtype='float16', shape=[64, 4096]))
+        stage = 'suffix_proj_input'
     return msg.SerializeToString(), dict(stage=stage, inputs=inputs, outputs=outputs,
-        output_edges=[e for e, _ in results], cut_inputs={e: s['name'] for e, s in bindings.items()},
+        output_edges=edges, cut_inputs={e: s['name'] for e, s in bindings.items()},
         silu_sites=info, gdr_nodes=gdr_count)
