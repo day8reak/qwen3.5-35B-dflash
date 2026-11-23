@@ -469,41 +469,16 @@ python "${REPO_DIR:?}/targets/cpro/tools/gdn_op_matrix.py" audit-proj \
 
 ## L0 卷积后的 SiLU 和 L0/L3 attention 的通用截取
 
-可复制的双机命令和换模块示例见 [SiLU(conv_out) 三端对比](guides/attention-step-example.md)。
-
-在 78 使用原四层 attention 批次。工具从 GDR 的 Q、K、V 三路共同向上回溯到卷积后的 SiLU，支持 SiLU 节点和 `x * sigmoid(x)` 两种表达。它在原生 310P L0 forward 中抓取实际送入 SiLU 的卷积输出和返回值，CPU 在同一份输入上执行 `F.silu`。核对原生 L0 attention 的 valid19 输出与源 AIR 配套的参考逐位一致后才发布。门控 SiLU 的输入 z 是另一条支路。源图在 SiLU 后附加的 dtype 转换、transpose 和 Q/K/V split 均位于本次输出边之后。
-
-```bash
-conda activate qwen3_5_w4
-git -C "${REPO_DIR:?}" pull --ff-only origin main
-P="$REPO_DIR/targets/cpro/tools/attention_step.py"
-T="${AI_RUN_DIR:?}/target/tests"
-A="${ATTENTION_AIR:-$T/attention4-t64-valid19-v1024-qlate-01/air}"
-R="$T/gdn-l0-qkv-conv-silu-t64-valid19-01"
-python "$P" prepare-qkv --source-air "$A" --run "$R" \
-  --source-root "${TARGET_SOURCE:?}" --config "${NZ_CONFIG:-config/qwen3_5_moe.yaml}"
-cat "$R/air/boundaries.json"
-```
-
-在 35 编译和执行。若两台机上运行根目录不同，增加 `--remote-air /78上的本次运行目录/air`。
-
-```bash
-conda activate custom_pypto
-git -C "${REPO_DIR:?}" pull --ff-only origin main
-P="$REPO_DIR/targets/cpro/tools/attention_step.py"
-R="${AI_RUN_DIR:?}/target/tests/gdn-l0-qkv-conv-silu-t64-valid19-01"
-python "$P" board --run "$R" --ddk-root "${CPRO_DDK_ROOT:?}" \
-  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" \
-  --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
-```
-
-`$R/matrices.csv` 覆盖 valid19 和每个有效 token。原生张量形状是 `[1,8192,64]`，沿最后一维选取 `0:19` 和 token18。板端使用输入哈希核对后的真实数值；若 AIR 要求不同 dtype，只允许能够逐值无损往返的转换。在缺少可观察的原生 SiLU 输入（例如 310P 采用融合卷积）时，采集会指出缺少哪个边界。
+在 78 准备卷积后的 SiLU，在 35 用同一份输入独立上板。两条命令见 [单测 L0 的 F.silu(conv_out)](guides/attention-step-example.md)。原生输入形状是 `[1,8192,64]`，沿最后一维统计 valid19 和 token18。
 
 ### 按 GE 端口截取其他步骤
 
 在 78 用 `list` 枚举实际端口。每行列出一个节点、它的输入边、各个输出的 `edge`、dtype 和 shape。层号支持 `0`（linear attention）和 `3`（full attention）。`--match` 可省略。
 
 ```bash
+P="${REPO_DIR:?}/targets/cpro/tools/attention_step.py"
+T="${AI_RUN_DIR:?}/target/tests"
+A="${ATTENTION_AIR:-$T/attention4-t64-valid19-v1024-qlate-01/air}"
 python "$P" list --source-air "$A" --layer 3 --match RmsNorm
 ```
 

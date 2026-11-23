@@ -8,8 +8,9 @@ from unittest.mock import patch
 import numpy as np
 
 from ...common.artifacts import share_for_transfer
-from ..layer_probe.common import KIND, identity, read_array, save_json, sha
+from ..layer_probe.common import KIND, checked, identity, read_array, save_json, sha
 from .attention_slice import DTYPES, descriptor, extract, source_graph
+from .decode_cache_trace import _record
 from .gdn_tail_probe import case_id, tensor
 from .gdr_stage_air import stage_edges
 
@@ -128,9 +129,24 @@ def measure(source, config, expected_hidden):
     return capture_l0(source, config, evaluate, observe=observe_conv)
 
 
-def prepare(run, air, source, config):
+def prepare(run, air, source, config, *, reuse=False):
     run.mkdir(parents=True, exist_ok=True)
     target = run/'air'
+    if reuse and target.is_dir():
+        manifest, _, folder, spec = _record(target, case_id(STAGE))
+        if manifest['golden_source'] != BASIS or len(manifest['cases']) != 1:
+            raise ValueError(f'{target}: expected the standalone convolution SiLU fixture')
+        if (air/'manifest.json').is_file() and sha(air/'manifest.json') != manifest['source_manifest_sha256']:
+            raise ValueError(f'{target}: stored SiLU data belongs to a different attention AIR batch')
+        native = manifest['native_310p']
+        if sha(source/'inference_segment.py') != native['driver_sha256'] or sha(source/config) != native['config_sha256']:
+            raise ValueError(f'{target}: driver or config changed; prepare a new fixture directory')
+        checked(target, manifest['boundaries'])
+        for record in (spec['air'], *spec['source_inputs'], spec['golden'], spec['cpu'], *spec['weight_evidence'].values()):
+            checked(folder, record)
+        share_for_transfer(target)
+        print(f'Reusing SiLU fixture: {target}', flush=True)
+        return
     if target.exists():
         raise FileExistsError(f'{target} already exists')
     folder, original, msg, graph = source_graph(air, 0)

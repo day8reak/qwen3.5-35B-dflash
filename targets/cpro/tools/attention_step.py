@@ -106,6 +106,7 @@ def main():
     compile_cmd.add_argument('--remote-slice', type=Path)
     compile_cmd.add_argument('--tbe-diagnosis', type=Path, required=True)
     prep = actions.add_parser('prepare-qkv', help='78: capture the original convolution SiLU and cut its AIR')
+    prep.add_argument('--reuse', action='store_true', help='verify and reuse the prepared SiLU inputs and references')
     prep.add_argument('--source-air', type=Path, required=True, help='original four-attention AIR batch')
     prep.add_argument('--source-root', type=Path, required=True, help='original 310P segmented driver')
     prep.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
@@ -131,7 +132,7 @@ def main():
     elif args.action == 'compile':
         compile_slice(args, run)
     elif args.action == 'prepare-qkv':
-        qkv_silu.prepare(run, args.source_air.resolve(), args.source_root.resolve(), args.config)
+        qkv_silu.prepare(run, args.source_air.resolve(), args.source_root.resolve(), args.config, reuse=args.reuse)
     else:
         scores = partial(summarize, roles={qkv_silu.STAGE: 'conv_out'}, basis=qkv_silu.BASIS)
         ok = (scores(run) if args.action == 'report' else
