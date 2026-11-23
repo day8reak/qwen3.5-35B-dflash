@@ -52,11 +52,17 @@ def logits_wrapper(base, trace=False):
 
         def forward(self, *, past_key_values, **kwargs):
             self._readouts = []
-            logits = super().forward(past_key_values=past_key_values, **kwargs)
-            if tuple(i for i, _ in self._readouts) != whole_trace.LAYERS:
+            try:
+                logits = super().forward(past_key_values=past_key_values, **kwargs)
+                readouts = tuple(self._readouts)
+            finally:
+                # Dynamo returns tensors that survive as module side effects to its
+                # backend. Only the packed tensor may escape this invocation.
+                self._readouts.clear()
+            if tuple(i for i, _ in readouts) != whole_trace.LAYERS:
                 raise ValueError('Incomplete or unordered decoder readouts')
             parts = [logits.reshape(1, 1, whole_trace.VOCAB).float()]
-            for _, hidden in self._readouts:
+            for _, hidden in readouts:
                 parts.append(torch.index_select(hidden.float(), 1, kwargs['output_pos'].int()))
             return torch.cat(parts, dim=-1)
     return Checkpoints
@@ -152,6 +158,9 @@ def export(source, config, reference, output, *, baseline=None):
     air = root / 'export.air'
     (root / 'weight/export.air').rename(air)
     _, _, graph = _decode(_schema(*_producer_schema()), _read_air(air)[0])
+    if baseline is not None:
+        save_json(root / 'netoutput.json', [{'name': n['name'], 'edges': n.get('input', []),
+                  'data_edges': _data_edges(n)} for n in graph['op'] if n['type'] == 'NetOutput'])
     file_nodes = {n['name']: str(Path(_attributes(n)['file_path']['s'])) for n in _file_constants(graph)}
     if file_nodes != {r['node']: r['path'] for r in weights['files']}:
         raise ValueError('AIR FileConstants differ from the tensors written by the original exporter')
@@ -209,7 +218,16 @@ def export_trace(source, config, baseline, reference, output):
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.prefill40-trace-', dir=output.parent) as tmp:
         work = Path(tmp) / 'export'
-        export(source, config, reference, work, baseline=baseline)
+        try:
+            export(source, config, reference, work, baseline=baseline)
+        except Exception:
+            if (work / 'export.air').is_file():
+                retained = Path(tempfile.mkdtemp(prefix='failed-trace-air-', dir=output.parent))
+                for name in ('export.air', 'netoutput.json'):
+                    if (work / name).is_file():
+                        (work / name).rename(retained / name)
+                print(f'Retained diagnostic graph for inspection: {retained}', flush=True)
+            raise
         # The baseline owns identical weights, tokenizer and inputs on the OMG host.
         bundle = Path(tmp) / 'bundle'
         bundle.mkdir()
