@@ -31,6 +31,8 @@ def main():
     probe = actions.add_parser('diagnose', help='inspect the failed decoder request in device HiLog')
     probe.add_argument('--case-dir', type=Path, required=True)
     probe.add_argument('--hilog', type=Path, help='use an existing hilog -x snapshot')
+    v2 = actions.add_parser('replay-v2', help='test the failed decoder OMC and its retained inputs once via HIAI V2')
+    v2.add_argument('--case-dir', type=Path, required=True)
     board = actions.add_parser('run')
     for flag in ('compiled', 'config', 'ddk-root', 'output'):
         board.add_argument('--' + flag, type=Path, required=True)
@@ -57,6 +59,9 @@ def main():
     elif a.action == 'diagnose':
         from qwen35_moe_dflash.target.prefill_t64.chain_hilog import diagnose
         diagnose(a.case_dir, a.hilog)
+    elif a.action == 'replay-v2':
+        from qwen35_moe_dflash.target.prefill_t64.chain_v2 import replay
+        replay(a.case_dir)
     elif a.action == 'run':
         from qwen35_moe_dflash.target.prefill_t64.chain_board import run
         run(a.compiled.resolve(), a.output, a.config.resolve(), a.ddk_root.resolve())
