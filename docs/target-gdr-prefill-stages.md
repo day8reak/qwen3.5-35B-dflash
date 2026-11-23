@@ -412,3 +412,45 @@ python "$TOOLS/gdr_prefill_stages.py" compare \
   --silu-readout "$T" --output "$T/dump" &&
 python "$TOOLS/gdr_prefill_stages.py" audit-product --dump "$T/dump" --layer 0
 ```
+
+## L0 三个单算子的 CPU、310P、CPro 对比矩阵
+
+下面的 `review` 只读已有的三张 AIR，在 78 或拥有上一轮 tail AIR 的主机均可运行。它打印原图的输入边、输出边、形状、引用权重及截取后每个 GE 节点的名称、类型和输入。OMG 编译可能融合节点。
+
+```bash
+conda activate qwen3_5_w4
+git -C "${REPO_DIR:?}" pull --ff-only origin main
+T="${AI_RUN_DIR:?}/target/tests"
+A="${TAIL_AIR:-$T/gdn-tail-l0-valid19-01/air}"
+P="$REPO_DIR/targets/cpro/tools/gdn_op_matrix.py"
+python "$P" review --air "$A"
+```
+
+| 单算子 | 三端使用的 310P 原生 L0 输入 | 输出边界 |
+| --- | --- | --- |
+| RMSNorm | GDR 的 core，按 128 通道归一化 | 原层 gamma 和 epsilon 参与计算后的 RMSNorm 输出 |
+| SiLU | 原层门控投影的 z | SiLU(z)，在门控乘法之前 |
+| out_proj | 310P 原层门控乘法、回转 FP16、reshape 后的投影输入 | DynamicQuant、QuantBatchMatmulV4444 及原图输出视图后的 attention 投影，止于残差相加之前 |
+
+在 78 运行 `prepare` 后，三个 `air/models/*/export.air` 均可单独编译。复用六图批次会保留这三张原 AIR 的字节，也可把 `--source-air` 指向包含 `l00_c00_gdn_layer_hidden_o0` 的四层 attention AIR 批次重新截取。每张图使用原生 T64 输入，指标统计第 0–18 行。CPU 投影使用原 checkpoint 的 group-256 W4 权重和 scale，逐 token 动态量化，int32 点积、FP32 分组累加、FP16 输出。
+
+```bash
+R="$T/gdn-op-matrix-l0-valid19-01"
+python "$P" prepare --run "$R" --source-air "$A" \
+  --source-root "${TARGET_SOURCE:?}" --config "${NZ_CONFIG:-config/qwen3_5_moe.yaml}"
+cat "$R/air/boundaries.json"
+```
+
+在 35 执行板端测试，`--remote-air` 可指定 78 的新批次路径。每张 OMC 预热三次，回读十次。复用已有结果时执行 `report --run "$R"`。
+
+```bash
+conda activate custom_pypto
+git -C "${REPO_DIR:?}" pull --ff-only origin main
+R="${AI_RUN_DIR:?}/target/tests/gdn-op-matrix-l0-valid19-01"
+python "$REPO_DIR/targets/cpro/tools/gdn_op_matrix.py" board \
+  --run "$R" --ddk-root "${CPRO_DDK_ROOT:?}" \
+  --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+```
+
+`$R/matrices.csv` 每三行是一张矩阵，行是 actual，列是 reference。覆盖 valid19 和每个有效 token。每个方向分别计算 cosine、relative L2、KL、RMSE、平均相对误差、MAE、最大绝对误差、逐元素超差数、总数、超差率和两个判定。超差按 `np.isclose(actual, reference, rtol=1e-3, atol=1e-5, equal_nan=True)`，超差率门限为 0.1%。脚本退出状态沿用 CPro 对 310P 在 valid19 和 token18 的五指标门限。
