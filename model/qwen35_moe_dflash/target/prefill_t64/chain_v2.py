@@ -15,7 +15,7 @@ from .chain_board import load
 from .chain_reference import HIDDEN
 
 
-def replay(case_dir, tool_path=DEFAULT_TOOL):
+def replay(case_dir, tool_path=DEFAULT_TOOL, *, external_build=None):
     import validate_draft_vector as api
 
     case_dir = output_path(case_dir)
@@ -49,13 +49,41 @@ def replay(case_dir, tool_path=DEFAULT_TOOL):
     folder = board / name
     model = folder / 'model.omc'
     checks = [api._identity_guard(model, case['model'])]
+    token_v2 = uuid.uuid4().hex
+    work = board / ('v2-' + token_v2)
+    uploads = []
+    if external_build is not None:
+        external_build = output_path(external_build)
+        external = load(external_build / 'external.json')
+        if not re.fullmatch('v2-[0-9a-f]{32}', external['baseline']):
+            raise ValueError('Invalid embedded V2 replay ID')
+        original = case_dir / 'recovery' / external['baseline'] / 'result.json'
+        baseline = load(original)
+        if (sha(original) != external['baseline_sha256'] or baseline['previous_attempt'] != str(board)
+                or external['case'] != name or external['embedded_omc_sha256'] != case['model']['sha256']
+                or external['fixture_sha256'] != plan['fixture_sha256']):
+            raise ValueError('External build is bound to a different embedded V2 run')
+        tool_path = baseline['argv'][0]
+        by_name = {s['semantic_name']: s for s in inputs}
+        order = external['input_order']
+        if len(order) != len(inputs) or set(order) != set(by_name):
+            raise ValueError('External input slots do not cover the original inputs')
+        inputs = [by_name[key] for key in order]
+        filenames = [s['path'] for s in external['files']]
+        if 'model.omc' not in filenames or len(filenames) < 2 or len(set(filenames)) != len(filenames):
+            raise ValueError('External build must contain one OMC and its distinct weight files')
+        for spec in external['files']:
+            if not re.fullmatch(r'model\.omc|[A-Za-z0-9_][A-Za-z0-9_.-]*\.weight', spec['path']):
+                raise ValueError('Unexpected external model or weight filename')
+            uploads.append((checked(external_build, spec), work / spec['path'], spec))
+        model = work / 'model.omc'
     paths = []
-    for s in inputs:
+    for slot, s in enumerate(inputs):
         filename = f"input_{s['index']}.bin"
         record = dict(bytes=s['fixture_bytes'], sha256=s['fixture_sha256'])
         local = checked(fixture/name, dict(path=filename, **record))
         values = np.fromfile(local, dtype=s['dtype'])
-        summary = f"slot {s['index']} {s['semantic_name']} {s['dtype']} {s['shape']}"
+        summary = f"slot {slot} {s['semantic_name']} {s['dtype']} {s['shape']} ({filename})"
         if s['semantic_name'] == 'effective_length':
             summary += f' = {values.tolist()}'
             if values.tolist() != [19]:
@@ -67,8 +95,6 @@ def replay(case_dir, tool_path=DEFAULT_TOOL):
     exe, serial, server = api._environment()
     if (serial, server) != (plan['serial'], plan['hdc_server']):
         raise ValueError('Select the board recorded in execution/request.json')
-    token_v2 = uuid.uuid4().hex
-    work = board / ('v2-' + token_v2)
     out = case_dir / 'recovery' / work.name
     out.mkdir()
     print(f'V2 replay: {out}', flush=True)
@@ -80,6 +106,11 @@ def replay(case_dir, tool_path=DEFAULT_TOOL):
             '--enable_item=1', '--output_dir=' + str(work / 'outputs')]
     report = dict(status='PREPARING', case=name, previous_attempt=str(board), device_work=str(work),
                   omc_sha256=case['model']['sha256'], fixture_sha256=plan['fixture_sha256'], argv=argv)
+    if uploads:
+        argv.insert(2, '--weight_dir=' + str(work))
+        report.update(weight_storage='external', baseline=str(original), files=external['files'],
+                      omc_sha256=next(s['sha256'] for _, dest, s in uploads if dest == model),
+                      embedded_omc_sha256=case['model']['sha256'], input_order=order)
     save_json(out/'result.json', report)
     api._acquire_global(hdc, api.GLOBAL_LOCK, token_v2, 0)
     uncertain = False
@@ -90,6 +121,16 @@ def replay(case_dir, tool_path=DEFAULT_TOOL):
         hdc.shell(' && '.join([api._guard(board, token), f'test "$(cat {board}/complete)" = {token}',
                   f'test "$(cat {board}/{name}.exitcode)" = {int(failure["exitcode"])}',
                   f'test -x {tool}', *checks, f'mkdir {work}', f'mkdir {work}/outputs']), 'verify-retained-case')
+        if uploads:
+            _, space = hdc.shell(f'df -Pk {work}', 'external-space')
+            required = sum(s['bytes'] for _, _, s in uploads) + output['bytes']
+            if api._space(space) < required:
+                raise OSError(f'External L0 replay requires {required:,} free board bytes')
+            print(f'Uploading external L0 model and weights ({required - output["bytes"]:,} bytes)', flush=True)
+            for path, dest, _ in uploads:
+                hdc.send(path, dest)
+            hdc.shell(' && '.join(api._identity_guard(dest, spec) for _, dest, spec in uploads),
+                      'verify-external-payload')
         report['status'] = 'RUN_REQUESTED'
         save_json(out/'result.json', report)
         uncertain = True
@@ -127,4 +168,10 @@ def replay(case_dir, tool_path=DEFAULT_TOOL):
         else:
             api._release_global(hdc, api.GLOBAL_LOCK, token_v2)
         share_for_transfer(out)
+        if uploads and report.get('tool_exitcode'):
+            from .chain_hilog import diagnose_v2
+            try:
+                diagnose_v2(out)
+            except Exception as error:
+                print(f'V2 failed; HiLog collection also failed: {error}. Replay directory: {out}', flush=True)
     return report

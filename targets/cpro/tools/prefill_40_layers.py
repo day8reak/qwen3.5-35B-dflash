@@ -33,6 +33,11 @@ def main():
     probe.add_argument('--hilog', type=Path, help='use an existing hilog -x snapshot')
     v2 = actions.add_parser('replay-v2', help='test the failed decoder OMC and its retained inputs once via HIAI V2')
     v2.add_argument('--case-dir', type=Path, required=True)
+    v2.add_argument('--external-build', type=Path, help='use a matched L0 external-weight compilation')
+    external = actions.add_parser('compile-l0-external', help='repeat the failed L0 V2 build with external weights')
+    external.add_argument('--replay-dir', type=Path, required=True, help='failed embedded V2 replay directory')
+    external.add_argument('--remote-air', type=Path, required=True, help='original split AIR root on the export host')
+    external.add_argument('--output', type=Path, required=True)
     v2_logs = actions.add_parser('diagnose-v2', help='read the device log window for an existing V2 replay')
     v2_logs.add_argument('--replay-dir', type=Path, required=True)
     v2_logs.add_argument('--hilog', type=Path, help='use an existing hilog -x snapshot')
@@ -64,7 +69,10 @@ def main():
         diagnose(a.case_dir, a.hilog)
     elif a.action == 'replay-v2':
         from qwen35_moe_dflash.target.prefill_t64.chain_v2 import replay
-        replay(a.case_dir)
+        replay(a.case_dir, external_build=a.external_build)
+    elif a.action == 'compile-l0-external':
+        from qwen35_moe_dflash.target.prefill_t64.chain_external import compile_external
+        compile_external(a.replay_dir, a.remote_air, a.output)
     elif a.action == 'diagnose-v2':
         from qwen35_moe_dflash.target.prefill_t64.chain_hilog import diagnose_v2
         diagnose_v2(a.replay_dir, a.hilog)
