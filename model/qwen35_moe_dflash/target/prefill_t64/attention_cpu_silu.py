@@ -173,7 +173,7 @@ def compile_options(path):
     return dict(air_transform=transform)
 
 
-def inspect(model, ddk):
+def inspect(model, ddk, *, standalone=False):
     from ...toolchain.omc_container import read_container, read_partition
     from ...toolchain.omc_cpu_inspect import _attr, _task
     from ...toolchain.omc_wire import load_schema
@@ -230,7 +230,7 @@ def inspect(model, ddk):
                  if op['type'] not in ('Data', 'NetOutput') and op['name'] not in silu_ops]
         if extra or not silu_ops:
             raise ValueError(f"CPUCL task {owner['name']} has unexpected work beyond SiLU: {extra}")
-    if set(proved) != set(SITES) or not counts['NPUCL']:
-        raise ValueError(f'Expected two verified CPUCL SiLU sites and NPUCL attention work; got {proved}, {counts}')
+    if set(proved) != set(SITES) or bool(counts['NPUCL']) == standalone:
+        raise ValueError(f'Unexpected SiLU placement (standalone={standalone}): {proved}, {counts}')
     return dict(model_sha256=sha(model), sites=proved, graphop_counts=dict(counts),
                 boundary_casts=boundary_casts, cpu_arithmetic_only_silu=True)

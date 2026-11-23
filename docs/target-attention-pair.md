@@ -31,6 +31,23 @@ L0_SILU_RUN="$R" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --retry-f
 
 运行目录在开头的 `L0 attention A/B` 一行。两组按相同输入和 310P golden 比较 `out_proj` 的前 19 行。终端显示 valid19 和 token18，`comparison.csv` 保存每个有效 token 的五项指标、MAE、最大绝对误差、超差元素数及比例。两个 `delta_*_pp` 列表示实验组减原版的百分点差。逐元素容差为 `rtol=1e-3, atol=1e-5`，允许超差比例为 0.1%。
 
+### 在板上拆开执行两处 SiLU
+
+在 53 的已有 L0 实验目录运行下面这条命令。脚本复用 78 的 AIR、输入和 310P golden，以及原始整张 L0 OMC 的板端结果。每次分段实验保存到单独的 `split-silu-*/` 目录。
+
+```bash
+L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --split-silu
+```
+
+| OMC | 板端计算和接线 |
+|---|---|
+| `prefix` | NPU 算出卷积后、SiLU 前的激活，以及门控 SiLU 的输入。 |
+| `native_silu` | 接收前段的两个输出，按原 AIR 执行两处 SiLU。 |
+| `cpu_silu` | 接收同一对输入，在 CPUCL 上执行两处 FP32 `x * sigmoid(x)`，返回各自原有的输出类型。 |
+| `suffix` | 两次使用同一张 NPU OMC，按原图接入两路 SiLU 结果以及其余所需的原始输入，执行 GDR、门控 RMSNorm 和 out_proj。 |
+
+每个 OMC 用板上的 `model_run_tool_internal` 运行。脚本按工具日志中的输出槽号回收中间数据，校验哈希并按编译后的输入顺序回灌，不裁掉 padding。每张模型的输入输出和计算位置在 `boundaries.json`。分段控制组与原整图的 valid19 差异见 `comparison.csv` 的 `split_native_vs_whole`。精度改善看 `split_native_vs_310p` 和 `split_cpu_vs_310p`，另有两条分段路线之间的直接比较。每组均包含 valid19 汇总及 19 个 token 的指标。
+
 L0–L2 的 310P 与 CPro 逐张量对比见 [GDR、RMSNorm 和门控乘法](target-gdr-prefill-stages.md)。
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。

@@ -120,7 +120,7 @@ def audit(run):
                           **audit_graphs(original, candidate)), indent=2), flush=True)
 
 
-def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=False):
+def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=False, split_silu=False):
     from qwen35_moe_dflash.target.layer_probe.batch import compile_batch
     from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import execute
     from pull_artifacts import DEFAULT_CONFIG, connection, pull
@@ -148,6 +148,9 @@ def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=F
         variant = run/name
         record = variant/'omc/compile.json'
         cpu = name == 'cpu_silu'
+        if cpu and split_silu:
+            from qwen35_moe_dflash.target.prefill_t64.silu_split_run import split_run
+            return split_run(run, ddk, source, stamp, config, diagnosis)
         if cpu and retry_failed_compile and record.is_file():
             previous = load(record)
             if (previous.get('status') == 'PARTIAL' and previous['cases'][CASE]['status'] == 'FAILED'
@@ -239,7 +242,9 @@ def main():
     execute = sub.add_parser('board')
     for name in ('run', 'remote_air', 'ddk', 'gdr_source', 'runtime_config', 'tbe_diagnosis'):
         execute.add_argument(name, type=Path)
-    execute.add_argument('--retry-failed-compile', action='store_true',
+    mode = execute.add_mutually_exclusive_group()
+    mode.add_argument('--split-silu', action='store_true', help='run independent board SiLU OMCs with shared NPU prefix and suffix')
+    mode.add_argument('--retry-failed-compile', action='store_true',
                          help='keep a failed CPU SiLU build and retry it in the same experiment')
     sub.add_parser('audit', help='compare the saved original and candidate AIR').add_argument('run', type=Path)
     sub.add_parser('report').add_argument('run', type=Path)
@@ -255,7 +260,7 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             board(run, a.remote_air, a.ddk.resolve(), a.gdr_source.resolve(),
                   a.runtime_config.resolve(), a.tbe_diagnosis.resolve(),
-                  retry_failed_compile=a.retry_failed_compile)
+                  retry_failed_compile=a.retry_failed_compile, split_silu=a.split_silu)
     else:
         report(output_path(a.run))
 

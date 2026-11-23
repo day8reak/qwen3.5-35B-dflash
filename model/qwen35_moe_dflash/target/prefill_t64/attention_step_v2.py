@@ -26,7 +26,6 @@ def execute(run, name, ddk, config):
             note(f'[reuse V2 output] {out / "result.json"}')
             return
         raise ValueError(f'Previous V2 attempt: {receipt["status"]}. See {out}/result.json. Use a new run to retry.')
-    env = _environment()
     runtime = read_json(config.parent/read_json(config)['assets'])['environment']
     with tempfile.TemporaryDirectory(dir=run, prefix='.v2-fixture-') as tmp:
         prepared = Path(tmp)/'prepared'
@@ -44,12 +43,23 @@ def execute(run, name, ddk, config):
     if not operands or [s['index'] for s in operands] != list(range(len(operands))):
         raise ValueError('Expected inputs in compiled slot order')
     files = [checked(fixture/name, dict(s, path=f"input_{s['index']}.bin")) for s in operands]
+    return run_v2(out, name, model, operands, files, [result], runtime,
+                  fixture_sha256=sha(fixture/'manifest.json'))
+
+
+def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None):
+    from ..prefill_output_inventory import _logged_slots
+
+    env = _environment()
+    input_names = [f'input_{i}.bin' for i in range(len(files))]
+    if not operands or len(operands) != len(files) or not outputs:
+        raise ValueError(f'{name}: missing model inputs or outputs')
     token = uuid.uuid4().hex
     remote = PurePosixPath('/data/local/tmp') / ('qwen35_step_' + token)
     tool = _board_path(DEFAULT_TOOL)
-    argv = [str(tool), f'--model={remote}/model.omc', '--input=' + ','.join(str(remote/p.name) for p in files),
+    argv = [str(tool), f'--model={remote}/model.omc', '--input=' + ','.join(str(remote/n) for n in input_names),
             '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in operands),
-            '--output_type=' + _TOOL_TYPES[result['dtype'].upper()], '--times=1', '--modelmanager_itf=V2',
+            '--output_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in outputs), '--times=1', '--modelmanager_itf=V2',
             '--direct_from_file=true', '--enable_item=1', f'--output_dir={remote}/outputs']
     command = f'timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
     script = out/'run.sh'
@@ -57,12 +67,13 @@ def execute(run, name, ddk, config):
                       'rc=$?\necho "$rc" >tool.exitcode\ntail -n 20 tool.stdout tool.stderr\nexit "$rc"\n')
     note(f'[V2 board script] {script}\n{script.read_text()}')
     hashes = out/'files.sha256'
-    hashes.write_text(f"{case['model']['sha256']}  model.omc\n"
-                      + ''.join(f"{s['sha256']}  {p.name}\n" for s, p in zip(operands, files))
+    model_sha = sha(model)
+    hashes.write_text(f"{model_sha}  model.omc\n"
+                      + ''.join(f"{s['sha256']}  {n}\n" for s, n in zip(operands, input_names))
                       + f"{sha(script)}  run.sh\n")
     receipt = dict(status='PREPARED', case=name, device=env[1], server=env[2], remote=str(remote),
-                   argv=argv, omc_sha256=case['model']['sha256'], input_hashes=[s['sha256'] for s in operands],
-                   fixture_sha256=sha(fixture/'manifest.json'))
+                   argv=argv, omc_sha256=model_sha, input_hashes=[s['sha256'] for s in operands],
+                   fixture_sha256=fixture_sha256)
     if len(operands) == 1:
         receipt['input_sha256'] = operands[0]['sha256']
     save_json(out/'result.json', receipt)
@@ -75,8 +86,8 @@ def execute(run, name, ddk, config):
         if fw.strip() != runtime['firmware_id'].strip():
             raise ValueError(f'Board firmware differs from {config}')
         _, space = hdc.shell(f'test -x {tool} && df -Pk {remote.parent}', 'preflight')
-        uploads = [(model, 'model.omc'), *((p, p.name) for p in files), (script, 'run.sh'), (hashes, 'files.sha256')]
-        needed = result['bytes'] + sum(source.stat().st_size for source, _ in uploads)
+        uploads = [(model, 'model.omc'), *zip(files, input_names), (script, 'run.sh'), (hashes, 'files.sha256')]
+        needed = sum(s['bytes'] for s in outputs) + sum(source.stat().st_size for source, _ in uploads)
         if _space(space) < needed:
             raise OSError(f'Insufficient board storage for {name}: need {needed:,} bytes')
         hdc.shell(f'mkdir {remote} && mkdir {remote}/outputs', 'create-board-dir')
@@ -92,16 +103,33 @@ def execute(run, name, ddk, config):
         uncertain = False
         if receipt['exitcode']:
             raise RuntimeError(f'HIAI V2 exited {code} in {remote}\n{log}')
-        _, listing = hdc.shell(f"cd {remote}/outputs && find . -type f -size {result['bytes']}c "
-                               + '-exec sha256sum {} \\;', 'output-hash')
-        matches = re.findall(r'^([0-9a-f]{64})\s+(\./[^\r\n]+)$', listing, re.M)
-        if len(matches) != 1:
-            raise ValueError(f"Expected one {result['bytes']}-byte output in {remote}/outputs: {listing}")
-        digest, filename = matches[0]
-        hdc.receive(_board_path(str(remote/'outputs'/filename)), out/'output.bin')
-        output = dict(path='output.bin', bytes=result['bytes'], sha256=digest)
-        checked(out, output)
-        receipt.update(status='EXECUTED', output=output)
+        size_filter = f" -size {outputs[0]['bytes']}c" if len(outputs) == 1 else ''
+        _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f{size_filter} -exec sha256sum {{}} \\;', 'output-hash')
+        hash_by_file = {name[2:]: digest for digest, name in
+                        re.findall(r'^([0-9a-f]{64})\s+(\./[^\r\n]+)$', listing, re.M)}
+        if len(outputs) == 1 and len(hash_by_file) == 1:
+            names = list(hash_by_file)
+        else:
+            # The two SiLU wires can have the same byte size. Use the board tool's
+            # explicit output[index] mapping, even when filenames happen to be numbered.
+            _, logs = hdc.shell(f'cat {remote}/tool.stdout', 'output-slots')
+            _, sizes = hdc.shell(f'cd {remote}/outputs && find . -type f -exec wc -c {{}} \\;', 'output-sizes')
+            inventory = [dict(path='outputs/' + n, bytes=int(sz)) for sz, n in
+                         re.findall(r'^\s*(\d+)\s+\./([^\r\n]+)$', sizes, re.M) if n in hash_by_file]
+            mapping = _logged_slots(logs.encode(), dict(board_attempt=str(remote)), outputs, inventory)
+            if mapping['status'] != 'BOUND_TO_COMPLETE_EXPLICIT_TOOL_LOG':
+                raise ValueError(f"{name}: {mapping['reason']}; device logs at {remote}/tool.stdout")
+            names = [row['path'].removeprefix('outputs/') for row in mapping['entries']]
+        retrieved = []
+        for i, (filename, spec) in enumerate(zip(names, outputs, strict=True)):
+            path = 'output.bin' if len(outputs) == 1 else f'output_{i}.bin'
+            hdc.receive(_board_path(str(remote/'outputs'/filename)), out/path)
+            row = dict(path=path, bytes=spec['bytes'], sha256=hash_by_file[filename])
+            checked(out, row)
+            retrieved.append(row)
+        receipt.update(status='EXECUTED', outputs=retrieved)
+        if len(outputs) == 1:
+            receipt['output'] = retrieved[0]
     except BaseException as exc:
         receipt.update(status='EXECUTION_UNCERTAIN' if uncertain else 'FAILED', error=str(exc))
         raise
@@ -111,6 +139,7 @@ def execute(run, name, ddk, config):
             print(f'HDC lost execution acknowledgement. Check {remote}/tool.exitcode. Board lock owner {token}', flush=True)
         elif held:
             _release_global(hdc, GLOBAL_LOCK, token)
+    return receipt
 
 
 def read_case(run, name, fixture):
