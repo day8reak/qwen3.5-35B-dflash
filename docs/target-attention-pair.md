@@ -1,5 +1,25 @@
 # Target Prefill：分别验证 Linear Attention 与 Full Attention
 
+## L0 完整 Linear Attention 的 CPU SiLU 对照
+
+78 上运行以下脚本。它从原始四个 attention 的 AIR 批次提取完整 L0、权重、实测输入和 310P 的 `golden_hidden`。可用 `ATTENTION_AIR` 指定已有批次的 `air` 目录。默认批次已清理时，脚本沿用 `TARGET_SOURCE`、`CPRO_SOURCE` 及原有 conda 环境重新采集和导出。
+
+```bash
+cd "${REPO_DIR:?}"
+git pull --ff-only origin main
+bash targets/cpro/scripts/l0_attention_cpu_silu_78.sh
+```
+
+53 上用已有 DDK、GDR 和 HDC 环境运行以下脚本。脚本从 78 拉取该批次，编译原版和 CPU SiLU 版各一张完整的 L0 OMC，调用板上的 `model_run_tool_internal` 各执行一次。实验版替换卷积后的 SiLU 和门控 SiLU。编译后会检查两处 `sigmoid(x) * x` 的 CPUCL 归属和 FP32 dtype。
+
+```bash
+cd "${REPO_DIR:?}"
+git pull --ff-only origin main
+bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh
+```
+
+运行目录在开头的 `L0 attention A/B` 一行。两组按相同输入和 310P golden 比较 `out_proj` 的前 19 行。终端显示 valid19 和 token18，`comparison.csv` 保存每个有效 token 的五项指标、MAE、最大绝对误差、超差元素数及比例。两个 `delta_*_pp` 列表示实验组减原版的百分点差。逐元素容差为 `rtol=1e-3, atol=1e-5`，允许超差比例为 0.1%。
+
 L0–L2 的 310P 与 CPro 逐张量对比见 [GDR、RMSNorm 和门控乘法](target-gdr-prefill-stages.md)。
 
 用同一次真实 Prefill 的模块输入和旧缓存，分别运行 L0–L2 完整 GDN 与 L3 完整 FullAttention；每张图独立重放，定位模块自身的误差，不包含外部残差、MoE 或跨层误差反馈。

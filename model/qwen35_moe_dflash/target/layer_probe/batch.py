@@ -267,8 +267,12 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
             print('compile', case['id'], flush=True)
             options = {}
             if cpu_silu:
-                from ..prefill_t64.cpu_silu import compile_options, inspect
-                options = compile_options(case['point'], exported, destination.parent)
+                if case['kind'] == 'segment_module_hidden' and case['id'] == 'l00_c00_gdn_layer_hidden_o0':
+                    from ..prefill_t64.attention_cpu_silu import compile_options, inspect
+                    options = compile_options(air, destination.parent)
+                else:
+                    from ..prefill_t64.cpu_silu import compile_options, inspect
+                    options = compile_options(case['point'], exported, destination.parent)
             compiled = compile_existing_air(air, destination, ddk, ddk_id=ddk_id,
                 timeout_seconds=timeout, save_weights_as_external_data=diagnostic or stream_weights,
                 limit_partition_size=False if diagnostic else None, compiler_profile=compiler_profile,
