@@ -16,12 +16,44 @@ def load(path):
     return json.loads(path.read_text())
 
 
-def prepare_case(run, layer, batch, remote_air):
+def decoder_row(batch, layer):
     name = f'l{layer:02d}_c00_decoder_o0'
     row, = [r for r in batch['cases'] if r['id'] == name]
-    if (row['layer'] != layer or row['point'] != 'decoder' or row['status'] != 'EXPORTED'
-            or row['export']['path'] != f'models/{name}/export.json'):
+    if (row['layer'] != layer or row['point'] != 'decoder' or row['phase'] != 'prefill'
+            or row['status'] != 'EXPORTED' or row['export']['path'] != f'models/{name}/export.json'):
         raise ValueError(f'Invalid decoder case: {name}')
+    return row
+
+
+def check_capture(batch, provenance):
+    digest = batch['capture_sha256']
+    if (batch['status'] != 'EXPORTED' or batch['golden_source'] != BASIS
+            or not re.fullmatch(r'[0-9a-f]{64}', digest) or provenance['reference'] != digest
+            or not provenance['sources']):
+        raise ValueError('Expected decoder AIR with a matching T64/valid19 310P capture')
+
+
+def check_pair_air(root):
+    batch = load(root / 'manifest.json')
+    check_capture(batch, load(root / 'source.json'))
+    for layer in (0, 3):
+        metadata = checked(root, decoder_row(batch, layer)['export'])
+        export = load(metadata)
+        for spec in [*export['source_inputs'], export['golden'], export['air']]:
+            checked(metadata.parent, spec)
+        weights = export['weight_files']
+        if not weights:
+            raise ValueError(f'{metadata}: missing FileConstant weights')
+        for name, size in _payloads(metadata.parent, export).items():
+            path = metadata.parent / name
+            if not path.is_file() or path.stat().st_size != size:
+                raise ValueError(f'Incomplete decoder AIR payload: {path}')
+    print(f'Complete L0 and L3 decoder fixtures ready: {root}', flush=True)
+
+
+def prepare_case(run, layer, batch, remote_air):
+    row = decoder_row(batch, layer)
+    name = row['id']
     air = run / 'air'
     if not air.is_dir():
         _pull(air, air, remote_air / 'models' / name)
@@ -130,9 +162,13 @@ def select_board(baseline, digest, trace):
 
 
 def run_pair(root, remote_air, baseline, ddk, source, diagnosis, tool, trace=None):
-    base = load(baseline / 'air/manifest.json')
     digest = whole_run.kernel_identity(ddk, source)
-    selected = select_board(baseline, digest, trace)
+    if baseline:
+        selected = select_board(baseline, digest, trace)
+    else:
+        _, device, server = _environment()
+        selected = dict(device=device, server=server, gdr_source_sha256=digest)
+        print(f'Decoder board {device} via {server}. Installed GDR SHA256 {digest}.', flush=True)
     batch_path = root / 'source/manifest.json'
     if not batch_path.exists():
         _pull(batch_path, batch_path.parent, remote_air)
@@ -141,10 +177,11 @@ def run_pair(root, remote_air, baseline, ddk, source, diagnosis, tool, trace=Non
         _pull(provenance_path, provenance_path.parent, remote_air)
     provenance = load(provenance_path)
     batch = load(batch_path)
-    if (batch['status'] != 'EXPORTED' or batch['golden_source'] != BASIS
-            or batch['capture_sha256'] != base['reference'] or provenance['reference'] != base['reference']
-            or provenance['sources'] != base['source']):
-        raise ValueError('Decoder export must match the 40-layer run’s CPro sources and 310P capture')
+    check_capture(batch, provenance)
+    if baseline:
+        base = load(baseline / 'air/manifest.json')
+        if batch['capture_sha256'] != base['reference'] or provenance['sources'] != base['source']:
+            raise ValueError('Decoder export must match the 40-layer run’s CPro sources and 310P capture')
     rows = {}
     for layer in (0, 3):
         key = f'L{layer}'

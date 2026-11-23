@@ -44,7 +44,15 @@ def abi(model, ddk, meta):
     contract = meta.get('output_contract', {'stage_views': {output['name']: [[width], [1, width]]}})
     if 'trace_layers' in meta:
         contract['required_dtypes'] = {'0': 'float32'}
-    return bind_compiled(graph, meta['inputs'], output, _enum_fields(schema), contract)
+    io = bind_compiled(graph, meta['inputs'], output, _enum_fields(schema), contract)
+    if meta['kind'] == 'single-cpro-decoder':
+        from collections import Counter
+        from ...toolchain.omc_cpu_inspect import _attr
+        nodes = graph['graph'][0]['op']
+        owners = Counter(_attr(op, 'cl_name').get('s', 'UNKNOWN') for op in nodes if op['type'] == 'GraphOp')
+        io['graphop_counts'] = dict(owners)
+        print(f"Compiled L{meta['layer']} decoder GraphOp placement: {dict(owners)}", flush=True)
+    return io
 
 
 def shared_assets(air, meta, baseline, digest):
