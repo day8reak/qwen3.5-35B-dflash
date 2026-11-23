@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pull exported files or directories to the same absolute paths on the receiving host."""
 import argparse
+from contextlib import contextmanager
 import fcntl
 import getpass
 import inspect
@@ -96,6 +97,26 @@ def pull(sftp, path, remote=None):
     print(f'Received {path}', flush=True)
 
 
+@contextmanager
+def connection(config, role):
+    import paramiko
+    if config.stat().st_mode & 0o077:
+        raise ValueError(f'Settings contain SSH credentials. Set permissions with chmod 600 {config}')
+    with config.open() as stream:
+        endpoint = json.load(stream)[role]
+    # Reuse OpenSSH's known keys. Remember new hosts alongside the private settings.
+    known = config.with_name('transfer.known_hosts')
+    known.touch(mode=0o600, exist_ok=True)
+    with paramiko.SSHClient() as client:
+        client.load_system_host_keys()
+        client.load_host_keys(str(known))
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        password = endpoint.get('password') or None
+        client.connect(endpoint['host'], port=int(endpoint.get('port', 22)), username=endpoint['user'],
+                       password=password, look_for_keys=not password, allow_agent=not password, timeout=20)
+        yield client
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
@@ -130,10 +151,6 @@ def main():
             share_for_transfer(path)
             print(f'Transfer permissions ready: {path}')
         return
-    if config.stat().st_mode & 0o077:
-        raise ValueError(f'Settings contain SSH credentials. Set permissions with chmod 600 {config}')
-    with config.open() as stream:
-        endpoint = json.load(stream)[args.source]
     roots = []
     for variable in ('AI_RUN_DIR', 'REPO_DIR'):
         value = os.environ.get(variable)
@@ -144,17 +161,7 @@ def main():
     targets = paths if args.to is None else [destination(args.to, roots)]
     if any(path == config or path in config.parents for path in [*paths, *targets]):
         raise ValueError('The destination includes the private transfer settings')
-    import paramiko
-    # Reuse OpenSSH's known keys. Remember new hosts alongside the private settings.
-    known = config.with_name('transfer.known_hosts')
-    known.touch(mode=0o600, exist_ok=True)
-    with paramiko.SSHClient() as client:
-        client.load_system_host_keys()
-        client.load_host_keys(str(known))
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        password = endpoint.get('password') or None
-        client.connect(endpoint['host'], port=int(endpoint.get('port', 22)), username=endpoint['user'],
-                       password=password, look_for_keys=not password, allow_agent=not password, timeout=20)
+    with connection(config, args.source) as client:
         with client.open_sftp() as sftp:
             sftp.get_channel().settimeout(120)
             for path, target in zip(paths, targets):

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 import sys
@@ -263,6 +264,10 @@ def generate(args):
             if values[name].dtype == np.float32:
                 originals[name] = values[name]
                 values[name] = values[name].astype('<f2')
+    write_case(root, values, source, ids=ids, originals=originals, context=context, length=length)
+
+
+def write_case(root, values, source, *, ids=None, originals=None, context=None, length=None, existing_air=None):
     for name, tensor in values.items():
         dtype = np.dtype('<i2' if name == 'effective_length' else '<f2')
         if list(tensor.shape) != shapes(name)[0] or tensor.dtype != dtype:
@@ -274,7 +279,10 @@ def generate(args):
         (stage / 'inputs').mkdir(parents=True)
         (stage / 'cpu').mkdir()
         air = stage / 'gdr_t64.air'
-        air.write_bytes(build_air())
+        if existing_air is None:
+            air.write_bytes(build_air())
+        else:
+            shutil.copyfile(existing_air, air)
 
         def write_tensor(folder, name, tensor):
             path = stage / folder / (name + '.bin')
@@ -308,7 +316,8 @@ def generate(args):
         if context is not None:
             save_context(stage, context, source['kind'])
         describe_inputs(stage)
-        share_for_transfer(stage)
+        if existing_air is None:
+            share_for_transfer(stage)
         stage.rename(root)
     if ids is not None:
         print(f'310P padded input_ids SHA256 (int32): {source["input_ids_i32_sha256"]}')
