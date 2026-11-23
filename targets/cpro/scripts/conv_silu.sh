@@ -5,6 +5,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage: conv_silu.sh prepare|board|extract|compile [--step NAME] [--layer 0|3] [run-directory]
+       conv_silu.sh report RUN_DIRECTORY [--step NAME] [--runner model-tool|probe]
        conv_silu.sh list [--layer 0|3]
 board uses the device model_run_tool_internal (V2) by default; use --runner probe for repeated calls.
 For an FP32 CPUCL SiLU control, add --cpu-silu to board.
@@ -18,10 +19,10 @@ EOF
 action="${1:-}"
 case "$action" in
     --help|-h) usage; exit 0 ;;
-    prepare|board|extract|compile|list) shift ;;
+    prepare|board|extract|compile|report|list) shift ;;
     *) usage >&2; exit 2 ;;
 esac
-step=qkv_conv_silu
+step=
 layer=
 directory=
 inputs=()
@@ -46,12 +47,12 @@ REPO_DIR="$(cd -- "$script_dir/../../.." && pwd)"
 export REPO_DIR
 table="$REPO_DIR/specs/attention-step-presets.csv"
 if (( ${#cpu_silu[@]} )) && [[ "$action" != board || "${layer:-0}" != 0 ||
-    ( "$step" != qkv_conv_silu && "$step" != gate_silu && "$step" != silu_output ) ]]; then
+    ( "${step:-qkv_conv_silu}" != qkv_conv_silu && "$step" != gate_silu && "$step" != silu_output ) ]]; then
     echo '--cpu-silu requires board and an L0 SiLU step' >&2
     exit 2
 fi
-if (( ${#runner[@]} )) && [[ "$action" != board ]]; then
-    echo '--runner is used with board' >&2; exit 2
+if (( ${#runner[@]} )) && [[ "$action" != board && "$action" != report ]]; then
+    echo '--runner is used with board or report' >&2; exit 2
 fi
 if [[ "$action" == list ]]; then
     awk -F, -v layer="$layer" 'NR>1 && (layer=="" || $1==layer) {
@@ -64,12 +65,6 @@ layer="${layer:-0}"
 if [[ "$layer" == 0 ]]; then
     case "$step" in rms_output) step=gated_rmsnorm ;; silu_output) step=gate_silu ;; out_proj_only) step=out_proj ;; esac
 fi
-mode="$(awk -F, -v layer="$layer" -v name="$step" '$1==layer && $2==name { print ($0 ~ /,prepare \/ board,/ ? "matrix" : "slice") }' "$table")"
-if [[ -z "$mode" ]]; then echo "Unknown L$layer step '$step'. See: $0 list --layer $layer" >&2; exit 2; fi
-if [[ "$mode" != matrix && ( "$action" == prepare || "$action" == board ) ]]; then
-    echo "L$layer $step has no automatic three-backend fixture. Use $0 extract --layer $layer --step $step on 78 and compile on 35." >&2
-    exit 2
-fi
 if (( ${#inputs[@]} )) && [[ "$action" != extract ]]; then
     echo '--input is used with extract' >&2
     exit 2
@@ -77,8 +72,6 @@ fi
 
 tool="$REPO_DIR/targets/cpro/tools/attention_step.py"
 tests="${AI_RUN_DIR:?}/target/tests"
-tag="l$layer-${step//_/-}"
-fixture="$tests/$tag-t64-valid19-01"
 # Show expanded shell commands and propagate tracing to the Python tools.
 export QWEN35_TRACE_COMMANDS=1
 PS4='+ [host] '
@@ -93,6 +86,23 @@ in_env() {
     fi
 }
 
+if [[ "$action" == report ]]; then
+    : "${directory:?report needs the existing board run directory}"
+    if [[ "$layer" != 0 ]]; then echo 'Single-step matrix reports cover L0' >&2; exit 2; fi
+    report_args=()
+    if [[ -n "$step" ]]; then report_args+=(--step "$step"); fi
+    in_env custom_pypto python -u "$tool" report --run "$directory" "${report_args[@]}" "${runner[@]}"
+    exit 0
+fi
+step="${step:-qkv_conv_silu}"
+tag="l$layer-${step//_/-}"
+fixture="$tests/$tag-t64-valid19-01"
+mode="$(awk -F, -v layer="$layer" -v name="$step" '$1==layer && $2==name { print ($0 ~ /,prepare \/ board,/ ? "matrix" : "slice") }' "$table")"
+if [[ -z "$mode" ]]; then echo "Unknown L$layer step '$step'. See: $0 list --layer $layer" >&2; exit 2; fi
+if [[ "$mode" != matrix && ( "$action" == prepare || "$action" == board ) ]]; then
+    echo "L$layer $step has no automatic three-backend fixture. Use $0 extract --layer $layer --step $step on 78 and compile on 35." >&2
+    exit 2
+fi
 if [[ "$action" == prepare || "$action" == extract ]]; then
     fixture="${directory:-$fixture}"
     source_air="${ATTENTION_AIR:-$tests/attention4-t64-valid19-v1024-qlate-01/air}"

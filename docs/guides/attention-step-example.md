@@ -38,6 +38,18 @@ ls "$R/v2/output.bin" "$R/v2/matrices.csv"
 
 已有 probe 运行目录也可以作为 `board` 的最后一个参数，沿用原来的 step 和 `--cpu-silu` 设置。脚本复用 OMC，把 V2 结果单独写到 `v2/`。旧 probe 的板端命令保存在 `execution/launch.sh`。
 
+## 在 35 离线核对逐元素超差率
+
+把 `R` 设为上一次 `board` 打印的运行目录。下面的命令直接读取已回收的输出，默认从 AIR 清单识别 step；同时保存两种 runner 结果时可指定 `--runner probe` 查看旧 probe。
+
+```bash
+bash targets/cpro/scripts/conv_silu.sh report "${R:?请指定已有的 board run 目录}"
+```
+
+终端列出 CPU、310P、CPro 各自的输出文件、shape、dtype，并显示以 310P 或 CPU 为 golden 的 CPro 超差数、总数、比例和百分比。每个范围分别按矩阵的 `rtol=1e-3` 和手工脚本的 `rtol=1e-2` 计算，两行都用 `atol=1e-5`、`equal_nan=True`、允许超差占比 `≤0.001`。矩阵保留 `1e-3` 的定义，脚本按元素核对 valid19 和 token18 的超差计数。
+
+手工复算时按各自的 dtype 读取两个文件，用 `np.isclose(cpro, golden, ...)`。T64 包含 padding，valid19 只取序列位置 0–18。卷积分支的 `[1, 8192, 64]` 按 `x[..., :19]` 取有效行，门控分支按 `x.reshape(64, -1)[:19]` 取有效行。单测 SiLU 时直接比较 SiLU 输出。手工脚本若在长度等于 77,824 时额外调用 gated RMSNorm，得到的是再做一次归一化和门控后的指标。
+
 ## 用同一份输入在板端 CPU 上对照 SiLU
 
 在 35 运行。脚本先查 35，再查 78。门控 SiLU 可直接复用旧三算子目录 `$AI_RUN_DIR/target/tests/gdn-op-matrix-l0-valid19-01/air`，只取该步的 AIR、输入和参考输出。自定义路径可在 35 设置 `AIR_ON_35` 或 `AIR_ON_78`。两边都已清理时，先在 78 运行 `bash targets/cpro/scripts/conv_silu.sh prepare --step gate_silu`。卷积分支用 `conv_out.bin`，门控分支用 `tail_z.bin`。

@@ -128,7 +128,8 @@ def main():
     execute.add_argument('--cpu-silu', action='store_true', help='run FP32 CPUCL SiLU with the original input bytes')
     report = actions.add_parser('report', help='35: recompute the selected matrices from retained outputs')
     report.add_argument('--runner', choices=('model-tool', 'probe'), help='default: V2 if present, otherwise probe')
-    for sub in (prep, execute, report):
+    report.add_argument('--step', choices=NATIVE_STEPS, help='default: read the step from the saved AIR manifest')
+    for sub in (prep, execute):
         sub.add_argument('--step', choices=NATIVE_STEPS, default=qkv_silu.STAGE)
     for sub in (cut, compile_cmd, prep, execute, report):
         sub.add_argument('--run', type=Path, required=True)
@@ -158,9 +159,16 @@ def main():
         else:
             ops.prepare(run, source_air, source, args.config, stages=(stage,))
     else:
-        stage = NATIVE_STEPS[args.step]
+        if args.action == 'report' and args.step is None:
+            manifest = json.loads((run/'air/manifest.json').read_text())
+            points = [case['point'] for case in manifest['cases']]
+            if len(points) != 1 or points[0] not in NATIVE_STEPS.values():
+                raise ValueError(f'{run}: expected one supported attention step, found {points}')
+            stage, = points
+        else:
+            stage = NATIVE_STEPS[args.step]
         role, basis = ('conv_out', qkv_silu.BASIS) if stage == qkv_silu.STAGE else (ops.ROLES[stage], ops.BASIS)
-        scores = partial(ops.summarize, roles={stage: role}, basis=basis)
+        scores = partial(ops.summarize, roles={stage: role}, basis=basis, audit_ratios=True)
         if args.action == 'report':
             v2 = args.runner == 'model-tool' if args.runner else (run/'v2/result.json').is_file()
             ok = scores(run, v2=v2)

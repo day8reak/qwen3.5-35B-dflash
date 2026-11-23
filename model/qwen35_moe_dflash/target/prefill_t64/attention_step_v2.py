@@ -112,7 +112,10 @@ def read_case(run, name, fixture):
     out = run/'v2'
     receipt = read_json(out/'result.json')
     case, = fixture['cases']
-    if (receipt['status'] != 'EXECUTED' or receipt['case'] != name or case['case'] != name
+    if receipt['status'] != 'EXECUTED':
+        raise ValueError(f"Cannot compare V2 output: {receipt['status']} in {out/'result.json'}. "
+                         f"{receipt.get('error', '')}")
+    if (receipt['case'] != name or case['case'] != name
             or receipt['fixture_sha256'] != sha(out/'fixture/manifest.json')
             or fixture['source_evidence']['compile_sha256'] != sha(run/'omc/compile.json')
             or receipt['omc_sha256'] != case['model']['sha256']):

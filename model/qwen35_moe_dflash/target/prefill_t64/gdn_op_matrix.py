@@ -10,6 +10,7 @@ import tempfile
 
 import numpy as np
 
+from ...common.accuracy import ELEMENTWISE_TOLERANCE, ERROR_RATIO_LIMIT
 from ...common.artifacts import share_for_transfer
 from ...common.command_trace import note
 from ..layer_probe.common import KIND, checked, identity, metrics, read_array, save_json, sha
@@ -267,12 +268,44 @@ def prepare(run, source_air, source, config, *, stages=tuple(ROLES)):
     print(target/'boundaries.json', flush=True)
 
 
-def matrix_rows(stage, outputs, *, token_axis=None):
+def step_rows(stage, value, token_axis):
+    if token_axis is not None:
+        return token_rows(value, token_axis)
     width = 2048 if stage == 'out_proj_only' else 4096
-    if token_axis is None:
-        values = {k: outputs[k].reshape(64, width)[:19] for k in BACKENDS}
-    else:
-        values = {k: token_rows(outputs[k], token_axis)[:19] for k in BACKENDS}
+    return value.reshape(64, width)
+
+
+def print_error_ratios(stage, outputs, paths, token_axis):
+    rtol = ELEMENTWISE_TOLERANCE['rtol']
+    print(f"\n{stage}  np.isclose(actual, golden)  numpy={np.__version__}  "
+          f"matrix_rtol={rtol:g}  diagnostic_rtol=0.01  atol={ELEMENTWISE_TOLERANCE['atol']}  equal_nan={ELEMENTWISE_TOLERANCE['equal_nan']}  "
+          f"max_error_ratio={ERROR_RATIO_LIMIT:g}", flush=True)
+    for backend in BACKENDS:
+        tensor = outputs[backend]
+        print(f"{backend:4}  {tensor.dtype}  {list(tensor.shape)}  {paths[backend]}")
+    layout = 'reshape(64, -1)' if token_axis is None else f'moveaxis({token_axis}, 0).reshape(64, -1)'
+    print(f"token rows: {layout}; valid19=rows[0:19], token18=rows[18]")
+    print('actual/golden  scope       rtol   mismatched/total    error_ratio     percent   pass')
+    strict_counts = {}
+    rows = {key: step_rows(stage, value, token_axis) for key, value in outputs.items()}
+    for ref in ('310p', 'cpu'):
+        for scope, positions in [('T64', slice(None)), ('valid19', slice(0, 19)), ('token18', 18)]:
+            actual = rows['cpro'][positions].reshape(-1)
+            golden = rows[ref][positions].reshape(-1)
+            for tol in (rtol, 1e-2):
+                with np.errstate(invalid='ignore', over='ignore', under='ignore'):
+                    close = np.isclose(actual, golden, **dict(ELEMENTWISE_TOLERANCE, rtol=tol))
+                count = int(np.count_nonzero(~close))
+                ratio = count / golden.size
+                if tol == rtol:
+                    strict_counts[scope, ref] = count
+                print(f"cpro/{ref:4}      {scope:7}  {tol:6g}  {count:7}/{golden.size:<7}  "
+                      f"{ratio:12.9f}  {ratio:9.4%}   {ratio <= ERROR_RATIO_LIMIT}", flush=True)
+    return strict_counts
+
+
+def matrix_rows(stage, outputs, *, token_axis=None):
+    values = {k: step_rows(stage, outputs[k], token_axis)[:19] for k in BACKENDS}
     for token in (None, *range(19)):
         scope = 'valid19' if token is None else f'token{token}'
         scores = {}
@@ -287,7 +320,7 @@ def matrix_rows(stage, outputs, *, token_axis=None):
                            **{ref: scores[actual, ref][field] for ref in BACKENDS})
 
 
-def summarize(run, *, roles=None, basis=BASIS, v2=False):
+def summarize(run, *, roles=None, basis=BASIS, v2=False, audit_ratios=False):
     from .segment_trace_compare import board_case
 
     air = run/'air'
@@ -320,10 +353,22 @@ def summarize(run, *, roles=None, basis=BASIS, v2=False):
                 if gold[stage].dtype != native.dtype or gold[stage].tobytes() != native.tobytes():
                     raise ValueError(f'{stage}: board fixture and 310P output disagree')
                 outputs = {'cpu': read_array(folder, spec['cpu']), '310p': native, 'cpro': board[stage]}
-                for row in matrix_rows(stage, outputs, token_axis=spec.get('token_axis')):
+                axis = spec.get('token_axis')
+                if audit_ratios:
+                    board_output = execution/'output.bin' if v2 else run/'recovery/native'/case_id(stage)/'0.bin'
+                    paths = {'cpu': folder/spec['cpu']['path'], '310p': folder/spec['golden']['path'],
+                             'cpro': board_output}
+                    strict_counts = print_error_ratios(stage, outputs, paths, axis)
+                for row in matrix_rows(stage, outputs, token_axis=axis):
                     writer.writerow(row)
                     if row['scope'] not in ('valid19', 'token18'):
                         continue
+                    if audit_ratios and row['metric'] == 'mismatched_elements' and row['actual'] == 'cpro':
+                        for ref in ('310p', 'cpu'):
+                            direct = strict_counts[row['scope'], ref]
+                            if row[ref] != direct:
+                                raise ValueError(f"{stage} {row['scope']} cpro/{ref}: matrix mismatch count "
+                                                 f"{row[ref]} differs from direct np.isclose count {direct}")
                     if row['metric'] in ('cosine','relative_l2','error_ratio'):
                         if row['actual'] == 'cpu':
                             print(f"\n{stage}  {row['scope']}  {row['metric']}\nactual\\reference          CPU           310P           CPro")
