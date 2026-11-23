@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Replay the existing T64 GDR AIR with the AIR host's GDN-acc/input files and return device outputs."""
 import argparse
+import fcntl
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 
 import numpy as np
@@ -18,7 +21,7 @@ sys.path.insert(0, str(HERE.parent / 'scripts'))
 from pull_artifacts import DEFAULT_CONFIG, connection
 from export_gdr_t64 import INPUTS, write_case
 from qwen35_moe_dflash.common.artifacts import output_path
-from qwen35_moe_dflash.target.layer_probe.common import checked, identity, new_output, save_json, sha
+from qwen35_moe_dflash.target.layer_probe.common import checked, identity, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64 import standalone_gdr as gdr
 from qwen35_moe_dflash.target.prefill_t64.gdr_stage_data import shapes
 
@@ -58,35 +61,64 @@ def input_names(available, explicit):
     return result
 
 
-def prepare(run, config, tests, air_path, input_dir, explicit):
-    incoming = new_output(run / 'download')
+def absolute_remote_path(value):
+    path = PurePosixPath(value)
+    if not path.is_absolute() or '..' in path.parts or path == PurePosixPath('/'):
+        raise argparse.ArgumentTypeError('expected an absolute path on the AIR host')
+    return path
+
+
+def fetch(sftp, remote, local, expected_bytes=None):
+    print(f'78 {remote} -> 35 {local}', flush=True)
+    try:
+        size = sftp.stat(str(remote)).st_size
+        if expected_bytes is not None and size != expected_bytes:
+            raise ValueError(f'78 {remote}: expected {expected_bytes} bytes, found {size}')
+        digest = remote_hash(sftp, remote)
+        if local.is_file() and local.stat().st_size == size and sha(local) == digest:
+            print(f'Reusing verified {local.name} ({size} bytes)', flush=True)
+            return digest
+        with tempfile.TemporaryDirectory(dir=local.parent) as tmp:
+            downloaded = Path(tmp) / local.name
+            sftp.get(str(remote), str(downloaded))
+            if downloaded.stat().st_size != size or sha(downloaded) != digest:
+                raise ValueError(f'{remote}: size or SHA256 differs after transfer to {downloaded}')
+            downloaded.replace(local)
+    except OSError as exc:
+        raise RuntimeError(f'Transfer from 78 {remote} to 35 {local} failed: {exc}') from exc
+    print(f'Verified {local.name} ({size} bytes)', flush=True)
+    return digest
+
+
+def list_inputs(sftp, folder):
+    print(f'Listing input directory on 78: {folder}', flush=True)
+    try:
+        return sorted(sftp.listdir(str(folder)))
+    except OSError as exc:
+        raise RuntimeError(f'Cannot list input directory on 78: {folder} ({exc}). '
+                           'Set --input-dir to the directory containing the seven bins.') from exc
+
+
+def prepare(run, config, tests, air_path, input_dir, explicit, output_dir):
+    incoming = run / 'download'
+    incoming.mkdir(mode=0o700, exist_ok=True)
     values, bindings = {}, {}
     with connection(config, 'air') as client, client.open_sftp() as sftp:
         sftp.get_channel().settimeout(120)
+        names = input_names(list_inputs(sftp, input_dir), explicit)
         air_path = air_path or find_air(client, sftp, tests)
         local_air = incoming / 'gdr_t64.air'
-        print(f'Pulling AIR {air_path}', flush=True)
-        sftp.get(str(air_path), str(local_air))
-        if sha(local_air) != remote_hash(sftp, air_path):
-            raise ValueError('AIR digest changed during transfer')
-        names = input_names(sorted(sftp.listdir(str(input_dir))), explicit)
+        fetch(sftp, air_path, local_air)
         for role, name in zip(INPUTS, names, strict=True):
             remote = input_dir / name
             local = incoming / (role + '.bin')
             shape = shapes(role)[0]
             dtype = np.dtype('<i2' if role == 'effective_length' else '<f2')
-            size = int(np.prod(shape)) * dtype.itemsize
-            if sftp.stat(str(remote)).st_size != size:
-                raise ValueError(f'{remote}: expected {size} bytes for {dtype} {shape}')
-            sftp.get(str(remote), str(local))
-            digest = sha(local)
-            if digest != remote_hash(sftp, remote):
-                raise ValueError(f'{remote}: input digest changed during transfer')
+            digest = fetch(sftp, remote, local, int(np.prod(shape)) * dtype.itemsize)
             values[role] = np.fromfile(local, dtype=dtype).reshape(shape)
             bindings[role] = dict(path=str(remote), sha256=digest)
-            print(f'{role} <- {remote} ({size} bytes)', flush=True)
-    write_case(run / 'case', values, dict(kind='supplied_gdr_inputs', air=str(air_path), files=bindings),
-               existing_air=local_air)
+    write_case(run / 'case', values, dict(kind='supplied_gdr_inputs', air=str(air_path), files=bindings,
+               input_dir=str(input_dir), output_dir=str(output_dir)), existing_air=local_air)
     gdr.bundle(run / 'case')
 
 
@@ -136,11 +168,33 @@ def collect(run):
     return result
 
 
+def ensure_remote_directory(sftp, directory):
+    try:
+        attrs = sftp.stat(str(directory))
+    except FileNotFoundError:
+        if directory == directory.parent:
+            raise
+        ensure_remote_directory(sftp, directory.parent)
+        try:
+            sftp.mkdir(str(directory))
+            return
+        except OSError as exc:
+            # An SFTP server may report a concurrent mkdir as a generic failure.
+            try:
+                attrs = sftp.stat(str(directory))
+            except OSError:
+                raise OSError(f'Cannot create output directory on 78: {directory} ({exc})') from exc
+    if not stat.S_ISDIR(attrs.st_mode):
+        raise NotADirectoryError(f'Expected a directory on 78: {directory}')
+
+
 def publish(config, result, dest, run_name):
     manifest = gdr.read(result / 'manifest.json')
     files = [checked(result, spec) for spec in [*manifest['outputs'], manifest['accuracy']]] + [result / 'manifest.json']
     with connection(config, 'air') as client, client.open_sftp() as sftp:
         sftp.get_channel().settimeout(120)
+        print(f'Publishing board results to 78: {dest}', flush=True)
+        ensure_remote_directory(sftp, dest.parent)
         for directory in (dest, dest / run_name):
             try:
                 previous = sftp.listdir(str(directory))
@@ -168,10 +222,29 @@ def publish(config, result, dest, run_name):
         print(f'Verified device outputs on 78: {dest}', flush=True)
 
 
+def prepare_download(run, config, tests, air, inputs, files, destination):
+    run.mkdir(mode=0o700, parents=True, exist_ok=True)
+    token = os.open(run, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            fcntl.flock(token, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError(f'A download is already active in {run}') from exc
+        if any(p.name != 'download' for p in run.iterdir()) or (run / 'download').is_symlink():
+            raise ValueError(f'{run} already contains more than a partial download. '
+                             'Use --publish-only for a recovered run or select a fresh --run for new inputs.')
+        prepare(run, config, tests, air, inputs, files, destination)
+    finally:
+        os.close(token)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--run', type=Path, required=True, help='new working directory on the DDK host')
-    parser.add_argument('--air', type=PurePosixPath, help='explicit path on the AIR host')
+    parser.add_argument('--run', type=Path, required=True, help='new or download-only working directory on the DDK host')
+    parser.add_argument('--air', type=absolute_remote_path, help='absolute path to the standalone GDR AIR file on 78')
+    parser.add_argument('--input-dir', type=absolute_remote_path, help='absolute directory of seven input bins on 78')
+    parser.add_argument('--output-dir', type=absolute_remote_path, help='absolute destination directory on 78 '
+                        '(default: AI_RUN_DIR/target/tests/GDN-acc/gdr)')
     parser.add_argument('--input-files', nargs=7, metavar='BIN', help='filenames in query key value g beta initial_state effective_length order')
     parser.add_argument('--transfer-config', type=Path, default=DEFAULT_CONFIG)
     parser.add_argument('--publish-only', action='store_true', help='retry extraction/upload of an already recovered run')
@@ -180,6 +253,8 @@ def main():
     parser.add_argument('--runtime-config', type=Path, default=os.getenv('RUNTIME_CONFIG'))
     parser.add_argument('--tbe-diagnosis', type=Path, default=os.getenv('TBE_DIAGNOSIS'))
     args = parser.parse_args()
+    if args.publish_only and (args.air or args.input_dir or args.input_files):
+        parser.error('--publish-only reads the recovered run; use --output-dir to change its destination')
     run = output_path(args.run)
     tests = Path(os.environ['AI_RUN_DIR']).resolve() / 'target/tests'
     remote = PurePosixPath(tests) / 'GDN-acc'
@@ -190,8 +265,8 @@ def main():
         config = gdr.read(runtime)
         ddk_id = gdr.read(runtime.parent / config['assets'])['environment']['ddk_id']
         diagnosis = args.tbe_diagnosis or tests.parents[1] / 'common/tbe-diagnosis'
-        new_output(run)
-        prepare(run, args.transfer_config, tests, args.air, remote / 'input', args.input_files)
+        prepare_download(run, args.transfer_config, tests, args.air, args.input_dir or remote / 'input',
+                         args.input_files, args.output_dir or remote / 'gdr')
         ddk = args.ddk_root.resolve()
         gdr.compile_case(run / 'case', run / 'omc', ddk, ddk_id, args.gdr_source.resolve(), diagnosis)
         validate = [sys.executable, str(HERE / 'validate_draft_vector.py')]
@@ -200,7 +275,10 @@ def main():
         recovery = subprocess.run([*validate, '--recover', run / 'execution', '--wait', '--output', run / 'recovery'])
         if recovery.returncode and not (run / 'recovery/result.json').is_file():
             recovery.check_returncode()
-    publish(args.transfer_config, collect(run), remote / 'gdr', run.name)
+    result = collect(run)
+    recorded = gdr.read(result / 'manifest.json')['source'].get('output_dir')
+    destination = args.output_dir or (PurePosixPath(recorded) if recorded else remote / 'gdr')
+    publish(args.transfer_config, result, destination, run.name)
 
 
 if __name__ == '__main__':
