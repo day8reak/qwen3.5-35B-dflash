@@ -158,7 +158,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         receipt['exitcode'] = int(code)
         uncertain = False
         if receipt['exitcode']:
-            raise RuntimeError(f'HIAI V2 exited {code} in {remote}\n{log}')
+            raise RuntimeError(f'{name}: HIAI V2 exited {code} in {remote}. Receipt: {out}/result.json\n{log}')
         size_filter = f" -size {outputs[0]['bytes']}c" if len(outputs) == 1 else ''
         _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f{size_filter} -exec sha256sum {{}} \\;', 'output-hash')
         hash_by_file = {name[2:]: digest for digest, name in

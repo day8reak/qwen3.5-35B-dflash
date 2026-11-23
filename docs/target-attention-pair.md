@@ -33,6 +33,14 @@ L0_SILU_RUN="$R" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --retry-f
 
 ### 在板上拆开执行两处 SiLU
 
+只测 CPU SiLU 时，在 53 上把 `R` 设为已有 L0 实验目录，执行：
+
+```bash
+L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --cpu-only
+```
+
+这条命令编译或复用 `prefix`、`cpu_silu`、`suffix` 三张 OMC。若同一板上已有匹配 OMC 和输入的完整前缀结果，会校验并复用两个输出。板端 CPUCL 接着计算卷积和门控两处 SiLU，NPU 后半图计算到 L0 的 `out_proj`。本次 `split-silu-*/comparison.csv` 中的 `split_cpu_vs_310p` 是与已有 310P golden 的比较，涵盖 valid19 和各个有效 token。
+
 在 53 的已有 L0 实验目录运行下面这条命令。脚本复用 78 的 AIR、输入和 310P golden，以及原始整张 L0 OMC 的板端结果。每次分段实验保存到单独的 `split-silu-*/` 目录。
 
 ```bash

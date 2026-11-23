@@ -120,7 +120,7 @@ def audit(run):
                           **audit_graphs(original, candidate)), indent=2), flush=True)
 
 
-def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=False, split_silu=False):
+def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=False, split_silu=False, cpu_only=False):
     from qwen35_moe_dflash.target.layer_probe.batch import compile_batch
     from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import execute
     from pull_artifacts import DEFAULT_CONFIG, connection, pull
@@ -144,6 +144,9 @@ def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=F
     if path.exists() and load(path) != stamp:
         raise ValueError(f'Experiment inputs or compiler changed. Select a fresh run: {path}')
     save_json(path, stamp)
+    if cpu_only:
+        from qwen35_moe_dflash.target.prefill_t64.silu_split_run import split_run
+        return split_run(run, ddk, source, stamp, config, diagnosis, cpu_only=True)
     for name in VARIANTS:
         variant = run/name
         record = variant/'omc/compile.json'
@@ -243,6 +246,8 @@ def main():
     for name in ('run', 'remote_air', 'ddk', 'gdr_source', 'runtime_config', 'tbe_diagnosis'):
         execute.add_argument(name, type=Path)
     mode = execute.add_mutually_exclusive_group()
+    mode.add_argument('--cpu-only', action='store_true',
+                      help='run the split L0 CPU SiLU route against the recorded 310P out_proj only')
     mode.add_argument('--split-silu', action='store_true', help='run independent board SiLU OMCs with shared NPU prefix and suffix')
     mode.add_argument('--retry-failed-compile', action='store_true',
                          help='keep a failed CPU SiLU build and retry it in the same experiment')
@@ -260,7 +265,7 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             board(run, a.remote_air, a.ddk.resolve(), a.gdr_source.resolve(),
                   a.runtime_config.resolve(), a.tbe_diagnosis.resolve(),
-                  retry_failed_compile=a.retry_failed_compile, split_silu=a.split_silu)
+                  retry_failed_compile=a.retry_failed_compile, split_silu=a.split_silu, cpu_only=a.cpu_only)
     else:
         report(output_path(a.run))
 

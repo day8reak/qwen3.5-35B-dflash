@@ -88,17 +88,54 @@ def execute_stage(out, name, build, feeds, runtime, config):
         inputs.append(dict(spec, sha256=source['sha256']))
     out.mkdir()
     receipt = run_v2(out, name, model, inputs, files, io['outputs'], runtime, slot_config=config)
-    return {spec['name']: (checked(out, saved), dict(spec, sha256=saved['sha256'], bytes=saved['bytes']))
-            for spec, saved in zip(io['outputs'], receipt['outputs'], strict=True)}
+    return stage_outputs(out, io, receipt)
 
 
-def compare(work, outputs, golden):
+def stage_outputs(out, io, receipt):
+    values = {}
+    for spec, saved in zip(io['outputs'], receipt['outputs'], strict=True):
+        if saved['bytes'] != spec['bytes']:
+            raise ValueError(f"{out}: wrong byte count for {spec['name']}")
+        values[spec['name']] = (checked(out, saved), dict(spec, sha256=saved['sha256']))
+    return values
+
+
+def saved_prefix(previous, build, feeds, device):
+    model, io = build
+    digest = sha(model)
+    for folder in previous:
+        out = folder/'run-prefix'
+        if not (out/'result.json').is_file() or not (out/'slots.json').is_file():
+            continue
+        receipt = read_json(out/'result.json')
+        if (receipt['status'] != 'EXECUTED' or receipt['case'] != 'prefix'
+                or (receipt['device'], receipt['server']) != tuple(device[1:3])
+                or receipt['omc_sha256'] != digest):
+            continue
+        slots = read_json(out/'slots.json')['inputs']
+        if sorted(s['name'] for s in slots) != sorted(s['name'] for s in io['inputs']):
+            continue
+        if receipt['input_hashes'] != [feeds[s['name']][1]['sha256'] for s in slots]:
+            continue
+        try:
+            values = stage_outputs(out, io, receipt)
+        except (OSError, ValueError) as exc:
+            print(f'Skipping incomplete saved prefix at {out}: {exc}', flush=True)
+            continue
+        print('Reusing board prefix outputs:', out, flush=True)
+        return values
+    return None
+
+
+def compare(work, outputs, golden, *, cpu_only=False):
     rows = []
     native = {}
-    pairs = (('whole_vs_310p', outputs['whole'], golden), ('split_native_vs_310p', outputs['native_silu'], golden),
-             ('split_cpu_vs_310p', outputs['cpu_silu'], golden),
-             ('split_native_vs_whole', outputs['native_silu'], outputs['whole']),
-             ('split_cpu_vs_split_native', outputs['cpu_silu'], outputs['native_silu']))
+    pairs = [('split_cpu_vs_310p', outputs['cpu_silu'], golden)]
+    if not cpu_only:
+        pairs = [('whole_vs_310p', outputs['whole'], golden),
+                 ('split_native_vs_310p', outputs['native_silu'], golden), *pairs,
+                 ('split_native_vs_whole', outputs['native_silu'], outputs['whole']),
+                 ('split_cpu_vs_split_native', outputs['cpu_silu'], outputs['native_silu'])]
     for label, actual, reference in pairs:
         if any(x.dtype != np.float16 or x.shape != (1, 64, 2048) for x in (reference, actual)):
             raise ValueError(f'{label}: unexpected whole L0 output')
@@ -114,14 +151,14 @@ def compare(work, outputs, golden):
                 native[scope] = m
             for key in ('relative_l2', 'error_ratio'):
                 delta = None
-                if label == 'split_cpu_vs_310p' and m[key] is not None and native[scope][key] is not None:
+                if label == 'split_cpu_vs_310p' and scope in native and m[key] is not None and native[scope][key] is not None:
                     delta = 100 * (m[key] - native[scope][key])
                 row['delta_' + key + '_pp'] = delta
             rows.append(row)
             if scope in ('valid19', 'token18'):
                 print(f"{label:26} {scope:7} cosine={m['cosine']} rel_L2={m['relative_l2']} "
                       f"RMSE={m['rmse']} error_ratio={m['error_ratio']} changed_fp16_elements={bits}", flush=True)
-                if label == 'split_cpu_vs_310p':
+                if label == 'split_cpu_vs_310p' and scope in native:
                     print(f"  CPU minus split native (pp): rel_L2={row['delta_relative_l2_pp']} "
                           f"error_ratio={row['delta_error_ratio_pp']}", flush=True)
     with (work/'comparison.csv').open('w', newline='') as stream:
@@ -131,50 +168,56 @@ def compare(work, outputs, golden):
     print('L0 out_proj results:', work/'comparison.csv', flush=True)
 
 
-def split_run(run, ddk, source, stamp, config, diagnosis):
+def split_run(run, ddk, source, stamp, config, diagnosis, *, cpu_only=False):
     device = _environment()
-    original = run/'original'
-    base_inputs, refs, baseline = read_case(original, CASE, read_json(original/'v2/fixture/manifest.json'))
-    base_receipt = read_json(original/'v2/result.json')
-    if (base_receipt['device'], base_receipt['server']) != tuple(device[1:3]):
-        raise ValueError('Split and whole L0 require the same board and HDC server')
     runtime = read_json(config.parent/read_json(config)['assets'])['environment']
     if runtime['ddk_id'] != stamp['ddk_id']:
         raise ValueError('Runtime configuration and whole L0 DDK differ')
     folder, spec, _, _ = source_graph(run/'air', 0)
-    feeds = {}
-    for s in spec['source_inputs']:
-        path = checked(folder, s)
-        if base_inputs[s['semantic_name']] != (s['dtype'], s['shape'], s['sha256']):
-            raise ValueError(f"Whole L0 input differs: {s['semantic_name']}")
-        feeds[s['name']] = (path, s)
+    feeds = {s['name']: (checked(folder, s), s) for s in spec['source_inputs']}
     golden = read_array(folder, spec['golden'])
-    if golden.tobytes() != refs['golden_hidden'].tobytes():
-        raise ValueError('Golden does not match the original whole L0 execution fixture')
-    provenance = dict(**stamp, original_v2_sha256=sha(original/'v2/result.json'))
-    # Earlier versions saved all four compile reports before the first board call.
-    previous = sorted(run.glob('split-silu-*/source.json'), key=lambda p: p.stat().st_mtime_ns, reverse=True)
-    reuse = next((p.parent for p in previous if read_json(p) == provenance
-                  and all((p.parent/s/'report.json').is_file()
-                          and read_json(p.parent/s/'report.json').get('status') == 'COMPILED' for s in STAGES)), None)
+    output = {}
+    provenance = dict(stamp)
+    stages = ('prefix', 'cpu_silu', 'suffix') if cpu_only else STAGES
+    if not cpu_only:
+        original = run/'original'
+        base_inputs, refs, baseline = read_case(original, CASE, read_json(original/'v2/fixture/manifest.json'))
+        base_receipt = read_json(original/'v2/result.json')
+        if (base_receipt['device'], base_receipt['server']) != tuple(device[1:3]):
+            raise ValueError('Split and whole L0 require the same board and HDC server')
+        for s in spec['source_inputs']:
+            if base_inputs[s['semantic_name']] != (s['dtype'], s['shape'], s['sha256']):
+                raise ValueError(f"Whole L0 input differs: {s['semantic_name']}")
+        if golden.tobytes() != refs['golden_hidden'].tobytes():
+            raise ValueError('Golden does not match the original whole L0 execution fixture')
+        provenance['original_v2_sha256'] = sha(original/'v2/result.json')
+        output['whole'] = baseline['golden_hidden']
+    previous = []
+    for path in sorted(run.glob('split-silu-*/source.json'), key=lambda p: p.stat().st_mtime_ns, reverse=True):
+        saved = read_json(path)
+        if all(saved.get(k) == v for k, v in provenance.items()):
+            previous.append(path.parent)
+    reuse = next((p for p in previous if all((p/s/'report.json').is_file()
+                  and read_json(p/s/'report.json').get('status') == 'COMPILED' for s in stages)), None)
     if reuse:
         print('Reusing compiled split OMCs:', reuse, flush=True)
     work = Path(tempfile.mkdtemp(dir=run, prefix='split-silu-'))
     print('L0 split experiment:', work, flush=True)
     save_json(work/'source.json', provenance)
     builds, shapes = {}, None
-    for stage in STAGES:
+    for stage in stages:
         builds[stage] = compile_stage(work, stage, checked(folder, spec['air']), spec, ddk,
                                       stamp['ddk_id'], diagnosis, shapes, reuse=reuse)
         if stage == 'prefix':
             shapes = {site: row['shape'] for site, row in zip(('conv', 'gate'), builds[stage][1]['outputs'], strict=True)}
     if kernel_identity(ddk, source) != stamp['gdr_source_sha256']:
         raise ValueError('Installed GDR changed during compilation')
-    cut_inputs = execute_stage(work/'run-prefix', 'prefix', builds['prefix'], feeds, runtime, config)
-    output = {'whole': baseline['golden_hidden']}
-    for middle in ('native_silu', 'cpu_silu'):
+    cut_inputs = saved_prefix(previous, builds['prefix'], feeds, device) if cpu_only else None
+    if cut_inputs is None:
+        cut_inputs = execute_stage(work/'run-prefix', 'prefix', builds['prefix'], feeds, runtime, config)
+    for middle in stages[1:-1]:
         middle_outputs = execute_stage(work/('run-' + middle), middle, builds[middle], cut_inputs, runtime, config)
         tail = work/('run-suffix-' + middle)
         path, record = execute_stage(tail, 'suffix', builds['suffix'], {**feeds, **middle_outputs}, runtime, config)['golden_hidden']
         output[middle] = read_array(tail, dict(record, path=path.name)).reshape(golden.shape)
-    compare(work, output, golden)
+    compare(work, output, golden, cpu_only=cpu_only)
