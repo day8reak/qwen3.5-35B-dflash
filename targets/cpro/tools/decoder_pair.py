@@ -14,6 +14,9 @@ def main():
     export = actions.add_parser('export', help='on the AIR host, export just the two complete decoders')
     check = actions.add_parser('check-air', help='verify the two exported decoder cases before transfer')
     check.add_argument('air', type=Path)
+    diagnose = actions.add_parser('diagnose', help='read full tool logs and HiLog for existing board attempts')
+    diagnose.add_argument('--run', required=True, type=Path)
+    diagnose.add_argument('--hilog', type=Path, help='reuse a device HiLog snapshot for both layers')
     execute = actions.add_parser('run', help='on the DDK host, pull both cases, compile, run HIAI V2, and score',
                                  epilog='If the original board/attempt.json is missing, use a matching --trace '
                                         'or set SN (board serial) and BIP (HDC server host:port).')
@@ -36,6 +39,9 @@ def main():
         return 0
     from qwen35_moe_dflash.common.artifacts import output_path
     run = output_path(a.run)
+    if a.action == 'diagnose':
+        from qwen35_moe_dflash.target.prefill_t64.chain_hilog import diagnose_decoder_pair
+        return 0 if diagnose_decoder_pair(run, a.hilog) else 1
     baseline = a.baseline.resolve() if a.baseline else None
     if a.action == 'export':
         from qwen35_moe_dflash.target.prefill_t64.chain_air import export

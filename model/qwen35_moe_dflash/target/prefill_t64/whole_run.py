@@ -194,9 +194,11 @@ def board(run, tool_path, baseline=None):
             '--output_type=' + _TOOL_TYPES[result_spec['dtype'].upper()], '--times=1', '--modelmanager_itf=V2',
             '--direct_from_file=true', '--enable_item=1', '--output_dir=' + str(remote / 'outputs')]
     script = out / 'run.sh'
-    script.write_text(f'cd {remote} || exit 1\nLD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
+    report_logs = ('if [ "$rc" != 0 ]; then cat tool.stdout tool.stderr; else tail -n 10 tool.stdout tool.stderr; fi'
+                   if meta['kind'] == 'single-cpro-decoder' else 'tail -n 10 tool.stdout tool.stderr')
+    script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\nLD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
                       + ' >tool.stdout 2>tool.stderr\nrc=$?\necho "$rc" > tool.exitcode\n'
-                      + 'tail -n 10 tool.stdout tool.stderr\nexit "$rc"\n')
+                      + report_logs + '\nexit "$rc"\n')
     checks = out / 'files.sha256'
     checks.write_text(''.join(row['sha256'] + '  ' + rel + '\n' for rel, _, row in files))
     _acquire_global(hdc, lock, token, 120)

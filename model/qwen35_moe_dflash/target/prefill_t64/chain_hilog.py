@@ -11,7 +11,7 @@ from ...common.artifacts import output_path
 from .chain_board import load
 
 
-def _window(snapshot, dest, start, end):
+def _window(snapshot, dest, start, end, *, signals=None):
     # HiLog records local month/day and time. Device marker mtimes use the same clock.
     # tar/FS mtimes and the text format can differ in fractional precision.
     lo = (start - timedelta(seconds=1)).strftime('%m-%d %H:%M:%S')
@@ -36,7 +36,7 @@ def _window(snapshot, dest, start, end):
                 continue
             out.write(line)
             total += 1
-            if failure.search(line) and relevant.search(line):
+            if (signals.search(line) if signals else failure.search(line) and relevant.search(line)):
                 candidates += 1
                 if len(first) < 20:
                     first.append(line.rstrip())
@@ -146,6 +146,10 @@ def diagnose_v2(replay_dir, hilog=None):
     print(f'HiLog snapshot: {snapshot}', flush=True)
     window = out / 'window.log'
     _window(snapshot, window, start, end)
+    _client_records(window, out, tids)
+
+
+def _client_records(window, out, tids):
     header = re.compile(r'^\S+\s+\S+\s+(\d+)\s+(\d+)\s+[VDIWEF]\s+\S*/model_run_tool[^\s/:]*[/:]')
     with window.open() as stream:
         pids = {m[1] for line in stream if (m := header.match(line)) and m[2] in tids}
@@ -158,3 +162,69 @@ def diagnose_v2(replay_dir, hilog=None):
             if (m := header.match(line)) and m[1] in pids:
                 client.write(line)
     print(f'V2 client_tid={",".join(tids)} matched PID {", ".join(sorted(pids))}. Client records: {client_log}')
+
+
+def diagnose_decoder_pair(run, hilog=None):
+    """Read retained standalone decoder logs and share one device snapshot across their windows."""
+    from ...execution.hdc_run import Hdc
+    from ...execution.serial_transport import _environment
+    from ..layer_probe.common import sha
+
+    env = _environment()
+    out = Path(tempfile.mkdtemp(dir=run, prefix='decoder-diagnostics-'))
+    print(f'Decoder diagnostics: {out}', flush=True)
+    hdc = Hdc(*env, out, 30)
+    windows = {}
+    complete = True
+    for name in ('L0', 'L3'):
+        board = run / name / 'board'
+        folder = out / name
+        folder.mkdir()
+        try:
+            attempt = load(board / 'attempt.json')
+            remote = attempt['remote']
+            if (not re.fullmatch(r'/data/local/tmp/qwen35_prefill40_[a-f0-9]{32}', remote)
+                    or (attempt['device'], attempt['server']) != env[1:3]):
+                raise ValueError('Select the board and server recorded in attempt.json')
+            _, identity = hdc.shell(f'cd {remote} && sha256sum run.sh && cat tool.exitcode', name + '-identity')
+            digest, code = identity.splitlines()
+            if digest.split()[0] != sha(board / 'run.sh') or not code.strip().isdigit():
+                raise ValueError('Remote script or completion record differs from this attempt')
+            print(f'\n{name} HIAI V2 exit={code.strip()}  {remote}', flush=True)
+            tids = []
+            for filename in ('tool.stdout', 'tool.stderr'):
+                _, body = hdc.shell(f'cd {remote} && cat {filename}', name + '-' + filename)
+                (folder / filename).write_text(body + '\n' if body else '')
+                if filename == 'tool.stdout':
+                    tids = re.findall(r'\bclient_tid=(\d+)', body)
+                print(f'{filename}\n{body}', flush=True)
+            if int(code) == 0:
+                continue
+            # Older scripts created stderr at launch. A write can move its mtime later.
+            _, bounds = hdc.shell(
+                f'cd {remote} && if test -f tool.started; then marker=tool.started; '
+                'else marker=tool.stderr; fi && echo "$marker" && wc -c < tool.stderr '
+                '&& stat -c "%y" "$marker" tool.exitcode', name + '-times')
+            marker, stderr_bytes, start, end = bounds.splitlines()
+            if marker == 'tool.stderr' and int(stderr_bytes):
+                print(f'{name}: nonempty stderr; its mtime covers only the end of execution.')
+            begin, finish = (datetime.fromisoformat(t[:19]) for t in (start, end))
+            if begin > finish:
+                raise ValueError('Device start marker is later than the exit record')
+            print(f'{name} device window ({marker} to tool.exitcode) {start} to {end}', flush=True)
+            windows[name] = begin, finish, tids
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+            complete = False
+            print(f'{name} diagnostics incomplete: {exc}', flush=True)
+
+    if windows:
+        snapshot = _snapshot(hdc, out, hilog)
+        print(f'Device HiLog: {snapshot}', flush=True)
+        signals = re.compile(r'run failed stubName|rtModelExecute failed|hwts exception info|'
+                             r'graph executor execute return error|tensor buffer.*not match|FillInputBuffer fail', re.I)
+        for name, (begin, finish, tids) in windows.items():
+            print(f'\n{name} device-window candidates (shared across processes)', flush=True)
+            window = out / name / 'window.log'
+            _window(snapshot, window, begin, finish, signals=signals)
+            _client_records(window, out / name, tids)
+    return complete
