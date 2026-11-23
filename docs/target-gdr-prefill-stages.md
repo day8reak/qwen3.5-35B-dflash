@@ -1,5 +1,61 @@
 # 310P 与 CPro 的 GDR、RMSNorm 和门控乘法逐张量对比
 
+<a id="gdn-tail"></a>
+
+## 用已有 GDR 输出定位 L0 从 core 到 out_proj 的误差
+
+在 78 的 310P 环境准备数据。三个 bin 均按 FP16 的 token、head、channel 顺序读取，每个 token 有 32 个 head，每个 head 有 128 个通道。可提供 19 或 64 行；只有 19 行时补齐物理 T64，比较 token 0–18。两端共用同一份门控投影输出 `z`。若手上有 310P 实测的 GDR core，可用它替换 `--gold-core` 的 CPU golden。两组参考的后处理均由 310P 原生 L0 模块执行。
+
+```bash
+conda activate qwen3_5_w4
+git -C "${REPO_DIR:?}" pull --ff-only origin main
+T="${AI_RUN_DIR:?}/target/tests"
+D="$T/GDN-acc"
+R="$T/gdn-tail-l0-valid19-01"
+A="${ATTENTION_AIR:-$T/attention4-t64-valid19-v1024-qlate-01/air}"
+
+# 旧 attention AIR 已删除时，用原采集和导出入口恢复。
+if [[ ! -f "$A/models/l00_c00_gdn_layer_hidden_o0/export.air" ]]; then
+  A="$R/original/air"
+  S="$REPO_DIR/targets/cpro/scripts/check_attention4_tmatrix.sh"
+  bash "$S" capture "$R/original" &&
+    conda activate qwen3_5_cpro &&
+    bash "$S" air "$R/original" &&
+    conda activate qwen3_5_w4
+fi
+
+python "$REPO_DIR/targets/cpro/tools/gdn_tail_accuracy.py" prepare \
+  --run "$R" --module-air "$A" --source-root "${TARGET_SOURCE:?}" \
+  --config "${NZ_CONFIG:-config/qwen3_5_moe.yaml}" \
+  --core "$D/gdr/core_attn.bin" --gold-core "$D/golden/golden_core_attn.bin" \
+  --z "${GDN_Z:-$D/inputs/z.bin}"
+```
+
+78 会核对原 310P L0 投影输出的 19 行与源 AIR 的 golden 逐位一致，再用指定的 core、z 重放原生 norm 和 W4 投影。CPro 端从源 AIR 保留各输出所依赖的算子、类型转换、gamma、epsilon 和投影权重。输入文件的哈希和真实 310P 模块信息在 `air/manifest.json`，各截取点的源边和外部权重记录在对应的 `export.json`。
+
+在 35 的 DDK 环境执行。同一运行目录在两台服务器上的路径不同时，给 `board` 增加 `--remote-air /78上的运行目录/air`。
+
+```bash
+conda activate custom_pypto
+git -C "${REPO_DIR:?}" pull --ff-only origin main
+R="${AI_RUN_DIR:?}/target/tests/gdn-tail-l0-valid19-01"
+python "$REPO_DIR/targets/cpro/tools/gdn_tail_accuracy.py" board \
+  --run "$R" --ddk-root "${CPRO_DDK_ROOT:?}" \
+  --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+  --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+```
+
+六张 OMC 各只返回一个结果。沿 core 分支依次读 `rms_output`（含 gamma）、`mul_output`（与 SiLU 门值相乘）、`gated_return`（门控值转回投影输入 dtype）、`out_proj`（含 DynamicQuant 和 W4 矩阵乘）。另两张分别读 `silu_output`（只依赖 z）和 `out_proj_only`（固定投影输入）。每张图预热三次，再回读十次。板端结果保存在 35 的 `$R/recovery`。重算指标可执行 `python "$REPO_DIR/targets/cpro/tools/gdn_tail_accuracy.py" report --run "$R"`。
+
+| accuracy.csv 的 comparison | 对比 | 回答的问题 |
+| --- | --- | --- |
+| own_core | CPro 用实测 core，310P 用指定 golden core | 从 raw_core 开始，各阶段实际相差多少 |
+| same_core | 两端均用 CPro 的 core 和同一份 z | 对齐输入后，从哪一段开始仍有差异 |
+| 310p_core_change | 只在 310P 上替换 core | 已知的 core 差异在同一套后处理下被放大多少 |
+| same_proj_input | 两端直接投影同一份 310P 门控结果 | 固定激活时，动态量化和投影共引入多少差异 |
+
+`$R/accuracy.csv` 给出 valid19 和每个 token 的五项指标、MAE、最大绝对误差、参考 RMS 和逐元素超差率。逐元素对比使用 `rtol=1e-3`、`atol=1e-5`，允许超差元素占比最多 0.1%，单独记录通过情况。`delta_L2_pp` 是相对于上一个 core 分支输出的相对 L2 变化（百分点）。终端标出 valid19 和 token18 增幅最大的阶段。各阶段独立编译，跨阶段的增幅可用来选定位点；固定输入对照可检验该段在相同输入下的偏差。
+
 ## 汇总 L0 的 dump 和精度
 
 在 10.136.181.35 的 DDK 终端执行。命令从已回收的 `gamma-readout`、`norm-single-l0`、`l0-silu-pair` 和原始 310P capture 中读取 L0 张量，校验后写入 `l0-dump-summary/`。

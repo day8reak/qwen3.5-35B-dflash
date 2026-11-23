@@ -257,6 +257,9 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
             exported = json.loads(checked(root, case['export']).read_text())
             folder = root/'models'/case['id']
             air = checked(folder, exported['air'])
+            if case['kind'] == 'gdn_tail_prefix':
+                for weight in exported['weight_evidence'].values():
+                    checked(folder, weight)
             destination = output/'models'/case['id']/'omc'
             stream_weights = case.get('kind') == 'segment_prefill' and not diagnostic
             print('compile', case['id'], flush=True)
@@ -481,6 +484,10 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
         if case['kind'] == 'gdr_stages':
             from ..prefill_t64.gdr_stage_data import BASIS
             cases[-1]['reference_basis'] = BASIS
+        if case['kind'] == 'gdn_tail_prefix':
+            if {s['semantic_name'] for s in exported['source_inputs']} != {s['semantic_name'] for s in io['inputs']}:
+                raise ValueError(f'{name}: compiled prefix lost a declared runtime operand')
+            cases[-1]['reference_basis'] = exported['reference_basis']
         if case['kind'] == 'segment_gdn_trace':
             from ..prefill_t64.segment_gdn_trace import BASIS, TAPS
             if (exported['reference_basis'] != BASIS or exported['capture_sha256'] != manifest['capture_sha256']
@@ -541,6 +548,8 @@ def prepare_fixture(root, out, ddk, ddk_id, selection=None, *, external_weights=
         source_evidence=dict(artifact_kind=KIND, manifest_sha256=sha(root/'manifest.json'), compile_sha256=sha(root/'compile.json')))
     meta['reference'] = {k: manifest.get(k) for k in ('golden_source', 'reference_quant_matmul_policy',
         'reference_baseline_equivalence', 'reference_model_layers')}
+    if all(c['kind'] == 'gdn_tail_prefix' for c in cases):
+        meta['comparison_scope'] = manifest['scope']
     save_json(out/'fixture/manifest.json', meta)
     return meta
 
@@ -620,13 +629,16 @@ def compare(fixture, native, *, selection=None, allow_host_fake=False, atol=None
                         active = actual[:, :case['effective_length']]
                         valid_hashes.append(hashlib.sha256(active.tobytes()).hexdigest())
                         metric = score_core(active, golden, atol, rtol)
-                    elif case['kind'] == 'gdr_stages':
+                    elif case['kind'] in ('gdr_stages', 'gdn_tail_prefix'):
                         from ..prefill_t64.gdr_stage_data import STATIC, logical
                         role = spec['semantic_name']
                         if role in STATIC:
                             metric = metrics(actual, golden, atol=atol, rtol=rtol)
                         else:
-                            a, b = (logical(x, role)[:, :19] for x in (actual, golden))
+                            if case['kind'] == 'gdn_tail_prefix':
+                                a, b = (x.reshape(1, 64, -1)[:, :19] for x in (actual, golden))
+                            else:
+                                a, b = (logical(x, role)[:, :19] for x in (actual, golden))
                             valid_hashes.append(hashlib.sha256(a.tobytes()).hexdigest())
                             metric = metrics(a, b, atol=atol, rtol=rtol)
                             metric['token_18'] = metrics(a[:, 18], b[:, 18], atol=atol, rtol=rtol)
