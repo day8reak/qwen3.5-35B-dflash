@@ -21,7 +21,8 @@ from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
 from qwen35_moe_dflash.common.command_trace import subprocess_event
 from qwen35_moe_dflash.common.tool_logs import log_excerpt
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha
-from qwen35_moe_dflash.target.prefill_t64.attention_cpu_silu import CASE, silu_sites
+from qwen35_moe_dflash.target.prefill_t64.attention_cpu_silu import CASE, audit_graphs, silu_sites
+from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
 from qwen35_moe_dflash.target.prefill_t64.attention_slice import source_graph
 from qwen35_moe_dflash.target.prefill_t64.segment_export import MODULE_BASIS
 
@@ -106,6 +107,19 @@ def stage(source, dest):
     print('SiLU input/output edges:', manifest['silu_sites'], flush=True)
 
 
+def audit(run):
+    folder, spec, _, original = source_graph(run/'air', 0)
+    build = run/'cpu_silu/omc/models'/CASE/'omc'
+    receipt = load(build/'air-preparation.json')
+    if receipt['source_sha256'] != sha(checked(folder, spec['air'])):
+        raise ValueError('Prepared AIR and original fixture have different source hashes')
+    prepared = checked(build, receipt['compiler_air'])
+    _, candidate = graph_message(prepared.read_bytes(), 'ChunkGatedDeltaRule')
+    print(json.dumps(dict(source_sha256=receipt['source_sha256'], prepared_air=str(prepared),
+                          prepared_sha256=receipt['compiler_air']['sha256'],
+                          **audit_graphs(original, candidate)), indent=2), flush=True)
+
+
 def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=False):
     from qwen35_moe_dflash.target.layer_probe.batch import compile_batch
     from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import execute
@@ -144,8 +158,7 @@ def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=F
         if not record.exists():
             print(f'Compiling complete L0 ({name})', flush=True)
             compile_batch(air, variant/'omc', ddk, stamp['ddk_id'], tbe_diagnosis=diagnosis,
-                          use_origin_format=True, cases=[CASE], cpu_silu=cpu,
-                          cpu_silu_baseline=run/'original/omc/models'/CASE/'omc' if cpu else None)
+                          use_origin_format=True, cases=[CASE], cpu_silu=cpu)
         build = load(record)
         row = build['cases'][CASE]
         if row['status'] != 'COMPILED':
@@ -228,10 +241,13 @@ def main():
         execute.add_argument(name, type=Path)
     execute.add_argument('--retry-failed-compile', action='store_true',
                          help='keep a failed CPU SiLU build and retry it in the same experiment')
+    sub.add_parser('audit', help='compare the saved original and candidate AIR').add_argument('run', type=Path)
     sub.add_parser('report').add_argument('run', type=Path)
     a = commands.parse_args()
     if a.action == 'prepare':
         stage(a.source.resolve(), output_path(a.dest))
+    elif a.action == 'audit':
+        audit(a.run.resolve())
     elif a.action == 'board':
         run = output_path(a.run)
         run.mkdir(parents=True, exist_ok=True)

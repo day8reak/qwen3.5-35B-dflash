@@ -1,12 +1,10 @@
 """Replace the two SiLU sites in the original L0 attention AIR, preserving its external ports."""
 from collections import Counter
 import hashlib
-import json
-import re
 from pathlib import Path
 
-from ..layer_probe.common import save_json, sha
-from .attention_slice import descriptor
+from ..layer_probe.common import sha
+from .attention_slice import descriptor, port_info
 from .decode_cache_control import graph_message
 from .gdr_stage_air import stage_edges, VIEWS
 from .qkv_silu import activation_edges, CONVS
@@ -25,7 +23,7 @@ def replace_sites(graph, sites):
     enums = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
     fp16, fp32 = (enums[k].number for k in ('DT_FLOAT16', 'DT_FLOAT'))
     next_id = max(op.id for op in graph.op) + 1
-    replacements, policy_nodes, evidence = {}, [], {}
+    replacements, evidence = {}, {}
 
     def dtype(edge):
         op = nodes[edge.rsplit(':', 1)[0]]
@@ -90,9 +88,12 @@ def replace_sites(graph, sites):
             out.dtype = dt
             if kind == 'Cast':
                 op.attr['dst_type'].i = 0 if dt == fp32 else 1
+            elif kind in ('Sigmoid', 'Mul'):
+                # Pin the implementation on these four new arithmetic nodes only.
+                # The resulting device placement is verified in the compiled OMC.
+                op.attr['npucl_implementation'].i = 7
             seq.append(op)
             nodes[name] = op
-            policy_nodes.append(name)
             return name + ':0'
 
         wide = x if src == fp32 else emit('wide', 'Cast', [(x, src)], fp32)
@@ -108,55 +109,68 @@ def replace_sites(graph, sites):
     ordered = [item for op in graph.op for item in replacements.get(op.name, [op])]
     del graph.op[:]
     graph.op.extend(ordered)
-    return policy_nodes, evidence
+    return evidence
 
 
-def custom_npu_nodes(graph, baseline, air_hash):
-    # Implementation 7 selects the custom AscendC store. With cl_customization,
-    # an unlisted custom node can lose this store even when plain OMG found it.
-    kinds = {'ChunkGatedDeltaRule', 'QuantBatchMatmulV4444'}
-    if baseline is not None:
-        report = json.loads((baseline/'report.json').read_text())
-        log = baseline/'compile.log'
-        if (report['status'] != 'COMPILED' or report['air']['sha256'] != air_hash
-                or sha(log) != report['compile_log_sha256']):
-            raise ValueError(f'Original OMG evidence does not match the L0 AIR: {baseline}')
-        # Capture additional custom types accepted by this DDK (e.g. a quantizer).
-        accepted = re.compile(r'Node \[name:[^,]+,type:([^\]]+)\] does not need check support')
-        with log.open(errors='replace') as stream:
-            for line in stream:
-                if 'custom_ascendc_adaptee.cpp OpCheckSupport' in line:
-                    match = accepted.search(line)
-                    if match:
-                        kinds.add(match[1])
-    return {op.name: op.type for op in graph.op if op.type in kinds}
+def audit_graphs(original, candidate):
+    """Compare the two AIR graphs outside the selected SiLU producers, including inline constants."""
+    sites = silu_sites(original)
+    original_count = len(original.op)
+    gdr, = [op for op in original.op if op.type == 'ChunkGatedDeltaRule']
+    observed = {op.name: op for op in candidate.op}
+    if len(observed) != len(candidate.op):
+        raise ValueError('Duplicate node names in candidate AIR')
+    # Reconstruct the expected edits from original bytes. Earlier compiles applied
+    # the implementation selector in a separate JSON, so accept its absence there.
+    site_info = replace_sites(original, sites)
+    arithmetic = {s[key].rsplit(':', 1)[0] for s in site_info.values() for key in ('sigmoid', 'product')}
+    expected_names = {op.name for op in original.op}
+    changed = []
+    for op in original.op:
+        actual = observed.get(op.name)
+        if actual is None:
+            continue
+        if op.name in arithmetic and 'npucl_implementation' not in actual.attr:
+            del op.attr['npucl_implementation']
+        if op.SerializeToString(deterministic=True) != actual.SerializeToString(deterministic=True):
+            changed.append(op.name)
+    missing = sorted(expected_names - observed.keys())
+    extra = sorted(observed.keys() - expected_names)
+    if (changed or missing or extra or list(original.input) != list(candidate.input)
+            or list(original.output) != list(candidate.output)):
+        raise ValueError(f'AIR comparison: changed={changed}, missing={missing}, extra={extra}, '
+                         f'original ports={(list(original.input), list(original.output))}, '
+                         f'candidate ports={(list(candidate.input), list(candidate.output))}')
+    port_names = {}
+    if '_input_name_key' in gdr.attr and '_input_name_value' in gdr.attr:
+        port_names = dict(zip(gdr.attr['_input_name_value'].list.i,
+                              (s.decode() for s in gdr.attr['_input_name_key'].list.s), strict=True))
+    edges = [edge for edge in gdr.input if edge and not edge.endswith(':-1')]
+    ports = [dict(slot=i, name=port_names.get(i), edge=edge,
+                  declared=port_info(original, gdr.input_desc[i]) if i < len(gdr.input_desc) else None)
+             for i, edge in enumerate(edges)]
+    attrs = {k: gdr.attr[k].i for k in ('chunk_size', 'output_final_state', 'use_qk_l2norm_in_kernel')
+             if k in gdr.attr}
+    return dict(sites=site_info, gate_matches_pytorch_fp32=site_info['gate']['input_dtype'] == 'float32',
+                unchanged_non_silu_nodes=original_count - len(sites), gdr_node_identical=True,
+                gdr_inputs=ports, gdr_attrs=attrs)
 
 
-def compile_options(path, folder, *, baseline=None):
-    from google.protobuf import message_factory
-    raw = path.read_bytes()
-    digest = hashlib.sha256(raw).hexdigest()
-    msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
-    npu = custom_npu_nodes(graph, baseline, digest)
-    names, evidence = replace_sites(graph, silu_sites(graph))
-    if not graph.name:
-        graph.name = 'l0_attention_cpu_silu'
-    policy = folder/'cpu-silu-policy.json'
-    group = dict(groups_info=[dict(npucl_implementation=7)], nodes_info={n: dict(group_id=0) for n in [*names, *npu]})
-    save_json(policy, dict(npucl_strategy=dict(npucl_graphs={graph.name: group})))
-    print('L0 custom AscendC nodes requested on NPU:', npu, flush=True)
-    if msg is graph:
-        desc = graph.DESCRIPTOR.file.pool.FindMessageTypeByName('ge.proto.ModelDef')
-        cls = (message_factory.GetMessageClass(desc) if hasattr(message_factory, 'GetMessageClass')
-               else message_factory.MessageFactory(desc.file.pool).GetPrototype(desc))
-        msg = cls()
-        msg.graph.add().CopyFrom(graph)
+def compile_options(path):
+    digest = sha(path)
 
     def transform(snapshot):
-        if sha(snapshot) != digest:
+        raw = snapshot.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != digest:
             raise ValueError('AIR changed while preparing CPU SiLU compilation')
-        return msg.SerializeToString(), dict(source_sha256=digest, sites=evidence, custom_npu_nodes=npu)
-    return dict(air_transform=transform, cl_customization=policy)
+        msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
+        replace_sites(graph, silu_sites(graph))
+        prepared = msg.SerializeToString()
+        _, original = graph_message(raw, 'ChunkGatedDeltaRule')
+        audit = audit_graphs(original, graph)
+        print('L0 AIR: two SiLU sites:', audit['sites'], 'unchanged GDR inputs:', audit['gdr_inputs'], flush=True)
+        return prepared, dict(source_sha256=digest, **audit)
+    return dict(air_transform=transform)
 
 
 def inspect(model, ddk):
