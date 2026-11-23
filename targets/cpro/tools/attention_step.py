@@ -28,7 +28,7 @@ def extract(args, run):
         ports[edge] = (f'step_input_{i}', dtype, shape)
     target_edge = args.output_edge
     if args.step:
-        selected = Catalog(graph).select(args.layer, args.step)
+        selected = Catalog(graph, original.get('source_inputs', ())).select(args.layer, args.step)
         target_edge = selected['output_edge']
         inputs = selected['runtime_inputs']
         if set(ports) - {s['edge'] for s in inputs}:
@@ -54,6 +54,8 @@ def extract(args, run):
         dest = Path(tmp)/'slice'
         dest.mkdir()
         spec = slices.extract(msg, graph, folder, dest, ports, target_edge)
+        if args.step:
+            spec['step'] = args.step
         spec.update(source_case=slices.CASE_IDS[args.layer], source_air=original['air'])
         save_json(dest/'slice.json', spec)
         dest.rename(target)
@@ -87,6 +89,7 @@ def main():
     catalog = actions.add_parser('catalog', help='78: export selectable L0/L3 steps and their inputs to CSV')
     catalog.add_argument('--source-air', required=True, type=Path)
     catalog.add_argument('--layer', type=int, choices=slices.CASE_IDS, action='append', help='default: both 0 and 3')
+    catalog.add_argument('--presets-only', action='store_true', help='only source-level steps, in forward order')
     catalog.add_argument('--output', type=Path, required=True)
     cut = actions.add_parser('extract', help='78: generate independent AIR from named graph edges')
     for sub in (nodes, cut):
@@ -113,7 +116,8 @@ def main():
         sub.add_argument('--run', type=Path, required=True)
     args = parser.parse_args()
     if args.action == 'catalog':
-        write_catalog(args.source_air, tuple(dict.fromkeys(args.layer or slices.CASE_IDS)), output_path(args.output))
+        write_catalog(args.source_air, tuple(dict.fromkeys(args.layer or slices.CASE_IDS)), output_path(args.output),
+                      presets_only=args.presets_only)
         return 0
     if args.action == 'list':
         _, _, _, graph = slices.source_graph(args.source_air, args.layer)

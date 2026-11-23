@@ -541,3 +541,18 @@ python "$P" catalog --source-air "$A" --output "$T/attention-l0-l3-steps.csv"
 S="${AI_RUN_DIR:?}/target/tests/l3-out-proj-only-01"
 python "$P" extract --source-air "$A" --layer 3 --step out_proj --run "$S"
 ```
+
+### 按原 forward 查看步骤
+
+静态步骤表按层排列。L0 覆盖四个输入投影、卷积窗口、depthwise conv、卷积 SiLU、Q/K/V 拆分与 head 整理、beta、衰减 g、GDR 的 core 和 final state、门控归一化、门控乘法及输出投影。L3 覆盖 Q/gate 拆分、Q/K norm、cos/sin 查表、partial RoPE、Q 与 KV 布局、缓存索引与写入、融合 attention、解包、sigmoid 门控及输出投影。每个投影都可通过 `_a8`、`_token_scale`、`_matmul` 选择量化激活、逐 token 尺度、矩阵乘三个边界。矩阵乘接收整数激活和动态尺度，使用 AIR 中的原权重。
+
+在 78 导出便于 review 的源码步骤表。去掉 `--presets-only` 可同时查看这份图的 GE 节点端口。以区分 out_proj 量化误差和矩阵乘误差为例，每个输出使用独立目录。
+
+```bash
+python "$P" catalog --source-air "$A" --presets-only --output "$T/attention-forward-steps.csv"
+for step in out_proj_a8 out_proj_token_scale out_proj_matmul; do
+  python "$P" extract --source-air "$A" --layer 0 --step "$step" --run "$T/l0-step-$step"
+done
+```
+
+`reason` 记录未匹配的原因，例如两个逻辑步骤在导出时共用同一条边、输出被裁剪或名称对应多个分支。审查每个切片的 `slice/slice.json` 可核对实际输入端口顺序、输出边和保留的 GE 节点。GDR 内部的 T-matrix 和融合 full attention 内部的 softmax 需要算子内读出或另行导出诊断图。

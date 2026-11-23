@@ -1,18 +1,24 @@
 """Build a selectable per-port CSV from the installed L0 and L3 attention AIRs."""
 import csv
+from collections import Counter
 from functools import lru_cache
 import json
 from pathlib import Path
 import tempfile
 
-from .attention_slice import CASE_IDS, DTYPES, descriptor, port_info, source_graph
-from .decode_cache_trace import _project_input
-from .gdr_stage_air import stage_edges
-from .qkv_silu import activation_edges
+from .attention_slice import DTYPES, descriptor, port_info, source_graph
+from .attention_steps import AttentionSteps
+
+
+@lru_cache(None)
+def preset_table(layer):
+    path = Path(__file__).resolve().parents[4] / 'specs/attention-step-presets.csv'
+    with path.open(encoding='utf-8-sig', newline='') as stream:
+        return {row['step']: row['步骤说明'] for row in csv.DictReader(stream) if row['layer'] == str(layer)}
 
 
 class Catalog:
-    def __init__(self, graph):
+    def __init__(self, graph, bindings=()):
         self.graph = graph
         self.nodes = {n.name: n for n in graph.op}
 
@@ -24,6 +30,7 @@ class Catalog:
             return (bool(n.input) and not n.subgraph_name and n.type not in ('Data', 'NetOutput')
                     and all(e and not e.endswith(':-1') and constant(e.rsplit(':', 1)[0]) for e in n.input))
         self.constant = constant
+        self.steps = AttentionSteps(graph, self.nodes, bindings)
 
     def spec(self, edge, consumer=None, slot=None):
         d = descriptor(self.nodes, edge)
@@ -44,7 +51,7 @@ class Catalog:
         return dict(step=step, description=description, output_edge=target, op_type=op.type,
                     runtime_inputs=inputs, constant_inputs=list(constants), output=self.spec(target),
                     status='manual_edges' if manual else 'supply_input_abi' if missing else 'ready',
-                    incomplete_inputs=missing)
+                    incomplete_inputs=missing, reason='Original control dependencies require review' if manual else '')
 
     def node_row(self, step):
         descriptor(self.nodes, step)
@@ -63,50 +70,55 @@ class Catalog:
                         constants=const, manual=any(e.endswith(':-1') for e in n.input))
 
     def preset(self, layer, step):
-        net, = [n for n in self.nodes.values() if n.type == 'NetOutput']
-        target, = [e for e in net.input if e and not e.endswith(':-1')]
-        if step == 'out_proj':
-            x = _project_input(self.nodes, target)
-            description = '门控后的激活 → DynamicQuant、原 W4 输出投影及输出视图'
-        elif layer == 0 and step == 'qkv_conv_silu':
-            x, target = activation_edges(self.graph)
-            description = '卷积后、Q/K/V 拆分前的 SiLU'
-        elif layer == 0 and step in ('gated_rmsnorm', 'gate_silu'):
-            edges = stage_edges(self.graph, 'norm')
-            if step == 'gated_rmsnorm':
-                gdr, = [n for n in self.nodes.values() if n.type == 'ChunkGatedDeltaRule']
-                x, target = gdr.name + ':0', edges['rms_output']
-                description = 'GDR core → 带 gamma 的 RMSNorm 输出'
-            else:
-                x, target = edges['gate'], edges['silu_output']
-                description = '门控输入 z → SiLU(z)'
-        else:
+        table = preset_table(layer)
+        if step not in table:
             raise ValueError(f'L{layer}: unknown step {step!r}. Use catalog to select a step.')
-        literals = set()
-        visited = set()
+        description = table[step]
+        cuts, target = self.steps.boundaries(layer, step)
+        if cuts is None:
+            row = self.node_row(target)
+            return dict(row, step=step, description=description)
+        if target in cuts:
+            raise ValueError(f'Input and output share {target}; no independent operation in this AIR')
+        literals, reached, visited = set(), set(), set()
+        manual = False
+
         def visit(edge):
-            if edge == x or edge in visited:
+            nonlocal manual
+            if edge in cuts:
+                reached.add(edge)
+                return
+            if edge in visited:
                 return
             visited.add(edge)
-            n = self.nodes[edge.rsplit(':', 1)[0]]
-            if n.type in ('Const','Constant','FileConstant'):
+            op = self.nodes[edge.rsplit(':', 1)[0]]
+            if op.type in ('Const', 'Constant', 'FileConstant'):
                 literals.add(edge)
-            else:
-                for arg in n.input:
-                    if arg and not arg.endswith(':-1'):
-                        visit(arg)
+                return
+            if op.type in ('Data', 'NetOutput') or op.subgraph_name:
+                raise ValueError(f'Unexpected dependency {edge} ({op.type}) inside {step}')
+            for arg in op.input:
+                if arg.endswith(':-1'):
+                    manual = True
+                elif arg:
+                    visit(arg)
         visit(target)
-        return self.row(step, target, [self.spec(x)], description, constants=sorted(literals))
+        if reached != set(cuts):
+            raise ValueError(f'{step} does not consume {sorted(set(cuts) - reached)}')
+        return self.row(step, target, [self.spec(x) for x in cuts], description,
+                        constants=sorted(literals), manual=manual)
 
     def select(self, layer, step):
         return self.node_row(step) if ':' in step else self.preset(layer, step)
 
-    def rows(self, layer):
-        for step in (('qkv_conv_silu','gated_rmsnorm','gate_silu','out_proj') if layer == 0 else ('out_proj',)):
+    def rows(self, layer, presets_only=False):
+        for step, description in preset_table(layer).items():
             try:
-                yield self.preset(layer, step)
+                yield dict(self.preset(layer, step), kind='preset')
             except (ValueError, KeyError, IndexError) as exc:
-                yield dict(step=step, description=str(exc), status='unresolved_preset')
+                yield dict(step=step, kind='preset', description=description, reason=str(exc), status='unresolved_preset')
+        if presets_only:
+            return
         for n in self.graph.op:
             if n.type in ('Data', 'NetOutput') or n.subgraph_name or self.constant(n.name):
                 continue
@@ -115,12 +127,12 @@ class Catalog:
                     row = self.node_row(f'{n.name}:{i}')
                 except ValueError:
                     continue
-                yield row
+                yield dict(row, kind='ge_port')
 
 
-def write_catalog(air, layers, dest):
-    fields = ['layer','source_air_sha256','step','description','op_type','runtime_inputs','constant_inputs',
-              'output_edge','output','status','incomplete_inputs']
+def write_catalog(air, layers, dest, *, presets_only=False):
+    fields = ['layer','source_air_sha256','kind','step','description','op_type','runtime_inputs','constant_inputs',
+              'output_edge','output','status','reason','incomplete_inputs']
     dest.parent.mkdir(parents=True, exist_ok=True)
     counts = {}
     with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
@@ -130,11 +142,13 @@ def write_catalog(air, layers, dest):
             writer.writeheader()
             for layer in layers:
                 _, original, _, graph = source_graph(air, layer)
-                counts[layer] = 0
-                for row in Catalog(graph).rows(layer):
+                counts[layer] = Counter()
+                for row in Catalog(graph, original.get('source_inputs', ())).rows(layer, presets_only):
                     fields_row = {k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict,list)) else v
                                   for k,v in row.items()}
                     writer.writerow(dict(fields_row, layer=layer, source_air_sha256=original['air']['sha256']))
-                    counts[layer] += 1
+                    counts[layer][row['status']] += 1
         staged.replace(dest)
-    print(f'{dest}  rows per layer: {counts}')
+    print(dest)
+    for layer, counts_by_status in counts.items():
+        print(f'L{layer}  {dict(counts_by_status)}')

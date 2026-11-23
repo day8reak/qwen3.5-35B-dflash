@@ -1,7 +1,87 @@
 layer,step,步骤说明,运行时输入,输出边界,三端矩阵入口,备注
-0,qkv_conv_silu,卷积后Q/K/V支路的SiLU,"310P卷积结果conv_out，逻辑[1,8192,64]",F.silu(conv_out)，在后续cast、转置及拆分前,prepare-qkv / board,卷积、Q/K/V拆分和GDR均在子图外
-0,gated_rmsnorm,GDR后的门控RMSNorm归一化部分,GDR core_attn，每个head有128个通道,使用原层gamma和epsilon的归一化结果,gdn_op_matrix.py,止于与SiLU(z)相乘之前
-0,gate_silu,门控投影后的SiLU,门控投影z,SiLU(z),gdn_op_matrix.py,原图通往SiLU的Cast保留
-0,out_proj,linear attention输出投影,310P门控乘法和回转dtype后的投影输入,attention投影输出，残差相加前,gdn_op_matrix.py,包含激活动态量化和原W4矩阵乘
-3,out_proj,full attention输出投影,sigmoid门控后的投影输入,full attention投影输出，残差相加前,需提供参照后另测,包含激活动态量化和原W4矩阵乘
-0或3,实际节点名:输出端口,所选GE单节点及静态常量依赖,catalog中runtime_inputs列；常量留在图内,所选节点的一个输出端口,需提供参照后另测,实际节点名和输出端口来自对应AIR的catalog
+0,in_proj_qkv,混合 QKV完整投影,激活动态量化入口,投影矩阵乘结果,extract / compile；另备三端同输入与参考,运行时输入按本次 AIR 的视图取值
+0,in_proj_qkv_a8,混合 QKV的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+0,in_proj_qkv_token_scale,混合 QKV的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+0,in_proj_qkv_matmul,混合 QKV的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+0,in_proj_z,门控 z完整投影,激活动态量化入口,投影矩阵乘结果,extract / compile；另备三端同输入与参考,运行时输入按本次 AIR 的视图取值
+0,in_proj_z_a8,门控 z的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+0,in_proj_z_token_scale,门控 z的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+0,in_proj_z_matmul,门控 z的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+0,in_proj_b,更新系数 b完整投影,激活动态量化入口,投影矩阵乘结果,extract / compile；另备三端同输入与参考,运行时输入按本次 AIR 的视图取值
+0,in_proj_b_a8,更新系数 b的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+0,in_proj_b_token_scale,更新系数 b的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+0,in_proj_b_matmul,更新系数 b的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+0,in_proj_a,衰减投影 a完整投影,激活动态量化入口,投影矩阵乘结果,extract / compile；另备三端同输入与参考,运行时输入按本次 AIR 的视图取值
+0,in_proj_a_a8,衰减投影 a的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+0,in_proj_a_token_scale,衰减投影 a的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+0,in_proj_a_matmul,衰减投影 a的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+0,conv_window,拼接历史并准备卷积窗口,混合 QKV 投影、旧卷积缓存及图中需要的更新张量,深度卷积第一个输入,extract / compile；另备三端同输入与参考,
+0,conv_history,本轮卷积历史,图中卷积状态更新节点的非常量操作数,LinearAttentionConvstateUpdate 的新历史端口,extract / compile；另备三端同输入与参考,仅当 AIR 暴露该算子的输出 0
+0,depthwise_conv,逐通道因果卷积,卷积算子的窗口张量,进入 F.silu 的 conv_out,extract / compile；另备三端同输入与参考,
+0,qkv_conv_silu,卷积后的 SiLU,conv_out,F.silu(conv_out)，后续 cast 和拆分前,prepare-qkv / board,
+0,qkv_transpose,卷积激活恢复序列布局,卷积 SiLU 输出,Q/K/V 三路拆分的公共输入,extract / compile；另备三端同输入与参考,
+0,split_query,分出 query,混合 QKV 张量,query 的 Split 或 Slice 输出,extract / compile；另备三端同输入与参考,
+0,prepare_query,整理 query 的 head,对应的拆分输出,GDR 的 query 端口，包含源图上的 reshape 或 repeat,extract / compile；另备三端同输入与参考,
+0,split_key,分出 key,混合 QKV 张量,key 的 Split 或 Slice 输出,extract / compile；另备三端同输入与参考,
+0,prepare_key,整理 key 的 head,对应的拆分输出,GDR 的 key 端口，包含源图上的 reshape 或 repeat,extract / compile；另备三端同输入与参考,
+0,split_value,分出 value,混合 QKV 张量,value 的 Split 或 Slice 输出,extract / compile；另备三端同输入与参考,
+0,prepare_value,整理 value 的 head,对应的拆分输出,GDR 的 value 端口，包含源图上的 reshape 或 repeat,extract / compile；另备三端同输入与参考,
+0,beta_sigmoid,计算 beta,b 投影结果,GDR beta 输入,extract / compile；另备三端同输入与参考,
+0,decay_softplus,计算衰减分支的 softplus,softplus 的加偏置激活,Softplus 输出,extract / compile；另备三端同输入与参考,仅当 AIR 保留独立 Softplus
+0,decay_g,完整衰减系数,a 投影结果,GDR 的 g 输入，包含 dt_bias 和 A_log 的源图计算,extract / compile；另备三端同输入与参考,
+0,gdr_core,GDR 注意力输出,GDR 各非常量输入，含有效长度和初始状态（如为动态图输入）,GDR 输出 0 core_attn,extract / compile；另备三端同输入与参考,
+0,gdr_final_state,GDR 末状态,与 gdr_core 相同,GDR 输出 1 last_recurrent_state,extract / compile；另备三端同输入与参考,
+0,core_to_rms,准备每头归一化输入,GDR core_attn,原图归一化输入（含上游视图或 cast）,extract / compile；另备三端同输入与参考,
+0,gated_rmsnorm,门控 RMSNorm 的归一化支路,GDR core_attn,使用原 gamma 和 epsilon 归一化后的值,gdn_op_matrix.py,
+0,gate_reshape,门控张量形状和精度转换,z 投影结果,SiLU 的实际输入,extract / compile；另备三端同输入与参考,
+0,gate_silu,计算 SiLU(z),门控 z,SiLU(z),gdn_op_matrix.py,
+0,gated_mul,归一化值与门控相乘,RMSNorm 与 SiLU(z) 的两个结果,Mul 输出,extract / compile；另备三端同输入与参考,
+0,gated_return,还原门控输出精度和形状,Mul 输出,out_proj 激活动态量化入口,extract / compile；另备三端同输入与参考,
+0,out_proj,linear attention 输出完整投影,激活动态量化入口,attention 输出,gdn_op_matrix.py,运行时输入按本次 AIR 的视图取值
+0,out_proj_a8,linear attention 输出的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+0,out_proj_token_scale,linear attention 输出的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+0,out_proj_matmul,linear attention 输出的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+3,q_proj,拼接的 Q 和 gate完整投影,激活动态量化入口,投影矩阵乘结果,extract / compile；另备三端同输入与参考,运行时输入按本次 AIR 的视图取值
+3,q_proj_a8,拼接的 Q 和 gate的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+3,q_proj_token_scale,拼接的 Q 和 gate的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+3,q_proj_matmul,拼接的 Q 和 gate的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+3,k_proj,Key完整投影,激活动态量化入口,投影矩阵乘结果,extract / compile；另备三端同输入与参考,运行时输入按本次 AIR 的视图取值
+3,k_proj_a8,Key的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+3,k_proj_token_scale,Key的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+3,k_proj_matmul,Key的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+3,v_proj,Value完整投影,激活动态量化入口,投影矩阵乘结果,extract / compile；另备三端同输入与参考,运行时输入按本次 AIR 的视图取值
+3,v_proj_a8,Value的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+3,v_proj_token_scale,Value的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+3,v_proj_matmul,Value的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+3,q_split,取 query 半支并整理 shape,q_proj 结果,q_norm 输入,extract / compile；另备三端同输入与参考,
+3,gate_split,取 gate 半支并展开,q_proj 结果,Sigmoid 的输入,extract / compile；另备三端同输入与参考,
+3,q_norm,q 的逐头 RMSNorm,归一化输入,使用源图 gamma 和 epsilon 的归一化输出,extract / compile；另备三端同输入与参考,
+3,k_norm,k 的逐头 RMSNorm,归一化输入,使用源图 gamma 和 epsilon 的归一化输出,extract / compile；另备三端同输入与参考,
+3,rope_cos,RoPE cos 查表及广播视图,position_ids,Q 旋转乘法的 cos 操作数,extract / compile；另备三端同输入与参考,
+3,rope_sin,RoPE sin 查表及广播视图,position_ids,Q 旋转乘法的 sin 操作数,extract / compile；另备三端同输入与参考,
+3,q_rotate_half,q 旋转半维,参与 cos 乘法的旋转通道,参与 sin 乘法的 rotate_half 结果,extract / compile；另备三端同输入与参考,
+3,q_mul_cos,q 的 cos 项,旋转通道和 cos,与 cos 相乘后的值,extract / compile；另备三端同输入与参考,
+3,q_mul_sin,q 的 sin 项,rotate_half 结果和 sin,与 sin 相乘后的值,extract / compile；另备三端同输入与参考,
+3,q_rotary_sum,q 的旋转和,cos 项和 sin 项,旋转部分相加后的值,extract / compile；另备三端同输入与参考,
+3,q_rope,q 的完整 partial RoPE,归一化输出与 position_ids,旋转部分与直通部分拼接的结果,extract / compile；另备三端同输入与参考,
+3,k_rotate_half,k 旋转半维,参与 cos 乘法的旋转通道,参与 sin 乘法的 rotate_half 结果,extract / compile；另备三端同输入与参考,
+3,k_mul_cos,k 的 cos 项,旋转通道和 cos,与 cos 相乘后的值,extract / compile；另备三端同输入与参考,
+3,k_mul_sin,k 的 sin 项,rotate_half 结果和 sin,与 sin 相乘后的值,extract / compile；另备三端同输入与参考,
+3,k_rotary_sum,k 的旋转和,cos 项和 sin 项,旋转部分相加后的值,extract / compile；另备三端同输入与参考,
+3,k_rope,k 的完整 partial RoPE,归一化输出与 position_ids,旋转部分与直通部分拼接的结果,extract / compile；另备三端同输入与参考,
+3,q_pack,整理 Q 的 NZ 布局,Q RoPE 拼接输出,融合 attention 的 query 输入,extract / compile；另备三端同输入与参考,
+3,k_pack,准备写入缓存的 K,K RoPE 拼接输出,K CacheUpdate 的新 K 输入,extract / compile；另备三端同输入与参考,
+3,v_pack,准备写入缓存的 V,V 投影结果,V CacheUpdate 的新 V 输入,extract / compile；另备三端同输入与参考,
+3,cache_blocks,查找目标缓存块,cache_positions,K CacheUpdate 的 target_blocks,extract / compile；另备三端同输入与参考,
+3,cache_offsets,计算块内偏移,cache_positions,K CacheUpdate 的 offset,extract / compile；另备三端同输入与参考,
+3,key_cache_update,写入 key cache,原 CacheUpdate 非常量操作数,CacheUpdate 输出 0,extract / compile；另备三端同输入与参考,需使用对应的写前缓存
+3,value_cache_update,写入 value cache,原 CacheUpdate 非常量操作数,CacheUpdate 输出 0,extract / compile；另备三端同输入与参考,需使用对应的写前缓存
+3,attention_core,融合 full attention,原融合算子的非常量操作数,AdnFusedInferAttention 的注意力输出,extract / compile；另备三端同输入与参考,独立输入使用更新后的 K/V 缓存；如有原位写控制边需审查切点
+3,attention_unpack,还原 full attention 输出布局,融合 attention 输出,门控乘法的 attention 操作数,extract / compile；另备三端同输入与参考,
+3,gate_sigmoid,计算 sigmoid(gate),拆分整理后的 gate,Sigmoid 输出,extract / compile；另备三端同输入与参考,
+3,gated_mul,full attention 的门控乘法,attention 输出与 sigmoid(gate),Mul 输出,extract / compile；另备三端同输入与参考,
+3,out_proj,full attention 输出完整投影,激活动态量化入口,attention 输出,extract / compile；另备三端同输入与参考,运行时输入按本次 AIR 的视图取值
+3,out_proj_a8,full attention 输出的激活量化,DynamicQuant 输入,供矩阵乘使用的整数激活,extract / compile；另备三端同输入与参考,
+3,out_proj_token_scale,full attention 输出的量化尺度,与整数激活共用的 DynamicQuant 输入,供矩阵乘使用的逐 token scale,extract / compile；另备三端同输入与参考,
+3,out_proj_matmul,full attention 输出的矩阵乘,已量化激活、动态尺度及图内其余非常量操作数,QuantBatchMatmulV4444 输出,extract / compile；另备三端同输入与参考,保留原图常量权重和尺度
+0或3,实际节点名:输出端口,GE 单节点及静态常量依赖,见 catalog 的 runtime_inputs,所选节点输出端口,extract / compile；另备三端同输入与参考,
