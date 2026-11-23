@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Export the original CPro 40-layer wrapper as one model and read its greedy first token."""
 import argparse
+import os
 from pathlib import Path
 import sys
 
@@ -26,6 +27,9 @@ def main():
         if name == 'board':
             from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
             p.add_argument('--tool', default=DEFAULT_TOOL)
+    slots = stages.add_parser('check-slots', help='Read HIAI V2 descriptors of the previously deployed OMC')
+    slots.add_argument('--run', type=Path, required=True)
+    slots.add_argument('--config', type=Path, help='runtime.json used for the board environment')
     args = parser.parse_args()
     from qwen35_moe_dflash.common.artifacts import output_path
     run = output_path(args.run)
@@ -38,6 +42,12 @@ def main():
     elif args.stage == 'compile':
         from qwen35_moe_dflash.target.prefill_t64.whole_run import compile_model
         compile_model(run, args.ddk_root.resolve(), args.gdr_source.resolve(), args.tbe_diagnosis)
+    elif args.stage == 'check-slots':
+        from qwen35_moe_dflash.target.prefill_t64.whole_slots import check_slots
+        config = args.config or os.environ.get('RUNTIME_CONFIG') or Path(os.environ['AI_RUN_DIR']) / 'runtime/runtime.json'
+        verdict = check_slots(run, Path(config).resolve())
+        if verdict['status'] not in {'INPUT_ORDER_MATCH', 'EQUIVALENT_INPUT_BYTES'}:
+            raise SystemExit(1)
     else:
         from qwen35_moe_dflash.target.prefill_t64.whole_run import board
         board(run, args.tool)
