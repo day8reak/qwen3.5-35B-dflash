@@ -12,7 +12,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest='action', required=True)
     export = actions.add_parser('export', help='on the AIR host, export just the two complete decoders')
-    execute = actions.add_parser('run', help='on the DDK host, pull both cases, compile, run HIAI V2, and score')
+    execute = actions.add_parser('run', help='on the DDK host, pull both cases, compile, run HIAI V2, and score',
+                                 epilog='If the original board/attempt.json is missing, use a matching --trace '
+                                        'or set SN (board serial) and BIP (HDC server host:port).')
     for action in (export, execute):
         action.add_argument('--run', required=True, type=Path)
         action.add_argument('--baseline', required=True, type=Path, help='original logits-only 40-layer run')

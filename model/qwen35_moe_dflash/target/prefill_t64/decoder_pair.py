@@ -5,6 +5,7 @@ import re
 
 import numpy as np
 
+from ...execution.serial_transport import _environment
 from ..layer_probe.common import checked, identity, metrics, read_array, save_json, sha
 from .chain_compile import _payloads, _pull
 from .chain_reference import BASIS, HIDDEN
@@ -66,12 +67,13 @@ def score_hidden(air, meta, output, spec):
                 valid19=aggregate, token18=tokens[18], per_token=tokens)
 
 
-def trace_comparison(trace, meta, run):
+def trace_comparison(trace, meta, run, baseline):
     record = load(trace / 'air/manifest.json')
+    whole_trace.check_baseline(record, baseline)
     attempt = load(trace / 'board/attempt.json')
     isolated = load(run / 'board/attempt.json')
     previous = load(trace / 'board/first-token.json')['decoder_checkpoints']
-    if (record.get('trace_layers') != list(whole_trace.LAYERS) or record['reference'] != meta['reference']
+    if (record['reference'] != meta['reference']
             or not previous['baseline_logits_equal_bits']
             or any(attempt[k] != isolated[k] for k in ('device', 'server', 'gdr_source_sha256'))):
         raise ValueError('Whole-model trace is from a different capture, board or GDR, or changed the original logits')
@@ -92,15 +94,45 @@ def trace_comparison(trace, meta, run):
     return dict(continuous_vs_310p=metrics(actual, expected), isolated_vs_continuous=metrics(single, actual))
 
 
+def select_board(baseline, digest, trace):
+    compiled_path = baseline / 'omc/manifest.json'
+    compiled = load(compiled_path) if compiled_path.is_file() else None
+    if compiled is not None and (compiled['gdr_source_sha256'] != digest
+                                 or compiled['air_manifest_sha256'] != sha(baseline / 'air/manifest.json')):
+        raise ValueError(f'{compiled_path}: baseline OMC differs from the selected GDR or baseline AIR')
+
+    baseline_receipt = baseline / 'board/attempt.json'
+    receipt = baseline_receipt
+    if not receipt.is_file() and trace and (trace / 'board/attempt.json').is_file():
+        whole_trace.check_baseline(load(trace / 'air/manifest.json'), baseline)
+        receipt = trace / 'board/attempt.json'
+
+    board_source = 'SN/BIP'
+    gdr_source = compiled_path if compiled is not None else 'current DDK and source only'
+    if receipt.is_file():
+        attempt = load(receipt)
+        if receipt == baseline_receipt and compiled is not None and attempt['omc_sha256'] != compiled['primary']['sha256']:
+            raise ValueError(f'{receipt}: board attempt differs from baseline OMC')
+        if attempt['gdr_source_sha256'] != digest:
+            raise ValueError(f'{receipt}: recorded whole-model GDR differs from selected GDR')
+        for var, key in (('SN', 'device'), ('BIP', 'server')):
+            if os.environ.setdefault(var, attempt[key]) != attempt[key]:
+                raise ValueError(f'{var} differs from {receipt}')
+        board_source = gdr_source = receipt
+    elif not all(os.environ.get(k) for k in ('SN', 'BIP')):
+        raise ValueError(f'Missing {receipt}. Set SN and BIP (HDC host:port) for the independent decoder run, '
+                         'or pass --trace with the matching whole-model board attempt.')
+
+    _, device, server = _environment()
+    print(f'Decoder board {device} via {server} (from {board_source}). '
+          f'GDR SHA256 {digest} (checked against {gdr_source}).', flush=True)
+    return dict(device=device, server=server, gdr_source_sha256=digest)
+
+
 def run_pair(root, remote_air, baseline, ddk, source, diagnosis, tool, trace=None):
     base = load(baseline / 'air/manifest.json')
-    original = load(baseline / 'board/attempt.json')
     digest = whole_run.kernel_identity(ddk, source)
-    if original['gdr_source_sha256'] != digest:
-        raise ValueError('Installed GDR differs from the measured whole-model GDR')
-    for var, key in (('SN', 'device'), ('BIP', 'server')):
-        if os.environ.setdefault(var, original[key]) != original[key]:
-            raise ValueError(f'{var} differs from the measured whole-model run')
+    selected = select_board(baseline, digest, trace)
     batch_path = root / 'source/manifest.json'
     if not batch_path.exists():
         _pull(batch_path, batch_path.parent, remote_air)
@@ -132,7 +164,7 @@ def run_pair(root, remote_air, baseline, ddk, source, diagnosis, tool, trace=Non
                 attempt = load(run / 'board/attempt.json')
                 result = load(report)
                 if (attempt['omc_sha256'] != compiled['primary']['sha256']
-                        or any(attempt[k] != original[k] for k in ('device', 'server', 'gdr_source_sha256'))
+                        or any(attempt[k] != v for k, v in selected.items())
                         or result['hidden_sha256'] != sha(run / 'board/hidden.bin')):
                     raise ValueError(f'{key}: retained board output differs from the original attempt')
             else:
@@ -144,7 +176,7 @@ def run_pair(root, remote_air, baseline, ddk, source, diagnosis, tool, trace=Non
                       f"error_ratio={m['error_ratio']} five_metrics_passed={m['passed']}", flush=True)
             if trace:
                 stage = 'compare-trace'
-                rows[key]['trace_token18'] = trace_comparison(trace, meta, run)
+                rows[key]['trace_token18'] = trace_comparison(trace, meta, run, baseline)
                 for boundary, m in rows[key]['trace_token18'].items():
                     print(f"{key} token18 {boundary}: L2={m['relative_l2']} cosine={m['cosine']}", flush=True)
         except Exception as exc:
