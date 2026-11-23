@@ -151,7 +151,7 @@ def _export(root, exporter, schema, index, role, module, args, golden, linear=Fa
                 status='EXPORTED', kind='prefill_chain', output_name=output, export=identity(dest / 'export.json', root))
 
 
-def export(source, config, reference, output):
+def export(source, config, reference, output, *, decoder_pair=False):
     root = output_path(output)
     root.parent.mkdir(parents=True, exist_ok=True)
     with (root.parent / f'.{root.name}-export.lock').open('a') as lock:
@@ -159,7 +159,7 @@ def export(source, config, reference, output):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RuntimeError(f'an AIR export is already active for {root}') from exc
-        _export_batch(source, config, reference, root)
+        _export_batch(source, config, reference, root, decoder_pair=decoder_pair)
 
 
 def stage_cpro_source(source, stage, adapt_wrapper):
@@ -195,7 +195,7 @@ def checkpoint_paths(source, config, ref):
 
 
 @torch.no_grad()
-def _export_batch(source, config, reference, root):
+def _export_batch(source, config, reference, root, *, decoder_pair=False):
     from ...draft.incremental.torch_export import _producer_schema, _schema
 
     reference = reference.resolve(strict=True)
@@ -210,6 +210,8 @@ def _export_batch(source, config, reference, root):
     binding = dict(reference=sha(reference / 'manifest.json'), sources={n: sha(source / n)
         for n in (MODELING, WRAPPER, EXPORTER, NZ, 'utils.py')}, exporter=sha(__file__))
     binding['weight_storage'] = 'native-torchair-fileconstant-v1'
+    if decoder_pair:
+        binding['decoder_layers'] = [0, 3]
     binding_path = root / 'source.json'
     if binding_path.exists():
         previous = json.loads(binding_path.read_text())
@@ -239,7 +241,7 @@ def _export_batch(source, config, reference, root):
             from models.export_model_wrapper_qwen3_5_moe import load_npu_model
             from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
             schema = _schema(*_producer_schema())
-            for base in range(0, LAYERS, 4):
+            for base in range(0, 4 if decoder_pair else LAYERS, 4):
                 print(f'Preparing CPro weights for L{base}–L{base + 3}', flush=True)
                 model = load_npu_model(str(paths['model_file']), 'cpu', torch.float16, variant='cpro',
                                        layer_num=4, start_layer_idx=base, quant_enable=True)
@@ -252,7 +254,7 @@ def _export_batch(source, config, reference, root):
                 for m in model.modules():
                     if isinstance(m, Qwen3_5MoeRMSNorm):
                         m.register_buffer('export_gamma', (m.weight + 1.0).detach().contiguous(), persistent=False)
-                if base == 0:
+                if base == 0 and not decoder_pair:
                     ids = tensor('input_ids').int()
                     emb = Embedding(model)
                     if not np.array_equal(emb(ids).numpy(), array(ref['inputs']['embedding'])):
@@ -262,6 +264,8 @@ def _export_batch(source, config, reference, root):
                     del emb
                 for offset, layer in enumerate(model.model.layers):
                     i = base + offset
+                    if decoder_pair and i not in (0, 3):
+                        continue
                     row = ref['blocks'][i]
                     if layer.block_type != row['block_type']:
                         raise ValueError(f'L{i} attention type differs from 310P')

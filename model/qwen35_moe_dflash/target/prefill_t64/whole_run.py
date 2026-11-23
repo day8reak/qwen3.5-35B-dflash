@@ -41,7 +41,7 @@ def abi(model, ddk, meta):
     graph = schema.decode(read_partition(model, part, max_bytes=max(1, part['bytes'])), 'ModelDef')
     output = meta['golden']
     width = output['shape'][-1]
-    contract = {'stage_views': {output['name']: [[width], [1, width]]}}
+    contract = meta.get('output_contract', {'stage_views': {output['name']: [[width], [1, width]]}})
     if 'trace_layers' in meta:
         contract['required_dtypes'] = {'0': 'float32'}
     return bind_compiled(graph, meta['inputs'], output, _enum_fields(schema), contract)
@@ -62,8 +62,8 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
     manifest = (air / 'manifest.json').read_bytes()
     manifest_sha = hashlib.sha256(manifest).hexdigest()
     meta = json.loads(manifest)
-    if meta['kind'] != 'single-cpro-prefill40':
-        raise ValueError('Expected the single 40-layer CPro AIR manifest')
+    if meta['kind'] not in ('single-cpro-prefill40', 'single-cpro-decoder'):
+        raise ValueError('Expected a whole prefill or independent decoder AIR manifest')
     digest = kernel_identity(ddk, source)
     assets = shared_assets(air, meta, baseline, digest)
     air_file = checked(air, meta['air'])
@@ -214,7 +214,9 @@ def board(run, tool_path, baseline=None):
         hdc.send(script, remote / 'run.sh')
         hdc.send(checks, remote / 'files.sha256')
         hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
-        print('Running one 40-layer HIAI V2 prefill', flush=True)
+        decoder = meta['kind'] == 'single-cpro-decoder'
+        label = f"L{meta['layer']} standalone decoder" if decoder else '40-layer'
+        print(f'Running one {label} HIAI V2 prefill', flush=True)
         uncertain = True
         # Use the exit record even for a tool failure. Some HDC clients turn a
         # nonzero remote status into a transport exception before returning its log.
@@ -231,10 +233,15 @@ def board(run, tool_path, baseline=None):
             raise ValueError(f'Expected one {result_spec["bytes"]}-byte output in {remote}/outputs: {listing}')
         digest, name = matches[0]
         remote_file = _board_path(str(remote / 'outputs' / name))
-        output = out / ('logits-and-hidden.bin' if baseline else 'logits.bin')
+        output = out / ('hidden.bin' if decoder else 'logits-and-hidden.bin' if baseline else 'logits.bin')
         hdc.receive(remote_file, output)
         if sha(output) != digest:
-            raise ValueError('HDC logits digest differs from device')
+            raise ValueError('HDC output digest differs from device')
+        if decoder:
+            from .decoder_pair import score_hidden
+            result = score_hidden(air, meta, output, result_spec)
+            save_json(out / 'accuracy.json', result)
+            return result
         result = score(air, meta, output, result_spec, assets=assets,
                        original=baseline / 'board/logits.bin' if baseline else None)
         save_json(out / 'first-token.json', result)
