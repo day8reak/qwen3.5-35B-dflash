@@ -27,6 +27,17 @@ if [[ $# == 1 && $1 == capture ]]; then
     printf '%s\n' "$job/reference" > "$selected"
     in_env qwen3_5_w4 python "$transfer" --prepare "$selected"
     mv -f -- "$selected" "$selection"
+elif [[ ( $# == 2 || $# == 3 ) && $1 == projections ]]; then
+    : "${CPRO_DDK_ROOT:?}" "${SN:?}" "${BIP:?}"
+    parent="$(realpath -e -- "$2")"
+    layer="${3:-0}"
+    [[ "$layer" == 0 || "$layer" == 3 ]] || { echo 'Select layer 0 or 3' >&2; exit 2; }
+    test -f "$parent/L$layer/air/manifest.json"
+    job="$(mktemp -d "$parent/L$layer-projections-XXXXXXXX")"
+    echo "Projection results: $job/projections.json"
+    in_env custom_pypto python -u "$tool" tail-projections --run "$job" --parent "$parent" --layer "$layer" \
+        --ddk-root "$CPRO_DDK_ROOT" --gdr-source "${GDR_SOURCE:-$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp}" \
+        --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
 elif [[ $# == 2 && $1 == board ]]; then
     : "${CPRO_DDK_ROOT:?}" "${SN:?}" "${BIP:?}"
     parent="$(realpath -e -- "$2")"
@@ -42,5 +53,6 @@ elif [[ $# == 2 && $1 == board ]]; then
 else
     echo "Usage on 78: bash $0 capture" >&2
     echo "Usage on 53: bash $0 board <decoder-pair-prefill-board-run>" >&2
+    echo "Usage on 53: bash $0 projections <decoder-tail-run> [0|3]" >&2
     exit 2
 fi

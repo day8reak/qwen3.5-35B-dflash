@@ -23,6 +23,7 @@ from ..original_target_board import _board_path
 from ..prefill_smoke_plan import _TOOL_TYPES
 from . import whole_trace
 
+_PROBE = 'decoder-tail-projection-probe'
 _DECODER_KINDS = ('single-cpro-decoder', 'single-cpro-decoder-tail')
 
 _GDR_PATHS = ('ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp',
@@ -41,6 +42,9 @@ def abi(model, ddk, meta):
     schema = load_schema(ddk / 'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     part, = [p for p in read_container(model)['partitions'] if p['type'] == 0]
     graph = schema.decode(read_partition(model, part, max_bytes=max(1, part['bytes'])), 'ModelDef')
+    if meta['kind'] == _PROBE:
+        from .decoder_projection import probe_abi
+        return probe_abi(graph, _enum_fields(schema), meta)
     output = meta['golden']
     width = output['shape'][-1]
     contract = meta.get('output_contract', {'stage_views': {output['name']: [[width], [1, width]]}})
@@ -72,12 +76,12 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
     manifest = (air / 'manifest.json').read_bytes()
     manifest_sha = hashlib.sha256(manifest).hexdigest()
     meta = json.loads(manifest)
-    if meta['kind'] not in ('single-cpro-prefill40', *_DECODER_KINDS):
+    if meta['kind'] not in ('single-cpro-prefill40', _PROBE, *_DECODER_KINDS):
         raise ValueError('Expected a whole prefill or independent decoder AIR manifest')
     digest = kernel_identity(ddk, source)
     assets = shared_assets(air, meta, baseline, digest)
     air_file = checked(air, meta['air'])
-    if not meta['weights']:
+    if not meta['weights'] and meta['kind'] != _PROBE:
         raise ValueError('Missing W4 weight inventory')
     def stamp(path):
         info = path.stat()
@@ -115,7 +119,7 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
         raise ValueError(f'Expected one compiled OMC, found {models}')
     model, = models
     weights = sorted(model.parent.rglob('*.weight'))
-    if not weights:
+    if not weights and meta['kind'] != _PROBE:
         raise ValueError(f'OMG did not produce external .weight files alongside {model}')
     io = abi(model, ddk, meta)
     save_json(out / 'manifest.json', dict(air_manifest_sha256=manifest_sha,
@@ -197,7 +201,7 @@ def board(run, tool_path, baseline=None):
             '--direct_from_file=true', '--enable_item=1', '--output_dir=' + str(remote / 'outputs')]
     script = out / 'run.sh'
     report_logs = ('if [ "$rc" != 0 ]; then cat tool.stdout tool.stderr; else tail -n 10 tool.stdout tool.stderr; fi'
-                   if meta['kind'] in _DECODER_KINDS else 'tail -n 10 tool.stdout tool.stderr')
+                   if meta['kind'] in (*_DECODER_KINDS, _PROBE) else 'tail -n 10 tool.stdout tool.stderr')
     script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\nLD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
                       + ' >tool.stdout 2>tool.stderr\nrc=$?\necho "$rc" > tool.exitcode\n'
                       + report_logs + '\nexit "$rc"\n')
@@ -230,6 +234,8 @@ def board(run, tool_path, baseline=None):
         label = f"L{meta['layer']} standalone decoder" if decoder else '40-layer'
         if meta['kind'] == 'single-cpro-decoder-tail':
             label = f"L{meta['layer']} post-attention decoder tail"
+        if meta['kind'] == _PROBE:
+            label = f"L{meta['layer']} {meta['output_edge']} probe"
         print(f'Running one {label} HIAI V2 prefill', flush=True)
         uncertain = True
         # Use the exit record even for a tool failure. Some HDC clients turn a
@@ -248,9 +254,16 @@ def board(run, tool_path, baseline=None):
         digest, name = matches[0]
         remote_file = _board_path(str(remote / 'outputs' / name))
         output = out / ('hidden.bin' if decoder else 'logits-and-hidden.bin' if baseline else 'logits.bin')
+        if meta['kind'] == _PROBE:
+            output = out / 'output.bin'
         hdc.receive(remote_file, output)
         if sha(output) != digest:
             raise ValueError('HDC output digest differs from device')
+        if meta['kind'] == _PROBE:
+            result = dict(status='EXECUTED', output=dict(identity(output, out), dtype=result_spec['dtype'],
+                          shape=result_spec['shape']), numerical_validation='NOT_RUN')
+            save_json(out / 'result.json', result)
+            return result
         if decoder:
             from .decoder_pair import score_hidden
             result = score_hidden(air, meta, output, result_spec)

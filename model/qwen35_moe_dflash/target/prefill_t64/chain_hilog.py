@@ -164,7 +164,7 @@ def _client_records(window, out, tids):
     print(f'V2 client_tid={",".join(tids)} matched PID {", ".join(sorted(pids))}. Client records: {client_log}')
 
 
-def diagnose_decoder_pair(run, hilog=None):
+def diagnose_decoder_pair(run, hilog=None, *, names=('L0', 'L3')):
     """Read retained standalone decoder logs and share one device snapshot across their windows."""
     from ...execution.hdc_run import Hdc
     from ...execution.serial_transport import _environment
@@ -176,7 +176,7 @@ def diagnose_decoder_pair(run, hilog=None):
     hdc = Hdc(*env, out, 30)
     windows = {}
     complete = True
-    for name in ('L0', 'L3'):
+    for name in names:
         board = run / name / 'board'
         folder = out / name
         folder.mkdir()
