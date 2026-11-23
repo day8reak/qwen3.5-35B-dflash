@@ -93,7 +93,7 @@ def replay(case_dir, tool_path=DEFAULT_TOOL):
         report['status'] = 'RUN_REQUESTED'
         save_json(out/'result.json', report)
         uncertain = True
-        _, log = hdc.shell(f'cd {work} && {{ timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} '
+        _, log = hdc.shell(f'cd {work} && touch tool.started && {{ timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} '
                            + shlex.join(argv) + ' >tool.stdout 2>tool.stderr; rc=$?; echo "$rc" >tool.exitcode; '
                            + 'tail -n 20 tool.stdout tool.stderr; }', 'v2-run')
         _, code = hdc.shell(f'cat {work}/tool.exitcode', 'v2-exitcode')
