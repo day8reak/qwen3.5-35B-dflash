@@ -122,9 +122,12 @@ def main():
     prep.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
     execute = actions.add_parser('board', help='35: compile and execute the selected L0 operator and print matrices')
     board_arguments(execute)
+    execute.add_argument('--runner', choices=('model-tool', 'probe'), default='model-tool',
+                         help='board model_run_tool_internal V2 (default) or repeated tensor probe')
     execute.add_argument('--local-air', type=Path, help='reuse an existing single- or multi-step AIR batch on 35')
     execute.add_argument('--cpu-silu', action='store_true', help='run FP32 CPUCL SiLU with the original input bytes')
     report = actions.add_parser('report', help='35: recompute the selected matrices from retained outputs')
+    report.add_argument('--runner', choices=('model-tool', 'probe'), help='default: V2 if present, otherwise probe')
     for sub in (prep, execute, report):
         sub.add_argument('--step', choices=NATIVE_STEPS, default=qkv_silu.STAGE)
     for sub in (cut, compile_cmd, prep, execute, report):
@@ -159,7 +162,8 @@ def main():
         role, basis = ('conv_out', qkv_silu.BASIS) if stage == qkv_silu.STAGE else (ops.ROLES[stage], ops.BASIS)
         scores = partial(ops.summarize, roles={stage: role}, basis=basis)
         if args.action == 'report':
-            ok = scores(run)
+            v2 = args.runner == 'model-tool' if args.runner else (run/'v2/result.json').is_file()
+            ok = scores(run, v2=v2)
         else:
             from attention_step_fixture import ensure_fixture
             ensure_fixture(run, args.step, stage, basis, local=args.local_air, remote=args.remote_air)

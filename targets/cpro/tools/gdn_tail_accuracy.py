@@ -53,6 +53,11 @@ def board(run, args, *, stages=None, summarize=None, basis=None):
             or set(build['cases']) != expected
             or any(x['status'] != 'COMPILED' for x in build['cases'].values())):
         raise ValueError(f'Incomplete or mismatched compilation. See {compile_record}')
+    if getattr(args, 'runner', 'probe') == 'model-tool':
+        from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import execute
+        name, = expected
+        execute(run, name, ddk, args.runtime_config.resolve())
+        return summarize(run, v2=True)
     validate = [sys.executable, TOOLS/'validate_draft_vector.py']
     if not (run/'execution/request.json').is_file():
         subprocess.run([*validate, '--config', args.runtime_config, '--compiled', run/'omc', '--ddk-root', ddk,

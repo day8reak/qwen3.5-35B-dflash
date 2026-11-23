@@ -6,6 +6,7 @@ usage() {
     cat <<'EOF'
 Usage: conv_silu.sh prepare|board|extract|compile [--step NAME] [--layer 0|3] [run-directory]
        conv_silu.sh list [--layer 0|3]
+board uses the device model_run_tool_internal (V2) by default; use --runner probe for repeated calls.
 For an FP32 CPUCL SiLU control, add --cpu-silu to board.
 Default: L0 qkv_conv_silu. "list" shows which steps have automatic three-backend fixtures.
 78: prepare data for a matrix, or extract just the selected AIR.
@@ -25,8 +26,10 @@ layer=
 directory=
 inputs=()
 cpu_silu=()
+runner=()
 while (( $# )); do
     case "$1" in
+        --runner) runner=(--runner "${2:?missing runner (model-tool or probe)}"); shift 2 ;;
         --cpu-silu) cpu_silu=(--cpu-silu); shift ;;
         --step) step="${2:?missing step name}"; shift 2 ;;
         --layer) layer="${2:?missing layer}"; shift 2 ;;
@@ -46,6 +49,9 @@ if (( ${#cpu_silu[@]} )) && [[ "$action" != board || "${layer:-0}" != 0 ||
     ( "$step" != qkv_conv_silu && "$step" != gate_silu && "$step" != silu_output ) ]]; then
     echo '--cpu-silu requires board and an L0 SiLU step' >&2
     exit 2
+fi
+if (( ${#runner[@]} )) && [[ "$action" != board ]]; then
+    echo '--runner is used with board' >&2; exit 2
 fi
 if [[ "$action" == list ]]; then
     awk -F, -v layer="$layer" 'NR>1 && (layer=="" || $1==layer) {
@@ -120,7 +126,7 @@ else
         source_args=()
         if [[ -n "${AIR_ON_35:-}" ]]; then source_args+=(--local-air "$AIR_ON_35"); fi
         if [[ -n "${AIR_ON_78:-}" ]]; then source_args+=(--remote-air "$AIR_ON_78"); fi
-        in_env custom_pypto python "$tool" board "${common[@]}" "${cpu_silu[@]}" "${source_args[@]}" \
+        in_env custom_pypto python "$tool" board "${common[@]}" "${cpu_silu[@]}" "${runner[@]}" "${source_args[@]}" \
             --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
     else
         in_env custom_pypto python "$tool" compile "${common[@]}" --layer "$layer" --remote-slice "${SLICE_ON_78:-$fixture/slice}"

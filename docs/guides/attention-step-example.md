@@ -23,17 +23,20 @@ bash targets/cpro/scripts/conv_silu.sh board --step qkv_conv_silu
 
 ## 查看实际命令和板端 runner
 
-`conv_silu.sh` 默认把展开后的命令打印到终端。78 的 `prepare` 会显示源 AIR 的生成或复用，以及 Python 截取的输入边、输出边和 AIR 路径。35 的 `board` 会显示 OMG 的工作目录、完整参数、HDC 上传和回收命令，以及发给板端的 `launch.sh` 内容。复用已有结果会显示对应的记录路径。
+`conv_silu.sh` 默认把展开后的命令打印到终端。78 的 `prepare` 会显示源 AIR 的生成或复用，以及 Python 截取的输入边、输出边和 AIR 路径。35 的 `board` 会显示 OMG 的工作目录、完整参数、HDC 上传和回收命令，以及发给板端的运行脚本全文。复用已有结果会显示对应的记录路径。
 
-单步测试使用仓库的 `qwen35_tensor_probe`。它以 `tensor-probe` 为文件名随模型上传，按 `plan.txt` 设置输入，调用 HIAI 同步推理。普通模式和 `--cpu-silu` 共用这个 runner。
+单步 `board` 默认直接调用板上的 `/data/local/tmp/tools_sysdbg/model_run_tool_internal`，使用 HIAI V2 执行一次。脚本从成品 OMC 读取输入、输出 dtype，核对实测 310P 输入的字节数和哈希，回收输出后计算三端矩阵。普通模式和 `--cpu-silu` 都支持这个入口。需要复查重复执行稳定性时，加 `--runner probe` 使用仓库的 `qwen35_tensor_probe`（3 次预热、10 次采样）。
 
 已有运行可以直接在 35 查看保存的记录。把 `R` 设成终端打印的 board run 目录：
 
 ```bash
 cat "$R"/omc/models/*/omc/compile-command.json
-cat "$R/execution/launch.sh"
-ls "$R/execution/calls" "$R/recovery/calls"
+cat "$R/v2/run.sh"           # 实际的 V2 命令，含输入和输出 dtype
+ls "$R/v2/calls"             # HDC 上传、执行、回收记录
+ls "$R/v2/output.bin" "$R/v2/matrices.csv"
 ```
+
+已有 probe 运行目录也可以作为 `board` 的最后一个参数，沿用原来的 step 和 `--cpu-silu` 设置。脚本复用 OMC，把 V2 结果单独写到 `v2/`。旧 probe 的板端命令保存在 `execution/launch.sh`。
 
 ## 用同一份输入在板端 CPU 上对照 SiLU
 

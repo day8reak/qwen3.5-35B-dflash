@@ -287,18 +287,19 @@ def matrix_rows(stage, outputs, *, token_axis=None):
                            **{ref: scores[actual, ref][field] for ref in BACKENDS})
 
 
-def summarize(run, *, roles=None, basis=BASIS):
+def summarize(run, *, roles=None, basis=BASIS, v2=False):
     from .segment_trace_compare import board_case
 
     air = run/'air'
     manifest = json.loads((air/'manifest.json').read_text())
     if roles is not None and sorted(c['id'] for c in manifest['cases']) != sorted(case_id(s) for s in roles):
         raise ValueError(f'{air}: expected a fixture containing only {list(roles)}')
-    fixture = json.loads((run/'execution/fixture/manifest.json').read_text())
+    execution = run/('v2' if v2 else 'execution')
+    fixture = json.loads((execution/'fixture/manifest.json').read_text())
     if manifest['golden_source'] != basis or fixture['source_evidence']['manifest_sha256'] != sha(air/'manifest.json'):
         raise ValueError('Board execution and native 310P inputs belong to different batches')
     passed = True
-    path = run/'matrices.csv'
+    path = (execution if v2 else run)/'matrices.csv'
     with tempfile.TemporaryDirectory(dir=run) as tmp:
         staged = Path(tmp)/path.name
         with staged.open('w', newline='') as stream:
@@ -307,7 +308,11 @@ def summarize(run, *, roles=None, basis=BASIS):
             for stage, role in (roles or ROLES).items():
                 _, _, folder, spec = _record(air, case_id(stage))
                 operand, = spec['source_inputs']
-                inputs, gold, board, _ = board_case(run, case_id(stage))
+                if v2:
+                    from .attention_step_v2 import read_case
+                    inputs, gold, board = read_case(run, case_id(stage), fixture)
+                else:
+                    inputs, gold, board, _ = board_case(run, case_id(stage))
                 if (set(inputs) != {role} or inputs[role][0] != operand['dtype']
                         or inputs[role][2] != operand['sha256']):
                     raise ValueError(f'{stage}: board input differs from the native 310P operand')
