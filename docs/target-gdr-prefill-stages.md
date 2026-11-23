@@ -502,7 +502,7 @@ python "$P" compile --run "$S" --ddk-root "${CPRO_DDK_ROOT:?}" \
   --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
 ```
 
-通用入口交付所选步骤的 AIR、边界清单和 OMC。`prepare-qkv` 配有专门的 310P/CPU 采集和三端矩阵；其他自选边界需要各自对应的实测输入和参考输出，才能进行同输入精度对比。
+通用入口生成所选步骤的 AIR、边界清单和 OMC。L0 的 `qkv_conv_silu`、`gate_silu`、`gated_rmsnorm` 和 `out_proj` 支持按步骤采集 310P 输入并生成三端矩阵。两台机器的命令见[单步骤执行示例](guides/attention-step-example.md)。
 
 可直接传给 `--step` 的命名步骤见[步骤说明表](../specs/attention-step-presets.csv)。在 78 执行以下命令可导出本次真实 AIR 的完整步骤表，包含两个层的命名片段和按节点输出端口选取的步骤。
 

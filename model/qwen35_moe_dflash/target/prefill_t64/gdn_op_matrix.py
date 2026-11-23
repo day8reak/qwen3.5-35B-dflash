@@ -92,7 +92,7 @@ def projection_audit(operands, proj, weight, scale, native):
     return report
 
 
-def native_and_cpu(source, config):
+def native_and_cpu(source, config, *, stages=tuple(ROLES), expected_hidden=None):
     import torch.nn.functional as F
     import torch_npu
     import yaml
@@ -103,17 +103,30 @@ def native_and_cpu(source, config):
     from .gdr_stage_capture import observe_norm
 
     config = (source/config).resolve(strict=True)
-    quant_path = (source/yaml.safe_load(config.read_text())['quanted_pth']).resolve(strict=True)
 
     def evaluate(layer, orig, info):
         x, z, proj = (orig[k] for k in ('norm_input', 'norm_gate', 'out_proj_input'))
         dev = orig['device']
-        taps = {}
-        with ExitStack() as cleanup:
-            observe_norm(layer, taps, cleanup)
-            gated = layer.norm(x.to(dev), z.to(dev))
-        if cpu(gated).numpy().tobytes() != orig['norm_return'].numpy().tobytes():
-            raise ValueError('Tapping RMSNorm and SiLU changed the original 310P gated return')
+        if expected_hidden is not None:
+            hidden = orig['output'].reshape(64, 2048)[:19]
+            if hidden.dtype != expected_hidden.dtype or hidden.tobytes() != expected_hidden.tobytes():
+                raise ValueError('Native L0 projection does not reproduce the original AIR golden on valid19')
+        datasets = {}
+        if 'rms_output' in stages or 'silu_output' in stages:
+            taps = {}
+            with ExitStack() as cleanup:
+                observe_norm(layer, taps, cleanup)
+                gated = layer.norm(x.to(dev), z.to(dev))
+            if cpu(gated).numpy().tobytes() != orig['norm_return'].numpy().tobytes():
+                raise ValueError('Tapping RMSNorm and SiLU changed the original 310P gated return')
+            if 'rms_output' in stages:
+                gamma = orig['gamma'].float()
+                host = F.rms_norm(x.float(), (128,), gamma, orig['epsilon'])
+                datasets['rms_output'] = x.numpy(), taps['norm']['rms_output'].numpy(), host.numpy()
+            if 'silu_output' in stages:
+                datasets['silu_output'] = z.numpy(), taps['norm']['silu_output'].numpy(), F.silu(z.float()).numpy()
+        if 'out_proj_only' not in stages:
+            return datasets
         operands = []
         matmul = torch_npu.npu_quant_matmul
 
@@ -127,8 +140,7 @@ def native_and_cpu(source, config):
             y = cpu(layer.out_proj(proj.to(dev))).numpy()
         if y.tobytes() != orig['output'].tobytes():
             raise ValueError('Replaying the exact projection operand changed the native 310P output')
-        # The stage boundary is before the gated product. gamma is the actual L0 gated-norm weight.
-        gamma = orig['gamma'].float()
+        quant_path = (source/yaml.safe_load(config.read_text())['quanted_pth']).resolve(strict=True)
         key = 'target.layers.0.linear_attn.out_proj.weight'
         weight, scale = OriginalQuantWeights(quant_path).logical(key, (2048, 4096))
         info['out_proj_quantization'] = projection_audit(operands, proj.numpy(), weight, scale, y)
@@ -136,13 +148,8 @@ def native_and_cpu(source, config):
                     weight_sha256=hashlib.sha256(weight.tobytes()).hexdigest(),
                     scale_sha256=hashlib.sha256(scale.tobytes()).hexdigest(),
                     policy='per-token A8 RNE, signed W4 group256, int32 dots, FP32 scales/sum, FP16 output'))
-        # Every CPU operand is the host copy taken directly at that operator's native entry.
-        return {
-            'rms_output': (x.numpy(), taps['norm']['rms_output'].numpy(),
-                           F.rms_norm(x.float(), (128,), gamma, orig['epsilon']).numpy()),
-            'silu_output': (z.numpy(), taps['norm']['silu_output'].numpy(), F.silu(z.float()).numpy()),
-            'out_proj_only': (proj.numpy(), y, linear(proj, weight, scale).numpy()),
-        }
+        datasets['out_proj_only'] = proj.numpy(), y, linear(proj, weight, scale).numpy()
+        return datasets
 
     return capture_l0(source, config, evaluate)
 
@@ -153,7 +160,7 @@ def audit_projection(run, source, config):
     manifest, _, folder, spec = _record(air, case_id('out_proj_only'))
     if manifest.get('golden_source') != BASIS:
         raise ValueError('Select the run used for the independent three-operator matrices')
-    datasets, info = native_and_cpu(source, config)
+    datasets, info = native_and_cpu(source, config, stages=('out_proj_only',))
     x, native, host = datasets['out_proj_only']
     operand, = spec['source_inputs']
     matched = {}
@@ -169,15 +176,33 @@ def audit_projection(run, source, config):
     return all(matched.values()) and audit['status'] == 'VERIFIED_A8_PACKED_W4'
 
 
-def prepare(run, source_air, source, config):
+def reuse_fixture(target, source_air, source, config, stage, basis):
+    manifest = json.loads((target/'manifest.json').read_text())
+    if manifest['golden_source'] != basis or [case['id'] for case in manifest['cases']] != [case_id(stage)]:
+        raise ValueError(f'{target}: expected a standalone {stage} fixture')
+    _, _, folder, spec = _record(target, case_id(stage))
+    if (source_air/'manifest.json').is_file() and sha(source_air/'manifest.json') != manifest['source_manifest_sha256']:
+        raise ValueError(f'{target}: stored {stage} data belongs to a different attention AIR batch')
+    native = manifest['native_310p']
+    if sha(source/'inference_segment.py') != native['driver_sha256'] or sha(source/config) != native['config_sha256']:
+        raise ValueError(f'{target}: driver or config changed; prepare a new fixture directory')
+    checked(target, manifest['boundaries'])
+    for record in (spec['air'], *spec['source_inputs'], spec['golden'], spec['cpu'], *spec['weight_evidence'].values()):
+        checked(folder, record)
+    share_for_transfer(target)
+    print(f'Reusing {stage} fixture: {target}', flush=True)
+
+
+def prepare(run, source_air, source, config, *, stages=tuple(ROLES)):
     source_manifest = json.loads((source_air/'manifest.json').read_text())
     run.mkdir(parents=True, exist_ok=True)
     target = run/'air'
     if target.exists():
         raise FileExistsError(f'{target} exists; reuse with board or select a new run')
     reuse = source_manifest.get('golden_source') == TAIL_BASIS
+    expected = None
     if reuse:
-        for stage in ROLES:
+        for stage in stages:
             boundary(source_air, stage)
     else:
         _, case, original_folder, original = _record(source_air, SOURCE_CASE)
@@ -185,22 +210,19 @@ def prepare(run, source_air, source, config):
                 (original['physical_rows'], original['valid_rows'], original['reference_position']) != (64, 19, 18)):
             raise ValueError('Expected original L0 attention AIR with T64 and valid19')
         raw = checked(original_folder, original['air']).read_bytes()
-    datasets, info = native_and_cpu(source, config)
+        expected = read_array(original_folder, original['golden']).reshape(64, 2048)[:19]
+    datasets, info = native_and_cpu(source, config, stages=stages, expected_hidden=expected)
     if reuse:
         previous = source_manifest['provenance']['native_310p']
         for k in ('config_sha256', 'norm_source', 'gamma_sha256', 'epsilon', 'proj_class'):
             if info[k] != previous[k]:
                 raise ValueError(f'Native 310P {k} differs from the source batch')
-    else:
-        actual = datasets['out_proj_only'][1].reshape(64, 2048)[:19]
-        expected = read_array(original_folder, original['golden']).reshape(64, 2048)[:19]
-        if actual.dtype != expected.dtype or actual.tobytes() != expected.tobytes():
-            raise ValueError('Native L0 projection does not reproduce the original AIR golden on valid19')
     cases = []
     with tempfile.TemporaryDirectory(dir=run) as tmp:
         root = Path(tmp)/'air'
         root.mkdir()
-        for ordinal, (stage, (x, native, host)) in enumerate(datasets.items()):
+        for ordinal, stage in enumerate(stages):
+            x, native, host = datasets[stage]
             name = case_id(stage)
             dest = root/'models'/name
             dest.mkdir(parents=True)
@@ -233,7 +255,7 @@ def prepare(run, source_air, source, config):
                         reference_model_layers=1, native_310p=info, source_manifest_sha256=sha(source_air/'manifest.json'),
                         scope='Independent L0 operators on native T64 inputs. Compare valid19 and individual tokens.')
         save_json(root/'manifest.json', manifest)
-        save_json(root/'boundaries.json', {stage: boundary(root, stage) for stage in ROLES})
+        save_json(root/'boundaries.json', {stage: boundary(root, stage) for stage in stages})
         manifest['boundaries'] = identity(root/'boundaries.json', root)
         save_json(root/'manifest.json', manifest)
         root.rename(target)
@@ -266,6 +288,8 @@ def summarize(run, *, roles=None, basis=BASIS):
 
     air = run/'air'
     manifest = json.loads((air/'manifest.json').read_text())
+    if roles is not None and sorted(c['id'] for c in manifest['cases']) != sorted(case_id(s) for s in roles):
+        raise ValueError(f'{air}: expected a fixture containing only {list(roles)}')
     fixture = json.loads((run/'execution/fixture/manifest.json').read_text())
     if manifest['golden_source'] != basis or fixture['source_evidence']['manifest_sha256'] != sha(air/'manifest.json'):
         raise ValueError('Board execution and native 310P inputs belong to different batches')

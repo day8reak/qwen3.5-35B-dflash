@@ -27,6 +27,10 @@ def board(run, args, *, stages=None, summarize=None, basis=None):
     manifest = json.loads((air/'manifest.json').read_text())
     if manifest['golden_source'] != basis:
         raise ValueError(f'Expected {basis} AIR batch at {air}')
+    expected = {tail.case_id(s) for s in stages}
+    actual = [case['id'] for case in manifest['cases']]
+    if sorted(actual) != sorted(expected):
+        raise ValueError(f'{air}: selected {sorted(expected)}, but the fixture contains {actual}')
     ddk = args.ddk_root.resolve(strict=True)
     compile_record = run/'omc/compile.json'
     if not compile_record.exists():
@@ -36,7 +40,7 @@ def board(run, args, *, stages=None, summarize=None, basis=None):
                         '--use-origin-format'], check=True)
     build = json.loads(compile_record.read_text())
     if (build['manifest_sha256'] != sha(air/'manifest.json') or build['ddk_id'] != args.ddk_id
-            or set(build['cases']) != {tail.case_id(s) for s in stages}
+            or set(build['cases']) != expected
             or any(x['status'] != 'COMPILED' for x in build['cases'].values())):
         raise ValueError(f'Incomplete or mismatched compilation. See {compile_record}')
     validate = [sys.executable, TOOLS/'validate_draft_vector.py']

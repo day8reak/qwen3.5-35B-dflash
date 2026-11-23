@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract one operation from L0/L3 attention, or replay L0's convolution SiLU on native 310P input."""
+"""Extract one operation from L0/L3 attention, or replay one measured L0 operator on its native 310P operand."""
 import argparse
 from functools import partial
 import json
@@ -14,8 +14,12 @@ from qwen35_moe_dflash.target.layer_probe.common import checked, save_json
 from qwen35_moe_dflash.target.prefill_t64 import attention_slice as slices
 from qwen35_moe_dflash.target.prefill_t64.attention_catalog import Catalog, write_catalog
 from qwen35_moe_dflash.target.prefill_t64 import qkv_silu
-from qwen35_moe_dflash.target.prefill_t64.gdn_op_matrix import summarize
+from qwen35_moe_dflash.target.prefill_t64 import gdn_op_matrix as ops
 from qwen35_moe_dflash.target.prefill_t64.chain_compile import _pull
+
+
+NATIVE_STEPS = {qkv_silu.STAGE: qkv_silu.STAGE, 'gated_rmsnorm': 'rms_output',
+                'gate_silu': 'silu_output', 'out_proj': 'out_proj_only'}
 
 
 def extract(args, run):
@@ -69,6 +73,10 @@ def compile_slice(args, run):
     if not source.exists():
         _pull(source, source, args.remote_slice or source)
     receipt = json.loads((source/'slice.json').read_text())
+    if args.step and args.step != receipt.get('step'):
+        raise ValueError(f"Requested {args.step}, but {source} contains {receipt.get('step')}")
+    if args.layer is not None and slices.CASE_IDS[args.layer] != receipt.get('source_case'):
+        raise ValueError(f"Requested L{args.layer}, but {source} belongs to {receipt.get('source_case')}")
     air = checked(source, receipt['air'])
     for weight in receipt['weight_evidence'].values():
         checked(source, weight)
@@ -105,14 +113,18 @@ def main():
     compile_cmd.add_argument('--ddk-id', default=os.environ.get('CPRO_DDK_ID') or '100.520.020.010')
     compile_cmd.add_argument('--remote-slice', type=Path)
     compile_cmd.add_argument('--tbe-diagnosis', type=Path, required=True)
-    prep = actions.add_parser('prepare-qkv', help='78: capture the original convolution SiLU and cut its AIR')
-    prep.add_argument('--reuse', action='store_true', help='verify and reuse the prepared SiLU inputs and references')
+    compile_cmd.add_argument('--step', help='check that the pulled slice matches this step')
+    compile_cmd.add_argument('--layer', type=int, choices=slices.CASE_IDS)
+    prep = actions.add_parser('prepare', aliases=['prepare-qkv'], help='78: prepare one original L0 operator')
+    prep.add_argument('--reuse', action='store_true', help='verify and reuse the selected inputs and references')
     prep.add_argument('--source-air', type=Path, required=True, help='original four-attention AIR batch')
     prep.add_argument('--source-root', type=Path, required=True, help='original 310P segmented driver')
     prep.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
-    execute = actions.add_parser('board', help='35: compile and execute the prepared qkv SiLU and print matrices')
+    execute = actions.add_parser('board', help='35: compile and execute the selected L0 operator and print matrices')
     board_arguments(execute)
-    report = actions.add_parser('report', help='35: recompute qkv matrices from retained outputs')
+    report = actions.add_parser('report', help='35: recompute the selected matrices from retained outputs')
+    for sub in (prep, execute, report):
+        sub.add_argument('--step', choices=NATIVE_STEPS, default=qkv_silu.STAGE)
     for sub in (cut, compile_cmd, prep, execute, report):
         sub.add_argument('--run', type=Path, required=True)
     args = parser.parse_args()
@@ -131,12 +143,20 @@ def main():
         extract(args, run)
     elif args.action == 'compile':
         compile_slice(args, run)
-    elif args.action == 'prepare-qkv':
-        qkv_silu.prepare(run, args.source_air.resolve(), args.source_root.resolve(), args.config, reuse=args.reuse)
+    elif args.action in ('prepare', 'prepare-qkv'):
+        source_air, source = args.source_air.resolve(), args.source_root.resolve()
+        stage = NATIVE_STEPS[args.step]
+        if stage == qkv_silu.STAGE:
+            qkv_silu.prepare(run, source_air, source, args.config, reuse=args.reuse)
+        elif args.reuse and (run/'air').is_dir():
+            ops.reuse_fixture(run/'air', source_air, source, args.config, stage, ops.BASIS)
+        else:
+            ops.prepare(run, source_air, source, args.config, stages=(stage,))
     else:
-        scores = partial(summarize, roles={qkv_silu.STAGE: 'conv_out'}, basis=qkv_silu.BASIS)
-        ok = (scores(run) if args.action == 'report' else
-              board(run, args, stages=(qkv_silu.STAGE,), summarize=scores, basis=qkv_silu.BASIS))
+        stage = NATIVE_STEPS[args.step]
+        role, basis = ('conv_out', qkv_silu.BASIS) if stage == qkv_silu.STAGE else (ops.ROLES[stage], ops.BASIS)
+        scores = partial(ops.summarize, roles={stage: role}, basis=basis)
+        ok = scores(run) if args.action == 'report' else board(run, args, stages=(stage,), summarize=scores, basis=basis)
         return 0 if ok else 1
     return 0
 
