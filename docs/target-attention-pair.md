@@ -10,6 +10,8 @@ git pull --ff-only origin main
 bash targets/cpro/scripts/l0_attention_cpu_silu_78.sh
 ```
 
+两台主机都会打印 `L0 AIR constants`。其中 `inline tensors` 统计 AIR 内含张量数据的常量，`external files` 统计图引用的外置文件。权重全部内嵌时，外置文件数为 0。两端打印的 AIR SHA-256 应相同。
+
 53 上用已有 DDK、GDR 和 HDC 环境运行以下脚本。脚本从 78 拉取该批次，编译原版和 CPU SiLU 版各一张完整的 L0 OMC，调用板上的 `model_run_tool_internal` 各执行一次。实验版替换卷积后的 SiLU 和门控 SiLU。编译后会检查两处 `sigmoid(x) * x` 的 CPUCL 归属和 FP32 dtype。
 
 ```bash

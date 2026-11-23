@@ -29,7 +29,7 @@ def load(path):
     return json.loads(path.read_text())
 
 
-def fixture(air):
+def fixture(air, *, show_weights=False):
     manifest = load(air/'manifest.json')
     case, = [c for c in manifest['cases'] if c['id'] == CASE]
     folder, spec, _, graph = source_graph(air, 0)
@@ -46,21 +46,47 @@ def fixture(air):
         checked(folder, s)
     if read_array(folder, inputs['effective_length']).tolist() != [19]:
         raise ValueError('Expected effective_length=[19]')
+    # The module exporter may put parameters directly in Const.value.t.data.
+    # checked() in source_graph binds those bytes to export.json via the AIR hash.
     weights = {}
+    # Shape literals can also have inline data. Check direct packed projection
+    # weights independently so they cannot be mistaken for those literals.
+    packed_inputs = {op.input[1] for op in graph.op if op.type == 'QuantBatchMatmulV4444'}
+    inline_bytes = 0
+    inline_count = 0
     for op in graph.op:
-        if op.type == 'FileConstant':
-            file = (folder / op.attr['file_path'].s.decode()).resolve(strict=True)
+        if op.type in ('Const', 'Constant'):
+            node_bytes = 0
+            for attr in op.attr.values():
+                if attr.HasField('t'):
+                    size = len(attr.t.data)
+                    if size:
+                        node_bytes += size
+                        inline_count += 1
+            if not node_bytes and op.name + ':0' in packed_inputs:
+                raise ValueError(f'{op.name}: missing inline packed projection weight in {folder}')
+            inline_bytes += node_bytes
+        elif op.type == 'FileConstant':
+            rel = Path(op.attr['file_path'].s.decode())
+            if rel.is_absolute() or '..' in rel.parts or not rel.parts:
+                raise ValueError(f'{op.name}: invalid external weight path {rel}')
+            file = (folder / rel).resolve(strict=True)
             rel = file.relative_to(folder.resolve())
             if str(rel) not in weights:
                 weights[str(rel)] = identity(file, folder.resolve())
-    if not weights:
-        raise ValueError('Original L0 attention AIR is missing its FileConstant weights')
+            if not weights[str(rel)]['bytes'] and op.name + ':0' in packed_inputs:
+                raise ValueError(f'{op.name}: empty packed projection weight file {file}')
+    if not weights and not inline_count:
+        raise ValueError(f'{folder}: found neither inline tensor data nor FileConstant weights')
+    if show_weights:
+        print(f'L0 AIR constants: {inline_count} inline tensors ({inline_bytes:,} bytes), '
+              f'{len(weights)} external files; AIR SHA-256={spec["air"]["sha256"]}', flush=True)
     return dict(manifest, cases=[case], status='EXPORTED', weight_files=weights,
                 silu_sites={k: list(v) for k, v in silu_sites(graph).items()})
 
 
 def stage(source, dest):
-    manifest = fixture(source)
+    manifest = fixture(source, show_weights=True)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.exists():
         with tempfile.TemporaryDirectory(dir=dest.parent) as tmp:
@@ -91,7 +117,7 @@ def board(run, remote, ddk, source, config, diagnosis):
             sftp.get_channel().settimeout(120)
             pull(sftp, air, remote)
     manifest = load(air/'manifest.json')
-    if fixture(air) != manifest:
+    if fixture(air, show_weights=True) != manifest:
         raise ValueError(f'Input, AIR or sidecar differs from the staged fixture: {air}')
     gdr = kernel_identity(ddk, source)
     print('Installed GDR SHA-256:', gdr, flush=True)

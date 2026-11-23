@@ -37,6 +37,10 @@ def replace_sites(graph, sites):
                 return ge_float.get(attr.i)
             if attr.HasField('dt'):
                 return attr.dt
+        if op.type in ('Const', 'Constant') and 'value' in op.attr:
+            stored_dtype = op.attr['value'].t.desc.dtype
+            if stored_dtype:
+                return stored_dtype
         code = descriptor(nodes, edge).dtype
         if code:
             return code
@@ -46,8 +50,6 @@ def replace_sites(graph, sites):
             # Convolution preserves the floating activation type. Its filter is
             # another typed operand if the activation has no static descriptor.
             return dtype(op.input[0]) or dtype(op.input[1])
-        if op.type == 'Const' and 'value' in op.attr:
-            return op.attr['value'].t.desc.dtype
         return None
 
     for site in SITES:
