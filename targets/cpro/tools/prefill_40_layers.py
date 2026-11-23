@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Measure CPro's continuous T64 valid19 prefill and greedy first token versus segmented 310P."""
 import argparse
+from contextlib import closing
 from pathlib import Path
 import sys
 
@@ -15,10 +16,18 @@ def main():
         cmd = actions.add_parser(name)
         for flag in ('source-root', 'config', 'baseline' if name == 'capture' else 'reference', 'output'):
             cmd.add_argument('--' + flag, type=Path, required=True)
-    compile_cmd = actions.add_parser('compile', help='compile on the DDK host and release each local AIR after success')
-    for flag in ('run', 'ddk-root', 'tbe-diagnosis'):
-        compile_cmd.add_argument('--' + flag, type=Path, required=True)
-    compile_cmd.add_argument('--ddk-id', required=True)
+    for name in ('compile', 'compile-run'):
+        cmd = actions.add_parser(name, help='compile each case and release its local AIR' +
+                                 (' and run it before compiling the next case' if name == 'compile-run' else ''))
+        for flag in ('run', 'ddk-root', 'tbe-diagnosis'):
+            cmd.add_argument('--' + flag, type=Path, required=True)
+        cmd.add_argument('--ddk-id', required=True)
+        if name == 'compile-run':
+            cmd.add_argument('--config', type=Path, required=True)
+            cmd.add_argument('--remote-air', type=Path, help='AIR directory on the export server (defaults to RUN/air)')
+            cmd.add_argument('--gdr-sha256', required=True, help='expected installed GDR C++ SHA-256')
+    verify = actions.add_parser('check-air', help='check all 42 export records, fixtures and weight file extents')
+    verify.add_argument('--air', type=Path, required=True)
     probe = actions.add_parser('diagnose', help='inspect the failed decoder request in device HiLog')
     probe.add_argument('--case-dir', type=Path, required=True)
     probe.add_argument('--hilog', type=Path, help='use an existing hilog -x snapshot')
@@ -32,9 +41,19 @@ def main():
     elif a.action == 'export':
         from qwen35_moe_dflash.target.prefill_t64.chain_air import export
         export(a.source_root.resolve(), a.config, a.reference, a.output)
+    elif a.action == 'check-air':
+        from qwen35_moe_dflash.target.prefill_t64.chain_compile import check_air
+        check_air(a.air.resolve())
     elif a.action == 'compile':
         from qwen35_moe_dflash.target.prefill_t64.chain_compile import compile_chain
         compile_chain(a.run, a.ddk_root, a.ddk_id, a.tbe_diagnosis)
+    elif a.action == 'compile-run':
+        from qwen35_moe_dflash.target.prefill_t64.chain_board import run
+        from qwen35_moe_dflash.target.prefill_t64.chain_compile import compiled_cases
+        root, ddk = a.run.resolve(), a.ddk_root.resolve()
+        with closing(compiled_cases(root, ddk, a.ddk_id, a.tbe_diagnosis, gdr_sha256=a.gdr_sha256,
+                                    remote_air=a.remote_air)) as cases:
+            run(root / 'omc', root / 'board', a.config.resolve(), ddk, compiling=cases)
     elif a.action == 'diagnose':
         from qwen35_moe_dflash.target.prefill_t64.chain_hilog import diagnose
         diagnose(a.case_dir, a.hilog)

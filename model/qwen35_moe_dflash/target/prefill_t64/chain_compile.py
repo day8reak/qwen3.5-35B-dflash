@@ -20,9 +20,10 @@ def _load(path):
     return json.loads(path.read_text())
 
 
-def _pull(path):
+def _pull(path, local_root, remote_root):
     tool = Path(__file__).resolve().parents[4] / 'targets/cpro/scripts/pull_artifacts.py'
-    subprocess.run([sys.executable, str(tool), '--from', 'air', str(path)], check=True)
+    source = remote_root / path.relative_to(local_root)
+    subprocess.run([sys.executable, str(tool), '--from', 'air', str(source), '--to', str(path)], check=True)
 
 
 def _local(path):
@@ -31,17 +32,17 @@ def _local(path):
     return path
 
 
-def _fixtures(source, folder, case):
+def _fixtures(source, folder, case, pull):
     # A completed run only needs the small metadata, input and golden files.
     if not _local(folder / 'export.json').is_file():
-        _pull(folder / 'export.json')
+        pull(folder / 'export.json')
     export = _load(checked(source, case['export']))
     for spec in [*export['source_inputs'], export['golden']]:
         if not re.fullmatch(r'[A-Za-z0-9_]+\.bin', spec['path']):
             raise ValueError(f'Unexpected chain fixture name in {folder}')
         path = _local(folder / spec['path'])
         if not path.is_file():
-            _pull(path)
+            pull(path)
         checked(folder, spec)
     return export
 
@@ -58,6 +59,35 @@ def _payloads(folder, export):
     for path in files:
         _local(folder / path)
     return files
+
+
+def _chain_names(manifest):
+    names = ['l00_c00_embedding_o0', *[f'l{i:02d}_c00_decoder_o0' for i in range(LAYERS)], 'l39_c00_head_o0']
+    if (manifest.get('scope') != BASIS or manifest.get('artifact_kind') != KIND or manifest.get('status') != 'EXPORTED'
+            or [c['id'] for c in manifest['cases']] != names
+            or any(c.get('kind') != 'prefill_chain' or c.get('status') != 'EXPORTED'
+                   or c['export']['path'] != f"models/{c['id']}/export.json" for c in manifest['cases'])):
+        raise ValueError('Expected the exported 42-case prefill chain')
+    if manifest['token_text_map']['path'] != 'token-text.json':
+        raise ValueError('Unexpected token map path')
+    return names
+
+
+def check_air(source):
+    manifest = _load(source / 'manifest.json')
+    names = _chain_names(manifest)
+    checked(source, manifest['token_text_map'])
+    for case in manifest['cases']:
+        metadata = checked(source, case['export'])
+        export = _load(metadata)
+        folder = metadata.parent
+        for spec in [*export['source_inputs'], export['golden'], export['air']]:
+            checked(folder, spec)
+        for name, size in _payloads(folder, export).items():
+            path = folder / name
+            if not path.is_file() or path.stat().st_size != size:
+                raise ValueError(f'Incomplete source AIR payload: {path}')
+    print(f'{len(names)} split AIR cases ready at {source}', flush=True)
 
 
 def _release(folder, sizes, inputs):
@@ -116,31 +146,33 @@ def _compile_case(air, export, sizes, dest, ddk, ddk_id, diagnosis, gdr):
 
 
 def compile_chain(run, ddk, ddk_id, diagnosis):
+    for _ in compiled_cases(run, ddk, ddk_id, diagnosis):
+        pass
+
+
+def compiled_cases(run, ddk, ddk_id, diagnosis, *, gdr_sha256=None, remote_air=None):
+    """Yield a durable case after its local AIR payload is released, holding the build lock."""
     run = output_path(run)
     run.mkdir(parents=True, exist_ok=True)
     with (run / '.ddk-compile.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _compile_chain(run, ddk.resolve(), ddk_id, diagnosis)
+        yield from _compile_chain(run, ddk.resolve(), ddk_id, diagnosis, gdr_sha256, remote_air)
 
 
-def _compile_chain(run, ddk, ddk_id, diagnosis):
+def _compile_chain(run, ddk, ddk_id, diagnosis, gdr_sha256, remote_air):
     source, out = _local(run / 'air'), _local(run / 'omc')
+    remote = source if remote_air is None else remote_air
+    def pull(path):
+        _pull(path, source, remote)
     if (run / '.air-export.lock').exists():
         raise ValueError('Use the DDK host with its own transferred AIR copy; this is the export directory')
     manifest_path = _local(source / 'manifest.json')
     if not manifest_path.is_file():
-        _pull(manifest_path)
+        pull(manifest_path)
     manifest = _load(manifest_path)
-    names = ['l00_c00_embedding_o0', *[f'l{i:02d}_c00_decoder_o0' for i in range(LAYERS)], 'l39_c00_head_o0']
-    if (manifest.get('scope') != BASIS or manifest.get('artifact_kind') != KIND or manifest.get('status') != 'EXPORTED'
-            or [c['id'] for c in manifest['cases']] != names
-            or any(c.get('kind') != 'prefill_chain' or c.get('status') != 'EXPORTED'
-                   or c['export']['path'] != f"models/{c['id']}/export.json" for c in manifest['cases'])):
-        raise ValueError('Expected the exported 42-case prefill chain')
-    if manifest['token_text_map']['path'] != 'token-text.json':
-        raise ValueError('Unexpected token map path')
+    names = _chain_names(manifest)
     if not _local(source / 'token-text.json').is_file():
-        _pull(source / 'token-text.json')
+        pull(source / 'token-text.json')
     checked(source, manifest['token_text_map'])
 
     manifest_hash = sha(manifest_path)
@@ -150,6 +182,10 @@ def _compile_chain(run, ddk, ddk_id, diagnosis):
         if report is None or report.get('status') != 'COMPILED':
             raise ValueError('Set CPRO_DDK_ID before compiling the chain')
         ddk_id = report['ddk_id']
+    installed = installed_vscale(ddk) if gdr_sha256 is not None or report is None else None
+    if gdr_sha256 is not None:
+        if set(installed.values()) != {gdr_sha256} or (report is not None and report.get('gdr_source_sha256') != installed):
+            raise ValueError('Requested GDR source differs from the installed DDK or compilation checkpoint')
     meta = dict(artifact_kind=KIND, ddk_id=ddk_id, platform='kirinx90', compiler_profile=DEFAULT_PROFILE,
                 selected_cases=names, tbe_compatibility_requested=diagnosis is not None, coverage='ALL_MANIFEST_CASES',
                 status_scope='SELECTED_CASES', diagnostic_only=False, manifest_sha256=manifest_hash, source_batch='../air')
@@ -158,7 +194,8 @@ def _compile_chain(run, ddk, ddk_id, diagnosis):
             raise ValueError('Compilation checkpoint differs from the source or compiler configuration')
         if report['status'] == 'COMPILED':
             for case in manifest['cases']:
-                _fixtures(source, _local(source/'models'/case['id']), case)
+                _fixtures(source, _local(source/'models'/case['id']), case, pull)
+                yield case['id'], report
             return
         if report.get('storage') not in (None, 'per-layer-v1'):
             raise ValueError('Unrecognized OMC storage mode')
@@ -169,7 +206,8 @@ def _compile_chain(run, ddk, ddk_id, diagnosis):
         if set(p.name for p in out.iterdir()) - {'manifest.json', 'compile.json.tmp'}:
             raise ValueError(f'Unrecognized OMC directory without a compile checkpoint: {out}')
         shutil.copyfile(manifest_path, _local(out/'manifest.json'))
-        report = dict(meta, status='COMPILING', storage='per-layer-v1', cases={}, gdr_source_sha256=installed_vscale(ddk))
+        report = dict(meta, status='COMPILING', storage='per-layer-v1', cases={},
+                      gdr_source_sha256=installed)
         save_json(checkpoint, report)
     gdr = report['gdr_source_sha256']
     for n, case in enumerate(manifest['cases'], 1):
@@ -179,13 +217,13 @@ def _compile_chain(run, ddk, ddk_id, diagnosis):
         row = report['cases'].get(name, {})
         done = row.get('status') == 'COMPILED'
         if not done and not folder.exists():
-            _pull(folder)
-        export = _fixtures(source, folder, case)
+            pull(folder)
+        export = _fixtures(source, folder, case, pull)
         sizes = _payloads(folder, export)
         if not done:
             for p in sizes:
                 if not (folder/p).is_file():
-                    _pull(folder/p)
+                    pull(folder/p)
         if done:
             model = checked(out, row['omc'])
             if model != dest/'model.omc':
@@ -218,5 +256,7 @@ def _compile_chain(run, ddk, ddk_id, diagnosis):
             save_json(checkpoint, report)
         # Publication precedes deletion. A crash during unlink is resumable without OMG.
         _release(folder, sizes, row['air_inputs'])
-    report['status'] = 'COMPILED'
-    save_json(checkpoint, report)
+        if n == len(names):
+            report['status'] = 'COMPILED'
+            save_json(checkpoint, report)
+        yield name, report

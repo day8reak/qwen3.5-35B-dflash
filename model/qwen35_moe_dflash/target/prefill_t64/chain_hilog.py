@@ -77,7 +77,12 @@ def diagnose(case_dir, hilog=None):
     if hilog is None:
         snapshot = out/'hilog.txt'
         with snapshot.open('xb') as stream:
-            subprocess.run([*hdc.prefix, 'shell', 'hilog -x'], stdout=stream, check=True, timeout=30)
+            try:
+                subprocess.run([*hdc.prefix, 'shell', 'hilog -x'], stdout=stream, check=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                if not snapshot.stat().st_size:
+                    raise RuntimeError(f'No HiLog bytes received in 30s. Supply a device log snapshot with --hilog. See {out}')
+                print('HiLog was still streaming after 30s; inspecting the partial snapshot.', flush=True)
     else:
         snapshot = hilog.resolve(strict=True)
     print(f'HiLog snapshot: {snapshot}', flush=True)

@@ -68,12 +68,13 @@ def download(sftp, remote, local, ancestors=()):
         raise ValueError(f'Expected a regular file or directory: {remote}')
 
 
-def pull(sftp, path):
+def pull(sftp, path, remote=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.pull-', dir=path.parent) as temporary:
         staged = Path(temporary) / 'incoming'
-        print(f'Pulling {path}', flush=True)
-        download(sftp, str(path), staged)
+        remote = path if remote is None else remote
+        print(f'Pulling {remote} to {path}', flush=True)
+        download(sftp, str(remote), staged)
         # Serialize publication of completed downloads in this directory.
         parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
@@ -103,9 +104,12 @@ def main():
     mode.add_argument('--init', nargs=2, metavar=('AIR_HOST', 'OMC_HOST'),
                         help='create private SSH settings on the receiving machine')
     parser.add_argument('--from', dest='source', choices=('air', 'omc'), default='air')
+    parser.add_argument('--to', type=Path, help='local destination for a single remote artifact')
     parser.add_argument('paths', nargs='*', help='absolute artifact paths or paths relative to AI_RUN_DIR')
     args = parser.parse_args()
     config = args.config.expanduser().absolute()
+    if args.to is not None and (len(args.paths) != 1 or args.prepare or args.init):
+        parser.error('--to requires a single remote artifact')
     if args.init:
         if args.paths:
             parser.error('--init takes two hostnames and no artifact paths')
@@ -137,7 +141,8 @@ def main():
             raise ValueError(f'Set {variable} to its absolute path on both hosts')
         roots.append(Path(value))
     paths = [destination(name, roots) for name in args.paths]
-    if any(path == config or path in config.parents for path in paths):
+    targets = paths if args.to is None else [destination(args.to, roots)]
+    if any(path == config or path in config.parents for path in [*paths, *targets]):
         raise ValueError('The destination includes the private transfer settings')
     import paramiko
     # Reuse OpenSSH's known keys. Remember new hosts alongside the private settings.
@@ -152,8 +157,8 @@ def main():
                        password=password, look_for_keys=not password, allow_agent=not password, timeout=20)
         with client.open_sftp() as sftp:
             sftp.get_channel().settimeout(120)
-            for path in paths:
-                pull(sftp, path)
+            for path, target in zip(paths, targets):
+                pull(sftp, target, path)
 
 
 if __name__ == '__main__':

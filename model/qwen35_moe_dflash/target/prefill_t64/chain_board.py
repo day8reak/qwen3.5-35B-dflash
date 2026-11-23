@@ -2,6 +2,7 @@
 import csv
 import fcntl
 import hashlib
+from itertools import chain
 import json
 import re
 from pathlib import Path, PurePosixPath
@@ -64,7 +65,7 @@ def discard_board_weight_copies(api, directory, case_id):
     (directory / 'upload-released').touch()
 
 
-def run(compiled, output, config, ddk):
+def run(compiled, output, config, ddk, *, compiling=None):
     from .segment_trace_compare import board_case
     import validate_draft_vector as api
 
@@ -72,15 +73,26 @@ def run(compiled, output, config, ddk):
     output.mkdir(parents=True, exist_ok=True)
     with (output / '.chain.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        manifest = load(compiled / 'manifest.json')
-        build = load(compiled / 'compile.json')
-        expected = ['l00_c00_embedding_o0', *[f'l{i:02d}_c00_decoder_o0' for i in range(LAYERS)], 'l39_c00_head_o0']
-        if (manifest.get('scope') != BASIS or [r['id'] for r in manifest['cases']] != expected
-                or build['status'] != 'COMPILED' or any(build['cases'][n]['status'] != 'COMPILED' for n in expected)):
-            raise ValueError('expected 42 compiled models: embedding, 40 complete decoder blocks, final norm/head')
-        token_map = load(checked(compiled / build['source_batch'], manifest['token_text_map']))
         _, serial, server = api._environment()
-        signature = dict(board_serial=serial, hdc_server=server, compile_sha256=sha(compiled/'compile.json'), config_sha256=sha(config),
+        expected = ['l00_c00_embedding_o0', *[f'l{i:02d}_c00_decoder_o0' for i in range(LAYERS)], 'l39_c00_head_o0']
+        if compiling is None:
+            build = load(compiled / 'compile.json')
+            if build['status'] != 'COMPILED' or any(build['cases'][n]['status'] != 'COMPILED' for n in expected):
+                raise ValueError('expected 42 compiled models: embedding, 40 complete decoder blocks, final norm/head')
+            ready = ((name, build) for name in expected)
+            compile_identity = dict(compile_sha256=sha(compiled/'compile.json'))
+        else:
+            first = next(compiling)
+            _, build = first
+            ready = chain([first], compiling)
+            # compile.json grows after each decoder. Bind its invariant fields here
+            # and check each recovered model's hash before forwarding its hidden.
+            compile_identity = {k: build[k] for k in ('manifest_sha256', 'compiler_profile', 'platform', 'ddk_id')}
+        manifest = load(compiled / 'manifest.json')
+        if manifest.get('scope') != BASIS or [r['id'] for r in manifest['cases']] != expected:
+            raise ValueError('expected the ordered 40-decoder prefill chain')
+        token_map = load(checked(compiled / build['source_batch'], manifest['token_text_map']))
+        signature = dict(board_serial=serial, hdc_server=server, **compile_identity, config_sha256=sha(config),
                          capture_sha256=manifest['capture_sha256'], gdr_source_sha256=build['gdr_source_sha256'])
         marker = output / 'source.json'
         if marker.exists() and load(marker) != signature:
@@ -88,8 +100,10 @@ def run(compiled, output, config, ddk):
         save_json(marker, signature)
         rows = []
         previous = predecessor = None
-        for entry in manifest['cases']:
-            name, role, i = entry['id'], entry['point'], entry['layer']
+        for entry, (name, build) in zip(manifest['cases'], ready, strict=True):
+            if name != entry['id'] or build['cases'][name]['status'] != 'COMPILED':
+                raise ValueError(f"Compiled case does not match the next chain entry {entry['id']}")
+            role, i = entry['point'], entry['layer']
             base = output / name
             base.mkdir(exist_ok=True)
             execution, recovery = base/'execution', base/'recovery'
