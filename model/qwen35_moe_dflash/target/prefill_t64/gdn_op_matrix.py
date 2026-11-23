@@ -11,6 +11,7 @@ import tempfile
 import numpy as np
 
 from ...common.artifacts import share_for_transfer
+from ...common.command_trace import note
 from ..layer_probe.common import KIND, checked, identity, metrics, read_array, save_json, sha
 from .gdr_stage_data import token_rows
 from .decode_cache_control import graph_message
@@ -209,7 +210,9 @@ def prepare(run, source_air, source, config, *, stages=tuple(ROLES)):
         if (case['point'] != 'gdn_layer' or
                 (original['physical_rows'], original['valid_rows'], original['reference_position']) != (64, 19, 18)):
             raise ValueError('Expected original L0 attention AIR with T64 and valid19')
-        raw = checked(original_folder, original['air']).read_bytes()
+        source_path = checked(original_folder, original['air'])
+        note(f'[AIR source] {source_path}')
+        raw = source_path.read_bytes()
         expected = read_array(original_folder, original['golden']).reshape(64, 2048)[:19]
     datasets, info = native_and_cpu(source, config, stages=stages, expected_hidden=expected)
     if reuse:
@@ -234,6 +237,7 @@ def prepare(run, source_air, source, config, *, stages=tuple(ROLES)):
                     src = checked(folder, record)
                     dst = dest/record['path']
                     dst.parent.mkdir(parents=True, exist_ok=True)
+                    note(f'[reuse AIR or weight] {src} -> {dst}')
                     shutil.copyfile(src, dst)
                     checked(dest, record)
                 operand, = spec['source_inputs']

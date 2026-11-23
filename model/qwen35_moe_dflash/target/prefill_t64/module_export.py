@@ -7,6 +7,7 @@ import tempfile
 import numpy as np
 import torch
 
+from ...common.command_trace import note
 from ..layer_probe.common import KIND, checked, identity, read_array, save_json, sha
 from ..layer_probe.replay import export_input_identity, source_bindings
 from ..layer_probe.steps import working_directory
@@ -180,6 +181,9 @@ def export_modules(job, segment, layers, exporter):
             print('export', case['id'], flush=True)
             with working_directory(folder), export_input_identity(list(args.values())) as evidence:
                 with exporter.cpro_export_contracts(True, chunk_size=rows, gdn_layers=int(linear), sequence_rows=rows):
+                    note(f'[AIR export in Python] cwd={folder} case={case["id"]} '
+                         f'torchair.dynamo_export(model=model.eval(), export_path="weight", dynamic=False, **args); '
+                         f'inputs={list(args)}')
                     exporter.torchair.dynamo_export(model=model.eval(), export_path='weight', dynamic=False, **args)
             air = folder / 'export.air'
             (folder / 'weight/export.air').replace(air)

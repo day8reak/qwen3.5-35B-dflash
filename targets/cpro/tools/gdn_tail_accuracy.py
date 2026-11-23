@@ -12,6 +12,7 @@ sys.path.insert(0, str(TOOLS.parents[2] / 'model'))
 sys.dont_write_bytecode = True
 
 from qwen35_moe_dflash.common.artifacts import output_path
+from qwen35_moe_dflash.common.command_trace import note
 
 
 def board(run, args, *, stages=None, summarize=None, basis=None):
@@ -43,6 +44,8 @@ def board(run, args, *, stages=None, summarize=None, basis=None):
                         '--output', run/'omc', '--ddk-root', ddk, '--ddk-id', args.ddk_id,
                         '--compiler-profile', 'isolated-kirinx90', '--tbe-diagnosis', args.tbe_diagnosis,
                         '--use-origin-format'], check=True)
+    else:
+        note(f'[reuse OMC] {compile_record}')
     build = json.loads(compile_record.read_text())
     if bool(build.get('cpu_silu')) != cpu_silu:
         raise ValueError('Select a fresh run for a different SiLU placement')
@@ -54,11 +57,15 @@ def board(run, args, *, stages=None, summarize=None, basis=None):
     if not (run/'execution/request.json').is_file():
         subprocess.run([*validate, '--config', args.runtime_config, '--compiled', run/'omc', '--ddk-root', ddk,
                         '--output', run/'execution', '--apply'], check=True)
+    else:
+        note(f"[reuse board request] {run/'execution/request.json'}; board script: {run/'execution/launch.sh'}")
     result = run/'recovery/result.json'
     if not result.is_file() or json.loads(result.read_text()).get('stage') != 'complete':
         recovered = subprocess.run([*validate, '--recover', run/'execution', '--wait', '--output', run/'recovery'])
         if recovered.returncode and not result.is_file():
             recovered.check_returncode()
+    else:
+        note(f'[reuse board outputs] {result}')
     record = json.loads(result.read_text())
     if record.get('device_execution') != 'EXECUTED_OUTPUTS_RETRIEVED':
         raise ValueError(f"{record.get('error',record['status'])}; see {result}")

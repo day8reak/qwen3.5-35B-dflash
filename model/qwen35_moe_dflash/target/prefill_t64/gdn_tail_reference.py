@@ -4,12 +4,14 @@ import hashlib
 import inspect
 from pathlib import Path
 import runpy
+import shlex
 import sys
 from unittest.mock import patch
 
 import numpy as np
 import torch
 
+from ...common.command_trace import note
 from ..layer_probe.capture import cpu
 from ..layer_probe.common import sha
 from ..layer_probe.steps import working_directory
@@ -32,6 +34,7 @@ def capture_l0(source, config, evaluate, *, observe=None):
         pass
 
     with working_directory(source), patch.object(sys, 'argv', argv), patch.object(sys, 'path', [str(source), *sys.path]):
+        note(f'[310P driver in Python] cwd={source} argv={shlex.join(argv)}')
         main = runpy.run_path(str(entry))['main']
         driver = main.__globals__
         chunk = driver['prefill_chunk_segment1']

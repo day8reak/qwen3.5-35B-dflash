@@ -2,6 +2,7 @@
 from pathlib import Path
 import shutil
 
+from ...common.command_trace import note
 from ..layer_probe.common import checked, identity
 from .decode_cache_control import graph_message
 from .decode_cache_trace import _record
@@ -17,7 +18,9 @@ def source_graph(air, layer):
     if (case['layer'] != layer or case['point'] != ('gdn_layer' if layer == 0 else 'full_attention_layer')
             or (spec['physical_rows'], spec['valid_rows'], spec['reference_position']) != (64, 19, 18)):
         raise ValueError(f'Expected the original L{layer} T64/valid19 attention AIR')
-    msg, graph = graph_message(checked(folder, spec['air']).read_bytes(), 'NetOutput')
+    path = checked(folder, spec['air'])
+    note(f'[AIR source] {path}')
+    msg, graph = graph_message(path.read_bytes(), 'NetOutput')
     return folder, spec, msg, graph
 
 
@@ -124,6 +127,7 @@ def extract(msg, graph, folder, dest, ports, target):
     if graph.output and graph.output[0] != net.name + ':0':
         graph.output[0] = target
     path = dest/'export.air'
+    note(f'[AIR slice in Python] {folder} | {list(ports)} -> {target} | write {path}')
     path.write_bytes(msg.SerializeToString())
     return dict(air=identity(path, dest), source_edge=target, output_desc=out, weight_evidence=weights,
                 inputs=[dict(edge=e, name=p[0], dtype=p[1], shape=list(p[2])) for e, p in ports.items()],

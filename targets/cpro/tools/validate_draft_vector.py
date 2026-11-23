@@ -18,6 +18,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 from probe_draft_vector import CASES, KIND as COMPILE_KIND, graph_case
 from qwen35_moe_dflash.common.artifacts import output_path
+from qwen35_moe_dflash.common.command_trace import note
 from qwen35_moe_dflash.execution.runtime_config import read_json
 from qwen35_moe_dflash.execution.run_layout import _save, reuse_test_output
 from qwen35_moe_dflash.execution.serial_transport import _environment, _build_payloads
@@ -679,6 +680,7 @@ def start(args, out, *, bind_inputs=None):
         _check_probe_dtypes(meta, built)
         uploads, search, _ = _build_payloads(out, 600, resident='resident-mixed', native_directory=native)
         uploads = [r for r in uploads if r['remote'].startswith('lib/')]
+        note(f'[runner] {binary} -> tensor-probe (board payload)')
         uploads.append(_file_record(binary, 'tensor-probe'))
         models = {}
         for case in meta['cases']:
@@ -695,7 +697,10 @@ def start(args, out, *, bind_inputs=None):
                     uploads.append(_file_record(path, case['case']+'/'+path.name))
         exe, serial, server = _environment(); token = uuid.uuid4().hex
         board = PurePosixPath(PREFIX+token)
-        (out/'launch.sh').write_text(supervisor(meta, board, token, env, search))
+        script = out/'launch.sh'
+        body = supervisor(meta, board, token, env, search)
+        script.write_text(body)
+        note(f'[board script prepared] {script} -> {board}/launch.sh\n{body}')
         uploads.append(_file_record(out/'launch.sh', 'launch.sh'))
         progress.update('pack', f'Packing {len(uploads)} files ({sum(r["bytes"] for r in uploads)} bytes) for one HDC transfer')
         payload = pack_uploads(out, uploads)

@@ -6,11 +6,12 @@ import shutil
 import sys
 import tempfile
 
+from qwen35_moe_dflash.common.command_trace import note
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.gdn_tail_probe import case_id
 
 
-def stage_one(source, dest, stage, basis, copy_file):
+def stage_one(source, dest, stage, basis, copy_file, host):
     """Publish only after the input, references, AIR and optional weights all match their hashes."""
     name = case_id(stage)
     with tempfile.TemporaryDirectory(dir=dest.parent, prefix='.step-') as tmp:
@@ -23,6 +24,7 @@ def stage_one(source, dest, stage, basis, copy_file):
                 raise ValueError(f'Invalid relative fixture path: {rel}')
             target = batch/rel
             target.parent.mkdir(parents=True, exist_ok=True)
+            note(f'[fixture from {host}] {source/rel} -> {target}')
             try:
                 copy_file(str(source/rel), str(target))
             except FileNotFoundError as exc:
@@ -63,6 +65,7 @@ def ensure_fixture(run, step, stage, basis, *, local=None, remote=None):
     if local and remote:
         raise ValueError('Select either AIR_ON_35 or AIR_ON_78')
     if (dest/'manifest.json').is_file():
+        note(f'[reuse AIR and inputs] {dest}')
         return
     tests = Path(os.environ['AI_RUN_DIR'])/'target/tests'
     defaults = [tests/f"l0-{step.replace('_', '-')}-t64-valid19-01"/'air']
@@ -74,7 +77,7 @@ def ensure_fixture(run, step, stage, basis, *, local=None, remote=None):
     def select(host, candidates, copy_file):
         for path in candidates:
             try:
-                stage_one(path, dest, stage, basis, copy_file)
+                stage_one(path, dest, stage, basis, copy_file, host)
             except FileNotFoundError as exc:
                 missing.append(f'{host} {path} ({exc})')
             else:

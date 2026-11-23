@@ -22,6 +22,8 @@ import re
 import stat
 import subprocess
 
+
+from qwen35_moe_dflash.common.command_trace import note
 from qwen35_moe_dflash.common.artifacts import output_path, save_json
 from qwen35_moe_dflash.toolchain.compile import omg_environment, _environment_record, _omg_ipc_environment, _retain_compiler_diagnostics, prepare_tbe_compatibility, verify_tbe_compatibility
 from qwen35_moe_dflash.toolchain.compiler_evidence import compile_evidence
@@ -677,6 +679,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             raw, evidence = air_transform(compiler_air)
             if not isinstance(raw, bytes) or not 0 < len(raw) <= 64 << 20:
                 raise ValueError('prepared compiler AIR must be nonempty bytes at most 64 MiB')
+            note(f'[AIR transform in Python] {compiler_air} -> {inputs / "prepared.air"}')
             compiler_air = inputs / 'prepared.air'
             with compiler_air.open('xb') as stream:
                 stream.write(raw)
@@ -704,6 +707,7 @@ def compile_existing_air(air_path, output_dir, ddk_root, *, ddk_id,
             environment = _environment_record(ddk, local_env)
             environment["ipc_temporary_directory"] = ipc
             save_json(output / "omg-environment.json", environment)
+            note(f'[OMG] environment={output / "omg-environment.json"} log={log}')
             attempted = True
             report["model_compilation"] = "FAILED"
             if compatibility is not None:

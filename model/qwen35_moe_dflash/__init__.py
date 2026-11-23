@@ -1,6 +1,12 @@
 """Portable DFlash reference; model dependencies load only when requested."""
 
 from importlib import import_module as _import_module
+import os as _os
+
+if _os.environ.get('QWEN35_TRACE_COMMANDS') == '1':
+    import sys as _sys
+    from .common.command_trace import subprocess_event as _subprocess_event
+    _sys.addaudithook(_subprocess_event)
 
 _EXPORT_MODULES = {
     "DFlashDraftModel": "model",

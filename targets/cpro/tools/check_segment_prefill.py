@@ -4,6 +4,7 @@ import argparse
 from contextlib import ExitStack
 import json
 import runpy
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +14,7 @@ sys.path.insert(0, str(REPO / 'model'))
 
 
 def capture(root, entry, config, prior, attention_layers=False, trace_linear=None, gdr_stages=False):
+    from qwen35_moe_dflash.common.command_trace import note
     from qwen35_moe_dflash.target.layer_probe.common import save_json
     from qwen35_moe_dflash.target.prefill_t64.segment_prefix import arm_prefix
 
@@ -46,6 +48,7 @@ def capture(root, entry, config, prior, attention_layers=False, trace_linear=Non
         sys.argv = [str(entry), '--max_token=0', '--quant_mode=enable', '--quant_bits=4',
                     '--prefill_chunk_size=64', '--config', str(config)]
         sys.path.insert(0, str(entry.parent))
+        note(f'[310P driver in Python] cwd={Path.cwd()} argv={shlex.join(sys.argv)}')
         runpy.run_path(str(entry), run_name='__main__')
     if (manifest is None or len(manifest['boundaries']) != 4 or len(manifest['outputs']) != 9
             or len(manifest['conv_history']) != 3 or 'logits' not in manifest['outputs']):

@@ -73,6 +73,10 @@ tool="$REPO_DIR/targets/cpro/tools/attention_step.py"
 tests="${AI_RUN_DIR:?}/target/tests"
 tag="l$layer-${step//_/-}"
 fixture="$tests/$tag-t64-valid19-01"
+# Show expanded shell commands and propagate tracing to the Python tools.
+export QWEN35_TRACE_COMMANDS=1
+PS4='+ [host] '
+set -x
 in_env() {
     local env_name="$1"
     shift
@@ -91,8 +95,8 @@ if [[ "$action" == prepare || "$action" == extract ]]; then
     if [[ -z "${ATTENTION_AIR:-}" && ( "$action" == extract || ! -d "$fixture/air" ) &&
           ( ! -f "$source_air/manifest.json" || ! -f "$source_air/models/$source_case/export.air" ) ]]; then
         original="$tests/attention4-source-01"
-        in_env qwen3_5_w4 bash "$script_dir/check_attention4_tmatrix.sh" capture "$original"
-        in_env qwen3_5_cpro bash "$script_dir/check_attention4_tmatrix.sh" air "$original"
+        in_env qwen3_5_w4 bash -x "$script_dir/check_attention4_tmatrix.sh" capture "$original"
+        in_env qwen3_5_cpro bash -x "$script_dir/check_attention4_tmatrix.sh" air "$original"
         source_air="$original/air"
     fi
     if [[ "$action" == extract ]]; then
