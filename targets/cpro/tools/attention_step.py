@@ -122,6 +122,7 @@ def main():
     prep.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
     execute = actions.add_parser('board', help='35: compile and execute the selected L0 operator and print matrices')
     board_arguments(execute)
+    execute.add_argument('--local-air', type=Path, help='reuse an existing single- or multi-step AIR batch on 35')
     execute.add_argument('--cpu-silu', action='store_true', help='run FP32 CPUCL SiLU with the original input bytes')
     report = actions.add_parser('report', help='35: recompute the selected matrices from retained outputs')
     for sub in (prep, execute, report):
@@ -157,7 +158,12 @@ def main():
         stage = NATIVE_STEPS[args.step]
         role, basis = ('conv_out', qkv_silu.BASIS) if stage == qkv_silu.STAGE else (ops.ROLES[stage], ops.BASIS)
         scores = partial(ops.summarize, roles={stage: role}, basis=basis)
-        ok = scores(run) if args.action == 'report' else board(run, args, stages=(stage,), summarize=scores, basis=basis)
+        if args.action == 'report':
+            ok = scores(run)
+        else:
+            from attention_step_fixture import ensure_fixture
+            ensure_fixture(run, args.step, stage, basis, local=args.local_air, remote=args.remote_air)
+            ok = board(run, args, stages=(stage,), summarize=scores, basis=basis)
         return 0 if ok else 1
     return 0
 

@@ -113,7 +113,10 @@ else
     echo "L$layer $step $action run: $run"
     common=(--step "$step" --run "$run" --ddk-root "$ddk" --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}")
     if [[ "$action" == board ]]; then
-        in_env custom_pypto python "$tool" board "${common[@]}" "${cpu_silu[@]}" --remote-air "${AIR_ON_78:-$fixture/air}" \
+        source_args=()
+        if [[ -n "${AIR_ON_35:-}" ]]; then source_args+=(--local-air "$AIR_ON_35"); fi
+        if [[ -n "${AIR_ON_78:-}" ]]; then source_args+=(--remote-air "$AIR_ON_78"); fi
+        in_env custom_pypto python "$tool" board "${common[@]}" "${cpu_silu[@]}" "${source_args[@]}" \
             --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
     else
         in_env custom_pypto python "$tool" compile "${common[@]}" --layer "$layer" --remote-slice "${SLICE_ON_78:-$fixture/slice}"

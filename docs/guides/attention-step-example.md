@@ -23,7 +23,7 @@ bash targets/cpro/scripts/conv_silu.sh board --step qkv_conv_silu
 
 ## 用同一份输入在板端 CPU 上对照 SiLU
 
-在 35 复用 78 已准备好的对应步骤。卷积分支用 `conv_out.bin`，门控分支用 `tail_z.bin`。
+在 35 运行。脚本先查 35，再查 78。门控 SiLU 可直接复用旧三算子目录 `$AI_RUN_DIR/target/tests/gdn-op-matrix-l0-valid19-01/air`，只取该步的 AIR、输入和参考输出。自定义路径可在 35 设置 `AIR_ON_35` 或 `AIR_ON_78`。两边都已清理时，先在 78 运行 `bash targets/cpro/scripts/conv_silu.sh prepare --step gate_silu`。卷积分支用 `conv_out.bin`，门控分支用 `tail_z.bin`。
 
 ```bash
 bash targets/cpro/scripts/conv_silu.sh board --step qkv_conv_silu --cpu-silu

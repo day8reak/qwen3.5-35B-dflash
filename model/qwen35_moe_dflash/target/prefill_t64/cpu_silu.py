@@ -9,19 +9,25 @@ TYPES = {'float16': 'DT_FLOAT16', 'float32': 'DT_FLOAT'}
 
 
 def control_air(path, *, operand, output_dtype):
-    msg, graph = graph_message(path.read_bytes(), 'Data')
-    source, = [op for op in graph.op if op.type == 'Data']
+    from google.protobuf import message_factory
+
+    _, original = graph_message(path.read_bytes(), 'Data')
+    source, = [op for op in original.op if op.type == 'Data']
     if source.name != operand['name']:
         raise ValueError('SiLU control input name differs from the source AIR')
     name, shape = source.name, operand['shape']
-    enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
+    enum = original.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
     fp32 = enum['DT_FLOAT'].number
     wire = enum[TYPES[operand['dtype']]].number
     dest = enum[TYPES[output_dtype]].number
     if source.output_desc[0].dtype not in (0, wire):
         raise ValueError('SiLU control input dtype differs from the original AIR')
-    graph.Clear()
-    graph.name = 'silu_probe'
+    # TorchAir slices can be raw GraphDefs. OMG's --framework=1 reads a ModelDef.
+    desc = original.DESCRIPTOR.file.pool.FindMessageTypeByName('ge.proto.ModelDef')
+    cls = (message_factory.GetMessageClass(desc) if hasattr(message_factory, 'GetMessageClass')
+           else message_factory.MessageFactory(desc.file.pool).GetPrototype(desc))
+    msg = cls()
+    graph = msg.graph.add(name='silu_probe')
 
     def node(label, kind, inputs, dtype=None):
         op = graph.op.add(name=label, type=kind, id=len(graph.op))
