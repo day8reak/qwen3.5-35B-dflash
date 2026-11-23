@@ -469,6 +469,8 @@ python "${REPO_DIR:?}/targets/cpro/tools/gdn_op_matrix.py" audit-proj \
 
 ## L0 卷积后的 SiLU 和 L0/L3 attention 的通用截取
 
+可复制的双机命令和换模块示例见 [SiLU(conv_out) 三端对比](guides/attention-step-example.md)。
+
 在 78 使用原四层 attention 批次。工具从 GDR 的 Q、K、V 三路共同向上回溯到卷积后的 SiLU，支持 SiLU 节点和 `x * sigmoid(x)` 两种表达。它在原生 310P L0 forward 中抓取实际送入 SiLU 的卷积输出和返回值，CPU 在同一份输入上执行 `F.silu`。核对原生 L0 attention 的 valid19 输出与源 AIR 配套的参考逐位一致后才发布。门控 SiLU 的输入 z 是另一条支路。源图在 SiLU 后附加的 dtype 转换、transpose 和 Q/K/V split 均位于本次输出边之后。
 
 ```bash
