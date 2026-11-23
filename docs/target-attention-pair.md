@@ -50,20 +50,24 @@ L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --spl
 
 ### 导出自定义算子 `silu_patch` 的单算子 AIR
 
-在仓库根目录运行以下命令，会在 `$AI_RUN_DIR/target/tests/silu_patch/` 生成 8 个静态 AIR 和 `contracts.csv`。每个模型只有 `Data(x) → silu_patch → NetOutput`，端口映射为输入 `x`、输出 `y`，格式均为 ND。OMG 编译需要在所用 DDK 注册同名算子及对应 dtype 的实现。
+在 78 的仓库根目录运行下面的脚本。它用仓库内的 GE protobuf 定义生成一张 `Data → silu_patch → NetOutput` 单算子 AIR，输出路径是 `$AI_RUN_DIR/target/tests/silu_patch_fp16_fp32/silu_patch.air`。
 
 ```bash
 python targets/cpro/tools/export_silu_patch_air.py
 ```
 
-| 当前 W4 模型的调用位置 | 输入和输出 dtype | Prefill B=1、T=64 | Decode B=1、T=1 | 每次前向的源码调用次数 |
-|---|---|---|---|---:|
-| GDN 卷积后的 SiLU | FP16 | `[1,8192,64]` | `[1,8192,1]` | 30 |
-| GDN 的 `SiLU(z.float())` | FP32 | `[2048,128]` | `[32,128]` | 30 |
-| 共享专家 gate 投影后的 SiLU | FP16 | `[64,512]` | `[1,512]` | 40 |
-| 路由专家第一次分组矩阵乘、切出 gate 后的 SiLU | FP16 | `[512,512]` | `[8,512]` | 40 |
+接口为 `x: FP16[N] → y: FP32[N]`，格式为 ND，输入和输出分别占 `2*N` 和 `4*N` 字节。单算子测试把连续输入展平，输出可按原 shape 还原。默认 AIR 用一维 `[-1]` 声明可变长度。OMG 和板端对已注册 kernel 的动态长度支持还需实测。验证固定长度时，在同一命令后加 `--numel 262144` 即可生成对应 L0 prefill 门控的静态 AIR，保存在 `n262144/`。
 
-输入输出形状相同，表内是原 CPro PyTorch 调用边界的逻辑 shape。模型规格取自 `specs/target-config.json`。卷积的通道数来自两路 16 × 128 的 Q/K 和一路 32 × 128 的 V。门控在转 FP32 前将 z 展平为 `[B*T*32,128]`；共享专家接收展平的 token；W4 路由路径按每 token 8 个专家展开，再批量对 gate 的 512 列做 SiLU。Full Attention 的输出门使用 sigmoid。valid19 用于评估前 19 个位置，AIR 保留 T64。上述次数按源码统计，编译器可以融合节点。
+| 原 CPro W4 调用位置 | Prefill B=1、T=64 的逻辑 shape | Decode B=1、T=1 的逻辑 shape | 每次前向的源码调用次数 |
+|---|---|---|---:|
+| GDN 卷积后的 SiLU | `[1,8192,64]` | `[1,8192,1]` | 30 |
+| GDN 门控 | `[2048,128]` | `[32,128]` | 30 |
+| 共享专家 gate 投影后的 SiLU | `[64,512]` | `[1,512]` | 40 |
+| W4 路由专家第一次分组矩阵乘、切出 gate 后的 SiLU | `[512,512]` | `[8,512]` | 40 |
+
+在当前 W4 路径，`in_proj_z` 输出 FP16，reshape 保留 dtype。对接时，GDN 的 gated RMSNorm 可以直接调用 `silu_patch(gate)`；kernel 将输入提升到 FP32 再算 SiLU，golden 可用 `F.silu(gate.float())`。FP32 结果与原 RMSNorm 的 FP32 输出相乘，乘完保留 `out.to(input_dtype)`。读完整 T64 的门控 bin 时输入应为 524288 字节，输出应为 1048576 字节。
+
+卷积分支可用 `silu_patch(conv_out).to(mixed_qkv.dtype)` 向下游 GDR 传 FP16 的 Q/K/V。两处 MoE 如果要保持原来的半精度乘法边界，可在与 up 分支相乘前把 SiLU 结果转回 FP16。做整图集成时，支持 ND 多维输入的算子可以直接推导 `shape(y) = shape(x)`；仅接收一维的接口需要在调用处展平，再还原输出。路由专家的 `x1` 是切片，一维接口要求连续输入时在展平前调用 `contiguous()`。
 
 L0–L2 的 310P 与 CPro 逐张量对比见 [GDR、RMSNorm 和门控乘法](target-gdr-prefill-stages.md)。
 
