@@ -12,14 +12,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     stages = parser.add_subparsers(dest='stage', required=True)
-    for name in ('capture', 'air', 'compile', 'board'):
+    for name in ('capture', 'air', 'trace-air', 'compile', 'board'):
         p = stages.add_parser(name)
         p.add_argument('--run', type=Path, required=True)
-        if name in ('capture', 'air'):
+        if name in ('capture', 'air', 'trace-air'):
             p.add_argument('--source-root', type=Path, required=True)
             p.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
-        if name == 'air':
+        if name in ('air', 'trace-air'):
             p.add_argument('--reference', type=Path, help='existing complete 40-layer 310P capture')
+        if name in ('trace-air', 'compile', 'board'):
+            p.add_argument('--baseline', type=Path, required=name == 'trace-air',
+                           help='original logits-only run for the sparse decoder diagnostic')
         if name == 'compile':
             p.add_argument('--ddk-root', type=Path, required=True)
             p.add_argument('--gdr-source', type=Path, required=True)
@@ -39,9 +42,13 @@ def main():
     elif args.stage == 'air':
         from qwen35_moe_dflash.target.prefill_t64.whole_export import export
         export(args.source_root.resolve(), args.config, args.reference or run / 'reference', run / 'air')
+    elif args.stage == 'trace-air':
+        from qwen35_moe_dflash.target.prefill_t64.whole_export import export_trace
+        export_trace(args.source_root.resolve(), args.config, args.baseline.resolve(), args.reference, run / 'air')
     elif args.stage == 'compile':
         from qwen35_moe_dflash.target.prefill_t64.whole_run import compile_model
-        compile_model(run, args.ddk_root.resolve(), args.gdr_source.resolve(), args.tbe_diagnosis)
+        compile_model(run, args.ddk_root.resolve(), args.gdr_source.resolve(), args.tbe_diagnosis,
+                      args.baseline.resolve() if args.baseline else None)
     elif args.stage == 'check-slots':
         from qwen35_moe_dflash.target.prefill_t64.whole_slots import check_slots
         config = args.config or os.environ.get('RUNTIME_CONFIG') or Path(os.environ['AI_RUN_DIR']) / 'runtime/runtime.json'
@@ -50,7 +57,7 @@ def main():
             raise SystemExit(1)
     else:
         from qwen35_moe_dflash.target.prefill_t64.whole_run import board
-        board(run, args.tool)
+        board(run, args.tool, args.baseline.resolve() if args.baseline else None)
 
 
 if __name__ == '__main__':

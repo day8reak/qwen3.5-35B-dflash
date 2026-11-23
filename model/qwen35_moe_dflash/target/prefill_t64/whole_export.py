@@ -23,9 +23,10 @@ from .chain_air import checkpoint_paths, export_progress, stage_cpro_source
 from .chain_reference import BASIS, LAYERS, VALID19_IDS_SHA256
 from .prepare import EXPORTER, MODELING, NZ, WRAPPER
 from .source_wrapper import stage_wrapper
+from . import whole_trace
 
 
-def logits_wrapper(base):
+def logits_wrapper(base, trace=False):
     class FirstToken(base):
         def forward(self, *, past_key_values, **kwargs):
             # The original GDN writes its two caches in-place. FullAttention's
@@ -33,7 +34,32 @@ def logits_wrapper(base):
             states = [pair if i % 4 == 3 else (pair[0].clone(), pair[1].clone())
                       for i, pair in enumerate(past_key_values)]
             return super().forward(past_key_values=states, **kwargs)[0]
-    return FirstToken
+    if not trace:
+        return FirstToken
+
+    class Checkpoints(FirstToken):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            def record(index):
+                def hook(module, inputs, result):
+                    hidden = result[0]
+                    if tuple(hidden.shape) != (1, 64, 2048) or hidden.dtype != torch.float16:
+                        raise ValueError(f'Unexpected decoder output at L{index}')
+                    self._readouts.append((index, hidden))
+                return hook
+            for i in whole_trace.LAYERS:
+                self.model.model.layers[i].register_forward_hook(record(i))
+
+        def forward(self, *, past_key_values, **kwargs):
+            self._readouts = []
+            logits = super().forward(past_key_values=past_key_values, **kwargs)
+            if tuple(i for i, _ in self._readouts) != whole_trace.LAYERS:
+                raise ValueError('Incomplete or unordered decoder readouts')
+            parts = [logits.reshape(1, 1, whole_trace.VOCAB).float()]
+            for _, hidden in self._readouts:
+                parts.append(torch.index_select(hidden.float(), 1, kwargs['output_pos'].int()))
+            return torch.cat(parts, dim=-1)
+    return Checkpoints
 
 
 def model_inputs(root, meta):
@@ -67,7 +93,7 @@ def model_inputs(root, meta):
 
 
 @torch.no_grad()
-def export(source, config, reference, output):
+def export(source, config, reference, output, *, baseline=None):
     reference = reference.resolve(strict=True)
     meta = json.loads((reference / 'manifest.json').read_text())
     if (meta['status'] != 'CAPTURED' or meta['reference'] != BASIS or
@@ -88,7 +114,7 @@ def export(source, config, reference, output):
             import export_glm_model_qwen3_5_moe as exporter
             from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
             print('Loading original CPro 40-layer wrapper and W4 weights', flush=True)
-            model = logits_wrapper(exporter.Qwen3_5MoeForCausalLMCproWrapper)(
+            model = logits_wrapper(exporter.Qwen3_5MoeForCausalLMCproWrapper, trace=baseline is not None)(
                 model_path=str(paths['model_file']), device='cpu', dtype=torch.float16,
                 embedding_config={'embedding_in_omc': True, 'mul_twice': False}, quant_enable=True).eval()
             layers = model.model.model.layers
@@ -159,12 +185,36 @@ def export(source, config, reference, output):
         raise ValueError('Expected the 310P full vocabulary row')
     shutil.copyfile(checked(reference, golden), root / 'logits.bin')
     shutil.copyfile(checked(reference, meta['token_text_map']), root / 'token-text.json')
-    save_json(root / 'manifest.json', dict(
+    manifest = dict(
         kind='single-cpro-prefill40', reference=sha(reference / 'manifest.json'),
         source={n: sha(source / n) for n in (MODELING, WRAPPER, EXPORTER, NZ, 'utils.py')},
         air=identity(air, root), weights=files, inputs=ports,
         golden=dict(golden, path='logits.bin', name='logits'), ops=dict(counts),
         token_text_map=identity(root / 'token-text.json', root),
-        reference_top1=meta['top1'], reference_text=meta['token_text']))
-    share_for_transfer(root)
-    print(f'One AIR: {air}; 30 GDR, 10 full attention, 1 logits output', flush=True)
+        reference_top1=meta['top1'], reference_text=meta['token_text'])
+    if baseline is not None:
+        manifest.update(trace_layers=list(whole_trace.LAYERS), golden=whole_trace.reference_output(reference, meta, root),
+                        baseline_air_manifest_sha256=sha(baseline / 'air/manifest.json'))
+        whole_trace.check_baseline(manifest, baseline)
+    save_json(root / 'manifest.json', manifest)
+    if baseline is None:
+        share_for_transfer(root)
+    print(f"One AIR: {air}; 30 GDR, 10 full attention, output={manifest['golden']['name']}", flush=True)
+
+
+def export_trace(source, config, baseline, reference, output):
+    reference = whole_trace.source_reference(baseline, reference)
+    if output.exists():
+        raise FileExistsError(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.prefill40-trace-', dir=output.parent) as tmp:
+        work = Path(tmp) / 'export'
+        export(source, config, reference, work, baseline=baseline)
+        # The baseline owns identical weights, tokenizer and inputs on the OMG host.
+        bundle = Path(tmp) / 'bundle'
+        bundle.mkdir()
+        for name in ('export.air', 'trace-golden.bin', 'manifest.json'):
+            (work / name).rename(bundle / name)
+        bundle.rename(output)
+    share_for_transfer(output)
+    print(f'Decoder checkpoint AIR and golden ready for transfer: {output}', flush=True)

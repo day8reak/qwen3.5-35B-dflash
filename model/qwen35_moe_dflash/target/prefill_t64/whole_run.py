@@ -21,6 +21,7 @@ from ..layer_probe.batch import bind_compiled
 from ..layer_probe.common import checked, identity, metrics, new_output, read_array, save_json, sha
 from ..original_target_board import _board_path
 from ..prefill_smoke_plan import _TOOL_TYPES
+from . import whole_trace
 
 _GDR_PATHS = ('ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp',
               'tools/tools_ascendc/custom_op/ascend310b/src/chunk_gated_delta_rule.cpp')
@@ -38,11 +39,25 @@ def abi(model, ddk, meta):
     schema = load_schema(ddk / 'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     part, = [p for p in read_container(model)['partitions'] if p['type'] == 0]
     graph = schema.decode(read_partition(model, part, max_bytes=max(1, part['bytes'])), 'ModelDef')
-    return bind_compiled(graph, meta['inputs'], meta['golden'], _enum_fields(schema),
-                         {'stage_views': {'logits': [[248320], [1, 248320]]}})
+    output = meta['golden']
+    width = output['shape'][-1]
+    contract = {'stage_views': {output['name']: [[width], [1, width]]}}
+    if 'trace_layers' in meta:
+        contract['required_dtypes'] = {'0': 'float32'}
+    return bind_compiled(graph, meta['inputs'], output, _enum_fields(schema), contract)
 
 
-def compile_model(run, ddk, source, diagnosis):
+def shared_assets(air, meta, baseline, digest):
+    if 'trace_layers' in meta:
+        whole_trace.check_baseline(meta, baseline)
+        whole_trace.baseline_logits(baseline, digest)
+        return baseline / 'air'
+    if baseline is not None:
+        raise ValueError('--baseline requires a diagnostic AIR with decoder readouts')
+    return air
+
+
+def compile_model(run, ddk, source, diagnosis, baseline=None):
     air = run / 'air'
     manifest = (air / 'manifest.json').read_bytes()
     manifest_sha = hashlib.sha256(manifest).hexdigest()
@@ -50,6 +65,7 @@ def compile_model(run, ddk, source, diagnosis):
     if meta['kind'] != 'single-cpro-prefill40':
         raise ValueError('Expected the single 40-layer CPro AIR manifest')
     digest = kernel_identity(ddk, source)
+    assets = shared_assets(air, meta, baseline, digest)
     air_file = checked(air, meta['air'])
     if not meta['weights']:
         raise ValueError('Missing W4 weight inventory')
@@ -59,14 +75,14 @@ def compile_model(run, ddk, source, diagnosis):
 
     original_files = {air_file: stamp(air_file)}
     for row in meta['weights']:
-        path = checked(air, row)
+        path = checked(assets, row)
         original_files[path] = stamp(path)
     omg, env = omg_environment(ddk)
     out = new_output(run / 'omc')
     work = out / 'generated'
     work.mkdir()
     # OMG resolves FileConstant paths relative to its working directory.
-    (work / 'weight').symlink_to(air / 'weight', target_is_directory=True)
+    (work / 'weight').symlink_to(assets / 'weight', target_is_directory=True)
     (work / 'input.air').symlink_to(air_file)
     if diagnosis is not None:
         env, _ = prepare_tbe_compatibility(ddk, diagnosis, out / 'tbe-compat', inherited=env)
@@ -98,31 +114,43 @@ def compile_model(run, ddk, source, diagnosis):
     print(f'{model} with {len(weights)} external weight files', flush=True)
 
 
-def score(air, meta, output, spec):
+def score(air, meta, output, spec, *, assets=None, original=None):
     ref = read_array(air, meta['golden']).reshape(-1)
     if output.stat().st_size != spec['bytes']:
         raise ValueError('Logits byte count differs from compiled ABI')
     actual = np.fromfile(output, dtype=spec['dtype'])
+    trace = None
+    if 'trace_layers' in meta:
+        trace = whole_trace.compare_rows(actual, ref, np.fromfile(original, dtype='<f4'))
+        actual, ref = actual[:whole_trace.VOCAB], ref[:whole_trace.VOCAB]
+        base = json.loads((assets / 'manifest.json').read_text())
+        if not np.array_equal(ref.view('uint32'), read_array(assets, base['golden']).reshape(-1).view('uint32')):
+            raise ValueError('Diagnostic reference logits differ from the original 310P capture')
+        actual.tofile(output.parent / 'logits.bin')
     if actual.size != ref.size or not (np.isfinite(actual).all() and np.isfinite(ref).all()):
         raise ValueError('Expected one finite full-vocabulary logits row from each backend')
     token = int(np.argmax(actual))
     reference = meta['reference_top1']
-    vocab = json.loads(checked(air, meta['token_text_map']).read_text())
+    vocab = json.loads(checked(assets or air, meta['token_text_map']).read_text())
     if (len(vocab['pieces']) != ref.size or not 0 <= reference < ref.size or ref[reference] != ref.max()
             or vocab['pieces'][reference] != meta['reference_text']):
         raise ValueError('Tokenizer or reference token differs from the reference logits')
-    return dict(prompt=vocab['prompt'], output_pos=18, valid_length=19,
+    result = dict(prompt=vocab['prompt'], output_pos=18, valid_length=19,
                 cpro_token=token, cpro_text=vocab['pieces'][token], cpro_special=token in vocab['special_ids'],
                 reference_token=reference, reference_text=meta['reference_text'],
                 top1_match=token == reference, logits=metrics(actual, ref))
+    if trace is not None:
+        result['decoder_checkpoints'] = trace
+    return result
 
 
-def board(run, tool_path):
+def board(run, tool_path, baseline=None):
     air, omc = run / 'air', run / 'omc'
     compiled = json.loads((omc / 'manifest.json').read_text())
     if sha(air / 'manifest.json') != compiled['air_manifest_sha256']:
         raise ValueError('OMC and AIR manifest differ')
     meta = json.loads((air / 'manifest.json').read_text())
+    assets = shared_assets(air, meta, baseline, compiled['gdr_source_sha256'])
     tool = _board_path(tool_path)
     primary = checked(omc, compiled['primary'])
     files = [('payload/' + primary.name, primary, compiled['primary'])]
@@ -132,7 +160,7 @@ def board(run, tool_path):
     inputs = compiled['io']['inputs']
     result_spec, = compiled['io']['outputs']
     for row in inputs:
-        files.append((f"inputs/{row['index']:03d}.bin", checked(air, row), row))
+        files.append((f"inputs/{row['index']:03d}.bin", checked(assets, row), row))
     # Private attempt paths and a host-side script keep 80 cache names off HDC's shell command line.
     env = _environment()
     out = new_output(run / 'board')
@@ -142,10 +170,16 @@ def board(run, tool_path):
     hdc = Hdc(*env, out, 7200)
     save_json(out / 'attempt.json', dict(device=env[1], server=env[2], remote=str(remote),
               omc_sha256=compiled['primary']['sha256'], gdr_source_sha256=compiled['gdr_source_sha256']))
-    _, space = hdc.shell(f'test -x {tool} && df -Pk {remote.parent}', 'preflight')
-    needed = sum(row['bytes'] for _, _, row in files) + result_spec['bytes']
-    if _space(space) < needed:
-        raise OSError(f'Board requires at least {needed:,} bytes for model, inputs and logits')
+    reusable = {}
+    if baseline:
+        old = json.loads((baseline / 'board/attempt.json').read_text())
+        if (old['device'], old['server']) != tuple(env[1:]):
+            raise ValueError('Trace and logits-only run must use the same board and HDC server')
+        old_remote = _board_path(old['remote'])
+        for line in (baseline / 'board/files.sha256').read_text().splitlines():
+            digest, rel = line.split('  ', 1)
+            if rel.startswith('payload/') and rel.endswith('.weight'):
+                reusable[digest] = _board_path(str(old_remote) + '/' + rel)
     argv = [str(tool), '--model=' + str(remote / files[0][0]), '--weight_dir=' + str(remote / 'payload'),
             '--input=' + ','.join(str(remote / f"inputs/{s['index']:03d}.bin") for s in inputs),
             '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in inputs),
@@ -162,8 +196,20 @@ def board(run, tool_path):
     try:
         dirs = {remote / 'outputs', *((remote / rel).parent for rel, _, _ in files)}
         hdc.shell(f'mkdir {remote} && mkdir -p ' + shlex.join(sorted(map(str, dirs))), 'create-board-dir')
-        print(f'Uploading model and inputs ({needed / 2**30:.1f} GiB) to {remote}', flush=True)
-        for rel, path, _ in files:
+        send = []
+        for rel, path, row in files:
+            if rel.endswith('.weight') and row['sha256'] in reusable:
+                link = shlex.join(['ln', str(reusable[row['sha256']]), str(remote / rel)])
+                _, outcome = hdc.shell(f'if {link} 2>/dev/null; then echo LINKED; else echo UPLOAD; fi', 'reuse-weight')
+                if outcome == 'LINKED':
+                    continue
+            send.append((rel, path, row))
+        needed = sum(row['bytes'] for _, _, row in send) + result_spec['bytes']
+        _, space = hdc.shell(f'test -x {tool} && df -Pk {remote.parent}', 'preflight')
+        if _space(space) < needed:
+            raise OSError(f'Board requires at least {needed:,} additional bytes for this run')
+        print(f'Uploading {len(send)} files ({(needed-result_spec["bytes"]) / 2**30:.2f} GiB) to {remote}', flush=True)
+        for rel, path, _ in send:
             hdc.send(path, remote / rel)
         hdc.send(script, remote / 'run.sh')
         hdc.send(checks, remote / 'files.sha256')
@@ -185,12 +231,22 @@ def board(run, tool_path):
             raise ValueError(f'Expected one {result_spec["bytes"]}-byte output in {remote}/outputs: {listing}')
         digest, name = matches[0]
         remote_file = _board_path(str(remote / 'outputs' / name))
-        output = out / 'logits.bin'
+        output = out / ('logits-and-hidden.bin' if baseline else 'logits.bin')
         hdc.receive(remote_file, output)
         if sha(output) != digest:
             raise ValueError('HDC logits digest differs from device')
-        result = score(air, meta, output, result_spec)
+        result = score(air, meta, output, result_spec, assets=assets,
+                       original=baseline / 'board/logits.bin' if baseline else None)
         save_json(out / 'first-token.json', result)
+        if baseline:
+            trace = result['decoder_checkpoints']
+            print(f"Original CPro logits equal bits: {trace['baseline_logits_equal_bits']}  "
+                  f"({trace['changed_logits']}/{trace['total_logits']} changed)", flush=True)
+            if not trace['baseline_logits_equal_bits']:
+                print('Checkpoint graph changed the final logits. Results apply to this diagnostic graph only.')
+            for layer, m in trace['layers'].items():
+                print(f"{layer:3s} token18  L2={m['relative_l2']}  cosine={m['cosine']}  "
+                      f"RMSE={m['rmse']}  error_ratio={m['error_ratio']}  failed={m['failed_metrics']}")
         print(f"310P {result['reference_token']} {result['reference_text']!r}; "
               f"CPro {result['cpro_token']} {result['cpro_text']!r}; top1_match={result['top1_match']}", flush=True)
         return result
