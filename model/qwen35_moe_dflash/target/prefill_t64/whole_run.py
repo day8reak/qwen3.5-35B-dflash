@@ -101,9 +101,12 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
     if diagnosis is not None:
         env, _ = prepare_tbe_compatibility(ddk, diagnosis, out / 'tbe-compat', inherited=env)
     shapes = ';'.join(s['name'] + ':' + ','.join(map(str, s['shape'])) for s in meta['inputs'])
+    # Small projection diagnostics fit in one OMC, including any retained FileConstants.
+    external = meta['kind'] != _PROBE
     argv = [str(omg), '--framework=1', '--model=input.air', '--output=model', '--target=omc',
             '--platform=kirinx90', '--use_origin_format=true', '--weight_data_type=FP16',
-            '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shapes]
+            '--limit_partition_size=false', f'--save_weights_as_external_data={str(external).lower()}',
+            '--input_shape=' + shapes]
     save_json(out / 'command.json', dict(argv=argv, cwd=str(work), gdr_source_sha256=digest))
     size = sum(row['bytes'] for row in meta['weights'])
     print(f'OMG starts. AIR weights {size / 2**30:.1f} GiB, free {shutil.disk_usage(work).free / 2**30:.1f} GiB. '
@@ -119,13 +122,16 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
         raise ValueError(f'Expected one compiled OMC, found {models}')
     model, = models
     weights = sorted(model.parent.rglob('*.weight'))
-    if not weights and meta['kind'] != _PROBE:
+    if external and not weights:
         raise ValueError(f'OMG did not produce external .weight files alongside {model}')
+    if not external and weights:
+        raise ValueError(f'OMG emitted external weights for an embedded probe: {weights}')
+    storage = 'external' if external else 'embedded'
     io = abi(model, ddk, meta)
     save_json(out / 'manifest.json', dict(air_manifest_sha256=manifest_sha,
-              gdr_source_sha256=digest, primary=identity(model, out),
+              gdr_source_sha256=digest, primary=identity(model, out), weight_storage=storage,
               weights=[identity(w, out) for w in weights], io=io))
-    print(f'{model} with {len(weights)} external weight files', flush=True)
+    print(f'{model} weight_storage={storage} external_files={len(weights)}', flush=True)
 
 
 def score(air, meta, output, spec, *, assets=None, original=None):
@@ -158,6 +164,19 @@ def score(air, meta, output, spec, *, assets=None, original=None):
     return result
 
 
+class HiaiRunFailure(RuntimeError):
+    def __init__(self, rc, remote, log):
+        self.stage = 'board'
+        for marker, stage in (('load model weight failed', 'load_weights'),
+                              ('loading model model failed', 'load_model'),
+                              ('filling input tensors failed', 'fill_inputs'),
+                              ('running model failed', 'execute')):
+            if marker in log.lower():
+                self.stage = stage
+                break
+        super().__init__(f'HIAI exited {rc} (stage={self.stage}); attempt {remote}\n{log}')
+
+
 def board(run, tool_path, baseline=None):
     air, omc = run / 'air', run / 'omc'
     compiled = json.loads((omc / 'manifest.json').read_text())
@@ -167,8 +186,12 @@ def board(run, tool_path, baseline=None):
     assets = shared_assets(air, meta, baseline, compiled['gdr_source_sha256'])
     tool = _board_path(tool_path)
     primary = checked(omc, compiled['primary'])
+    external_files = compiled['weights']
+    storage = 'external' if external_files else 'embedded'
+    if compiled.get('weight_storage', storage) != storage or (not external_files and meta['kind'] != _PROBE):
+        raise ValueError('OMC weight storage and external file inventory disagree')
     files = [('payload/' + primary.name, primary, compiled['primary'])]
-    for row in compiled['weights']:
+    for row in external_files:
         path = checked(omc, row)
         files.append(('payload/' + path.relative_to(primary.parent).as_posix(), path, row))
     inputs = compiled['io']['inputs']
@@ -183,7 +206,8 @@ def board(run, tool_path, baseline=None):
     lock = remote.parent / '.qwen35-target-model-io-lock'
     hdc = Hdc(*env, out, 7200)
     save_json(out / 'attempt.json', dict(device=env[1], server=env[2], remote=str(remote),
-              omc_sha256=compiled['primary']['sha256'], gdr_source_sha256=compiled['gdr_source_sha256']))
+              omc_sha256=compiled['primary']['sha256'], gdr_source_sha256=compiled['gdr_source_sha256'],
+              weight_storage=storage, external_weight_files=len(external_files)))
     reusable = {}
     if baseline:
         old = json.loads((baseline / 'board/attempt.json').read_text())
@@ -194,7 +218,8 @@ def board(run, tool_path, baseline=None):
             digest, rel = line.split('  ', 1)
             if rel.startswith('payload/') and rel.endswith('.weight'):
                 reusable[digest] = _board_path(str(old_remote) + '/' + rel)
-    argv = [str(tool), '--model=' + str(remote / files[0][0]), '--weight_dir=' + str(remote / 'payload'),
+    argv = [str(tool), '--model=' + str(remote / files[0][0]),
+            *(['--weight_dir=' + str(remote / 'payload')] if external_files else []),
             '--input=' + ','.join(str(remote / f"inputs/{s['index']:03d}.bin") for s in inputs),
             '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in inputs),
             '--output_type=' + _TOOL_TYPES[result_spec['dtype'].upper()], '--times=1', '--modelmanager_itf=V2',
@@ -236,7 +261,8 @@ def board(run, tool_path, baseline=None):
             label = f"L{meta['layer']} post-attention decoder tail"
         if meta['kind'] == _PROBE:
             label = f"L{meta['layer']} {meta['output_edge']} probe"
-        print(f'Running one {label} HIAI V2 prefill', flush=True)
+        print(f'Running one {label} HIAI V2 prefill (weight_storage={storage}, '
+              f'external_files={len(external_files)})', flush=True)
         uncertain = True
         # Use the exit record even for a tool failure. Some HDC clients turn a
         # nonzero remote status into a transport exception before returning its log.
@@ -245,7 +271,7 @@ def board(run, tool_path, baseline=None):
         rc = int(code.strip())
         uncertain = False
         if rc:
-            raise RuntimeError(f'HIAI exited {rc}; attempt {remote}\n{log}')
+            raise HiaiRunFailure(rc, remote, log)
         _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f -size {result_spec["bytes"]}c '
                                + '-exec sha256sum {} \\;', 'list-logits')
         matches = re.findall(r'^([a-f0-9]{64})\s+(\./[^\r\n]+)', listing, re.M)

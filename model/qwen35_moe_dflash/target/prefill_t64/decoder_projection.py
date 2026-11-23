@@ -138,6 +138,8 @@ def probe_layer(parent, layer, root, ddk, source, diagnosis, tool):
             row.update(status='FAILED', error=str(exc))
             if row['stage'] == 'board' and (work / 'board/attempt.json').is_file():
                 failed_boards.append(name)
+                if isinstance(exc, whole_run.HiaiRunFailure):
+                    row['stage'] = exc.stage
             print(f"{name} {row['stage']} FAILED: {exc}", flush=True)
             return None
         finally:
