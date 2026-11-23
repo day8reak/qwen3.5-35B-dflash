@@ -2,12 +2,14 @@
 """A/B of both SiLU sites inside one complete L0 linear attention, against measured 310P out_proj."""
 import argparse
 import csv
+import fcntl
 import json
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+import uuid
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]/'model'))
@@ -17,6 +19,7 @@ from attention4_qscale import hidden_scores
 from qwen35_moe_dflash.common.accuracy import ERROR_RATIO_FIELDS, THRESHOLDS
 from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
 from qwen35_moe_dflash.common.command_trace import subprocess_event
+from qwen35_moe_dflash.common.tool_logs import log_excerpt
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.attention_cpu_silu import CASE, silu_sites
 from qwen35_moe_dflash.target.prefill_t64.attention_slice import source_graph
@@ -103,7 +106,7 @@ def stage(source, dest):
     print('SiLU input/output edges:', manifest['silu_sites'], flush=True)
 
 
-def board(run, remote, ddk, source, config, diagnosis):
+def board(run, remote, ddk, source, config, diagnosis, *, retry_failed_compile=False):
     from qwen35_moe_dflash.target.layer_probe.batch import compile_batch
     from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import execute
     from pull_artifacts import DEFAULT_CONFIG, connection, pull
@@ -131,20 +134,34 @@ def board(run, remote, ddk, source, config, diagnosis):
         variant = run/name
         record = variant/'omc/compile.json'
         cpu = name == 'cpu_silu'
+        if cpu and retry_failed_compile and record.is_file():
+            previous = load(record)
+            if (previous.get('status') == 'PARTIAL' and previous['cases'][CASE]['status'] == 'FAILED'
+                    and not (variant/'v2').exists()):
+                archived = variant/('omc-failed-' + uuid.uuid4().hex[:12])
+                record.parent.rename(archived)
+                print('Previous CPU SiLU compilation retained at', archived, flush=True)
         if not record.exists():
             print(f'Compiling complete L0 ({name})', flush=True)
             compile_batch(air, variant/'omc', ddk, stamp['ddk_id'], tbe_diagnosis=diagnosis,
-                          use_origin_format=True, cases=[CASE], cpu_silu=cpu)
+                          use_origin_format=True, cases=[CASE], cpu_silu=cpu,
+                          cpu_silu_baseline=run/'original/omc/models'/CASE/'omc' if cpu else None)
         build = load(record)
         row = build['cases'][CASE]
         if row['status'] != 'COMPILED':
-            raise RuntimeError(f"{name}: {row.get('error', row['status'])}; see {record}")
+            log = record.parent/'models'/CASE/'omc/compile.log'
+            raise RuntimeError(f"{name}: {row.get('error', row['status'])}\n{log}\n{log_excerpt(log)}")
         if (bool(build.get('cpu_silu')) != cpu or
                 build['manifest_sha256'] != stamp['source_manifest'] or build['ddk_id'] != stamp['ddk_id'] or
                 kernel_identity(ddk, source) != gdr or fixture(air) != manifest):
             raise ValueError(f'{name}: the build differs from the experiment')
         if cpu:
-            print('CPUCL placement:', row['cpu_silu_placement']['sites'], flush=True)
+            placement = row['cpu_silu_placement']
+            if not placement.get('cpu_arithmetic_only_silu'):
+                from qwen35_moe_dflash.target.prefill_t64.attention_cpu_silu import inspect
+                placement = inspect(checked(record.parent, row['omc']), ddk)
+            print('CPUCL SiLU only:', placement['sites'], 'partitions:', placement['graphop_counts'],
+                  'boundary casts:', placement['boundary_casts'], flush=True)
         execute(variant, CASE, ddk, config)
     report(run)
 
@@ -209,13 +226,20 @@ def main():
     execute = sub.add_parser('board')
     for name in ('run', 'remote_air', 'ddk', 'gdr_source', 'runtime_config', 'tbe_diagnosis'):
         execute.add_argument(name, type=Path)
+    execute.add_argument('--retry-failed-compile', action='store_true',
+                         help='keep a failed CPU SiLU build and retry it in the same experiment')
     sub.add_parser('report').add_argument('run', type=Path)
     a = commands.parse_args()
     if a.action == 'prepare':
         stage(a.source.resolve(), output_path(a.dest))
     elif a.action == 'board':
-        board(output_path(a.run), a.remote_air, a.ddk.resolve(), a.gdr_source.resolve(),
-              a.runtime_config.resolve(), a.tbe_diagnosis.resolve())
+        run = output_path(a.run)
+        run.mkdir(parents=True, exist_ok=True)
+        with (run/'.board.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            board(run, a.remote_air, a.ddk.resolve(), a.gdr_source.resolve(),
+                  a.runtime_config.resolve(), a.tbe_diagnosis.resolve(),
+                  retry_failed_compile=a.retry_failed_compile)
     else:
         report(output_path(a.run))
 

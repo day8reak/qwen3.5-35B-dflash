@@ -200,7 +200,8 @@ def export_batch(capture, output, source_root, converter_script, *, points=None,
 
 
 def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900, use_origin_format=None,
-                  cases=None, compiler_profile=DEFAULT_PROFILE, cpu_silu=False):
+                  cases=None, compiler_profile=DEFAULT_PROFILE, cpu_silu=False,
+                  cpu_silu_baseline=None):
     """Read an AIR batch and write a fresh, separate compilation batch."""
     from qwen35_moe_dflash.common.artifacts import output_path
     from qwen35_moe_dflash.toolchain.existing_air import compile_existing_air
@@ -269,7 +270,7 @@ def compile_batch(root, output, ddk, ddk_id, *, tbe_diagnosis=None, timeout=900,
             if cpu_silu:
                 if case['kind'] == 'segment_module_hidden' and case['id'] == 'l00_c00_gdn_layer_hidden_o0':
                     from ..prefill_t64.attention_cpu_silu import compile_options, inspect
-                    options = compile_options(air, destination.parent)
+                    options = compile_options(air, destination.parent, baseline=cpu_silu_baseline)
                 else:
                     from ..prefill_t64.cpu_silu import compile_options, inspect
                     options = compile_options(case['point'], exported, destination.parent)

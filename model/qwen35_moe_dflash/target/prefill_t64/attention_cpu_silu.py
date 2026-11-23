@@ -1,6 +1,8 @@
 """Replace the two SiLU sites in the original L0 attention AIR, preserving its external ports."""
 from collections import Counter
 import hashlib
+import json
+import re
 from pathlib import Path
 
 from ..layer_probe.common import save_json, sha
@@ -109,17 +111,40 @@ def replace_sites(graph, sites):
     return policy_nodes, evidence
 
 
-def compile_options(path, folder):
+def custom_npu_nodes(graph, baseline, air_hash):
+    # Implementation 7 selects the custom AscendC store. With cl_customization,
+    # an unlisted custom node can lose this store even when plain OMG found it.
+    kinds = {'ChunkGatedDeltaRule', 'QuantBatchMatmulV4444'}
+    if baseline is not None:
+        report = json.loads((baseline/'report.json').read_text())
+        log = baseline/'compile.log'
+        if (report['status'] != 'COMPILED' or report['air']['sha256'] != air_hash
+                or sha(log) != report['compile_log_sha256']):
+            raise ValueError(f'Original OMG evidence does not match the L0 AIR: {baseline}')
+        # Capture additional custom types accepted by this DDK (e.g. a quantizer).
+        accepted = re.compile(r'Node \[name:[^,]+,type:([^\]]+)\] does not need check support')
+        with log.open(errors='replace') as stream:
+            for line in stream:
+                if 'custom_ascendc_adaptee.cpp OpCheckSupport' in line:
+                    match = accepted.search(line)
+                    if match:
+                        kinds.add(match[1])
+    return {op.name: op.type for op in graph.op if op.type in kinds}
+
+
+def compile_options(path, folder, *, baseline=None):
     from google.protobuf import message_factory
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     msg, graph = graph_message(raw, 'ChunkGatedDeltaRule')
+    npu = custom_npu_nodes(graph, baseline, digest)
     names, evidence = replace_sites(graph, silu_sites(graph))
     if not graph.name:
         graph.name = 'l0_attention_cpu_silu'
     policy = folder/'cpu-silu-policy.json'
-    group = dict(groups_info=[dict(npucl_implementation=7)], nodes_info={n: dict(group_id=0) for n in names})
+    group = dict(groups_info=[dict(npucl_implementation=7)], nodes_info={n: dict(group_id=0) for n in [*names, *npu]})
     save_json(policy, dict(npucl_strategy=dict(npucl_graphs={graph.name: group})))
+    print('L0 custom AscendC nodes requested on NPU:', npu, flush=True)
     if msg is graph:
         desc = graph.DESCRIPTOR.file.pool.FindMessageTypeByName('ge.proto.ModelDef')
         cls = (message_factory.GetMessageClass(desc) if hasattr(message_factory, 'GetMessageClass')
@@ -130,7 +155,7 @@ def compile_options(path, folder):
     def transform(snapshot):
         if sha(snapshot) != digest:
             raise ValueError('AIR changed while preparing CPU SiLU compilation')
-        return msg.SerializeToString(), dict(source_sha256=digest, sites=evidence)
+        return msg.SerializeToString(), dict(source_sha256=digest, sites=evidence, custom_npu_nodes=npu)
     return dict(air_transform=transform, cl_customization=policy)
 
 
@@ -146,18 +171,31 @@ def inspect(model, ddk):
     parts = {p['type']: p for p in read_container(model)['partitions']}
     main, = schema.decode(read_partition(model, parts[0]), 'ModelDef')['graph']
     counts, proved = Counter(), {}
+    cpu_owners = {op['name'] for op in main['op']
+                  if op['type'] == 'GraphOp' and _task(op)['cl_name'] == 'CPUCL'}
+    cpu_inputs = {edge.rsplit(':', 1)[0] for op in main['op'] if op['name'] in cpu_owners for edge in op['input']}
+    boundary_casts = []
     for owner in main['op']:
-        if owner['type'] != 'GraphOp':
+        if owner['type'] in ('Data', 'NetOutput', 'Const', 'Constant'):
             continue
+        if owner['type'] in ('Cast', 'CastT') and (owner['name'] in cpu_inputs or any(
+                edge.rsplit(':', 1)[0] in cpu_owners for edge in owner['input'])):
+            boundary_casts.append(owner['name'])
+            continue
+        if owner['type'] != 'GraphOp':
+            raise ValueError(f"Unexpected main-graph computation: {owner['name']} ({owner['type']})")
         task = _task(owner)
         counts[task['cl_name']] += 1
-        if task['cl_name'] != 'CPUCL':
+        if task['cl_name'] == 'NPUCL':
             continue
+        if task['cl_name'] != 'CPUCL':
+            raise ValueError(f"Unexpected compute library {task['cl_name']} in {owner['name']}")
         part = parts[2]
         if not 0 <= task['offset'] < part['bytes'] or not 0 < task['bytes'] <= part['bytes'] - task['offset']:
             raise ValueError('Invalid CPUCL task slice')
         raw = read_partition(model, dict(offset=part['offset'] + task['offset'], bytes=task['bytes']))
         ops = schema.decode(raw, 'GraphDef')['op']
+        silu_ops = set()
         for sig in ops:
             if sig['type'] not in ('Sigmoid', 'Activation') or (
                     sig['type'] == 'Activation' and _attr(sig, 'mode').get('i') != 0):
@@ -172,7 +210,13 @@ def inspect(model, ddk):
             ports = [v for n in (sig, mul) for k in ('input_desc', 'output_desc') for v in n[k]]
             if site in proved or len(ports) != 5 or any(_observed_desc(p, enums)['dtype'] != 'float32' for p in ports):
                 raise ValueError(f'Ambiguous or non-FP32 compiled {site} SiLU')
+            silu_ops.update((sig['name'], mul['name']))
             proved[site] = dict(graphop=owner['name'], sigmoid=sig['name'], mul=mul['name'], dtype='float32')
+        extra = [(op['name'], op['type']) for op in ops
+                 if op['type'] not in ('Data', 'NetOutput') and op['name'] not in silu_ops]
+        if extra or not silu_ops:
+            raise ValueError(f"CPUCL task {owner['name']} has unexpected work beyond SiLU: {extra}")
     if set(proved) != set(SITES) or not counts['NPUCL']:
         raise ValueError(f'Expected two verified CPUCL SiLU sites and NPUCL attention work; got {proved}, {counts}')
-    return dict(model_sha256=sha(model), sites=proved, graphop_counts=dict(counts))
+    return dict(model_sha256=sha(model), sites=proved, graphop_counts=dict(counts),
+                boundary_casts=boundary_casts, cpu_arithmetic_only_silu=True)

@@ -15,4 +15,4 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != custom_pypto ]]; then env_cmd=(conda run --no-
 "${env_cmd[@]}" python -u "$REPO_DIR/targets/cpro/tools/l0_attention_cpu_silu.py" board \
     "$run" "${AIR_ON_78:-$tests/l0-attention-cpu-silu-t64-valid19-01/air}" "$ddk" \
     "${GDR_SOURCE:-$ddk/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp}" \
-    "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+    "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" "$@"

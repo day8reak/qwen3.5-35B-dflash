@@ -12,12 +12,18 @@ bash targets/cpro/scripts/l0_attention_cpu_silu_78.sh
 
 两台主机都会打印 `L0 AIR constants`。其中 `inline tensors` 统计 AIR 内含张量数据的常量，`external files` 统计图引用的外置文件。权重全部内嵌时，外置文件数为 0。两端打印的 AIR SHA-256 应相同。
 
-53 上用已有 DDK、GDR 和 HDC 环境运行以下脚本。脚本从 78 拉取该批次，编译原版和 CPU SiLU 版各一张完整的 L0 OMC，调用板上的 `model_run_tool_internal` 各执行一次。实验版替换卷积后的 SiLU 和门控 SiLU。编译后会检查两处 `sigmoid(x) * x` 的 CPUCL 归属和 FP32 dtype。
+53 上用已有 DDK、GDR 和 HDC 环境运行以下脚本。脚本从 78 拉取该批次，编译原版和 CPU SiLU 版各一张完整的 L0 OMC，调用板上的 `model_run_tool_internal` 各执行一次。实验版替换卷积后的 SiLU 和门控 SiLU。候选编译沿用原版日志中确认的自定义 AscendC 算子库来执行 GDR 等节点。上板前读取 OMC，核对 CPUCL 只执行两处 FP32 `sigmoid(x) * x`，列出两端的类型转换，检查其余计算归属 NPUCL。
 
 ```bash
 cd "${REPO_DIR:?}"
 git pull --ff-only origin main
 bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh
+```
+
+若原版已经执行、CPU 版编译失败，在 53 上将 `R` 设为那次的运行目录，再执行以下命令。它保留失败的编译日志，复用原版结果和已拉取的 AIR，只重试实验版。
+
+```bash
+L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --retry-failed-compile
 ```
 
 运行目录在开头的 `L0 attention A/B` 一行。两组按相同输入和 310P golden 比较 `out_proj` 的前 19 行。终端显示 valid19 和 token18，`comparison.csv` 保存每个有效 token 的五项指标、MAE、最大绝对误差、超差元素数及比例。两个 `delta_*_pp` 列表示实验组减原版的百分点差。逐元素容差为 `rtol=1e-3, atol=1e-5`，允许超差比例为 0.1%。
