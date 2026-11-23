@@ -11,12 +11,13 @@ import numpy as np
 from ..layer_probe.common import identity, new_output, read_array, save_json, sha
 
 BASIS = 'MEASURED_310P_40_DECODER_BLOCKS_T64_VALID19'
+TAIL_BASIS = 'MEASURED_310P_DECODER_POST_ATTENTION_RESIDUAL_T64_VALID19'
 HIDDEN = (1, 64, 2048)
 LAYERS = 40
 VALID19_IDS_SHA256 = 'ec5119e4b49de3c9e0cd48b7cff7faf13b18a0a10dda89c2a5180b194f05eaf7'
 
 
-def capture(source, config, baseline, output):
+def capture(source, config, baseline, output, *, decoder_tails=False):
     import torch
     from ..layer_probe.capture import bound, cpu
     from ..layer_probe.steps import working_directory
@@ -33,6 +34,8 @@ def capture(source, config, baseline, output):
     report = dict(status='CAPTURING', reference=BASIS, physical_rows=64, valid_rows=19, output_pos=18,
                   baseline_sha256=sha(baseline / 'manifest.json') if prior else None, source_sha256=sha(entry),
                   config_sha256=sha(config), inputs={}, blocks=[], outputs={})
+    if decoder_tails:
+        report.update(reference=TAIL_BASIS, tails={})
     save_json(root / 'manifest.json', report)
     seen = []
     previous = tokenizer = None
@@ -90,6 +93,15 @@ def capture(source, config, baseline, output):
                 hook(wrapper, controls, True)
 
                 for i, layer in enumerate(text_model.layers, start):
+                    if decoder_tails and i in (0, 3):
+                        def residual(mod, args, kwargs, i=i):
+                            value = next(iter(bound(mod, args, kwargs).values()))
+                            if (value.device.type != 'npu' or tuple(value.shape) != HIDDEN
+                                    or value.dtype != torch.float16 or str(i) in report['tails']):
+                                raise ValueError(f'Unexpected post_attention_layernorm input at L{i}')
+                            report['tails'][str(i)] = tensor_record(root, f'l{i:02d}_residual', value)
+                        hook(layer.post_attention_layernorm, residual, True)
+
                     def enter(mod, args, kwargs, i=i):
                         v = bound(mod, args, kwargs)
                         x = cpu(v['hidden_states'])
@@ -104,6 +116,8 @@ def capture(source, config, baseline, output):
                                 expected[:, 19:] = 0
                             if not torch.equal(x.view(torch.int16), expected.view(torch.int16)):
                                 raise ValueError(f'unaccounted transformation before L{i}')
+                        if decoder_tails and i == 3:
+                            report['inputs']['l03_entry'] = tensor_record(root, 'l03_entry', x)
                         if any(cpu(t).count_nonzero().item() for t in v['past_key_values']):
                             raise ValueError(f'L{i} prefill initial state is nonzero')
                         if mod.block_type == 'full_attention' and not torch.equal(
@@ -117,6 +131,11 @@ def capture(source, config, baseline, output):
                         report['blocks'].append(dict(layer=i, block_type=mod.block_type,
                             hidden=tensor_record(root, f'l{i:02d}_hidden', previous)))
                         seen.append(i)
+                        if decoder_tails and i == 3:
+                            if set(report['tails']) != {'0', '3'}:
+                                raise ValueError('Incomplete 310P decoder residual capture')
+                            report['status'] = 'CAPTURED'
+                            raise Captured()
                     hook(layer, enter, True)
                     hook(layer, leave)
 
@@ -155,7 +174,11 @@ def capture(source, config, baseline, output):
         except Captured:
             pass
         if report['status'] != 'CAPTURED':
-            raise ValueError('original segmented run did not return a full-prefill first token')
+            boundary = 'L3 decoder return' if decoder_tails else 'full-prefill first token'
+            raise ValueError(f'Original segmented run did not reach {boundary}')
+        if decoder_tails:
+            save_json(root / 'manifest.json', report)
+            return
         vocab_size = report['outputs']['logits']['shape'][-1]
         mapping = [None] * vocab_size
         valid_ids = sorted({i for i in tokenizer.get_vocab().values() if 0 <= i < vocab_size})

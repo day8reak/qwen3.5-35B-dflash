@@ -17,6 +17,16 @@ def main():
     diagnose = actions.add_parser('diagnose', help='read full tool logs and HiLog for existing board attempts')
     diagnose.add_argument('--run', required=True, type=Path)
     diagnose.add_argument('--hilog', type=Path, help='reuse a device HiLog snapshot for both layers')
+    inspect_tail = actions.add_parser('tail-map', help='list source AIR quantized matmuls inside/outside each tail')
+    inspect_tail.add_argument('parent', type=Path, help='retained decoder-pair board run')
+    capture_tail = actions.add_parser('tail-capture', help='capture real post-attention residuals on 310P')
+    capture_tail.add_argument('--source-root', type=Path, required=True)
+    capture_tail.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
+    capture_tail.add_argument('--run', type=Path, required=True)
+    tail = actions.add_parser('tail-run', help='cut L0/L3 tails from the retained standalone decoder AIRs')
+    tail.add_argument('--run', type=Path, required=True)
+    tail.add_argument('--parent', type=Path, required=True)
+    tail.add_argument('--reference', type=Path, required=True)
     execute = actions.add_parser('run', help='on the DDK host, pull both cases, compile, run HIAI V2, and score',
                                  epilog='If the original board/attempt.json is missing, use a matching --trace '
                                         'or set SN (board serial) and BIP (HDC server host:port).')
@@ -27,18 +37,33 @@ def main():
     export.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
     export.add_argument('--reference', type=Path, help='measured T64/valid19 310P decoder capture')
     execute.add_argument('--remote-air', type=Path, help='two-case or 42-case AIR on the export host (default: RUN/air)')
-    execute.add_argument('--ddk-root', required=True, type=Path)
-    execute.add_argument('--gdr-source', required=True, type=Path)
-    execute.add_argument('--tbe-diagnosis', type=Path)
+    for action in (execute, tail):
+        action.add_argument('--ddk-root', required=True, type=Path)
+        action.add_argument('--gdr-source', required=True, type=Path)
+        action.add_argument('--tbe-diagnosis', type=Path)
+        action.add_argument('--tool', help='override the board HIAI V2 model tool')
     execute.add_argument('--trace', type=Path, help='also compare to token18 from the existing sparse whole-model run')
-    execute.add_argument('--tool', help='override the board HIAI V2 model tool')
     a = parser.parse_args()
     if a.action == 'check-air':
         from qwen35_moe_dflash.target.prefill_t64.decoder_pair import check_pair_air
         check_pair_air(a.air.resolve())
         return 0
+    if a.action == 'tail-map':
+        from qwen35_moe_dflash.target.prefill_t64.decoder_tail import inspect_pair
+        inspect_pair(a.parent.resolve())
+        return 0
     from qwen35_moe_dflash.common.artifacts import output_path
     run = output_path(a.run)
+    if a.action == 'tail-capture':
+        from qwen35_moe_dflash.target.prefill_t64.chain_reference import capture
+        capture(a.source_root.resolve(), a.config, None, run, decoder_tails=True)
+        return 0
+    if a.action == 'tail-run':
+        from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
+        from qwen35_moe_dflash.target.prefill_t64.decoder_tail import run_pair
+        ok = run_pair(a.parent.resolve(), a.reference.resolve(), run, a.ddk_root.resolve(),
+                      a.gdr_source.resolve(), a.tbe_diagnosis, a.tool or DEFAULT_TOOL)
+        return 0 if ok else 1
     if a.action == 'diagnose':
         from qwen35_moe_dflash.target.prefill_t64.chain_hilog import diagnose_decoder_pair
         return 0 if diagnose_decoder_pair(run, a.hilog) else 1

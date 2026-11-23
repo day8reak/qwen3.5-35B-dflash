@@ -23,6 +23,8 @@ from ..original_target_board import _board_path
 from ..prefill_smoke_plan import _TOOL_TYPES
 from . import whole_trace
 
+_DECODER_KINDS = ('single-cpro-decoder', 'single-cpro-decoder-tail')
+
 _GDR_PATHS = ('ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp',
               'tools/tools_ascendc/custom_op/ascend310b/src/chunk_gated_delta_rule.cpp')
 
@@ -45,7 +47,7 @@ def abi(model, ddk, meta):
     if 'trace_layers' in meta:
         contract['required_dtypes'] = {'0': 'float32'}
     io = bind_compiled(graph, meta['inputs'], output, _enum_fields(schema), contract)
-    if meta['kind'] == 'single-cpro-decoder':
+    if meta['kind'] in _DECODER_KINDS:
         from collections import Counter
         from ...toolchain.omc_cpu_inspect import _attr
         nodes = graph['graph'][0]['op']
@@ -70,7 +72,7 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
     manifest = (air / 'manifest.json').read_bytes()
     manifest_sha = hashlib.sha256(manifest).hexdigest()
     meta = json.loads(manifest)
-    if meta['kind'] not in ('single-cpro-prefill40', 'single-cpro-decoder'):
+    if meta['kind'] not in ('single-cpro-prefill40', *_DECODER_KINDS):
         raise ValueError('Expected a whole prefill or independent decoder AIR manifest')
     digest = kernel_identity(ddk, source)
     assets = shared_assets(air, meta, baseline, digest)
@@ -195,7 +197,7 @@ def board(run, tool_path, baseline=None):
             '--direct_from_file=true', '--enable_item=1', '--output_dir=' + str(remote / 'outputs')]
     script = out / 'run.sh'
     report_logs = ('if [ "$rc" != 0 ]; then cat tool.stdout tool.stderr; else tail -n 10 tool.stdout tool.stderr; fi'
-                   if meta['kind'] == 'single-cpro-decoder' else 'tail -n 10 tool.stdout tool.stderr')
+                   if meta['kind'] in _DECODER_KINDS else 'tail -n 10 tool.stdout tool.stderr')
     script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\nLD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
                       + ' >tool.stdout 2>tool.stderr\nrc=$?\necho "$rc" > tool.exitcode\n'
                       + report_logs + '\nexit "$rc"\n')
@@ -224,8 +226,10 @@ def board(run, tool_path, baseline=None):
         hdc.send(script, remote / 'run.sh')
         hdc.send(checks, remote / 'files.sha256')
         hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
-        decoder = meta['kind'] == 'single-cpro-decoder'
+        decoder = meta['kind'] in _DECODER_KINDS
         label = f"L{meta['layer']} standalone decoder" if decoder else '40-layer'
+        if meta['kind'] == 'single-cpro-decoder-tail':
+            label = f"L{meta['layer']} post-attention decoder tail"
         print(f'Running one {label} HIAI V2 prefill', flush=True)
         uncertain = True
         # Use the exit record even for a tool failure. Some HDC clients turn a
@@ -250,6 +254,8 @@ def board(run, tool_path, baseline=None):
         if decoder:
             from .decoder_pair import score_hidden
             result = score_hidden(air, meta, output, result_spec)
+            if meta['kind'] == 'single-cpro-decoder-tail':
+                result['scope'] = 'post_attention_layernorm input to final decoder hidden'
             save_json(out / 'accuracy.json', result)
             return result
         result = score(air, meta, output, result_spec, assets=assets,
