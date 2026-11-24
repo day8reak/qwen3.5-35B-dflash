@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 78 exports AIR and 310P references. 53 compiles, runs and compares.
+# 78 prepares AIR, 310P and CPU references. 53 compiles, runs and compares.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "$0")/../../.." && pwd)
 cd "$repo"
 usage() {
-    echo "Usage: bash $0 {air|board|compare} --mode {linear|full|40} [--run DIR] [--capture DIR]"
+    echo "Usage: bash $0 {air|cpu|board|compare} --mode {linear|full|40} [--run DIR] [--capture DIR]"
     echo "       bash $0 diagnose STAGE_DIR [STAGE_DIR ...]"
     echo "       bash $0 diagnose --saved DIAGNOSTICS_DIR"
     echo "       board [--recovery [REPLAY_DIR]] [--from-stage STAGE]; compare [--replay DIR]"
@@ -23,7 +23,7 @@ if [[ $action == diagnose ]]; then
     in_env custom_pypto python -u targets/cpro/tools/split_stage_log.py "$@"
     exit
 fi
-case "$action" in --help|-h) usage; exit 0;; air|board|compare) shift;; *) usage >&2; exit 2;; esac
+case "$action" in --help|-h) usage; exit 0;; air|cpu|board|compare) shift;; *) usage >&2; exit 2;; esac
 mode= run= capture= replay= restart= embed_hidden= split_variant=
 recovery=()
 while (( $# )); do
@@ -47,25 +47,39 @@ if [[ -n "$embed_hidden" && ( $action != board || $mode != linear ) ]]; then usa
 if [[ -n "$split_variant" && ( $action != board || -n "$embed_hidden" ) ]]; then usage >&2; exit 2; fi
 if [[ $action != board && ( ${#recovery[@]} != 0 || -n "$restart" ) ]] ||
    [[ -n "$restart" && ${#recovery[@]} == 0 ]] || [[ -n "$replay" && $action != compare ]] ||
-   [[ -n "$capture" && $action != air ]]; then usage >&2; exit 2; fi
+   [[ -n "$capture" && $action != air && $action != cpu ]]; then usage >&2; exit 2; fi
 if [[ -n "$split_variant" ]]; then recovery+=("$split_variant"); fi
 if [[ -n "$run" ]]; then run=$(realpath -m -- "$run"); fi
 if [[ -n "$capture" ]]; then capture=$(realpath -e -- "$capture"); fi
 tests="${AI_RUN_DIR:?}/target/tests"
 export QWEN35_TRACE_COMMANDS=1
 case "$mode" in
-    linear)
-        export L0_SPLIT_RUN="${run:-${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-02}}"
-        if [[ -n "$capture" ]]; then export L0_SPLIT_CAPTURE="$capture"; fi
-        if [[ -n "$replay" ]]; then
-            case "$replay" in /*) export L0_SPLIT_REPLAY="$replay";; *) export L0_SPLIT_REPLAY="$L0_SPLIT_RUN/$replay";; esac
-        fi
-        if [[ -n "$restart" ]]; then recovery+=(--from-stage "${restart#L00/}"); fi
-        if [[ -n "$embed_hidden" ]]; then recovery+=(--embed-decoder-hidden); fi
-        exec bash targets/cpro/scripts/l0_split_silu_t64.sh "$action" "${recovery[@]}";;
+    linear) run="${run:-${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-02}}";;
     full|40) run="${run:-$tests/prefill-split-$mode-t64-valid19-02}";;
     *) usage >&2; exit 2;;
 esac
+cpu_reference() {
+    local args=(--mode "$mode" --run "$run")
+    if [[ -n "$capture" ]]; then args+=(--capture "$capture"); fi
+    if [[ -n ${TARGET_SOURCE:-} ]]; then args+=(--source "$TARGET_SOURCE"); fi
+    in_env qwen3_5_w4 env PYTHONPATH="$repo/model${PYTHONPATH:+:$PYTHONPATH}" python -u -m \
+        qwen35_moe_dflash.target.prefill_t64.split_cpu_reference "${args[@]}"
+}
+if [[ $action == cpu ]]; then
+    if [[ $mode == linear ]]; then capture="${capture:-${L0_SPLIT_CAPTURE:-}}"; fi
+    cpu_reference
+    exit
+fi
+if [[ $mode == linear ]]; then
+    export L0_SPLIT_RUN="$run"
+    if [[ -n "$capture" ]]; then export L0_SPLIT_CAPTURE="$capture"; fi
+    if [[ -n "$replay" ]]; then
+        case "$replay" in /*) export L0_SPLIT_REPLAY="$replay";; *) export L0_SPLIT_REPLAY="$L0_SPLIT_RUN/$replay";; esac
+    fi
+    if [[ -n "$restart" ]]; then recovery+=(--from-stage "${restart#L00/}"); fi
+    if [[ -n "$embed_hidden" ]]; then recovery+=(--embed-decoder-hidden); fi
+    exec bash targets/cpro/scripts/l0_split_silu_t64.sh "$action" "${recovery[@]}"
+fi
 tool="$repo/targets/cpro/tools/split_prefill.py"
 args=("$action" --mode "$mode" --run "$run")
 case "$action" in
@@ -99,10 +113,7 @@ sys.exit(not (m["status"]=="CAPTURED" and ok))' "$dir/manifest.json" "$mode"; th
         if [[ -n ${CPRO_SOURCE:-} ]]; then args+=(--source "$CPRO_SOURCE"); fi
         if [[ -n ${TARGET_CONFIG:-} ]]; then args+=(--config "$TARGET_CONFIG"); fi
         in_env qwen3_5_cpro python -u "$tool" "${args[@]}"
-        cpu_args=(--mode "$mode" --run "$run" --capture "$capture")
-        if [[ -n ${TARGET_SOURCE:-} ]]; then cpu_args+=(--source "$TARGET_SOURCE"); fi
-        in_env qwen3_5_w4 env PYTHONPATH="$repo/model${PYTHONPATH:+:$PYTHONPATH}" python -u -m \
-            qwen35_moe_dflash.target.prefill_t64.split_cpu_reference "${cpu_args[@]}";;
+        cpu_reference;;
     board)
         args+=(--ddk "${CPRO_DDK_ROOT:?}" --diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
                --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" "${recovery[@]}")

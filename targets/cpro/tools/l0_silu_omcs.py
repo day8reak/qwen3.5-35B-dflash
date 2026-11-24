@@ -2,12 +2,14 @@
 """Compile and replay the one-layer native CPro decoder with four singleton SiluPatch OMCs."""
 import argparse
 import csv
+import errno
 from functools import partial
 import hashlib
 import json
 from math import prod
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sys
 import tempfile
@@ -345,12 +347,23 @@ def compare(bundle, replay, *, allow_failed=False, remote_air=None):
         print(f"Incomplete replay at {receipt['failed_stage']}; missing outputs: {missing}", flush=True)
         specs = {k: v for k, v in specs.items() if k in receipt['outputs']}
     cpu_dir = bundle.parent/'cpu'
+    mode = ('linear' if not meta.get('layer', 0) else 'full') if meta.get('standalone', True) else '40'
     if not cpu_dir.exists():
         remote_cpu = (remote_air or bundle).parent/'cpu'
         print(f'Reading CPU reference from {remote_cpu} on the export host', flush=True)
-        pull_air(bundle.parent, remote_cpu, destination_name='cpu', ssh_download=ssh_cpu)
+        try:
+            pull_air(bundle.parent, remote_cpu, destination_name='cpu', ssh_download=ssh_cpu)
+        except FileNotFoundError as exc:
+            # Paramiko reports SFTP ENOENT without a filename. Keep local filesystem errors intact.
+            if exc.errno != errno.ENOENT or exc.filename is not None:
+                raise
+            remote_run = remote_cpu.parent if mode == 'linear' else remote_cpu.parent.parent
+            raise FileNotFoundError(
+                f'CPU reference missing or incomplete at {remote_cpu} on the export host. '
+                f'On that host run: bash targets/cpro/scripts/split_prefill_t64.sh cpu '
+                f'--mode {mode} --run {shlex.quote(str(remote_run))}\nSaved board outputs: {replay}'
+            ) from exc
     cpu = load(cpu_dir/'manifest.json')
-    mode = ('linear' if not meta.get('layer', 0) else 'full') if meta.get('standalone', True) else '40'
     if ((cpu['basis'], cpu['mode'], cpu['layer'], cpu['capture_sha256']) !=
             (CPU_BASIS, mode, meta.get('layer', 0), reference['capture_sha256'])):
         raise ValueError(f'{cpu_dir}: CPU reference does not match the mode, layer and 310P capture')

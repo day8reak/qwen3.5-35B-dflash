@@ -131,17 +131,38 @@ def prepare(run, mode, capture, source):
             hidden = outputs['decoder_hidden']
 
 
+def select_capture(run, mode, capture):
+    first = run if mode == 'linear' else run / ('L03' if mode == 'full' else 'L00')
+    air_manifest = first/'air/manifest.json'
+    expected = json.loads(air_manifest.read_bytes())['reference']['capture_sha256']
+    if capture is not None:
+        if sha(capture/'manifest.json') != expected:
+            raise ValueError(f'{capture}: capture SHA-256 differs from {air_manifest}; expected {expected}')
+        return capture
+    # Existing exports can use a capture from an earlier run. Match its bytes,
+    # since two captures with the same prompt can have different model inputs.
+    pattern = 'capture-*/310p/manifest.json'
+    for paths in (run.glob(pattern), run.parent.glob('*/' + pattern)):
+        for path in sorted(paths):
+            if path.is_file() and sha(path) == expected:
+                return path.parent
+    raise FileNotFoundError(f'No capture matching {expected} under {run.parent}. '
+                            'Use --capture DIR with the original 310P capture on the export host.')
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--mode', choices=('linear', 'full', '40'), required=True)
     p.add_argument('--run', type=Path, required=True)
-    p.add_argument('--capture', type=Path, required=True)
+    p.add_argument('--capture', type=Path, help='original 310P capture (default: match the AIR manifest SHA-256)')
     p.add_argument('--source', type=Path)
     a = p.parse_args()
     run = output_path(a.run)
+    capture = select_capture(run, a.mode, a.capture)
+    print(f'Using retained 310P capture: {capture}', flush=True)
     with (run/'.split-cpu.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        prepare(run, a.mode, a.capture, a.source)
+        prepare(run, a.mode, capture, a.source)
 
 
 if __name__ == '__main__':

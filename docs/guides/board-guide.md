@@ -17,7 +17,7 @@
 | `full` | 从 310P 实测 L2 输出跑 L3，再接原模型 norm/head | L3 更新后的 K 和 V |
 | `40` | 从 embedding 跑 L0 至 L39，逐层传 CPro 的实际 hidden，在 L39 后接 norm/head | 全部 30 个 linear 层的两种状态和 10 个 full 层的 K、V |
 
-78 的 `air` 命令采集或复用 310P 参考、导出 AIR，并用原 W4 权重计算单独的 CPU 参考。已有同版 AIR 时可以再跑这条命令补 CPU 参考。53 负责编译、上板和对比。两台主机拉取同一版代码，以下示例的 `MODE` 在两端取相同值。
+78 的 `air` 命令采集或复用 310P 参考、导出 AIR，并用原 W4 权重计算单独的 CPU 参考。53 负责编译、上板和对比。两台主机拉取同一版代码，以下示例的 `MODE` 在两端取相同值。
 
 ```bash
 # 78
@@ -69,6 +69,18 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
 CPU 在 40 层模式逐层传自己的 hidden，在 310P 的分段边界同步清零 padding。对 19 个位置之外的 CPU 行，attention 分支输出按零处理，残差和 MoE 仍传播。这一约定影响后续层的物理卷积历史。单测 full 模式的 CPU 和 CPro 都以同一份 L2 实测输出为入口。
 
 已有修正版板端输出时，在 53 运行 `bash targets/cpro/scripts/split_prefill_t64.sh compare --mode "$MODE"`，可加 `--replay DIR`。显式指定失败的 replay 时，只对已返回的输出生成矩阵，并标记未完成。
+
+如果 53 拉取 `cpu/` 时收到 `ENOENT`，可在 78 单独补 CPU 参考。脚本按 AIR 中记录的 SHA-256 从本次及同级实验目录查找原始 310P capture。如果 capture 在其他位置，加 `--capture /实际路径/310p`。以下示例在 53 复用最近一次执行完成的 L0 replay。
+
+```bash
+# 78
+R="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-02"
+bash targets/cpro/scripts/split_prefill_t64.sh cpu --mode linear --run "$R"
+
+# 53
+R="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-02"
+bash targets/cpro/scripts/split_prefill_t64.sh compare --mode linear --run "$R"
+```
 
 若 V2 在同一段反复加载失败，在 53 读取已有尝试的设备日志。以下示例读取一次失败的 `decoder_hidden`，在命令末尾追加其他失败段的目录即可对比。脚本核对 OMC、外置权重和有序输入的哈希，使用每次调用的设备时间和 client_tid 从同一份 HiLog 中提取记录。命令只读取板端文件，诊断结果写到第一段回执旁的 `load-diagnostics-*`。
 
