@@ -1,12 +1,75 @@
 #!/usr/bin/env python3
 """Review, export, compile and run the complete L0–L3 T64 decoder prefix."""
 import argparse
+import hashlib
+import json
 from pathlib import Path
+import shlex
 import sys
 import tempfile
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
+
+
+def ssh_file(client, remote, local, record=None):
+    """Stream one file on an SSH exec channel and verify the exporter's receipt."""
+    with client.get_transport().open_session(timeout=20) as channel:
+        channel.settimeout(120)
+        channel.exec_command('exec cat -- ' + shlex.quote(str(remote)))
+        channel.shutdown_write()
+        digest = hashlib.sha256()
+        with local.open('xb') as dst:
+            for chunk in iter(lambda: channel.recv(1 << 20), b''):
+                dst.write(chunk)
+                digest.update(chunk)
+        if channel.recv_exit_status() != 0:
+            error = channel.recv_stderr(4096).decode(errors='replace').strip()
+            raise OSError(f'Could not read {remote} via SSH: {error}')
+    if record is not None and (local.stat().st_size != record['bytes'] or digest.hexdigest() != record['sha256']):
+        raise ValueError(f'Size or SHA-256 differs from the AIR manifest: {remote}')
+
+
+def ssh_air(client, remote, staged):
+    remote = Path(remote)
+    staged.mkdir()
+    manifest = staged / 'manifest.json'
+    ssh_file(client, remote / manifest.name, manifest)
+    meta = json.loads(manifest.read_bytes())
+    if meta['kind'] != 'single-cpro-l0-l3' or meta['layers'] != [0, 1, 2, 3] or not meta['weights']:
+        raise ValueError(f'Expected an exported L0–L3 AIR bundle at {remote}')
+    records = [meta['air'], *meta['weights'], *meta['inputs'], meta['golden']]
+    print(f"SSH transfer: {len(records)} files, {sum(r['bytes'] for r in records):,} bytes", flush=True)
+    for record in records:
+        rel = Path(record['path'])
+        if rel.is_absolute() or '..' in rel.parts or not rel.parts:
+            raise ValueError(f'Invalid path in AIR manifest: {rel}')
+        local = staged / rel
+        local.parent.mkdir(parents=True, exist_ok=True)
+        ssh_file(client, remote / rel, local, record)
+
+
+def pull_air(run, remote):
+    import paramiko
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+    from pull_artifacts import DEFAULT_CONFIG, connection, pull
+
+    if not remote.is_absolute() or '..' in remote.parts:
+        raise ValueError(f'Expected an absolute AIR directory on the export host: {remote}')
+    with connection(DEFAULT_CONFIG, 'air') as client:
+        try:
+            sftp = client.open_sftp()
+        except (EOFError, paramiko.SSHException) as error:
+            if not isinstance(error, EOFError) and str(error) != 'EOF during negotiation':
+                raise
+            print('SFTP closed during negotiation. Retrying over a regular SSH exec channel.', flush=True)
+        else:
+            with sftp:
+                sftp.get_channel().settimeout(120)
+                pull(sftp, run / 'air', remote)
+            return
+    with connection(DEFAULT_CONFIG, 'air') as client:
+        pull(client, run / 'air', remote, download_to=ssh_air)
 
 
 def main():
@@ -20,13 +83,15 @@ def main():
     air.add_argument('--config', type=Path, required=True)
     air.add_argument('--reference', type=Path, required=True)
     air.add_argument('--prepared-source', type=Path, help='export these reviewed source files directly')
+    transfer = stages.add_parser('pull', help='fetch the exported bundle from the AIR host')
+    transfer.add_argument('--remote-air', type=Path, required=True)
     build = stages.add_parser('compile')
     build.add_argument('--ddk-root', type=Path, required=True)
     build.add_argument('--gdr-source', type=Path, required=True)
     build.add_argument('--tbe-diagnosis', type=Path)
     board = stages.add_parser('board')
     board.add_argument('--runtime-config', type=Path, required=True)
-    for stage in (air, build, board):
+    for stage in (air, transfer, build, board):
         stage.add_argument('--run', type=Path, required=True)
     a = parser.parse_args()
     from qwen35_moe_dflash.common.artifacts import output_path
@@ -38,6 +103,9 @@ def main():
         print(out)
         return 0
     run = output_path(a.run)
+    if a.action == 'pull':
+        pull_air(run, a.remote_air)
+        return 0
     if a.action == 'air':
         from qwen35_moe_dflash.target.prefill_t64.whole_export import export
         export(a.source_root.resolve(), a.config, a.reference, run / 'air',

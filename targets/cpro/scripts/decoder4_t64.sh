@@ -45,8 +45,7 @@ case "${1:-}" in
         ;;
     compile|board)
         if [[ ! -s "$run/air/manifest.json" ]]; then
-            in_env custom_pypto python targets/cpro/scripts/pull_artifacts.py --from air \
-                "${DECODER4_REMOTE_AIR:-$run/air}" --to "$run/air"
+            in_env custom_pypto python -u "$tool" pull --run "$run" --remote-air "${DECODER4_REMOTE_AIR:-$run/air}"
         fi
         if [[ ! -s "$run/omc/manifest.json" ]]; then
             in_env custom_pypto python -u "$tool" compile --run "$run" --ddk-root "${CPRO_DDK_ROOT:?}" \

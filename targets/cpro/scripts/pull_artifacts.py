@@ -69,13 +69,13 @@ def download(sftp, remote, local, ancestors=()):
         raise ValueError(f'Expected a regular file or directory: {remote}')
 
 
-def pull(sftp, path, remote=None):
+def pull(sftp, path, remote=None, *, download_to=download):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.pull-', dir=path.parent) as temporary:
         staged = Path(temporary) / 'incoming'
         remote = path if remote is None else remote
         print(f'Pulling {remote} to {path}', flush=True)
-        download(sftp, str(remote), staged)
+        download_to(sftp, str(remote), staged)
         # Serialize publication of completed downloads in this directory.
         parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
