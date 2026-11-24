@@ -215,6 +215,10 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next
 
 汇总文件是命令打印的 `silu-diagnosis-*/probes.json`。`COMPILED` 表示 OMG 成功并生成 OMC。`EMPTY_OUTPUT_FORMAT` 表示该小图复现了 SiluPatch 的同一条格式错误。`OTHER_FAILURE` 需读对应的 `compile.log`。`SKIPPED` 记录未能从源图确定的连线。`format_failure_contrasts` 列出一边编译成功、另一边复现错误的成对结果。若所有小图均成功，定位范围仍包括整图分区及未保留的上游上下文。历史一维用例继续使用其下游 Reshape 对照。`SILU_DIAGNOSIS` 可指定已有诊断目录，`aligned-diagnose-report` 可只读历史结果。
 
+**检查两个已复现的子图出口。** 在 53 使用相同的 `ALIGNED4_RUN` 执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-check`。`gate-mul` 和 `output-cast-reshape` 已在子图出口复现空格式列表，对应的两个 FP32 Data 对照均编译成功。该命令读取最近的 `probes.json`，列出当前 DDK 的算子注册、所选配置目录中出现两个算子名字的文件，以及 DDK 内能找到的 `FindOpFormatConfig` 源码位置。磁盘上出现名字仅说明文件包含该项；查询是否使用它仍需结合实现判断。
+
+脚本先在当前 DDK 重编这两个保留的小 AIR。若仍复现同一错误，分别在 `SiluPatch.z`、其直接消费者的输入、或两端同时补上静态 shape 和 ND 描述，保留原连线及 dtype；字节等价的变体只编一次。结果写在 `format-lookup-*/result.json`。两个原小图均成功时可以重试原四层编译；两处均有成功的端口变体时，把对应的描述带入四层候选再验证。若某个小图在所有变体下都报相同错误，将该小图的 `export.air` 和 `compile.log` 交给 DDK 的 NPUCL 格式转换维护者。
+
 **单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
 
 ```bash
