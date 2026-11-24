@@ -5,7 +5,17 @@ export REPO_DIR="$(cd -- "$(dirname -- "$0")/../../.." && pwd)"
 export QWEN35_TRACE_COMMANDS=1
 cd "$REPO_DIR"
 tests="${AI_RUN_DIR:?}/target/tests"
-run="${DECODER4_RUN:-$tests/decoder4-single-t64-valid19-01}"
+baseline="$tests/decoder4-single-t64-valid19-01"
+default_run="$baseline"
+scale_args=()
+if [[ ${2:-} == --keep-weight-scale && $# == 2 ]]; then
+    default_run="$tests/decoder4-single-t64-valid19-scale-fp32-01"
+    scale_args=(--keep-weight-scale)
+elif (( $# > 1 )); then
+    echo "Usage: bash $0 {review|air|compile|board} [--keep-weight-scale]" >&2
+    exit 2
+fi
+run="${DECODER4_RUN:-$default_run}"
 tool=targets/cpro/tools/decoder4_prefill.py
 in_env() {
     local name="$1"
@@ -19,7 +29,7 @@ case "${1:-}" in
         source_root="${CPRO_SOURCE:-${TARGET_SOURCE:?set CPRO_SOURCE to the private CPro source directory}}"
         review="${DECODER4_PREPARED_SOURCE:-$run/review}"
         if [[ "$1" == review ]]; then
-            in_env qwen3_5_cpro python "$tool" review --source-root "$source_root" --output "$review"
+            in_env qwen3_5_cpro python "$tool" review --source-root "$source_root" --output "$review" "${scale_args[@]}"
             exit 0
         fi
         args=()
@@ -27,7 +37,7 @@ case "${1:-}" in
         ref="${DECODER_REFERENCE:-${PREFILL40_REFERENCE:-}}"
         if [[ -z "$ref" ]]; then
             for dir in "$tests/prefill-40l-t64-valid19-v1024-01" "$tests/prefill40-single-t64-valid19-v1024-qlate-01" \
-                       "${PREFILL40_RUN:-$tests/prefill-40l-t64-valid19-v1024-qlate-01}" "$run"; do
+                       "${PREFILL40_RUN:-$tests/prefill-40l-t64-valid19-v1024-qlate-01}" "$run" "$baseline"; do
                 if [[ -s "$dir/reference/manifest.json" ]] && python -c \
                     'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(m.get("status") != "CAPTURED" or len(m.get("blocks", ())) != 40)' \
                     "$dir/reference/manifest.json"; then ref="$dir/reference"; break; fi
@@ -41,7 +51,7 @@ case "${1:-}" in
         fi
         in_env qwen3_5_cpro python -u "$tool" air --run "$run" --source-root "$source_root" \
             --config "${TARGET_CONFIG:-${NZ_CONFIG:-config/qwen3_5_moe.yaml}}" \
-            --reference "$ref" "${args[@]}"
+            --reference "$ref" "${args[@]}" "${scale_args[@]}"
         ;;
     compile|board)
         if [[ ! -s "$run/air/manifest.json" ]]; then
@@ -50,11 +60,11 @@ case "${1:-}" in
         if [[ ! -s "$run/omc/manifest.json" ]]; then
             in_env custom_pypto python -u "$tool" compile --run "$run" --ddk-root "${CPRO_DDK_ROOT:?}" \
                 --gdr-source "${GDR_SOURCE:-$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp}" \
-                --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+                --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" "${scale_args[@]}"
         fi
         if [[ "$1" == board ]]; then
-            in_env custom_pypto python -u "$tool" board --run "$run"
+            in_env custom_pypto python -u "$tool" board --run "$run" "${scale_args[@]}"
         fi
         ;;
-    *) echo "Usage: bash $0 {review|air|compile|board}" >&2; exit 2 ;;
+    *) echo "Usage: bash $0 {review|air|compile|board} [--keep-weight-scale]" >&2; exit 2 ;;
 esac
