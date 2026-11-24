@@ -52,6 +52,7 @@ def _window(snapshot, dest, start, end, *, signals=None):
         print(line)
     if not total:
         print('No matching device log records for this attempt. Check snapshot coverage and format.')
+    return total
 
 
 def _snapshot(hdc, out, hilog):
@@ -164,11 +165,45 @@ def _client_records(window, out, tids):
     print(f'V2 client_tid={",".join(tids)} matched PID {", ".join(sorted(pids))}. Client records: {client_log}')
 
 
+def retained_tool_window(hdc, name, remote, board, folder, *, expected_exit=None):
+    from ..layer_probe.common import sha
+
+    files = ['run.sh'] if expected_exit is None else ['run.sh', 'files.sha256']
+    _, identity = hdc.shell(f'cd {remote} && sha256sum {" ".join(files)} && cat tool.exitcode', name + '-identity')
+    *hashes, code = identity.splitlines()
+    if (len(hashes) != len(files) or not code.strip().isdigit()
+            or any(line.split() != [sha(board / f), f] for line, f in zip(hashes, files))
+            or (expected_exit is not None and int(code) != expected_exit)):
+        raise ValueError('Remote script or completion record differs from this attempt')
+    print(f'\n{name} HIAI V2 exit={code.strip()}  {remote}', flush=True)
+    tids = []
+    for filename in ('tool.stdout', 'tool.stderr'):
+        _, body = hdc.shell(f'cd {remote} && cat {filename}', name + '-' + filename)
+        (folder / filename).write_text(body + '\n' if body else '')
+        if filename == 'tool.stdout':
+            tids = re.findall(r'\bclient_tid=(\d+)', body)
+        print(f'{filename}\n{body}', flush=True)
+    if int(code) == 0:
+        return None
+    # Older scripts created stderr at launch. A write can move its mtime later.
+    _, bounds = hdc.shell(
+        f'cd {remote} && if test -f tool.started; then marker=tool.started; '
+        'else marker=tool.stderr; fi && echo "$marker" && wc -c < tool.stderr '
+        '&& stat -c "%y" "$marker" tool.exitcode', name + '-times')
+    marker, stderr_bytes, start, end = bounds.splitlines()
+    if marker == 'tool.stderr' and int(stderr_bytes):
+        print(f'{name}: nonempty stderr; its mtime covers only the end of execution.')
+    begin, finish = (datetime.fromisoformat(t[:19]) for t in (start, end))
+    if begin > finish:
+        raise ValueError('Device start marker is later than the exit record')
+    print(f'{name} device window ({marker} to tool.exitcode) {start} to {end}', flush=True)
+    return begin, finish, tids
+
+
 def diagnose_decoder_pair(run, hilog=None, *, names=('L0', 'L3')):
     """Read retained standalone decoder logs and share one device snapshot across their windows."""
     from ...execution.hdc_run import Hdc
     from ...execution.serial_transport import _environment
-    from ..layer_probe.common import sha
 
     env = _environment()
     out = Path(tempfile.mkdtemp(dir=run, prefix='decoder-diagnostics-'))
@@ -186,33 +221,9 @@ def diagnose_decoder_pair(run, hilog=None, *, names=('L0', 'L3')):
             if (not re.fullmatch(r'/data/local/tmp/qwen35_prefill40_[a-f0-9]{32}', remote)
                     or (attempt['device'], attempt['server']) != env[1:3]):
                 raise ValueError('Select the board and server recorded in attempt.json')
-            _, identity = hdc.shell(f'cd {remote} && sha256sum run.sh && cat tool.exitcode', name + '-identity')
-            digest, code = identity.splitlines()
-            if digest.split()[0] != sha(board / 'run.sh') or not code.strip().isdigit():
-                raise ValueError('Remote script or completion record differs from this attempt')
-            print(f'\n{name} HIAI V2 exit={code.strip()}  {remote}', flush=True)
-            tids = []
-            for filename in ('tool.stdout', 'tool.stderr'):
-                _, body = hdc.shell(f'cd {remote} && cat {filename}', name + '-' + filename)
-                (folder / filename).write_text(body + '\n' if body else '')
-                if filename == 'tool.stdout':
-                    tids = re.findall(r'\bclient_tid=(\d+)', body)
-                print(f'{filename}\n{body}', flush=True)
-            if int(code) == 0:
-                continue
-            # Older scripts created stderr at launch. A write can move its mtime later.
-            _, bounds = hdc.shell(
-                f'cd {remote} && if test -f tool.started; then marker=tool.started; '
-                'else marker=tool.stderr; fi && echo "$marker" && wc -c < tool.stderr '
-                '&& stat -c "%y" "$marker" tool.exitcode', name + '-times')
-            marker, stderr_bytes, start, end = bounds.splitlines()
-            if marker == 'tool.stderr' and int(stderr_bytes):
-                print(f'{name}: nonempty stderr; its mtime covers only the end of execution.')
-            begin, finish = (datetime.fromisoformat(t[:19]) for t in (start, end))
-            if begin > finish:
-                raise ValueError('Device start marker is later than the exit record')
-            print(f'{name} device window ({marker} to tool.exitcode) {start} to {end}', flush=True)
-            windows[name] = begin, finish, tids
+            bounds = retained_tool_window(hdc, name, remote, board, folder)
+            if bounds:
+                windows[name] = bounds
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
             complete = False
             print(f'{name} diagnostics incomplete: {exc}', flush=True)

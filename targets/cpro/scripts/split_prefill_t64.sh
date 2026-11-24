@@ -5,9 +5,21 @@ repo=$(cd -- "$(dirname -- "$0")/../../.." && pwd)
 cd "$repo"
 usage() {
     echo "Usage: bash $0 {air|board|compare} --mode {linear|full|40} [--run DIR] [--capture DIR]"
+    echo "       bash $0 diagnose STAGE_DIR [STAGE_DIR ...]"
     echo "       board [--recovery [REPLAY_DIR]] [--from-stage STAGE]; compare [--replay DIR]"
 }
+in_env() {
+    local name="$1"
+    shift
+    if [[ ${CONDA_DEFAULT_ENV:-} == "$name" ]]; then "$@"
+    else conda run --no-capture-output -n "$name" "$@"; fi
+}
 action=${1:-}
+if [[ $action == diagnose ]]; then
+    shift
+    in_env custom_pypto python -u targets/cpro/tools/split_stage_log.py "$@"
+    exit
+fi
 case "$action" in --help|-h) usage; exit 0;; air|board|compare) shift;; *) usage >&2; exit 2;; esac
 mode= run= capture= replay= restart=
 recovery=()
@@ -45,12 +57,6 @@ case "$mode" in
 esac
 tool="$repo/targets/cpro/tools/split_prefill.py"
 args=("$action" --mode "$mode" --run "$run")
-in_env() {
-    local name="$1"
-    shift
-    if [[ ${CONDA_DEFAULT_ENV:-} == "$name" ]]; then "$@"
-    else conda run --no-capture-output -n "$name" "$@"; fi
-}
 case "$action" in
     air)
         mkdir -p "$run"

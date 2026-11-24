@@ -41,6 +41,14 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode 40 --recovery
 
 40 层显式起点的写法如 `--from-stage L03/out_proj`，可用段名见各层 `plan.json`。运行结束会自动生成对比。linear 的报告是 `replay-*/comparison.json`，full 和 40 的汇总是 `replay-*/prefill.json`，各层明细是 `Lxx/comparison.json`。报告包括 out_proj、decoder hidden 的 valid19 与 token18、读出层 token18 的全词表 logits 与 top1，以及各层状态。K/V 分别比较 19 个有效位置，并校验物理 64 行写入范围以外的缓存页。只重算精度可在 53 执行 `compare --mode "$MODE"`，用 `--replay DIR` 可选定一次已完成的运行。
 
+若 V2 在同一段反复加载失败，在 53 读取已有尝试的设备日志。以下示例读取一次失败的 `decoder_hidden`，在命令末尾追加其他失败段的目录即可对比。脚本核对 OMC、外置权重和有序输入的哈希，使用每次调用的设备时间和 client_tid 从同一份 HiLog 中提取记录。命令只读取板端文件，诊断结果写到第一段回执旁的 `load-diagnostics-*`。
+
+```bash
+R="${L0_SPLIT_RUN:-${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-01}"
+bash targets/cpro/scripts/split_prefill_t64.sh diagnose \
+  "$R/replay-d3iori8t/decoder_hidden"
+```
+
 ## 1. 构建 HIAI runner
 
 先按[环境配置](environment-setup.md)激活 `custom_pypto` 并配置 OHOS/HIAI/HDC；以下 `python3` 使用该环境。已有匹配的新 runner 可跳过构建，保留相邻构建记录及其引用的库路径。
