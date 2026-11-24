@@ -317,6 +317,13 @@ def main():
     run.mkdir(parents=True, exist_ok=True)
     bundle = run/'air'
     if a.mode == 'air':
+        if (bundle/'manifest.json').is_file():
+            meta = load(bundle/'manifest.json')
+            if (meta['kind'] != L0_KIND or meta['original_manifest_sha256'] != sha(a.baseline/'air/manifest.json')
+                    or meta['reference']['capture_sha256'] != sha(a.capture/'manifest.json')):
+                raise ValueError(f'{bundle}: different export version, baseline or capture. Use a new --run.')
+            print(f'Existing corrected L0 AIR: {bundle}', flush=True)
+            return 0
         export(run, a.source, a.config, None, None, baseline=a.baseline, kind=L0_KIND, l0_capture=a.capture)
         return 0
     if a.mode == 'board':

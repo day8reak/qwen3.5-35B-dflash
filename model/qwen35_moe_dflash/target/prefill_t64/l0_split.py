@@ -24,7 +24,7 @@ OUTPUTS = {
 SITES = {(1, 8192, 64): 'conv', (2048, 128): 'gate', (64, 512): 'shared', (512, 512): 'experts'}
 
 
-def expose_l0(folder, *, layer=None, head=True):
+def expose_l0(folder, *, layer=0, head=True):
     """Edit only the staged source. Return the values written by the fresh, single-call prefill."""
     def edit(file, scope, changes):
         path = folder / 'models' / file
@@ -50,12 +50,15 @@ def expose_l0(folder, *, layer=None, head=True):
         ('return hidden_states, present_key_value', 'return hidden_states, present_key_value, attention_output'),
     ])
     edit('export_model_wrapper_qwen3_5_moe.py', 'Qwen3_5MoeForCausalLMCproWrapper', [
+        ('        hidden_states = inputs_embeds\n', '        hidden_states = inputs_embeds.to(torch.float16)\n'),
         ('        hidden_states = hidden_states.to(torch.float32)',
          '        hidden_states = hidden_states.to(torch.float32)\n        decoder_hidden = hidden_states'),
+        ('hidden_states = hidden_states[:, output_pos, :]',
+         'hidden_states = torch.index_select(hidden_states, 1, output_pos.int())'),
+        ('hidden_states = self.model.model.norm(hidden_states)',
+         'hidden_states = self.model.model.norm(hidden_states.to(torch.float16))'),
         ('return lm_logits, *kv_caches_out', 'return lm_logits, *kv_caches_out, decoder_hidden, layer_outputs[2]'),
     ])
-    if layer is None:
-        return
     # The one-block graph uses local index 0. Select the global weights both in the
     # owner's HF loader and in its W4 projection/expert loader.
     wrapper = [('layer_num=None, start_layer_idx=0', f'layer_num=1, start_layer_idx={layer}')]
@@ -63,6 +66,8 @@ def expose_l0(folder, *, layer=None, head=True):
     text = path.read_text()
     replacements = [('start_layer_idx=0, device=\'cpu\', quant_bits=quant_bits)',
                      f'start_layer_idx={layer}, device=\'cpu\', quant_bits=quant_bits)'),
+                    ('output_pos = torch.tensor([seq_len], dtype=torch.int32)',
+                     'output_pos = torch.tensor([18], dtype=torch.int32)'),
                     ('block_type = config.layer_types[layer_idx]', f'block_type = config.layer_types[layer_idx + {layer}]')]
     owner = (folder/'models/export_model_wrapper_qwen3_5_moe.py').read_text().split(
         'class Qwen3_5MoeForCausalLMCproWrapper(', 1)[1].split('\nclass ', 1)[0]
@@ -82,7 +87,7 @@ def expose_l0(folder, *, layer=None, head=True):
         # readout so the same updated bytes can cross an OMC boundary.
         edit(model, 'Qwen3_5MoeAttention', [
             ('        torch_npu.npu_cache_update_(past_key_value.to(new_k.device),',
-             '        return torch.ops.npu.npu_cache_update__functional(past_key_value.clone().to(new_k.device),'),
+             '        return torch.ops.npu.npu_cache_update__functional(past_key_value.to(new_k.device),'),
             ('        return past_key_value\n', ''),
         ])
     for old, new in replacements:
@@ -130,8 +135,11 @@ def pack_reference(root, work, fixture, *, layer=0, head=True, standalone=True):
         target = dest / (key + '.bin')
         copyfile(checked(root, row), target)
         reference[key] = dict(identity(target, work), shape=row['shape'], dtype=row['dtype'])
-    return dict(capture_sha256=sha(root/'manifest.json'), conv_history=m.get('conv_history', {}).get(str(layer)),
-                tensors=reference)
+    packed = dict(capture_sha256=sha(root/'manifest.json'), conv_history=m.get('conv_history', {}).get(str(layer)),
+                  tensors=reference)
+    if not standalone:
+        packed['split_layer'] = m['split_layer']
+    return packed
 
 
 def score(actual, golden, contracts=OUTPUTS):
@@ -166,7 +174,75 @@ def contracts(layer, head):
     return specs
 
 
-def plan(raw, trace, *, layer=0, head=True):
+def physical_history(nodes, outputs):
+    """Locate the returned time slice of the concat containing the actual input conv cache."""
+    from .attention_steps import CONCATS, SPLITS
+    matches = []
+    for output in outputs:
+        edge = output
+        sliced = False
+        while True:
+            node = nodes[edge.rsplit(':', 1)[0]]
+            if node.type in CONCATS and sliced:
+                for operand in data_edges(node):
+                    src = nodes[operand.rsplit(':', 1)[0]]
+                    if (src.type in ('Data', 'RefData') and
+                            tuple(src.output_desc[0].shape.dim) == (1, 8192, 4)):
+                        matches.append((output, node))
+                break
+            if node.type not in SPLITS | {'Cast', 'Identity', 'TensorMove', 'Reshape', 'View'}:
+                break
+            sliced |= node.type in SPLITS
+            edge = data_edges(node)[0]
+    if len(matches) != 1:
+        raise ValueError(f'Expected one returned slice of the physical conv history, found {[e for e, _ in matches]}')
+    return matches[0]
+
+
+def check_split_precision(graph, layer, head):
+    """Check serialized operand descriptors, including absent optional argument slots."""
+    enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_number
+    nodes = {n.name: n for n in graph.op}
+    def check(op, contract):
+        keys = op.attr['_input_name_key'].list.s
+        slots = dict(zip((k.decode() for k in keys), op.attr['_input_name_value'].list.i, strict=True))
+        ports = {}
+        for key, expected in contract.items():
+            slot = slots[key]
+            actual = enum[op.input_desc[slot].dtype].name
+            if actual != expected:
+                raise ValueError(f'{op.name}.{key}: {actual}, expected {expected}')
+            ports[key] = dict(dtype=actual, edge=op.input[slot])
+        return ports
+
+    projections = {}
+    for op in graph.op:
+        if op.type == 'QuantBatchMatmulV4444':
+            ports = check(op, dict(x1='DT_INT8', x2='DT_INT32', scale='DT_FLOAT16', pertoken_scale='DT_FLOAT16'))
+            cast = nodes[ports['pertoken_scale']['edge'].rsplit(':', 1)[0]]
+            if (cast.type != 'Cast' or enum[cast.input_desc[0].dtype].name != 'DT_FLOAT'
+                    or enum[cast.output_desc[0].dtype].name != 'DT_FLOAT16'):
+                raise ValueError(f'{op.name}: expected an FP32 to FP16 per-token scale cast')
+            projections[op.name] = ports
+    linear = layer % 4 != 3
+    expected = (5 if linear else 4) + 4 + int(head)  # attention, shared expert/router, optional LM head
+    if len(projections) != expected:
+        raise ValueError(f'L{layer}: expected {expected} W4 projections, found {len(projections)}')
+    gdr = [n for n in graph.op if n.type == 'ChunkGatedDeltaRule']
+    if len(gdr) != int(linear):
+        raise ValueError(f'L{layer}: unexpected GDR count {len(gdr)}')
+    states = {}
+    for op in gdr:
+        expected_inputs = dict.fromkeys(('query', 'key', 'value', 'g', 'beta', 'initial_state'), 'DT_FLOAT16')
+        states = check(op, dict(expected_inputs, effective_length='DT_INT16'))
+        if op.attr['chunk_size'].i != 64 or enum[op.output_desc[1].dtype].name != 'DT_FLOAT16':
+            raise ValueError(f'{op.name}: expected chunk 64 and FP16 recurrent state output')
+    print(f'L{layer} AIR verified: {expected} W4 matmuls with FP16 weight and per-token scales, {len(gdr)} GDR',
+          flush=True)
+    return dict(matmuls=projections, gdr_inputs=states)
+
+
+def plan(raw, trace, *, layer=0, head=True, verify_precision=False):
     _, graph = graph_message(raw, 'SiluPatch')
     nodes = {op.name: op for op in graph.op}
     def one(kind):
@@ -188,8 +264,14 @@ def plan(raw, trace, *, layer=0, head=True):
     if len(outputs) != len(specs) or len(set(outputs)) != len(specs):
         raise ValueError(f'Expected {len(specs)} distinct L{layer} outputs, found {outputs}')
     if linear:
-        conv, gdr = one('LinearAttentionConvstateUpdate'), one('ChunkGatedDeltaRule')
-        state_ports = {conv.name + ':0': f'conv_state_{layer}', gdr.name + ':1': f'recurrent_state_{layer}'}
+        gdr = one('ChunkGatedDeltaRule')
+        legacy = [n for n in graph.op if n.type.lower() == 'linearattentionconvstateupdate']
+        if legacy and not verify_precision:
+            conv, = legacy
+            conv_edge = conv.name + ':0'
+        else:
+            conv_edge, conv = physical_history(nodes, outputs)
+        state_ports = {conv_edge: f'conv_state_{layer}', gdr.name + ':1': f'recurrent_state_{layer}'}
     else:
         attn = one('AdnFusedInferAttention')
         def cache_update(edge):
@@ -243,6 +325,12 @@ def plan(raw, trace, *, layer=0, head=True):
         wires[x], wires[z] = wire(name + '_x', shape, 'float16'), wire(name + '_z', shape, 'float32')
     # Carry the state and the activation from the *same* ConvState/GDR invocation.
     if linear:
+        if not legacy:
+            from .attention_steps import AttentionSteps, CONVS
+            topology = AttentionSteps(graph, nodes, [])
+            source = topology.nearest(groups['conv_input'][0], CONVS)
+            if not topology.depends(source, conv.name + ':0'):
+                raise ValueError('Convolution and returned history must consume the same QKV history')
         groups['conv_input'].append(result[f'conv_state_{layer}'])
         gate, = groups['gate_silu']
         mul, = [n for n in graph.op if n.type == 'Mul' and gate in n.input]
@@ -329,7 +417,10 @@ def plan(raw, trace, *, layer=0, head=True):
     for key, required in expected.items():
         if not required <= ancestors[key]:
             raise ValueError(f'{key}: missing upstream L0 edges for {required - ancestors[key]}')
-    return dict(entries=entries, wires={**entries, **wires}, stages=ordered, results=result)
+    chain = dict(entries=entries, wires={**entries, **wires}, stages=ordered, results=result)
+    if verify_precision:
+        chain['precision'] = check_split_precision(graph, layer, head)
+    return chain
 
 
 def slice_air(raw, step, wires):

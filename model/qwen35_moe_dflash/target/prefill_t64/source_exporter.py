@@ -98,3 +98,29 @@ def stage_exporter(text):
         if isinstance(node, ast.FunctionDef) and node.name == 'cpro_export_contracts':
             edits.append((node, ''))
     return _replace_functions(text, edits)
+
+
+def stage_split_exporter(text, layer):
+    """Run the native one-decoder entry with the same W4 loader and GE converters as chain_air."""
+    text = stage_exporter(text)
+    fn = _function(ast.parse(text), 'export_air')
+    quant = _only(_calls(fn, {'quant_model_inplace'}), 'split W4 load')
+    quant.keywords.append(ast.keyword(arg='qlinear_cls', value=ast.Name(id='CproQLinear', ctx=ast.Load())))
+    load = _only((stmt for stmt in fn.body if quant in ast.walk(stmt)), 'quantization branch')
+    init = ast.parse('''
+from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
+model_wrapper.model.eval().to(dtype=torch.float16)
+for module in model_wrapper.model.modules():
+    if isinstance(module, Qwen3_5MoeRMSNorm):
+        gamma = (module.weight + 1.0).detach().contiguous()
+        module.register_buffer('export_gamma', gamma, persistent=False)
+''').body
+    where = fn.body.index(load) + 1
+    fn.body[where:where] = init
+    call, = [n for n in ast.walk(fn) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+             and ast.unparse(n.value.func) == 'torchair.dynamo_export']
+    branch, = [n for n in ast.walk(fn) if isinstance(n, ast.If) and call in n.body]
+    context = ast.parse(f'cpro_export_contracts(True, chunk_size=64, gdn_layers={int(layer % 4 != 3)})',
+                        mode='eval').body
+    branch.body[branch.body.index(call)] = ast.With(items=[ast.withitem(context_expr=context)], body=[call])
+    return _replace_functions(text, [(fn, ast.unparse(ast.fix_missing_locations(fn)))])

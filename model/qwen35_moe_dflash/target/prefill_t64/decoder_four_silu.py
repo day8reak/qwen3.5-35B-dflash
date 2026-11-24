@@ -57,6 +57,12 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
         copyfile(init, dest / 'models/__init__.py')
     else:
         (dest / 'models/__init__.py').touch()
+    if l0:
+        from .decoder_four_source import preserve_source
+        from .source_model import stage_model
+
+        original = (source / MODELING).read_text()
+        (dest / MODELING).write_text(preserve_source(original, stage_model(original, single_token=False)))
     gdr_meta = '@torch.library.impl(m, "npu_chunk_gated_delta_rule")'
     edits = {
         EXPORTER: [(gdr_meta, REGISTRATION + gdr_meta)],
@@ -79,7 +85,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
         if name == MODELING:
             # Some source revisions also include a standalone causal-convolution helper.
             text = text.replace('F.silu(out[:, :, -seq_len:])', 'silu_same_dtype(out[:, :, -seq_len:])')
-        if name == MODELING and aligned:
+        if name == MODELING and aligned and not l0:
             import ast
             from .decoder_four_source import preserve_source
             from .source_model import _adapt_experts, _rotate_fp32, use_position_gathers
@@ -96,8 +102,15 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
     changed = [EXPORTER, MODELING]
     if l0:
         from .l0_split import expose_l0
-        expose_l0(dest, layer=layer, head=head)
-        changed.append('models/export_model_wrapper_qwen3_5_moe.py')
+        from .source_exporter import stage_split_exporter, stage_utils
+        index = layer or 0
+        expose_l0(dest, layer=index, head=head)
+        path = dest / EXPORTER
+        text = path.read_text()
+        path.write_text(preserve_source(text, stage_split_exporter(text, index)))
+        utils = dest / 'utils.py'
+        utils.write_text(stage_utils(utils.read_text()))
+        changed.extend(['models/export_model_wrapper_qwen3_5_moe.py', 'utils.py'])
     diff = []
     for name in changed:
         before = (source / name).read_text().splitlines(True)

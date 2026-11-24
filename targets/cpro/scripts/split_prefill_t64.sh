@@ -48,7 +48,7 @@ tests="${AI_RUN_DIR:?}/target/tests"
 export QWEN35_TRACE_COMMANDS=1
 case "$mode" in
     linear)
-        export L0_SPLIT_RUN="${run:-${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-01}}"
+        export L0_SPLIT_RUN="${run:-${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-02}}"
         if [[ -n "$capture" ]]; then export L0_SPLIT_CAPTURE="$capture"; fi
         if [[ -n "$replay" ]]; then
             case "$replay" in /*) export L0_SPLIT_REPLAY="$replay";; *) export L0_SPLIT_REPLAY="$L0_SPLIT_RUN/$replay";; esac
@@ -56,7 +56,7 @@ case "$mode" in
         if [[ -n "$restart" ]]; then recovery+=(--from-stage "${restart#L00/}"); fi
         if [[ -n "$embed_hidden" ]]; then recovery+=(--embed-decoder-hidden); fi
         exec bash targets/cpro/scripts/l0_split_silu_t64.sh "$action" "${recovery[@]}";;
-    full|40) run="${run:-$tests/prefill-split-$mode-t64-valid19-01}";;
+    full|40) run="${run:-$tests/prefill-split-$mode-t64-valid19-02}";;
     *) usage >&2; exit 2;;
 esac
 tool="$repo/targets/cpro/tools/split_prefill.py"
@@ -65,7 +65,7 @@ case "$action" in
     air)
         mkdir -p "$run"
         if [[ -z "$capture" ]]; then
-            candidates=("$run"/capture-*/310p)
+            candidates=("$run"/capture-*/310p "$tests/prefill-split-$mode-t64-valid19-01"/capture-*/310p)
             if [[ $mode == full ]]; then
                 candidates+=("${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-01}"/capture-*/310p)
             fi

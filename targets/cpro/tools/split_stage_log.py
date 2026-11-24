@@ -48,10 +48,34 @@ def compile_manifest(stage, uploaded):
     m = load(path)
     model = Path(m['model']['path'])
     expected = {str(Path(w['path']).relative_to(model.parent)): w['sha256'] for w in m['weights']}
-    return dict(path=str(path), available=True, omc_bytes=m['model']['bytes'],
+    return dict(path=str(path), available=True, air_sha256=m['source']['air_sha256'], omc_bytes=m['model']['bytes'],
                 external_weight_bytes=sum(w['bytes'] for w in m['weights']),
                 matches_upload=(m['model']['sha256'] == uploaded['model_sha256']
                                 and expected == uploaded['external_weights']))
+
+
+def service_context(window, tids):
+    """Use the client PID on the service's failed Load RPC to select its worker."""
+    lines = [line.split(maxsplit=5) for line in window.read_text(errors='replace').splitlines()]
+    clients = {str(tid) for tid in tids}
+    matches = []
+    for i, row in enumerate(lines):
+        if len(row) != 6 or '/hiaiserver/' not in row[5]:
+            continue
+        rpc = re.search(r'GraphExecutorInit.*model loaded fail, Pid:\s*(\d+)\b', row[5])
+        if not rpc or rpc[1] not in clients:
+            continue
+        worker = [r for r in lines[:i + 1] if len(r) == 6 and r[2:4] == row[2:4] and '/hiaiserver/' in r[5]]
+        errors = [j for j, r in enumerate(worker) if 'OpUpdateKernelArgs failed' in r[5]]
+        # Do not attach an older caller's error on a reused server thread.
+        prior_rpc = max((j for j, r in enumerate(worker[:-1]) if 'model loaded fail, Pid:' in r[5]), default=-1)
+        relevant = [j for j in errors if j > prior_rpc]
+        first = relevant[-1] if relevant else len(worker)-1
+        context = [' '.join(r) for r in worker[max(prior_rpc+1, first-16):]]
+        matches.append(dict(client=rpc[1], pid=row[2], tid=row[3],
+                            op_update_kernel_args_seen=bool(relevant), lines=context))
+        print(f'Failure context from hiaiserver {row[2]}/{row[3]} for client {rpc[1]}:', *context, sep='\n')
+    return matches
 
 
 def diagnose(stages, hilog=None):
@@ -96,6 +120,10 @@ def diagnose(stages, hilog=None):
     if len(report) > 1 and all('payload' in row for row in report):
         same = all(row['payload'] == report[0]['payload'] for row in report[1:])
         print('Identical recorded OMC, ordered inputs and external weights across attempts:', same)
+        print('Identical ordered input hashes:',
+              all(r['payload']['input_hashes'] == report[0]['payload']['input_hashes'] for r in report))
+        if all(r.get('compile', {}).get('matches_upload') for r in report):
+            print('Identical compiler input AIR:', len({r['compile']['air_sha256'] for r in report}) == 1)
     try:
         if windows:
             snapshot = _snapshot(hdc, out, hilog)
@@ -104,6 +132,7 @@ def diagnose(stages, hilog=None):
                 print(f'\nDevice-window candidates (shared across processes): {row["stage"]}', flush=True)
                 row['window_records'] = _window(snapshot, window, start, end)
                 _client_records(window, folder, tids)
+                row['service_failures'] = service_context(window, tids)
     finally:
         save_json(out / 'result.json', report)
         print('Report:', out / 'result.json', flush=True)

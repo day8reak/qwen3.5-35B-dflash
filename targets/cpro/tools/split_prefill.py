@@ -32,7 +32,8 @@ def check_capture(capture, layers):
         required = {'logits', 'key_cache_3', 'value_cache_3'}
     else:
         blocks = [(b['layer'], b['block_type']) for b in ref.get('blocks', []) if 'hidden' in b]
-        if blocks != [(i, 'full_attention' if i % 4 == 3 else 'linear_attention') for i in layers]:
+        if (ref.get('split_layer') not in layers[1:] or
+                blocks != [(i, 'full_attention' if i % 4 == 3 else 'linear_attention') for i in layers]):
             raise ValueError(f'{capture}: expected all 40 ordered decoder boundaries from the same prefill')
         required = {'logits'}
         for i in layers:
@@ -100,6 +101,17 @@ def run_board(args, run, layers):
                     raise ValueError(f'{key} did not complete before requested restart')
                 if i > start_layer:
                     checkpoint = None
+            if args.mode == '40' and i == meta['reference']['split_layer']:
+                # The 310P driver trims and re-pads once between its two decoder segments.
+                # Apply the same operation to the preceding CPro output, keeping all valid rows.
+                import numpy as np
+                previous_hidden = hidden
+                values = np.fromfile(previous_hidden, dtype='<f4').reshape(1, 64, 2048)
+                values[:, 19:] = 0
+                hidden = out/f'{key}-entry.bin'
+                values.tofile(hidden)
+                summary['segment_entry'] = dict(layer=i, source_sha256=sha(previous_hidden),
+                                                input_sha256=sha(hidden), valid_rows=19)
             execute(case, bundle, meta, graph, raw, args.ddk.resolve(strict=True), args.diagnosis,
                     args.runtime_config.resolve(strict=True), recovery=checkpoint, entry=hidden,
                     from_stage=start_stage if i == start_layer and checkpoint else None, out=dst, shared_silu=run/'silu-omc')

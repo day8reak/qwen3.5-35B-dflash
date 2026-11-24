@@ -29,13 +29,15 @@ MODE=full
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode "$MODE"
 ```
 
-`--run DIR` 指定该模式的运行目录。默认都在 `$AI_RUN_DIR/target/tests` 下，linear 复用原来的 `l0-split-silupatch-t64-valid19-01`，其余为 `prefill-split-full-t64-valid19-01` 和 `prefill-split-40-t64-valid19-01`。首次导出使用 `ORIGINAL4_RUN` 的成功原版基线，默认 `decoder4-original-t64-01`。已有 310P 捕获可用 `air --capture DIR` 指向含 `manifest.json` 的目录。重新执行 `air` 可以接着导出剩余层。
+`--run DIR` 指定该模式的运行目录。当前默认目录分别是 `$AI_RUN_DIR/target/tests` 下的 `l0-split-silupatch-t64-valid19-02`、`prefill-split-full-t64-valid19-02` 和 `prefill-split-40-t64-valid19-02`。三个模式均使用 CPro W4 投影，导出时检查每个量化 matmul 的 weight scale 和 per-token scale 都是 FP16，并将端口记录在各层的 `air/manifest.json` 的 `precision` 字段里。linear 层返回物理序列末四行的卷积状态，按有效长度更新 GDR 状态。full 层在 FP32 计算 RoPE，再将 Q/K 转回 attention 的输入类型。各层在 FP16 计算残差，在分段接口以 FP32 传递 decoder hidden。
+
+首次导出使用 `ORIGINAL4_RUN` 的成功原版基线，默认 `decoder4-original-t64-01`。可以用 `air --capture DIR` 复用旧实验同一份 310P 参考。切换到修正版时先导出，再从第一段上板。后续在同版模型内使用恢复参数。40 层模式在 310P 捕获记录的两个模型段交界处保留上段 CPro 的前 19 行并将剩余 45 行清零。
 
 **恢复上板。** 在 53 用 `--recovery` 接着最近一次运行，或显式指定旧 replay。脚本将已完成段的 OMC、输入和输出与回执核对，在新 replay 中使用校验通过的输出，每段成功后写入 `chain.json`。有意重跑某段时加 `--from-stage`，其前面的输入必须能从已完成的前缀恢复。
 
 ```bash
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
-  --recovery replay-d3iori8t --from-stage decoder_hidden
+  --recovery --from-stage decoder_hidden
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode 40 --recovery
 ```
 

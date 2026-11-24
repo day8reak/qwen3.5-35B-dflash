@@ -27,8 +27,8 @@ VECTOR_PATCH_KIND = KIND + '-silu-patch'
 VECTOR_ALIGNED_KIND = KIND + '-aligned-silu-patch'
 PATCH_KIND = VECTOR_PATCH_KIND + '-native-shape'
 ALIGNED_KIND = VECTOR_ALIGNED_KIND + '-native-shape'
-L0_KIND = 'original-cpro-l0-prefill64-aligned-silu-patch-split'
-SPLIT_KIND = 'original-cpro-decoder-prefill64-aligned-silu-patch-split'
+L0_KIND = 'original-cpro-l0-prefill64-aligned-silu-patch-split-v2'
+SPLIT_KIND = 'original-cpro-decoder-prefill64-aligned-silu-patch-split-v2'
 L0_DIR = 'glm_export_air_cpro_1block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
@@ -176,6 +176,9 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         shape_trace = work / 'silu-shapes.txt'
         if kind != KIND:
             env['QWEN35_SILU_SHAPES'] = str(shape_trace)
+        if split:
+            package = str(Path(__file__).resolve().parents[3] / 'model')
+            env['PYTHONPATH'] = os.pathsep.join(filter(None, (package, env.get('PYTHONPATH'))))
         subprocess.run(argv, cwd=work, env=env, check=True)
         air = work / export_dir / 'export.air'
         variant = {}
@@ -186,7 +189,11 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             if split:
                 from qwen35_moe_dflash.target.prefill_t64.l0_split import pack_reference, plan
                 index = layer or 0
-                plan(air.read_bytes(), variant['silu_patch']['nodes'], layer=index, head=head)
+                chain = plan(air.read_bytes(), variant['silu_patch']['nodes'], layer=index, head=head,
+                             verify_precision=True)
+                variant['precision'] = chain['precision']
+                if index % 4 != 3:
+                    fixture['conv_state_control'] = 'last 4 physical QKV rows (60..63 for T64)'
                 variant.update(layer=index, head=head, standalone=standalone)
                 variant['reference'] = pack_reference(l0_capture, work, fixture, layer=index, head=head,
                                                       standalone=standalone)
@@ -198,7 +205,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                       f'{[row["role"] for row in boundary["outputs"]]}', flush=True)
             staged_files = [EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py']
             if split:
-                staged_files.append('models/export_model_wrapper_qwen3_5_moe.py')
+                staged_files.extend(['models/export_model_wrapper_qwen3_5_moe.py', 'utils.py'])
             variant['silu_patch']['source_sha256'] = {n: sha(staged / n) for n in staged_files}
         abi = inspect_input_shape(air)
         files = [identity(p, work) for p in sorted(air.parent.rglob('*')) if p.is_file()]
