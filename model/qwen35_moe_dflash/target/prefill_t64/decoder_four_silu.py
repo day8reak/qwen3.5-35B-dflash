@@ -19,7 +19,9 @@ REGISTRATION = '''if not hasattr(torch.ops.npu, "silu_patch"):
 def silu_patch_meta(x):
     if x.dtype != torch.float16:
         raise ValueError("SiluPatch expects FP16 input")
-    return torch.empty_like(x, dtype=torch.float32)
+    ret = x.size()
+    z = torch.empty(ret, dtype=torch.float32, device='meta')
+    return torch.empty_like(z)
 
 
 @torchair.register_fx_node_ge_converter(torch.ops.npu.silu_patch.default)
