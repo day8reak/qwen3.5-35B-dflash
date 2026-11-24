@@ -24,7 +24,8 @@ from ..prefill_smoke_plan import _TOOL_TYPES
 from . import whole_trace
 
 _PROBE = 'decoder-tail-projection-probe'
-_DECODER_KINDS = ('single-cpro-decoder', 'single-cpro-decoder-tail')
+_REMAINDER = 'decoder-tail-after-projections'
+_DECODER_KINDS = ('single-cpro-decoder', 'single-cpro-decoder-tail', _REMAINDER)
 
 _GDR_PATHS = ('ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp',
               'tools/tools_ascendc/custom_op/ascend310b/src/chunk_gated_delta_rule.cpp')
@@ -177,12 +178,14 @@ class HiaiRunFailure(RuntimeError):
         super().__init__(f'HIAI exited {rc} (stage={self.stage}); attempt {remote}\n{log}')
 
 
-def board(run, tool_path, baseline=None):
+def board(run, tool_path, baseline=None, *, slot_config=None):
     air, omc = run / 'air', run / 'omc'
     compiled = json.loads((omc / 'manifest.json').read_text())
     if sha(air / 'manifest.json') != compiled['air_manifest_sha256']:
         raise ValueError('OMC and AIR manifest differ')
     meta = json.loads((air / 'manifest.json').read_text())
+    if meta['kind'] == _REMAINDER and slot_config is None:
+        raise ValueError('The decoder remainder requires runtime slot binding for its FP16 inputs')
     assets = shared_assets(air, meta, baseline, compiled['gdr_source_sha256'])
     tool = _board_path(tool_path)
     primary = checked(omc, compiled['primary'])
@@ -218,18 +221,6 @@ def board(run, tool_path, baseline=None):
             digest, rel = line.split('  ', 1)
             if rel.startswith('payload/') and rel.endswith('.weight'):
                 reusable[digest] = _board_path(str(old_remote) + '/' + rel)
-    argv = [str(tool), '--model=' + str(remote / files[0][0]),
-            *(['--weight_dir=' + str(remote / 'payload')] if external_files else []),
-            '--input=' + ','.join(str(remote / f"inputs/{s['index']:03d}.bin") for s in inputs),
-            '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in inputs),
-            '--output_type=' + _TOOL_TYPES[result_spec['dtype'].upper()], '--times=1', '--modelmanager_itf=V2',
-            '--direct_from_file=true', '--enable_item=1', '--output_dir=' + str(remote / 'outputs')]
-    script = out / 'run.sh'
-    report_logs = ('if [ "$rc" != 0 ]; then cat tool.stdout tool.stderr; else tail -n 10 tool.stdout tool.stderr; fi'
-                   if meta['kind'] in (*_DECODER_KINDS, _PROBE) else 'tail -n 10 tool.stdout tool.stderr')
-    script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\nLD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
-                      + ' >tool.stdout 2>tool.stderr\nrc=$?\necho "$rc" > tool.exitcode\n'
-                      + report_logs + '\nexit "$rc"\n')
     checks = out / 'files.sha256'
     checks.write_text(''.join(row['sha256'] + '  ' + rel + '\n' for rel, _, row in files))
     _acquire_global(hdc, lock, token, 120)
@@ -252,13 +243,38 @@ def board(run, tool_path, baseline=None):
         print(f'Uploading {len(send)} files ({(needed-result_spec["bytes"]) / 2**30:.2f} GiB) to {remote}', flush=True)
         for rel, path, _ in send:
             hdc.send(path, remote / rel)
-        hdc.send(script, remote / 'run.sh')
         hdc.send(checks, remote / 'files.sha256')
         hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
+        model = remote / files[0][0]
+        if slot_config is not None:
+            from .attention_step_v2 import runtime_slots
+            from .whole_slots import observe_model_io, read
+            runtime = read(slot_config.parent / read(slot_config)['assets'])['environment']
+            native = observe_model_io(hdc, slot_config, runtime, remote, out, model,
+                                      compiled['primary']['sha256'], tool.parent)
+            slots = dict(inputs=runtime_slots(native, 'inputs', inputs),
+                         outputs=runtime_slots(native, 'outputs', [result_spec]))
+            save_json(out / 'slots.json', slots)
+            inputs = [inputs[row['compiled_index']] for row in slots['inputs']]
+        argv = [str(tool), '--model=' + str(model),
+                *(['--weight_dir=' + str(remote / 'payload')] if external_files else []),
+                '--input=' + ','.join(str(remote / f"inputs/{s['index']:03d}.bin") for s in inputs),
+                '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in inputs),
+                '--output_type=' + _TOOL_TYPES[result_spec['dtype'].upper()], '--times=1', '--modelmanager_itf=V2',
+                '--direct_from_file=true', '--enable_item=1', '--output_dir=' + str(remote / 'outputs')]
+        script = out / 'run.sh'
+        report_logs = ('if [ "$rc" != 0 ]; then cat tool.stdout tool.stderr; else tail -n 10 tool.stdout tool.stderr; fi'
+                       if meta['kind'] in (*_DECODER_KINDS, _PROBE) else 'tail -n 10 tool.stdout tool.stderr')
+        script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\nLD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
+                          + ' >tool.stdout 2>tool.stderr\nrc=$?\necho "$rc" > tool.exitcode\n'
+                          + report_logs + '\nexit "$rc"\n')
+        hdc.send(script, remote / 'run.sh')
         decoder = meta['kind'] in _DECODER_KINDS
         label = f"L{meta['layer']} standalone decoder" if decoder else '40-layer'
         if meta['kind'] == 'single-cpro-decoder-tail':
             label = f"L{meta['layer']} post-attention decoder tail"
+        if meta['kind'] == _REMAINDER:
+            label = f"L{meta['layer']} decoder tail with retained projection outputs"
         if meta['kind'] == _PROBE:
             label = f"L{meta['layer']} {meta['output_edge']} probe"
         print(f'Running one {label} HIAI V2 prefill (weight_storage={storage}, '
@@ -295,6 +311,9 @@ def board(run, tool_path, baseline=None):
             result = score_hidden(air, meta, output, result_spec)
             if meta['kind'] == 'single-cpro-decoder-tail':
                 result['scope'] = 'post_attention_layernorm input to final decoder hidden'
+            if meta['kind'] == _REMAINDER:
+                result.update(scope='decoder tail from 310P post-attention residual and CPro projection outputs',
+                              reused_outputs=meta['reused_outputs'])
             save_json(out / 'accuracy.json', result)
             return result
         result = score(air, meta, output, result_spec, assets=assets,

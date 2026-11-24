@@ -38,6 +38,16 @@ elif [[ ( $# == 2 || $# == 3 ) && $1 == projections ]]; then
     in_env custom_pypto python -u "$tool" tail-projections --run "$job" --parent "$parent" --layer "$layer" \
         --ddk-root "$CPRO_DDK_ROOT" --gdr-source "${GDR_SOURCE:-$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp}" \
         --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+elif [[ $# == 2 && $1 == remainder ]]; then
+    : "${CPRO_DDK_ROOT:?}" "${SN:?}" "${BIP:?}"
+    projections="$(realpath -e -- "$2")"
+    test -f "$projections/projections.json"
+    job="$(mktemp -d "$projections/remainder-XXXXXXXX")"
+    echo "Decoder tail accuracy: $job/tail/board/accuracy.json"
+    in_env custom_pypto python -u "$tool" tail-remainder --run "$job/tail" --projections "$projections" \
+        --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+        --ddk-root "$CPRO_DDK_ROOT" --gdr-source "${GDR_SOURCE:-$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp}" \
+        --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
 elif [[ $# == 2 && $1 == board ]]; then
     : "${CPRO_DDK_ROOT:?}" "${SN:?}" "${BIP:?}"
     parent="$(realpath -e -- "$2")"
@@ -54,5 +64,6 @@ else
     echo "Usage on 78: bash $0 capture" >&2
     echo "Usage on 53: bash $0 board <decoder-pair-prefill-board-run>" >&2
     echo "Usage on 53: bash $0 projections <decoder-tail-run> [0|3]" >&2
+    echo "Usage on 53: bash $0 remainder <completed-layer-projections-run>" >&2
     exit 2
 fi
