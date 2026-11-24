@@ -207,21 +207,23 @@ class Schema:
         for child in _many(fields, 3, 2):
             self._message(child, name, budget, depth + 1)
 
-    def decode(self, data: bytes, type_name: str):
-        """Decode one whole protobuf, preserving map entries and enum integers.
+    def decode(self, data, type_name: str, *, fields=None):
+        """Decode a protobuf, preserving map entries and enum integers.
 
         Unknown fields are rejected so a mismatching schema cannot silently
         manufacture an apparently complete CPU graph. Omitted defaults stay
         absent. Attribute bytes are text only for small printable strings.
+        An optional nested mapping selects field names at each level. None
+        selects a whole value. Other payloads are skipped at their wire boundaries.
         """
         name = type_name.lstrip(".")
         if not name.startswith(self.package + "."):
             name = self.package + "." + name
         if name not in self._messages:
             raise ValueError(f"unknown protobuf message {type_name}")
-        return self._decode(memoryview(data), name, [_MAX_FIELDS], 0)
+        return self._decode(memoryview(data), name, [_MAX_FIELDS], 0, fields)
 
-    def _decode(self, data, name, budget, depth):
+    def _decode(self, data, name, budget, depth, fields):
         if depth > _MAX_DEPTH:
             raise ValueError("protobuf nesting depth exceeded")
         result, selected_oneofs = {}, {}
@@ -230,7 +232,13 @@ class Schema:
             field = message.get(number)
             if field is None:
                 raise ValueError(f"unknown protobuf field {number} in {name}")
-            if field.repeated and field.kind in _PACKABLE and wire == 2:
+            packed = field.repeated and field.kind in _PACKABLE and wire == 2
+            if not packed and wire != _WIRE[field.kind]:
+                raise ValueError(f"wire type mismatch for {name}.{field.name}: "
+                                 f"field={number}, expected={_WIRE[field.kind]}, observed={wire}")
+            if fields is not None and field.name not in fields:
+                continue
+            if packed:
                 values, offset = [], 0
                 while offset < len(value):
                     _consume(budget)
@@ -243,10 +251,8 @@ class Schema:
                     values.append(self._scalar(raw, field, name))
                 result.setdefault(field.name, []).extend(values)
                 continue
-            if wire != _WIRE[field.kind]:
-                raise ValueError(f"wire type mismatch for {name}.{field.name}: "
-                                 f"field={number}, expected={_WIRE[field.kind]}, observed={wire}")
-            decoded = (self._decode(value, field.type_name, budget, depth + 1)
+            decoded = (self._decode(value, field.type_name, budget, depth + 1,
+                                    fields[field.name] if fields is not None else None)
                        if field.kind == 11 else self._scalar(value, field, name))
             if field.repeated:
                 result.setdefault(field.name, []).append(decoded)

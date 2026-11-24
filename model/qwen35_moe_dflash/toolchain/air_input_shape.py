@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from collections import Counter
+import mmap
+import os
 from pathlib import Path
 import re
 
@@ -9,15 +11,19 @@ from .air_schema import load_torchair_schema
 from .omc_wire import Schema
 
 
-MAX_AIR_BYTES = 64 << 20
 _INPUT_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9./-]*\Z")
+_GRAPH_FIELDS = {
+    "name": None,
+    "op": {"name": None, "type": None,
+           "output_desc": {"dtype": None, "layout": None, "shape": {"dim": None}}},
+}
 
 
 def _root_graph(schema, raw):
     candidates, errors = [], []
-    for kind in ("ModelDef", "GraphDef"):
+    for kind, fields in (("ModelDef", {"graph": _GRAPH_FIELDS}), ("GraphDef", _GRAPH_FIELDS)):
         try:
-            decoded = schema.decode(raw, kind)
+            decoded = schema.decode(raw, kind, fields=fields)
             graphs = decoded.get("graph", []) if kind == "ModelDef" else [decoded]
             if len(graphs) != 1:
                 raise ValueError("expected exactly one root graph")
@@ -43,18 +49,20 @@ def inspect_input_shape(air, *, torchair_pb2=None):
     Missing/scalar/unknown/dynamic shapes fail rather than being guessed as [1].
     """
     path = Path(air).expanduser().resolve(strict=True)
-    if not path.is_file() or not 0 < path.stat().st_size <= MAX_AIR_BYTES:
-        raise ValueError("AIR must be a nonempty regular file at most 64 MiB")
-    with path.open("rb") as stream:
-        raw = stream.read(MAX_AIR_BYTES + 1)
-    if not 0 < len(raw) <= MAX_AIR_BYTES:
-        raise ValueError("AIR size exceeds the 64 MiB inspection limit")
+    if not path.is_file():
+        raise ValueError(f"Expected a regular AIR file: {path}")
     if torchair_pb2:
         schema = load_torchair_schema(torchair_pb2)
     else:
         descriptor = Path(__file__).resolve().parents[3] / "specs/torchair-ge-ir.pb"
         schema = Schema(descriptor.read_bytes(), expected_file="ge_ir.proto", expected_package="ge.proto")
-    kind, graph = _root_graph(schema, raw)
+    with path.open("rb") as stream:
+        if not os.fstat(stream.fileno()).st_size:
+            raise ValueError(f"AIR file is empty: {path}")
+        # Inline constants can be much larger than the ABI. Map the file so
+        # skipping an OpDef.attr does not read or copy its tensor contents.
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as raw:
+            kind, graph = _root_graph(schema, raw)
     rows, problems = [], []
     for node in graph["op"]:
         if node.get("type") not in {"Data", "RefData"}:
