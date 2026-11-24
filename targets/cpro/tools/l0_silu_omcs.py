@@ -22,6 +22,7 @@ from qwen35_moe_dflash.common.artifacts import output_path
 from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
+from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
 from qwen35_moe_dflash.target.prefill_t64.l0_split import plan, score, slice_air
 
 
@@ -91,7 +92,17 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash):
         save_json(out/'manifest.json', dict(source=source, model=identity(model, out), weights=weights, **io))
         out.rename(dest)
     meta = load(dest/'manifest.json')
-    if meta['source'] != source:
+    recorded = meta['source']
+    if recorded != source:
+        # Earlier slices wrote unordered protobuf maps. Verify the retained compiler input
+        # against its original hash, then compare its canonical serialization to today's slice.
+        retained = dest / L0_DIR / 'export.air'
+        if (dict(recorded, air_sha256=source['air_sha256']) == source
+                and retained.is_file() and sha(retained) == recorded['air_sha256']):
+            old, _ = graph_message(retained.read_bytes(), 'NetOutput')
+            if old.SerializeToString(deterministic=True) == stage_air:
+                recorded = source
+    if recorded != source:
         raise ValueError(f'{dest} belongs to a different AIR or DDK. Select a new L0_SPLIT_RUN.')
     return meta, checked(dest, meta['model']), [checked(dest, row) for row in meta['weights']]
 

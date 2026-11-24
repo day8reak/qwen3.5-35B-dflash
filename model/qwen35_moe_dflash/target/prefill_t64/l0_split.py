@@ -276,4 +276,4 @@ def slice_air(raw, step, wires):
     graph.op.extend([*body, out])
     graph.input[:] = [name + ':0' for name in bindings.values()]
     graph.output[:] = [f'{out.name}:{i}' if via_net else e for i, e in enumerate(step['outputs'])]
-    return msg.SerializeToString()
+    return msg.SerializeToString(deterministic=True)

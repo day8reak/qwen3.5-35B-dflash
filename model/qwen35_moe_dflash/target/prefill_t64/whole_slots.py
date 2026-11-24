@@ -144,15 +144,47 @@ def observe_model_io(hdc, config, env, work, out, model, model_sha, tool_lib):
            str(work / 'draft-runner'), '--model-io-only', str(model), '--descriptor-stage', 'restore-only',
            '--model-sha256', model_sha, '--expected-runtime-version', env['runtime_version'],
            '--ddk-id', env['ddk_id'], '--firmware-id', env['firmware_id'].strip(), '--output', str(work / 'model-io.json')]
-    # A native failure can also produce a diagnostic JSON.
-    hdc.shell(f'cd {model.parent} && {{ {shlex.join(cmd)}; test -s {work}/model-io.json; }}', 'restore')
+    # Preserve the runner's exit code independently of whether it wrote a diagnostic JSON.
+    restore = (f'cd {model.parent} && {{ {shlex.join(cmd)} 2>&1; probe_rc=$?; '
+               f'if test -s {work}/model-io.json; then has_json=1; else has_json=0; fi; '
+               'printf "\\n__PROBE_RESULT__=%d,%d\\n" "$probe_rc" "$has_json"; }')
+    available = None
+    deployed = {path.name for path, _, _ in files}
+    while True:
+        _, log = hdc.shell(restore, 'restore')
+        message, marker, status = log.rpartition('__PROBE_RESULT__=')
+        if not marker or not re.fullmatch(r'\d+,[01]', status):
+            raise RuntimeError(f'{out}: descriptor probe returned no exit status\n{log}')
+        rc, has_json = map(int, status.split(','))
+        if has_json:
+            break
+        failure = f'{out}: descriptor probe exited {rc} without model-io.json\n{message.strip()}'
+        # The resident model tool and our separate descriptor binary have different link dependencies.
+        missing = set(re.findall(r'^Error loading shared library ([\w.+-]+\.so(?:\.\d+)*): '
+                                 r'No such file or directory', message, re.MULTILINE))
+        if not rc or not missing or missing & (DDK_HCL_EXCLUDED | deployed):
+            raise RuntimeError(failure)
+        if available is None:
+            try:
+                available = {lib.name: lib for lib in discover_libraries(runner, native_dir)['libraries']}
+            except (ValueError, OSError) as exc:
+                raise RuntimeError(f'{failure}\nCould not resolve dependencies from {native_dir}: {exc}') from exc
+        if not missing <= available.keys():
+            raise RuntimeError(f'{failure}\nMissing from the probe build: {sorted(missing - available.keys())}')
+        for name in sorted(missing):
+            path = available[name]
+            digest = sha(path)
+            print(f'Descriptor probe requires {name}; uploading to {work}/lib', flush=True)
+            hdc.send(path, work/'lib'/name)
+            hdc.shell(f'cd {work}/lib && echo "{digest}  {name}" | sha256sum -c -', 'verify-probe-library')
+        deployed.update(missing)
     _, digest = hdc.shell(f'sha256sum {work}/model-io.json', 'descriptor-hash')
     local = out / 'model-io.json'
     hdc.receive(work / local.name, local)
     if sha(local) != digest.split()[0]:
         raise ValueError('Retrieved descriptor hash differs from the board')
     native = read(local)
-    if (native.get('status') != 'IO_DESCRIPTORS_OBSERVED' or native.get('evidence_kind') != 'device-hiai'
+    if (rc or native.get('status') != 'IO_DESCRIPTORS_OBSERVED' or native.get('evidence_kind') != 'device-hiai'
             or native.get('model_sha256') != model_sha or native.get('model_path') != str(model)
             or native.get('run_called') is not False or native.get('process_called') is not False):
         raise ValueError(f"Could not observe this model's HIAI descriptors: {native.get('reason', local)}")
