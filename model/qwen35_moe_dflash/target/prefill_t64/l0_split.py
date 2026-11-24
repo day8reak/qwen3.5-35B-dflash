@@ -1,4 +1,4 @@
-"""One native L0 decoder with observable state updates and separately compiled SiLU calls."""
+"""Split native prefill decoders at SiLU and state updates and score their public outputs."""
 from hashlib import sha256
 import json
 from shutil import copyfile
@@ -24,7 +24,7 @@ OUTPUTS = {
 SITES = {(1, 8192, 64): 'conv', (2048, 128): 'gate', (64, 512): 'shared', (512, 512): 'experts'}
 
 
-def expose_l0(folder):
+def expose_l0(folder, *, layer=None, head=True):
     """Edit only the staged source. Return the values written by the fresh, single-call prefill."""
     def edit(file, scope, changes):
         path = folder / 'models' / file
@@ -54,9 +54,45 @@ def expose_l0(folder):
          '        hidden_states = hidden_states.to(torch.float32)\n        decoder_hidden = hidden_states'),
         ('return lm_logits, *kv_caches_out', 'return lm_logits, *kv_caches_out, decoder_hidden, layer_outputs[2]'),
     ])
+    if layer is None:
+        return
+    # The one-block graph uses local index 0. Select the global weights both in the
+    # owner's HF loader and in its W4 projection/expert loader.
+    wrapper = [('layer_num=None, start_layer_idx=0', f'layer_num=1, start_layer_idx={layer}')]
+    path = folder / 'export_glm_model_qwen3_5_moe.py'
+    text = path.read_text()
+    replacements = [('start_layer_idx=0, device=\'cpu\', quant_bits=quant_bits)',
+                     f'start_layer_idx={layer}, device=\'cpu\', quant_bits=quant_bits)'),
+                    ('block_type = config.layer_types[layer_idx]', f'block_type = config.layer_types[layer_idx + {layer}]')]
+    owner = (folder/'models/export_model_wrapper_qwen3_5_moe.py').read_text().split(
+        'class Qwen3_5MoeForCausalLMCproWrapper(', 1)[1].split('\nclass ', 1)[0]
+    if layer:
+        # Later layers consume the FP32 residual directly; there is no second embedding lookup.
+        begin = owner.index('        if not self.embedding_in_omc')
+        wrapper.append((owner[begin:owner.index('        new_kv_cache_pos =', begin)], ''))
+        old = '            inputs_embeds=inputs_embeds,\n            embed_scale=embed_scale,'
+        replacements.append((old, '            inputs_embeds=inputs_embeds.float(),\n            embed_scale=None,'))
+    if not head:
+        begin = owner.index('        bsz, q_len, hidden_state_len = hidden_states.size()')
+        wrapper.append((owner[begin:].rstrip(), '        return hidden_states.float(), *kv_caches_out, layer_outputs[2]'))
+    edit('export_model_wrapper_qwen3_5_moe.py', 'Qwen3_5MoeForCausalLMCproWrapper', wrapper)
+    if layer % 4 == 3:
+        # The owner's Functionalize rule lowers to this op then copy_ back into
+        # the input. Use its returned CacheUpdate tensor for both attention and
+        # readout so the same updated bytes can cross an OMC boundary.
+        edit(model, 'Qwen3_5MoeAttention', [
+            ('        torch_npu.npu_cache_update_(past_key_value.to(new_k.device),',
+             '        return torch.ops.npu.npu_cache_update__functional(past_key_value.clone().to(new_k.device),'),
+            ('        return past_key_value\n', ''),
+        ])
+    for old, new in replacements:
+        if text.count(old) != 1:
+            raise ValueError(f'{path}: cannot select global L{layer} at {old!r}')
+        text = text.replace(old, new)
+    path.write_text(text)
 
 
-def pack_reference(root, work, fixture):
+def pack_reference(root, work, fixture, *, layer=0, head=True, standalone=True):
     m = json.loads((root / 'manifest.json').read_bytes())
     ids = read_array(root, m['inputs']['input_ids'])
     digest = sha256(ids.astype('<i4').tobytes()).hexdigest()
@@ -72,33 +108,47 @@ def pack_reference(root, work, fixture):
     changed = np.count_nonzero((quant * scale).astype('<f2')[:, :19].view('<u2') != entry[:, :19].view('<u2'))
     if changed != fixture['valid19_embedding_changed_fp16_elements']:
         raise ValueError('L0 reference entry differs from the original measured embedding')
-    rows = dict(logits=m['l0_logits'], decoder_hidden=m['boundaries']['0'],
-                out_proj=m['attention_modules']['0']['golden_hidden'],
-                **{k: m['outputs'][k] for k in ('conv_state_0', 'recurrent_state_0')})
+    specs = contracts(layer, head)
+    rows = {k: m['outputs'][k] for k in specs if k.endswith(f'_{layer}')}
+    if 'blocks' in m:
+        rows.update(decoder_hidden=m['blocks'][layer]['hidden'], out_proj=m['outputs'][f'out_proj_{layer}'])
+    else:
+        rows.update(decoder_hidden=m['boundaries'][str(layer)], out_proj=m['attention_modules'][str(layer)]['golden_hidden'])
+    if head:
+        rows['logits'] = m['l0_logits'] if layer == 0 else m['outputs']['logits']
+    if standalone and layer:
+        entry = read_array(root, m['boundaries'][str(layer-1)])
+        if tuple(entry.shape) != (1, 64, 2048) or entry.dtype != np.float16:
+            raise ValueError(f'Unexpected measured entry for L{layer}')
+        entry.astype('<f4').tofile(work/'inputs/layer_entry.bin')
     dest = work / 'golden'
     dest.mkdir()
     reference = {}
     for key, row in rows.items():
-        if row['shape'] != OUTPUTS[key][0] or row['dtype'] not in ('float16', 'float32'):
+        if row['shape'] != specs[key][0] or row['dtype'] not in ('float16', 'float32'):
             raise ValueError(f'Unexpected 310P {key}: {row}')
         target = dest / (key + '.bin')
         copyfile(checked(root, row), target)
         reference[key] = dict(identity(target, work), shape=row['shape'], dtype=row['dtype'])
-    return dict(capture_sha256=sha(root/'manifest.json'), conv_history=m['conv_history']['0'], tensors=reference)
+    return dict(capture_sha256=sha(root/'manifest.json'), conv_history=m.get('conv_history', {}).get(str(layer)),
+                tensors=reference)
 
 
-def score(actual, golden):
-    if set(actual) != set(OUTPUTS) or set(golden) != set(OUTPUTS):
+def score(actual, golden, contracts=OUTPUTS):
+    if set(actual) != set(contracts) or set(golden) != set(contracts):
         raise ValueError('Missing complete L0 readout or cache')
     report = {}
-    for role, (shape, _) in OUTPUTS.items():
+    for role, (shape, _) in contracts.items():
         a, g = actual[role], golden[role]
         if list(a.shape) != shape or list(g.shape) != shape:
             raise ValueError(f'{role}: expected {shape}, got {a.shape} and {g.shape}')
         if role in ('decoder_hidden', 'out_proj'):
             report[role] = dict(valid19=metrics(a[0, :19], g[0, :19]), token18=metrics(a[0, 18], g[0, 18]))
         else:
-            report[role] = {('token18' if role == 'logits' else 'full_state'): compare_segment_output(role, a, g, None)}
+            if role.startswith(('key_cache_', 'value_cache_')):
+                report[role] = dict(valid19=compare_segment_output(role, a, g, None))
+            else:
+                report[role] = {('token18' if role == 'logits' else 'full_state'): compare_segment_output(role, a, g, None)}
     return report
 
 
@@ -106,15 +156,27 @@ def wire(name, shape, dtype):
     return dict(name=name, shape=list(shape), dtype=dtype)
 
 
-def plan(raw, trace):
+def contracts(layer, head):
+    specs = {k: v for k, v in OUTPUTS.items() if k in ('decoder_hidden', 'out_proj') or (head and k == 'logits')}
+    if layer % 4 == 3:
+        specs.update({f'{k}_cache_{layer}': ([64, 32, 32, 16], 'float16') for k in ('key', 'value')})
+    else:
+        for k in ('conv_state', 'recurrent_state'):
+            specs[f'{k}_{layer}'] = OUTPUTS[k + '_0']
+    return specs
+
+
+def plan(raw, trace, *, layer=0, head=True):
     _, graph = graph_message(raw, 'SiluPatch')
     nodes = {op.name: op for op in graph.op}
     def one(kind):
         op, = [n for n in graph.op if n.type.lower() == kind.lower()]
         return op
-    conv, gdr, net = one('LinearAttentionConvstateUpdate'), one('ChunkGatedDeltaRule'), one('NetOutput')
-    if any(n.type in ('Assign', 'AssignVariableOp', 'AdnFusedInferAttention') for n in graph.op):
-        raise ValueError('Expected one functional linear-attention layer')
+    net = one('NetOutput')
+    linear = layer % 4 != 3
+    specs = contracts(layer, head)
+    if any(n.type in ('Assign', 'AssignVariableOp') for n in graph.op):
+        raise ValueError('Expected functional cache updates in the split AIR')
     def activation_edge(edge):
         while True:
             node = nodes[edge.rsplit(':', 1)[0]]
@@ -123,9 +185,23 @@ def plan(raw, trace):
             edge, = data_edges(node)
 
     outputs = [activation_edge(e) for e in data_edges(net)]
-    if len(outputs) != 5 or len(set(outputs)) != 5:
-        raise ValueError(f'Expected five distinct L0 outputs, found {outputs}')
-    state_ports = {conv.name + ':0': 'conv_state_0', gdr.name + ':1': 'recurrent_state_0'}
+    if len(outputs) != len(specs) or len(set(outputs)) != len(specs):
+        raise ValueError(f'Expected {len(specs)} distinct L{layer} outputs, found {outputs}')
+    if linear:
+        conv, gdr = one('LinearAttentionConvstateUpdate'), one('ChunkGatedDeltaRule')
+        state_ports = {conv.name + ':0': f'conv_state_{layer}', gdr.name + ':1': f'recurrent_state_{layer}'}
+    else:
+        attn = one('AdnFusedInferAttention')
+        def cache_update(edge):
+            while nodes[edge.rsplit(':', 1)[0]].type in ('Identity', 'TensorMove', 'Cast', 'Reshape', 'View'):
+                edge = data_edges(nodes[edge.rsplit(':', 1)[0]])[0]
+            if nodes[edge.rsplit(':', 1)[0]].type != 'CacheUpdate':
+                raise ValueError(f'L{layer}: cannot identify updated K/V at {edge}')
+            return edge
+        attn_inputs = dict(zip(('key', 'value'), data_edges(attn)[1:3], strict=True))
+        state_ports = {cache_update(e): f'{k}_cache_{layer}' for k, e in attn_inputs.items()}
+        if len(state_ports) != 2:
+            raise ValueError(f'L{layer}: K and V have the same CacheUpdate producer')
     result = {}
     for output in outputs:
         edge = output
@@ -154,10 +230,11 @@ def plan(raw, trace):
             raise ValueError(f'Expected a connected L0 readout; cannot distinguish {output} and {result[role]}')
         result[role] = output
     by_shape = {tuple(s['shape']): s['name'] for s in trace}
-    if set(by_shape) != set(SITES) or set(by_shape.values()) != {n.name for n in graph.op if n.type == 'SiluPatch'}:
-        raise ValueError('Expected one native patch at each of the four L0 SiLU sites')
+    sites = {s: n for s, n in SITES.items() if linear or n in ('shared', 'experts')}
+    if set(by_shape) != set(sites) or set(by_shape.values()) != {n.name for n in graph.op if n.type == 'SiluPatch'}:
+        raise ValueError(f'L{layer}: expected one native patch at each of {list(sites.values())}')
     groups, wires = {}, {}
-    for shape, name in SITES.items():
+    for shape, name in sites.items():
         op = nodes[by_shape[shape]]
         x, = data_edges(op)
         z = op.name + ':0'
@@ -165,16 +242,31 @@ def plan(raw, trace):
         groups[name + '_silu'] = [z]
         wires[x], wires[z] = wire(name + '_x', shape, 'float16'), wire(name + '_z', shape, 'float32')
     # Carry the state and the activation from the *same* ConvState/GDR invocation.
-    groups['conv_input'].append(result['conv_state_0'])
-    gate, = groups['gate_silu']
-    mul, = [n for n in graph.op if n.type == 'Mul' and gate in n.input]
-    norm, = [e for e in data_edges(mul) if e != gate]
-    groups['gdr_norm'] = [norm, result['recurrent_state_0']]
-    wires[norm] = wire('norm', (2048, 128), 'float32')
+    if linear:
+        groups['conv_input'].append(result[f'conv_state_{layer}'])
+        gate, = groups['gate_silu']
+        mul, = [n for n in graph.op if n.type == 'Mul' and gate in n.input]
+        norm, = [e for e in data_edges(mul) if e != gate]
+        groups['gdr_norm'] = [norm, result[f'recurrent_state_{layer}']]
+        wires[norm] = wire('norm', (2048, 128), 'float32')
     for role, edge in result.items():
-        wires[edge] = wire(role, *OUTPUTS[role])
-        if role not in ('conv_state_0', 'recurrent_state_0'):
+        wires[edge] = wire(role, *specs[role])
+        if role not in state_ports.values():
             groups[role] = [edge]
+    if not linear:
+        # Preserve K/V identities even when OMG renames equal-shaped subgraph outputs.
+        # Publish each updated cache once, then feed the actual bytes to attention.
+        for k, edge in attn_inputs.items():
+            role = f'{k}_cache_{layer}'
+            public = result[role]
+            # A view or cast on the path into attention must still execute. Cut at
+            # the actual public cache, and prove that this value feeds attention.
+            while activation_edge(edge) != public:
+                op = nodes[activation_edge(edge).rsplit(':', 1)[0]]
+                if op.type not in ('Cast', 'Reshape', 'View'):
+                    raise ValueError(f'L{layer}: {role} output {public} does not feed attention')
+                edge = data_edges(op)[0]
+            groups[role] = [public]
 
     entries = {}
     reverse_types = {v: k for k, v in DTYPES.items()}
@@ -223,12 +315,17 @@ def plan(raw, trace):
         ordered.append(dict(name=key, inputs=sorted(deps), outputs=groups[key], nodes=sorted(kept)))
         done.add(key)
         active.remove(key)
-    stage('logits')
-    if done != set(groups) or sum(gdr.name in s['nodes'] for s in ordered) != 1 or sum(
-            conv.name in s['nodes'] for s in ordered) != 1:
-        raise ValueError('Incomplete L0 chain or repeated state update')
-    expected = {'gdr_norm': {'conv_silu'}, 'out_proj': {'gate_silu', 'gdr_norm'},
-                'decoder_hidden': {'out_proj', 'shared_silu', 'experts_silu'}, 'logits': {'decoder_hidden'}}
+    stage('logits' if head else 'decoder_hidden')
+    operators = (gdr.name, conv.name) if linear else (attn.name, *(e.rsplit(':', 1)[0] for e in state_ports))
+    if done != set(groups) or any(sum(op in s['nodes'] for s in ordered) != 1 for op in operators):
+        raise ValueError(f'Incomplete L{layer} chain or repeated state update')
+    expected = {'decoder_hidden': {'out_proj', 'shared_silu', 'experts_silu'}}
+    if head:
+        expected['logits'] = {'decoder_hidden'}
+    if linear:
+        expected.update(gdr_norm={'conv_silu'}, out_proj={'gate_silu', 'gdr_norm'})
+    else:
+        expected['out_proj'] = set(state_ports.values())
     for key, required in expected.items():
         if not required <= ancestors[key]:
             raise ValueError(f'{key}: missing upstream L0 edges for {required - ancestors[key]}')

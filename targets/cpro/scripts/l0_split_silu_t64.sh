@@ -41,7 +41,7 @@ case "${1:-}" in
         in_env custom_pypto python -u "$tool" board --run "$run" --ddk "${CPRO_DDK_ROOT:?}" \
             --remote-air "${L0_SPLIT_REMOTE_AIR:-$run/air}" \
             --diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}" \
-            --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+            --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" "${@:2}"
         ;;
     compare)
         args=()

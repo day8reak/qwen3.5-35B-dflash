@@ -28,6 +28,7 @@ VECTOR_ALIGNED_KIND = KIND + '-aligned-silu-patch'
 PATCH_KIND = VECTOR_PATCH_KIND + '-native-shape'
 ALIGNED_KIND = VECTOR_ALIGNED_KIND + '-native-shape'
 L0_KIND = 'original-cpro-l0-prefill64-aligned-silu-patch-split'
+SPLIT_KIND = 'original-cpro-decoder-prefill64-aligned-silu-patch-split'
 L0_DIR = 'glm_export_air_cpro_1block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
@@ -92,11 +93,12 @@ def valid19_inputs(folder, reference, cfg, conv_control):
                 valid19_embedding_changed_fp16_elements=changes, conv_state_control=policy)
 
 
-def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None, l0_capture=None):
+def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None, l0_capture=None,
+           layer=None, head=True, standalone=True):
     import yaml
-    l0 = kind == L0_KIND
-    layers = 1 if l0 else 4
-    export_dir = L0_DIR if l0 else EXPORT_DIR
+    split = kind in (L0_KIND, SPLIT_KIND)
+    layers = 1 if split else 4
+    export_dir = L0_DIR if split else EXPORT_DIR
     default_config = Path('config/qwen3_5_moe.yaml')
     if kind != KIND:
         base_manifest = baseline / 'air/manifest.json'
@@ -129,11 +131,11 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if base['sources'] != sources or base['config_sha256'] != sha(config):
             raise ValueError(f'Source/config differs from the successful original at {baseline}')
         graph_path = EXPORT_DIR + '/export.air'
-        if not l0:
+        if not split:
             original = checked(base_manifest.parent, next(row for row in base['files'] if row['path'] == graph_path))
             base_boundary = inspect_air(original)
         staged = Path(tempfile.mkdtemp(dir=run, prefix='silu-source-'))
-        entry = stage(source, staged, aligned=kind in (ALIGNED_KIND, L0_KIND), l0=l0)
+        entry = stage(source, staged, aligned=split or kind == ALIGNED_KIND, l0=split, layer=layer, head=head)
         print(f'SiluPatch model and exporter for review: {staged}', flush=True)
     # The owner's exporter deletes its relative export directory on startup.
     with tempfile.TemporaryDirectory(dir=run, prefix='export-') as temp:
@@ -178,12 +180,16 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         air = work / export_dir / 'export.air'
         variant = {}
         if kind != KIND:
-            variant['silu_patch'] = inspect_silu_air(air, shape_trace, layers=layers)
+            variant['silu_patch'] = inspect_silu_air(air, shape_trace, layers=layers,
+                                                      full_only=layer is not None and layer % 4 == 3)
             variant['original_manifest_sha256'] = sha(base_manifest)
-            if l0:
+            if split:
                 from qwen35_moe_dflash.target.prefill_t64.l0_split import pack_reference, plan
-                plan(air.read_bytes(), variant['silu_patch']['nodes'])
-                variant['reference'] = pack_reference(l0_capture, work, fixture)
+                index = layer or 0
+                plan(air.read_bytes(), variant['silu_patch']['nodes'], layer=index, head=head)
+                variant.update(layer=index, head=head, standalone=standalone)
+                variant['reference'] = pack_reference(l0_capture, work, fixture, layer=index, head=head,
+                                                      standalone=standalone)
             else:
                 boundary = inspect_air(air)
                 same_boundary(base_boundary, boundary)
@@ -191,7 +197,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 print(f'Native AIR boundary matched: {len(boundary["inputs"])} inputs, '
                       f'{[row["role"] for row in boundary["outputs"]]}', flush=True)
             staged_files = [EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py']
-            if l0:
+            if split:
                 staged_files.append('models/export_model_wrapper_qwen3_5_moe.py')
             variant['silu_patch']['source_sha256'] = {n: sha(staged / n) for n in staged_files}
         abi = inspect_input_shape(air)
@@ -200,9 +206,9 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if kind != KIND:
             recorded = {r['path']: r['sha256'] for r in base['files'] if r['path'].startswith('inputs/')}
             current = {r['path']: r['sha256'] for r in files if r['path'].startswith('inputs/')}
-            if recorded != current:
+            if recorded != {k: v for k, v in current.items() if k != 'inputs/layer_entry.bin'}:
                 raise ValueError('The generated input files differ from the original four-layer fixture')
-        if l0:
+        if split:
             files.extend(variant['reference']['tensors'].values())
         save_json(work / 'manifest.json', dict(kind=kind, **variant,
                   argv=argv, sources=sources, fixture=fixture,
@@ -210,7 +216,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         bundle = work / 'bundle'
         bundle.mkdir()
         contents = [export_dir, 'inputs', 'manifest.json']
-        if l0:
+        if split:
             contents.append('golden')
         for name in contents:
             (work / name).rename(bundle / name)
@@ -228,7 +234,7 @@ def ssh_bundle(client, remote, staged, *, kind=KIND):
     meta = json.loads(manifest.read_bytes())
     if meta['kind'] != kind:
         raise ValueError(f'Expected {kind} AIR at {remote}, got {meta["kind"]}')
-    roots = (L0_DIR, 'inputs', 'golden') if kind == L0_KIND else (EXPORT_DIR, 'inputs')
+    roots = (L0_DIR, 'inputs', 'golden') if kind in (L0_KIND, SPLIT_KIND) else (EXPORT_DIR, 'inputs')
     for row in meta['files']:
         rel = Path(row['path'])
         if rel.is_absolute() or '..' in rel.parts or len(rel.parts) < 2 or rel.parts[0] not in roots:

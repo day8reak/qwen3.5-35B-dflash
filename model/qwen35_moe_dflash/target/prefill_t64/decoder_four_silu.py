@@ -48,7 +48,7 @@ def silu_same_dtype(x):
 '''
 
 
-def stage(source, dest, *, aligned=False, l0=False):
+def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
     (dest / 'models').mkdir(parents=True)
     for name in SOURCE_FILES:
         copyfile(source / name, dest / name)
@@ -96,7 +96,7 @@ def stage(source, dest, *, aligned=False, l0=False):
     changed = [EXPORTER, MODELING]
     if l0:
         from .l0_split import expose_l0
-        expose_l0(dest)
+        expose_l0(dest, layer=layer, head=head)
         changed.append('models/export_model_wrapper_qwen3_5_moe.py')
     diff = []
     for name in changed:
@@ -137,7 +137,7 @@ def vector_length(op, producers):
     return lengths.pop()
 
 
-def inspect_silu_air(path, shape_trace, *, layers=4):
+def inspect_silu_air(path, shape_trace, *, layers=4, full_only=False):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -153,8 +153,9 @@ def inspect_silu_air(path, shape_trace, *, layers=4):
     if set(ops) != set(traced):
         raise ValueError(f'SiluPatch AIR and converter names differ: {sorted(set(ops) ^ set(traced))}')
     counts = Counter(traced.values())
-    linear = {1: 1, 4: 3}[layers]
-    if counts != {(1, 8192, 64): linear, (2048, 128): linear, (64, 512): layers, (512, 512): layers}:
+    linear = 0 if full_only else {1: 1, 4: 3}[layers]
+    expected = Counter({(1, 8192, 64): linear, (2048, 128): linear, (64, 512): layers, (512, 512): layers})
+    if counts != +expected:
         raise ValueError(f'Unexpected {layers}-layer W4 T64 SiluPatch shapes: {dict(counts)}')
 
     readers = defaultdict(list)

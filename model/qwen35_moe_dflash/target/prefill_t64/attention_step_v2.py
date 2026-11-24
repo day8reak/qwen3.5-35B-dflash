@@ -10,7 +10,7 @@ import numpy as np
 
 from ...common.command_trace import note
 from ...draft.profile_board import GLOBAL_LOCK
-from ...execution.hdc_run import Hdc
+from ...execution.hdc_run import Hdc, _cleanup_remote
 from ...execution.lock import _acquire_global, _release_global, _space
 from ...execution.runtime_config import read_json
 from ...execution.serial_transport import _environment
@@ -94,7 +94,7 @@ def runtime_slots(native, direction, specs, *, equivalent_inputs=False):
 
 
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
-           external_weights=()):
+           external_weights=(), release_after_pull=False):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -127,7 +127,10 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         needed += sum(p.stat().st_size for p, _, _ in sidecars)
         if _space(space) < needed:
             raise OSError(f'Insufficient board storage for {name}: need {needed:,} bytes')
-        hdc.shell(f'mkdir {remote} && mkdir {remote}/outputs', 'create-board-dir')
+        create = f'mkdir {remote} && mkdir {remote}/outputs'
+        if release_after_pull:
+            create += f' && echo {token} > {remote}/.qwen35-hdc-owner'
+        hdc.shell(create, 'create-board-dir')
         if sidecars:
             dirs = sorted({str(_board_path(str(remote / rel.parent))) for _, rel, _ in sidecars})
             hdc.shell('mkdir -p ' + shlex.join(dirs), 'weight-directories')
@@ -211,6 +214,14 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         receipt.update(status='EXECUTED', outputs=retrieved)
         if len(outputs) == 1:
             receipt['output'] = retrieved[0]
+        if release_after_pull:
+            save_json(out/'result.json', receipt)
+            try:
+                _cleanup_remote(hdc, remote, token)
+                receipt['board_cleanup'] = 'REMOVED'
+            except (RuntimeError, OSError) as exc:
+                receipt['board_cleanup_error'] = str(exc)
+                print(f'{name}: outputs verified; board cleanup failed at {remote}: {exc}', flush=True)
     except BaseException as exc:
         receipt.update(status='EXECUTION_UNCERTAIN' if uncertain else 'FAILED', error=str(exc))
         raise

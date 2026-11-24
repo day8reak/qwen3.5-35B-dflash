@@ -7,6 +7,7 @@ import json
 from math import prod
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 
@@ -23,7 +24,7 @@ from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
-from qwen35_moe_dflash.target.prefill_t64.l0_split import plan, score, slice_air
+from qwen35_moe_dflash.target.prefill_t64.l0_split import contracts, plan, score, slice_air
 
 
 def load(path):
@@ -65,22 +66,25 @@ def bind(step, wires, abi):
     return io
 
 
-def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash):
+def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, shared_silu=None):
     name = step['name']
     wires = graph['wires']
     stage_air = (build_air(shape=wires[step['inputs'][0]]['shape']) if name.endswith('_silu')
                  else slice_air(raw, step, wires))
-    dest = run / 'omc' / name
+    shared = shared_silu is not None and name.endswith('_silu')
+    dest = (shared_silu if shared else run / 'omc') / name
     parent = dest.parent
     parent.mkdir(exist_ok=True)
     source = dict(bundle_sha256=bundle_hash, air_sha256=hashlib.sha256(stage_air).hexdigest(), ddk=str(ddk))
+    if shared:
+        del source['bundle_sha256']  # Singleton AIRs have no layer weights.
     if not dest.exists():
         out = Path(tempfile.mkdtemp(prefix=name + '-', dir=parent))
         folder = out / L0_DIR
         folder.mkdir()
         (folder/'export.air').write_bytes(stage_air)
         for p in (bundle / L0_DIR).iterdir():
-            if p.name != 'export.air':
+            if p.name != 'export.air' and not name.endswith('_silu'):
                 (folder / p.name).symlink_to(p, target_is_directory=p.is_dir())
         code, _, _ = compile_omg(out, L0_DIR + '/export.air', ddk, diagnosis, platform=None)
         if code:
@@ -104,27 +108,94 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash):
                 recorded = source
     if recorded != source:
         raise ValueError(f'{dest} belongs to a different AIR or DDK. Select a new L0_SPLIT_RUN.')
+    if shared:
+        for direction in ('inputs', 'outputs'):
+            row, = meta[direction]
+            edge, = step[direction]
+            if typed_view(row['dtype'], row['shape']) != typed_view(wires[edge]['dtype'], wires[edge]['shape']):
+                raise ValueError(f'Shared {name} {direction} differs from {edge}')
+            meta[direction] = [dict(row, edge=edge)]
     return meta, checked(dest, meta['model']), [checked(dest, row) for row in meta['weights']]
 
 
-def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config):
+def checkpoint_source(run, recovery, fixture_hash):
+    if recovery is None:
+        return None, []
+    if recovery == 'auto':
+        candidates = sorted(run.glob('replay-*/chain.json'), key=lambda f: f.stat().st_mtime_ns, reverse=True)
+    else:
+        candidates = [(run / recovery) / 'chain.json']
+    for path in candidates:
+        previous = load(path)
+        if previous['bundle_sha256'] == fixture_hash:
+            print(f'Recovering from {path.parent} ({len(previous["stages"])} completed stages)', flush=True)
+            return path.parent, previous['stages']
+    raise ValueError(f'No matching replay for --recovery {recovery} in {run}')
+
+
+def restore_stage(previous, dest, record, model_hash, inputs, outputs, fixture_hash):
+    from qwen35_moe_dflash.execution.serial_transport import _environment
+    _, device, server = _environment()
+    name = dest.name
+    source = previous / name
+    path = source / 'result.json'
+    if (record['name'] != name or record['inputs'] != inputs or record['model_sha256'] != model_hash
+            or sha(path) != record['result_sha256']):
+        raise ValueError(f'{name}: checkpoint inputs, model or result changed in {previous}')
+    result = load(path)
+    expected = dict(case=name, status='EXECUTED', exitcode=0, omc_sha256=model_hash,
+                    fixture_sha256=fixture_hash, device=device, server=server)
+    if any(result.get(k) != v for k, v in expected.items()):
+        raise ValueError(f'{name}: checkpoint belongs to another run, model or board: {path}')
+    paths = []
+    for i, (row, spec) in enumerate(zip(result['outputs'], outputs, strict=True)):
+        filename = 'output.bin' if len(outputs) == 1 else f'output_{i}.bin'
+        if row['bytes'] != spec['bytes'] or row['path'] != filename:
+            raise ValueError(f'{name}: unexpected saved output {row}')
+        paths.append(checked(source, row))
+    for output in paths:
+        shutil.copyfile(output, dest / output.name)
+    shutil.copyfile(path, dest / path.name)
+    print(f'{name}: restored verified outputs from {previous.name}', flush=True)
+    return result
+
+
+def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=None, from_stage=None,
+            entry=None, out=None, shared_silu=None):
     runtime = load(config.parent/load(config)['assets'])['environment']
     os.environ.setdefault('BOARD_HIAI_LIB_DIR', str(Path(DEFAULT_TOOL).parent))
     fixture_hash = sha(bundle/'manifest.json')
     files = {s['path']: s for s in meta['files']}
     feeds = {}
+    if meta.get('layer') and (entry is None) != meta['standalone']:
+        raise ValueError('Standalone decoders require the measured layer entry; the 40-layer chain requires its previous CPro hidden')
     for edge, wire in graph['entries'].items():
+        if meta.get('layer') and (wire['dtype'], wire['shape']) == ('float32', [1, 64, 2048]):
+            feeds[edge] = entry if entry is not None else checked(bundle, files['inputs/layer_entry.bin'])
+            continue
         filename = original_filename(wire['name'], wire, wire['dtype'], fresh_zero_states=True)
         feeds[edge] = checked(bundle, files['inputs/' + filename])
-    out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
+    if meta.get('layer') and sum((s['dtype'], s['shape']) == ('float32', [1, 64, 2048])
+                                 for s in graph['entries'].values()) != 1:
+        raise ValueError('Expected one FP32 layer entry')
+    previous, checkpoints = checkpoint_source(run, recovery, fixture_hash)
+    names = [s['name'] for s in graph['stages']]
+    if from_stage:
+        if previous is None or from_stage not in names or names.index(from_stage) > len(checkpoints):
+            raise ValueError(f'--from-stage needs a verified prefix in the selected replay: {from_stage}; stages={names}')
+        checkpoints = checkpoints[:names.index(from_stage)]
+    if out is None:
+        out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
+    else:
+        out.mkdir()
     receipt = dict(status='RUNNING', bundle_sha256=fixture_hash, stages=[], outputs={})
     save_json(out/'chain.json', receipt)
-    print('L0 split replay:', out, flush=True)
+    print('Decoder split replay:', out, flush=True)
     try:
-        for step in graph['stages']:
+        for i, step in enumerate(graph['stages']):
             name = step['name']
             print(f"{name}: {step['inputs']} -> {step['outputs']}", flush=True)
-            build, model, weights = compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, fixture_hash)
+            build, model, weights = compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, fixture_hash, shared_silu)
             operands, paths = [], []
             for s in build['inputs']:
                 path = feeds[s['edge']]
@@ -134,16 +205,26 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config):
                 paths.append(path)
             stage = out/name
             stage.mkdir()
-            result = run_v2(stage, name, model, operands, paths, build['outputs'], runtime,
-                            external_weights=weights, fixture_sha256=fixture_hash,
-                            slot_config=config if len(operands) > 1 or len(build['outputs']) > 1 else None)
+            links = [dict(edge=s['edge'], sha256=s['sha256']) for s in operands]
+            if i < len(checkpoints):
+                try:
+                    result = restore_stage(previous, stage, checkpoints[i], build['model']['sha256'],
+                                           links, build['outputs'], fixture_hash)
+                except (ValueError, KeyError, FileNotFoundError) as exc:
+                    print(f'{name}: checkpoint invalid in {previous}: {exc}. Re-executing from this stage.', flush=True)
+                    checkpoints = []
+            if i >= len(checkpoints):
+                result = run_v2(stage, name, model, operands, paths, build['outputs'], runtime,
+                                external_weights=weights, fixture_sha256=fixture_hash,
+                                release_after_pull=meta.get('standalone') is False,
+                                slot_config=config if len(operands) > 1 or len(build['outputs']) > 1 else None)
             for s, r in zip(build['outputs'], result['outputs'], strict=True):
                 if r['bytes'] != s['bytes']:
                     raise ValueError(f'{name}: output length differs at {s["edge"]}')
                 feeds[s['edge']] = checked(stage, r)
             receipt['stages'].append(dict(name=name, model_sha256=result['omc_sha256'],
                                           result_sha256=sha(stage/'result.json'),
-                                          inputs=[dict(edge=s['edge'], sha256=s['sha256']) for s in operands]))
+                                          inputs=links))
             for key, edge in graph['results'].items():
                 if edge in step['outputs']:
                     receipt['outputs'][key] = dict(identity(feeds[edge], out), **graph['wires'][edge])
@@ -164,7 +245,8 @@ def compare(bundle, replay):
     meta = load(bundle/'manifest.json')
     reference = meta['reference']
     results = score({k: read_array(replay, v) for k, v in receipt['outputs'].items()},
-                    {k: read_array(bundle, v) for k, v in reference['tensors'].items()})
+                    {k: read_array(bundle, v) for k, v in reference['tensors'].items()},
+                    contracts(meta.get('layer', 0), meta.get('head', True)))
     passed = all(row['passed'] for scopes in results.values() for row in scopes.values())
     report = dict(status='PASSED' if passed else 'FAILED_ACCURACY', physical_rows=64, valid_rows=19,
                   output_pos=18, conv_state_control=meta['fixture']['conv_state_control'],
@@ -176,9 +258,11 @@ def compare(bundle, replay):
         for scope, m in scopes.items():
             print(f'{role:20} {scope:10} cosine={m["cosine"]} rel_L2={m["relative_l2"]} '
                   f'RMSE={m["rmse"]} error_ratio={m["error_ratio"]} passed={m["passed"]}')
-    logits = results['logits']['token18']
-    print(f'Token 18 top1: CPro={logits["actual_top1"]} 310P={logits["native_top1"]}')
-    print('ConvState control:', report['conv_state_control'], '; 310P history:', report['conv_history_310p'])
+    if 'logits' in results:
+        logits = results['logits']['token18']
+        print(f'Token 18 top1: CPro={logits["actual_top1"]} 310P={logits["native_top1"]}')
+    if reference['conv_history'] is not None:
+        print('ConvState control:', report['conv_state_control'], '310P history:', report['conv_history_310p'])
     print(report['status'], path, flush=True)
     return passed
 
@@ -186,6 +270,8 @@ def compare(bundle, replay):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('mode', choices=['air', 'board', 'compare'])
+    p.add_argument('--recovery', nargs='?', const='auto', help='reuse verified prefix from latest or named replay')
+    p.add_argument('--from-stage', help='with --recovery, execute again starting at this stage')
     for flag in ('run', 'baseline', 'source', 'config', 'capture', 'ddk', 'diagnosis', 'runtime-config',
                  'remote-air', 'replay'):
         p.add_argument('--' + flag, type=Path, required=flag == 'run')
@@ -200,7 +286,7 @@ def main():
         if not bundle.exists():
             pull_air(run, a.remote_air or bundle, ssh_download=partial(ssh_bundle, kind=L0_KIND))
         meta = load(bundle/'manifest.json')
-        if meta['kind'] != L0_KIND:
+        if meta['kind'] != L0_KIND or meta.get('layer', 0) != 0 or not meta.get('head', True):
             raise ValueError(f'Expected {L0_KIND} at {bundle}')
         for row in meta['files']:
             checked(bundle, row)
@@ -208,7 +294,7 @@ def main():
         graph = plan(raw, meta['silu_patch']['nodes'])
         save_json(run/'plan.json', graph)
         replay = execute(run, bundle, meta, graph, raw, a.ddk.resolve(strict=True), a.diagnosis,
-                         a.runtime_config.resolve(strict=True))
+                         a.runtime_config.resolve(strict=True), recovery=a.recovery, from_stage=a.from_stage)
     else:
         if a.replay:
             replay = a.replay

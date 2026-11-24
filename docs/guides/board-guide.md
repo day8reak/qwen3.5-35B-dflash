@@ -7,6 +7,40 @@
 
 新缓存图使用 runner 的 `--stateful-step`；原始 ABI v2 target/draft 双图使用 `run_hdc.py`。完整 FP16 模型约 65 GiB 权重，以下执行接口不代表它已能部署到 32GB 板端。
 
+## 独立 SiluPatch 的分段 prefill
+
+用 `targets/cpro/scripts/split_prefill_t64.sh` 运行 W4、S=64、有效 token 为 19 的同一条输入。每个模式都执行完整 decoder，包含 attention、MoE 和最终残差。每处 SiLU 使用 FP16 输入、FP32 输出的独立 NPU OMC。
+
+| `--mode` | 层输入与读出 | 对比的状态 |
+| --- | --- | --- |
+| `linear` | 从原 CPro embedding 输入跑 L0，再接原模型 norm/head | L0 conv_state 和 recurrent_state |
+| `full` | 从 310P 实测 L2 输出跑 L3，再接原模型 norm/head | L3 更新后的 K 和 V |
+| `40` | 从 embedding 跑 L0 至 L39，逐层传 CPro 的实际 hidden，在 L39 后接 norm/head | 全部 30 个 linear 层的两种状态和 10 个 full 层的 K、V |
+
+78 负责采集 310P 参考并导出 AIR，53 负责编译、上板和对比。两台主机拉取同一版代码，沿用原实验环境。以下示例中的 `MODE` 可取表中任一值，两端须相同。
+
+```bash
+# 78
+MODE=full
+bash targets/cpro/scripts/split_prefill_t64.sh air --mode "$MODE"
+
+# 53
+MODE=full
+bash targets/cpro/scripts/split_prefill_t64.sh board --mode "$MODE"
+```
+
+`--run DIR` 指定该模式的运行目录。默认都在 `$AI_RUN_DIR/target/tests` 下，linear 复用原来的 `l0-split-silupatch-t64-valid19-01`，其余为 `prefill-split-full-t64-valid19-01` 和 `prefill-split-40-t64-valid19-01`。首次导出使用 `ORIGINAL4_RUN` 的成功原版基线，默认 `decoder4-original-t64-01`。已有 310P 捕获可用 `air --capture DIR` 指向含 `manifest.json` 的目录。重新执行 `air` 可以接着导出剩余层。
+
+**恢复上板。** 在 53 用 `--recovery` 接着最近一次运行，或显式指定旧 replay。脚本将已完成段的 OMC、输入和输出与回执核对，在新 replay 中使用校验通过的输出，每段成功后写入 `chain.json`。有意重跑某段时加 `--from-stage`，其前面的输入必须能从已完成的前缀恢复。
+
+```bash
+bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
+  --recovery replay-d3iori8t --from-stage decoder_hidden
+bash targets/cpro/scripts/split_prefill_t64.sh board --mode 40 --recovery
+```
+
+40 层显式起点的写法如 `--from-stage L03/out_proj`，可用段名见各层 `plan.json`。运行结束会自动生成对比。linear 的报告是 `replay-*/comparison.json`，full 和 40 的汇总是 `replay-*/prefill.json`，各层明细是 `Lxx/comparison.json`。报告包括 out_proj、decoder hidden 的 valid19 与 token18、读出层 token18 的全词表 logits 与 top1，以及各层状态。K/V 分别比较 19 个有效位置，并校验物理 64 行写入范围以外的缓存页。只重算精度可在 53 执行 `compare --mode "$MODE"`，用 `--replay DIR` 可选定一次已完成的运行。
+
 ## 1. 构建 HIAI runner
 
 先按[环境配置](environment-setup.md)激活 `custom_pypto` 并配置 OHOS/HIAI/HDC；以下 `python3` 使用该环境。已有匹配的新 runner 可跳过构建，保留相邻构建记录及其引用的库路径。

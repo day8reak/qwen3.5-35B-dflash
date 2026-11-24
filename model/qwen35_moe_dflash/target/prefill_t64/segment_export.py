@@ -206,7 +206,7 @@ def compare_segment_output(name, actual, native, cpu, atol=None, rtol=None, *, r
     def score(a, b):
         return metrics(a, b, atol=atol, rtol=rtol)
 
-    if name in ('key_cache_3', 'value_cache_3'):
+    if name.startswith(('key_cache_', 'value_cache_')):
         # The captured page table is sequential. Positions 0..18 are all on page 0.
         if actual.shape != (64, 32, 32, 16) or actual.dtype != native.dtype:
             raise ValueError('Unexpected segmented K/V output descriptor')

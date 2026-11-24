@@ -17,7 +17,7 @@ LAYERS = 40
 VALID19_IDS_SHA256 = 'ec5119e4b49de3c9e0cd48b7cff7faf13b18a0a10dda89c2a5180b194f05eaf7'
 
 
-def capture(source, config, baseline, output, *, decoder_tails=False):
+def capture(source, config, baseline, output, *, decoder_tails=False, states=False):
     import torch
     from ..layer_probe.capture import bound, cpu
     from ..layer_probe.steps import working_directory
@@ -137,6 +137,17 @@ def capture(source, config, baseline, output, *, decoder_tails=False):
                             report['status'] = 'CAPTURED'
                             raise Captured()
                     hook(layer, enter, True)
+                    if states:
+                        linear = layer.block_type == 'linear_attention'
+                        def projected(mod, args, kwargs, result, i=i):
+                            report['outputs'][f'out_proj_{i}'] = tensor_record(root, f'out_proj_{i}', result[0])
+                        hook(layer.linear_attn if linear else layer.self_attn, projected)
+                        def updated(mod, args, kwargs, result, i=i, linear=linear):
+                            names = ('conv_state', 'recurrent_state') if linear else ('key_cache', 'value_cache')
+                            for name, tensor in zip(names, result[1], strict=True):
+                                role = f'{name}_{i}'
+                                report['outputs'][role] = tensor_record(root, role, tensor)
+                        hook(layer, updated)
                     hook(layer, leave)
 
             def head(mod, args, kwargs, result):
