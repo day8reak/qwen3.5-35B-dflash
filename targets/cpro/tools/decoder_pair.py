@@ -39,6 +39,11 @@ def main():
     complete.add_argument('--parent', type=Path, required=True, help='retained complete decoder-pair board run')
     complete.add_argument('--run', type=Path, required=True)
     complete.add_argument('--runtime-config', type=Path, required=True)
+    replay = actions.add_parser('single-omc', help='replay one retained complete OMC per layer and score against 310P')
+    replay.add_argument('--parent', type=Path, required=True, help='original decoder-pair board run')
+    replay.add_argument('--run', type=Path, required=True, help='fresh result directory')
+    replay.add_argument('--runtime-config', type=Path, required=True)
+    replay.add_argument('--tool', help='override the board HIAI V2 model tool')
     execute = actions.add_parser('run', help='on the DDK host, pull both cases, compile, run HIAI V2, and score',
                                  epilog='If the original board/attempt.json is missing, use a matching --trace '
                                         'or set SN (board serial) and BIP (HDC server host:port).')
@@ -66,6 +71,11 @@ def main():
         return 0
     from qwen35_moe_dflash.common.artifacts import output_path
     run = output_path(a.run)
+    if a.action == 'single-omc':
+        from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
+        from qwen35_moe_dflash.target.prefill_t64.decoder_pair import replay_single_pair
+        ok = replay_single_pair(a.parent.resolve(), run, a.tool or DEFAULT_TOOL, a.runtime_config.resolve(strict=True))
+        return 0 if ok else 1
     if a.action == 'full-chain':
         from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
         from qwen35_moe_dflash.target.prefill_t64.decoder_full_chain import run_pair as run_complete

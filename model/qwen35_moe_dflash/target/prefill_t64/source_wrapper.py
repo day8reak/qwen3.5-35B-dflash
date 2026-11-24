@@ -7,6 +7,22 @@ _SOURCE_DIGEST = "adffc184d14b606641ceb61db2628c886608996ead4f0abc21c9e9aa36903c
 _STAGED_DIGEST = "5d641ec2e050220f4c64fb934d24b57b939e99e25751ff2def141dea3ea44df7"
 
 
+def four_decoder_hidden_wrapper(text):
+    """Keep the original CPro decoder loop between measured embedding and L3 hidden."""
+    tree = ast.parse(stage_wrapper(text))
+    cls, = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Qwen3_5MoeForCausalLMCproWrapper']
+    forward, = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'forward']
+    embedding, = [n for n in forward.body if isinstance(n, ast.If) and
+                  any(isinstance(c, ast.Call) and ast.unparse(c.func) == 'self.model.model.embed_tokens'
+                      for c in ast.walk(n))]
+    loop, = [n for n in forward.body if isinstance(n, ast.For) and
+             ast.unparse(n.iter) == 'enumerate(self.model.model.layers)']
+    # Keep the original cache-position transform, FP16 entry and complete layer calls.
+    forward.body = [n for n in forward.body[:forward.body.index(loop) + 1] if n is not embedding]
+    forward.body.extend(ast.parse('return (hidden_states,)').body)
+    return ast.unparse(ast.fix_missing_locations(tree)) + '\n'
+
+
 def stage_wrapper(text: str, *, segmented=False, layers=4) -> str:
     source = _stage_base_wrapper(text)
     if segmented or layers != 4:

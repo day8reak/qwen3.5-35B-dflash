@@ -161,6 +161,54 @@ def select_board(baseline, digest, trace):
     return dict(device=device, server=server, gdr_source_sha256=digest)
 
 
+def replay_single_pair(parent, root, tool, config):
+    """Run each retained complete decoder once, keeping the original attempts intact."""
+    from .chain_hilog import diagnose_decoder_pair
+
+    if root.exists() and any(root.iterdir()):
+        raise ValueError(f'Select a fresh output directory for the replay: {root}')
+    _, device, server = _environment()
+    results, failed_runs = {}, []
+    for layer in (0, 3):
+        key = f'L{layer}'
+        case, out = parent / key, root / key / 'board'
+        row = results[key] = dict(execution='single OMC on CPro')
+        try:
+            meta = load(case / 'air/manifest.json')
+            compiled = load(case / 'omc/manifest.json')
+            original = load(case / 'board/attempt.json')
+            if (meta['kind'] != 'single-cpro-decoder' or meta['layer'] != layer
+                    or compiled['primary']['sha256'] != original['omc_sha256']
+                    or compiled['gdr_source_sha256'] != original['gdr_source_sha256']
+                    or (device, server) != (original['device'], original['server'])):
+                raise ValueError(f'{case}: expected the original complete L{layer} OMC and board')
+            checked(case / 'air', meta['golden'])
+            row.update(model=str(case / 'omc' / compiled['primary']['path']),
+                       omc_sha256=original['omc_sha256'], reference_sha256=meta['reference'])
+            result = whole_run.board(case, tool, slot_config=config, board_dir=out)
+            row.update({k: result[k] for k in ('status', 'valid19', 'token18')})
+            row['output'] = str(out / 'hidden.bin')
+            for scope in ('valid19', 'token18'):
+                m = row[scope]
+                print(f"{key} {scope}: relative_l2={m['relative_l2']} cosine={m['cosine']}", flush=True)
+        except Exception as exc:
+            if isinstance(exc, whole_run.HiaiRunFailure):
+                failed_runs.append(key)
+                row['failure_stage'] = exc.stage
+            row.update(status='ERROR', error=str(exc))
+            print(f'{key} replay failed: {exc}', flush=True)
+        if (out / 'slots.json').is_file():
+            slots = load(out / 'slots.json')['inputs']
+            order = [s['compiled_index'] for s in slots]
+            row['runtime_input_order'] = order
+            print(f'{key} HIAI input slots in compiled-index order: {order}', flush=True)
+        save_json(root / 'comparison.json', results)
+    print(root / 'comparison.json', flush=True)
+    if failed_runs:
+        diagnose_decoder_pair(root, names=failed_runs)
+    return all(row['status'] == 'PASSED' for row in results.values())
+
+
 def run_pair(root, remote_air, baseline, ddk, source, diagnosis, tool, trace=None):
     digest = whole_run.kernel_identity(ddk, source)
     if baseline:

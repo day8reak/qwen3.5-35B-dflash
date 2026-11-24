@@ -27,7 +27,9 @@ _PROBE = 'decoder-tail-projection-probe'
 _BLOCK_STAGE = 'complete-decoder-stage'
 _READOUT_KINDS = (_PROBE, _BLOCK_STAGE)
 _REMAINDER = 'decoder-tail-after-projections'
-_DECODER_KINDS = ('single-cpro-decoder', 'single-cpro-decoder-tail', _REMAINDER)
+_FOUR_DECODERS = 'single-cpro-l0-l3'
+_DECODER_KINDS = ('single-cpro-decoder', 'single-cpro-decoder-tail', _REMAINDER, _FOUR_DECODERS)
+_EMBEDDED_KINDS = (*_READOUT_KINDS, _FOUR_DECODERS)
 
 _GDR_PATHS = ('ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp',
               'tools/tools_ascendc/custom_op/ascend310b/src/chunk_gated_delta_rule.cpp')
@@ -104,8 +106,7 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
     if diagnosis is not None:
         env, _ = prepare_tbe_compatibility(ddk, diagnosis, out / 'tbe-compat', inherited=env)
     shapes = ';'.join(s['name'] + ':' + ','.join(map(str, s['shape'])) for s in meta['inputs'])
-    # Small projection diagnostics fit in one OMC, including any retained FileConstants.
-    external = meta['kind'] not in _READOUT_KINDS
+    external = meta['kind'] not in _EMBEDDED_KINDS
     argv = [str(omg), '--framework=1', '--model=input.air', '--output=model', '--target=omc',
             '--platform=kirinx90', '--use_origin_format=true', '--weight_data_type=FP16',
             '--limit_partition_size=false', f'--save_weights_as_external_data={str(external).lower()}',
@@ -180,7 +181,7 @@ class HiaiRunFailure(RuntimeError):
         super().__init__(f'HIAI exited {rc} (stage={self.stage}); attempt {remote}\n{log}')
 
 
-def board(run, tool_path, baseline=None, *, slot_config=None):
+def board(run, tool_path, baseline=None, *, slot_config=None, board_dir=None):
     air, omc = run / 'air', run / 'omc'
     compiled = json.loads((omc / 'manifest.json').read_text())
     if sha(air / 'manifest.json') != compiled['air_manifest_sha256']:
@@ -193,7 +194,7 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
     primary = checked(omc, compiled['primary'])
     external_files = compiled['weights']
     storage = 'external' if external_files else 'embedded'
-    if compiled.get('weight_storage', storage) != storage or (not external_files and meta['kind'] not in _READOUT_KINDS):
+    if compiled.get('weight_storage', storage) != storage or (not external_files and meta['kind'] not in _EMBEDDED_KINDS):
         raise ValueError('OMC weight storage and external file inventory disagree')
     files = [('payload/' + primary.name, primary, compiled['primary'])]
     for row in external_files:
@@ -205,7 +206,7 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
         files.append((f"inputs/{row['index']:03d}.bin", checked(assets, row), row))
     # Private attempt paths and a host-side script keep 80 cache names off HDC's shell command line.
     env = _environment()
-    out = new_output(run / 'board')
+    out = new_output(run / 'board' if board_dir is None else board_dir)
     token = uuid.uuid4().hex
     remote = PurePosixPath('/data/local/tmp') / ('qwen35_prefill40_' + token)
     lock = remote.parent / '.qwen35-target-model-io-lock'
@@ -254,7 +255,8 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
             runtime = read(slot_config.parent / read(slot_config)['assets'])['environment']
             native = observe_model_io(hdc, slot_config, runtime, remote, out, model,
                                       compiled['primary']['sha256'], tool.parent)
-            slots = dict(inputs=runtime_slots(native, 'inputs', inputs),
+            slots = dict(inputs=runtime_slots(native, 'inputs', inputs,
+                                              equivalent_inputs=meta['kind'] in ('single-cpro-decoder', _FOUR_DECODERS)),
                          outputs=runtime_slots(native, 'outputs', [result_spec]))
             save_json(out / 'slots.json', slots)
             inputs = [inputs[row['compiled_index']] for row in slots['inputs']]
@@ -273,6 +275,8 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
         hdc.send(script, remote / 'run.sh')
         decoder = meta['kind'] in _DECODER_KINDS
         label = f"L{meta['layer']} standalone decoder" if decoder else '40-layer'
+        if meta['kind'] == _FOUR_DECODERS:
+            label = 'L0–L3 four-layer decoder'
         if meta['kind'] == 'single-cpro-decoder-tail':
             label = f"L{meta['layer']} post-attention decoder tail"
         if meta['kind'] == _REMAINDER:
@@ -311,6 +315,9 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
         if decoder:
             from .decoder_pair import score_hidden
             result = score_hidden(air, meta, output, result_spec)
+            if meta['kind'] == _FOUR_DECODERS:
+                result.update(scope='L0 entry through L3 final residual', layers=meta['layers'],
+                              execution='one four-layer OMC', omc_sha256=compiled['primary']['sha256'])
             if meta['kind'] == 'single-cpro-decoder-tail':
                 result['scope'] = 'post_attention_layernorm input to final decoder hidden'
             if meta['kind'] == _REMAINDER:

@@ -51,7 +51,7 @@ def execute(run, name, ddk, config):
                   fixture_sha256=sha(fixture/'manifest.json'))
 
 
-def runtime_slots(native, direction, specs):
+def runtime_slots(native, direction, specs, *, equivalent_inputs=False):
     """Bind each observed slot to its tensor by name and typed view, or by a unique typed view."""
     descs = native[direction]
     if len(descs) != len(specs) or native[direction[:-1] + '_count'] != len(specs):
@@ -61,6 +61,7 @@ def runtime_slots(native, direction, specs):
         raise ValueError(f'Duplicate compiled {direction} names')
     types = native['dtype_enum_values']
     keys = [_nd_view_key((types[s['dtype'].upper()], _shape(s))) for s in specs]
+    named = {d['tensor_name'] for d in descs if d.get('tensor_name_status') == 'OBSERVED'}
     slots = []
     used = set()
     for slot, desc in enumerate(descs):
@@ -69,8 +70,16 @@ def runtime_slots(native, direction, specs):
         key = _nd_view_key((desc['raw_dtype'], _shape(desc)))
         matches = [i for i, expected in enumerate(keys) if expected == key]
         name = desc.get('tensor_name') if desc.get('tensor_name_status') == 'OBSERVED' else None
+        binding = 'unique_typed_shape'
         if name in names:
             matches = [i for i in matches if i == names[name]]
+            binding = 'name_and_typed_shape'
+        elif equivalent_inputs and direction == 'inputs' and len(matches) > 1:
+            candidates = [i for i in matches if i not in used and specs[i]['name'] not in named]
+            hashes = {specs[i].get('sha256', '') for i in candidates}
+            if candidates and len(hashes) == 1 and re.fullmatch('[0-9a-f]{64}', hashes.pop()):
+                matches = candidates[:1]
+                binding = 'remaining_typed_shape' if len(candidates) == 1 else 'identical_input_bytes'
         if len(matches) != 1 or matches[0] in used:
             raise ValueError(f'Cannot bind HIAI {direction}[{slot}] {desc} to a unique compiled tensor: '
                              f'candidates={[specs[i]["name"] for i in matches]}')
@@ -79,7 +88,7 @@ def runtime_slots(native, direction, specs):
         spec = specs[index]
         size = math.prod(spec['shape']) * np.dtype(DTYPES[spec['dtype']]).itemsize
         slots.append(dict(slot=slot, compiled_index=index, name=spec['name'], runtime_name=name,
-                          binding='name_and_typed_shape' if name in names else 'unique_typed_shape',
+                          binding=binding,
                           dtype=spec['dtype'], shape=spec['shape'], bytes=size))
     return slots
 

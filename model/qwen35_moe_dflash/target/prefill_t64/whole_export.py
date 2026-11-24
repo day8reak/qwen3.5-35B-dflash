@@ -68,7 +68,7 @@ def logits_wrapper(base, trace=False):
     return Checkpoints
 
 
-def model_inputs(root, meta):
+def model_inputs(root, meta, *, layers=LAYERS):
     def tensor(name):
         return torch.from_numpy(read_array(root, meta['inputs'][name]))
 
@@ -87,7 +87,7 @@ def model_inputs(root, meta):
         raise ValueError('Expected the original T64/valid19 inputs')
     call = dict(data)
     states = []
-    for i in range(LAYERS):
+    for i in range(layers):
         shapes = [(1, 8192, 4), (1, 32, 128, 128)] if i % 4 != 3 else [(64, 32, 32, 16)] * 2
         pair = tuple(torch.zeros(shape, dtype=torch.float16) for shape in shapes)
         for j, value in enumerate(pair):
@@ -99,7 +99,7 @@ def model_inputs(root, meta):
 
 
 @torch.no_grad()
-def export(source, config, reference, output, *, baseline=None):
+def export(source, config, reference, output, *, baseline=None, four_decoders=False, prepared_source=None):
     reference = reference.resolve(strict=True)
     meta = json.loads((reference / 'manifest.json').read_text())
     if (meta['status'] != 'CAPTURED' or meta['reference'] != BASIS or
@@ -108,27 +108,48 @@ def export(source, config, reference, output, *, baseline=None):
         raise ValueError('Expected a complete 40-layer 310P reference for T64/valid19')
     paths = checkpoint_paths(source, (source / config).resolve(strict=True), meta)
     root = new_output(output)
-    data, call = model_inputs(reference, meta)
+    depth = 4 if four_decoders else LAYERS
+    full_count = depth // 4
+    gdr_count = depth - full_count
+    if four_decoders and (baseline is not None or meta['split_layer'] < depth):
+        raise ValueError('L0–L3 require a continuous reference through L3')
+    data, call = model_inputs(reference, meta, layers=depth)
     ids = data['input_ids'].numpy().astype('<i4', copy=False)
     if hashlib.sha256(ids.tobytes()).hexdigest() != VALID19_IDS_SHA256:
         raise ValueError('310P capture uses a different prompt from the valid19 case')
     with tempfile.TemporaryDirectory(dir=root.parent, prefix='.cpro40-source-') as tmp:
         stage = Path(tmp)
-        stage_cpro_source(source, stage, lambda s: stage_wrapper(s, segmented=True, layers=40))
-        sys.path.insert(0, tmp)
+        if prepared_source is not None:
+            if not four_decoders:
+                raise ValueError('A prepared source override is only supported for the four-layer decoder')
+            stage = prepared_source.resolve(strict=True)
+        elif four_decoders:
+            from .decoder_four_source import stage as stage_four
+            stage_four(source, stage)
+        else:
+            stage_cpro_source(source, stage, lambda s: stage_wrapper(s, segmented=True, layers=LAYERS))
+        staged_sha = {n: sha(stage / n) for n in (MODELING, WRAPPER, EXPORTER, NZ, 'utils.py')}
+        sys.path.insert(0, str(stage))
         try:
             import export_glm_model_qwen3_5_moe as exporter
             from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
-            print('Loading original CPro 40-layer wrapper and W4 weights', flush=True)
+            print(f'Loading original CPro {depth}-layer wrapper and W4 weights', flush=True)
             model = logits_wrapper(exporter.Qwen3_5MoeForCausalLMCproWrapper, trace=baseline is not None)(
                 model_path=str(paths['model_file']), device='cpu', dtype=torch.float16,
                 embedding_config={'embedding_in_omc': True, 'mul_twice': False}, quant_enable=True).eval()
             layers = model.model.model.layers
-            if ([x.block_type for x in layers] != [b['block_type'] for b in meta['blocks']]
+            if ([x.block_type for x in layers] != [b['block_type'] for b in meta['blocks'][:depth]]
                     or model.model.config.kv_cache_max_len != 2048):
                 raise ValueError('Original wrapper layer or KV configuration differs from the reference')
-            exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.model.config.num_experts,
-                                         device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
+            if four_decoders:
+                exporter.load_four_decoder_weights(model, paths['quanted_pth'])
+            else:
+                exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.model.config.num_experts,
+                                             device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
+                model.model.to(dtype=torch.float16)
+                for module in model.modules():
+                    if isinstance(module, Qwen3_5MoeRMSNorm):
+                        module.register_buffer('export_gamma', (module.weight + 1.).detach().contiguous(), persistent=False)
             if not isinstance(model.model.lm_head, exporter.CproQLinear):
                 raise ValueError('Original CPro W4 LM head was not loaded')
             for i, layer in enumerate(layers):
@@ -140,21 +161,28 @@ def export(source, config, reference, output, *, baseline=None):
                     names = ('q_proj', 'k_proj', 'v_proj', 'o_proj')
                 if not all(isinstance(getattr(attn, name), exporter.CproQLinear) for name in names):
                     raise ValueError(f'L{i} has an unquantized attention projection')
-            model.model.to(dtype=torch.float16)
-            for module in model.modules():
-                if isinstance(module, Qwen3_5MoeRMSNorm):
-                    module.register_buffer('export_gamma', (module.weight + 1.).detach().contiguous(), persistent=False)
             embedding = model.model.model.embed_tokens(data['input_ids']).half()
             if not np.array_equal(embedding.numpy(), read_array(reference, meta['inputs']['embedding'])):
                 raise ValueError('CPro embedding differs from the first 310P decoder input')
+            if four_decoders:
+                if [x.block_type for x in layers] != ['linear_attention'] * 3 + ['full_attention']:
+                    raise ValueError('Expected three linear decoder layers followed by one full-attention decoder')
+                data.pop('input_ids')
+                data.pop('output_pos')
+                data['inputs_embeds'] = torch.from_numpy(read_array(reference, meta['inputs']['embedding']))
+                call.update(input_ids=None, output_pos=None, inputs_embeds=data['inputs_embeds'])
             for layer in layers[3::4]:
                 if not torch.equal(layer.self_attn.block_table.cpu(), torch.arange(64)[None]):
                     raise ValueError('Full attention page table differs from the reference')
             with working_directory(root), external_weight_export() as weights, export_input_identity(list(data.values())) as evidence:
-                with exporter.cpro_export_contracts(True, chunk_size=64, gdn_layers=30), export_progress('single Prefill40', root / 'weight'):
-                    exporter.torchair.dynamo_export(model=model, export_path='weight', dynamic=False, **call)
+                with export_progress(f'single Prefill{depth}', root / 'weight'):
+                    if four_decoders:
+                        exporter.export_four_decoder_air(model, call)
+                    else:
+                        with exporter.cpro_export_contracts(True, chunk_size=64, gdn_layers=gdr_count):
+                            exporter.torchair.dynamo_export(model=model, export_path='weight', dynamic=False, **call)
         finally:
-            sys.path.remove(tmp)
+            sys.path.remove(str(stage))
     air = root / 'export.air'
     (root / 'weight/export.air').rename(air)
     _, _, graph = _decode(_schema(*_producer_schema()), _read_air(air)[0])
@@ -178,8 +206,8 @@ def export(source, config, reference, output, *, baseline=None):
     counts = Counter(n['type'] for n in graph['op'])
     if not any(n.lower().startswith('groupedmatmul') for n in counts):
         raise ValueError('No grouped expert matmul in exported MoE graph')
-    for kind, port, control, number in [('ChunkGatedDeltaRule', 'effective_length', 'effective_length', 30),
-                                        ('AdnFusedInferAttention', 'all_seq_lengths_q', 'allQLen', 10)]:
+    for kind, port, control, number in [('ChunkGatedDeltaRule', 'effective_length', 'effective_length', gdr_count),
+                                        ('AdnFusedInferAttention', 'all_seq_lengths_q', 'allQLen', full_count)]:
         if counts[kind] != number:
             raise ValueError(f'Expected {number} {kind} calls, found {counts[kind]}')
         for op in (n for n in graph['op'] if n['type'] == kind):
@@ -189,18 +217,26 @@ def export(source, config, reference, output, *, baseline=None):
                 raise ValueError(f'Unexpected prefill controls on {op["name"]}')
     if set(edges) != set(data):
         raise ValueError(f'Unexpected AIR ports; missing {set(data) - set(edges)}')
-    golden = meta['outputs']['logits']
-    if golden['shape'] != [1, 1, 248320] or golden['dtype'] != 'float32':
-        raise ValueError('Expected the 310P full vocabulary row')
-    shutil.copyfile(checked(reference, golden), root / 'logits.bin')
-    shutil.copyfile(checked(reference, meta['token_text_map']), root / 'token-text.json')
-    manifest = dict(
-        kind='single-cpro-prefill40', reference=sha(reference / 'manifest.json'),
-        source={n: sha(source / n) for n in (MODELING, WRAPPER, EXPORTER, NZ, 'utils.py')},
-        air=identity(air, root), weights=files, inputs=ports,
-        golden=dict(golden, path='logits.bin', name='logits'), ops=dict(counts),
-        token_text_map=identity(root / 'token-text.json', root),
-        reference_top1=meta['top1'], reference_text=meta['token_text'])
+    manifest = dict(reference=sha(reference / 'manifest.json'), source={n: sha(source / n) for n in staged_sha},
+                    air=identity(air, root), weights=files, inputs=ports, ops=dict(counts))
+    if four_decoders:
+        golden = meta['blocks'][3]['hidden']
+        if golden['shape'] != [1, 64, 2048] or golden['dtype'] != 'float16':
+            raise ValueError('Expected a measured FP16 [1,64,2048] L3 hidden')
+        shutil.copyfile(checked(reference, golden), root / 'l3-hidden.bin')
+        manifest.update(kind='single-cpro-l0-l3', layer=3, layers=[0, 1, 2, 3], staged_source=staged_sha,
+                        attention=[b['block_type'] for b in meta['blocks'][:depth]],
+                        golden=dict(golden, path='l3-hidden.bin', name='hidden'),
+                        output_contract=dict(required_dtypes={'0': 'float16'}, stage_views={'hidden': [[64, 2048]]}))
+    else:
+        golden = meta['outputs']['logits']
+        if golden['shape'] != [1, 1, 248320] or golden['dtype'] != 'float32':
+            raise ValueError('Expected the 310P full vocabulary row')
+        shutil.copyfile(checked(reference, golden), root / 'logits.bin')
+        shutil.copyfile(checked(reference, meta['token_text_map']), root / 'token-text.json')
+        manifest.update(kind='single-cpro-prefill40', golden=dict(golden, path='logits.bin', name='logits'),
+                        token_text_map=identity(root / 'token-text.json', root),
+                        reference_top1=meta['top1'], reference_text=meta['token_text'])
     if baseline is not None:
         manifest.update(trace_layers=list(whole_trace.LAYERS), golden=whole_trace.reference_output(reference, meta, root),
                         baseline_air_manifest_sha256=sha(baseline / 'air/manifest.json'))
@@ -208,7 +244,7 @@ def export(source, config, reference, output, *, baseline=None):
     save_json(root / 'manifest.json', manifest)
     if baseline is None:
         share_for_transfer(root)
-    print(f"One AIR: {air}; 30 GDR, 10 full attention, output={manifest['golden']['name']}", flush=True)
+    print(f"One AIR: {air}; {gdr_count} GDR, {full_count} full attention, output={manifest['golden']['name']}", flush=True)
 
 
 def export_trace(source, config, baseline, reference, output):
