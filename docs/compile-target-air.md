@@ -130,3 +130,21 @@ python "$REPO_DIR/targets/cpro/tools/parse_model_json.py" "$OMC_JSON" \
 本地已检查标准库独立执行、图索引排序、数值 dtype 映射、主图边界、缺失与动态 shape、多图选择、控制边、输出名称缺失和 shell 转义。真实 DDK JSON 与设备输入绑定仍需目标环境核对。
 
 针对 88 输入、81 输出的整网结构，回归覆盖两套输入顺序冲突、INT64[1] 的 8 字节描述、显式顺序选择、输出名称元数据和重复生成报告。修改解析工具不需要重新导出 AIR 或编译 OMC。
+
+## 原 CPro 四层 S=64 对照
+
+`original-air` 在 78 直接运行 `CPRO_SOURCE` 下的 `export_glm_model_qwen3_5_moe.py`。原量化 wrapper 在图内把 INT8 embedding 乘以 FP32 scale，执行 L0–L3，按 `output_pos` 选行，再过 final norm 和 LM head，返回 logits 和各层 cache。另一个入口 `air` 接收 310P 的 FP16 embedding，只导出 L3 的全部 64 行 hidden。
+
+78 导出，用现有 valid19 采集准备输入。可用 `ORIGINAL4_REFERENCE` 指定含 `manifest.json` 的采集目录。脚本打印图内乘法在主机重算后舍入到 FP16 与 310P 层入口的逐位差异数。运行时选择 `output_pos=[18]`，初始 cache 为零。`conv_state_pos` 默认按已记录的 valid64 格式推定为 `[19, 0 × 127]`，可用 `ORIGINAL4_CONV_CONTROL` 指向实测的 128 元素 INT32 文件。
+
+```bash
+cd "${REPO_DIR:?}" && git pull --ff-only origin main
+bash targets/cpro/scripts/decoder4_t64.sh original-air
+```
+
+53 使用现有 DDK、HDC、板上工具和运行配置。脚本拉取 AIR，编译一份带外置权重的 OMC，按编译图的输入顺序运行 HIAI V2，并取回各输出。控制量和 embedding 的数据类型按原版接口生成。默认目录是 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01`，本次运行的 `replay-*/io.json` 和 `result.json` 记录槽位与结果文件。两台机器可分别设置 `ORIGINAL4_RUN`，目录不同时在 53 设置 `ORIGINAL4_REMOTE_AIR` 为 78 的 AIR 目录。
+
+```bash
+cd "${REPO_DIR:?}" && git pull --ff-only origin main
+bash targets/cpro/scripts/decoder4_t64.sh original-board
+```

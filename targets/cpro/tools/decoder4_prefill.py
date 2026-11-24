@@ -49,7 +49,7 @@ def ssh_air(client, remote, staged):
         ssh_file(client, remote / rel, local, record)
 
 
-def pull_air(run, remote):
+def pull_air(run, remote, *, ssh_download=ssh_air):
     import paramiko
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
     from pull_artifacts import DEFAULT_CONFIG, connection, pull
@@ -69,7 +69,7 @@ def pull_air(run, remote):
                 pull(sftp, run / 'air', remote)
             return
     with connection(DEFAULT_CONFIG, 'air') as client:
-        pull(client, run / 'air', remote, download_to=ssh_air)
+        pull(client, run / 'air', remote, download_to=ssh_download)
 
 
 def main():

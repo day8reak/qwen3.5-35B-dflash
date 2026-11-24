@@ -93,7 +93,8 @@ def runtime_slots(native, direction, specs, *, equivalent_inputs=False):
     return slots
 
 
-def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None):
+def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
+           external_weights=()):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -104,6 +105,8 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
     remote = PurePosixPath('/data/local/tmp') / ('qwen35_step_' + token)
     tool = _board_path(DEFAULT_TOOL)
     model_sha = sha(model)
+    # Paths in the model are relative to its weight directory.
+    sidecars = [(p, p.relative_to(model.parent), sha(p)) for p in external_weights]
     output_order = list(range(len(outputs)))
     receipt = dict(status='PREPARED', case=name, device=env[1], server=env[2], remote=str(remote),
                    omc_sha256=model_sha, input_hashes=[s['sha256'] for s in operands],
@@ -121,9 +124,13 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
             raise ValueError(f"Board firmware {fw.strip()!r} differs from {runtime['firmware_id']!r}")
         _, space = hdc.shell(f'test -x {tool} && df -Pk {remote.parent}', 'preflight')
         needed = model.stat().st_size + sum(p.stat().st_size for p in files) + sum(s['bytes'] for s in outputs)
+        needed += sum(p.stat().st_size for p, _, _ in sidecars)
         if _space(space) < needed:
             raise OSError(f'Insufficient board storage for {name}: need {needed:,} bytes')
         hdc.shell(f'mkdir {remote} && mkdir {remote}/outputs', 'create-board-dir')
+        if sidecars:
+            dirs = sorted({str(_board_path(str(remote / rel.parent))) for _, rel, _ in sidecars})
+            hdc.shell('mkdir -p ' + shlex.join(dirs), 'weight-directories')
         hdc.send(model, remote/'model.omc')
         if slot_config is not None:
             native = observe_model_io(hdc, slot_config, runtime, remote, out, remote/'model.omc', model_sha, tool.parent)
@@ -141,21 +148,24 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
             for row, path in zip(slots['inputs'], files, strict=True):
                 if path.stat().st_size != row['bytes']:
                     raise ValueError(f"{name}: {path} differs from the {row['bytes']}-byte {row['name']} input")
-        argv = [str(tool), f'--model={remote}/model.omc', '--input=' + ','.join(str(remote/n) for n in input_names),
+        argv = [str(tool), f'--model={remote}/model.omc', *([f'--weight_dir={remote}'] if sidecars else []),
+                '--input=' + ','.join(str(remote/n) for n in input_names),
                 '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in operands),
                 '--output_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in outputs), '--times=1', '--modelmanager_itf=V2',
                 '--direct_from_file=true', '--enable_item=1', f'--output_dir={remote}/outputs']
         command = f'timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
         script = out/'run.sh'
-        script.write_text(f'cd {remote} || exit 1\n{command} >tool.stdout 2>tool.stderr\n'
+        script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\n{command} >tool.stdout 2>tool.stderr\n'
                           'rc=$?\necho "$rc" >tool.exitcode\ntail -n 20 tool.stdout tool.stderr\nexit "$rc"\n')
         note(f'[V2 board script] {script}\n{script.read_text()}')
         hashes = out/'files.sha256'
         hashes.write_text(f"{model_sha}  model.omc\n"
                           + ''.join(f"{s['sha256']}  {n}\n" for s, n in zip(operands, input_names))
+                          + ''.join(f"{digest}  {rel}\n" for _, rel, digest in sidecars)
                           + f"{sha(script)}  run.sh\n")
         receipt.update(argv=argv, input_hashes=[s['sha256'] for s in operands])
         uploads = [*zip(files, input_names), (script, 'run.sh'), (hashes, 'files.sha256')]
+        uploads.extend((path, rel) for path, rel, _ in sidecars)
         for source, dest in uploads:
             hdc.send(source, remote/dest)
         hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
@@ -168,6 +178,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         uncertain = False
         if receipt['exitcode']:
             raise RuntimeError(f'{name}: HIAI V2 exited {code} in {remote}. Receipt: {out}/result.json\n{log}')
+        receipt['model_execution'] = 'EXECUTED'
         size_filter = f" -size {outputs[0]['bytes']}c" if len(outputs) == 1 else ''
         _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f{size_filter} -exec sha256sum {{}} \\;', 'output-hash')
         hash_by_file = {name[2:]: digest for digest, name in
