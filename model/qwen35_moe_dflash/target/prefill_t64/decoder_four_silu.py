@@ -48,7 +48,7 @@ def silu_same_dtype(x):
 '''
 
 
-def stage(source, dest, *, aligned=False):
+def stage(source, dest, *, aligned=False, l0=False):
     (dest / 'models').mkdir(parents=True)
     for name in SOURCE_FILES:
         copyfile(source / name, dest / name)
@@ -93,8 +93,13 @@ def stage(source, dest, *, aligned=False):
             _adapt_experts(tree)
             text = preserve_source(text, ast.unparse(ast.fix_missing_locations(tree)))
         path.write_text(text)
+    changed = [EXPORTER, MODELING]
+    if l0:
+        from .l0_split import expose_l0
+        expose_l0(dest)
+        changed.append('models/export_model_wrapper_qwen3_5_moe.py')
     diff = []
-    for name in (EXPORTER, MODELING):
+    for name in changed:
         before = (source / name).read_text().splitlines(True)
         diff.extend(unified_diff(before, (dest / name).read_text().splitlines(True),
                                  fromfile='original/' + name, tofile='modified/' + name))
@@ -132,7 +137,7 @@ def vector_length(op, producers):
     return lengths.pop()
 
 
-def inspect_silu_air(path, shape_trace):
+def inspect_silu_air(path, shape_trace, *, layers=4):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -148,8 +153,9 @@ def inspect_silu_air(path, shape_trace):
     if set(ops) != set(traced):
         raise ValueError(f'SiluPatch AIR and converter names differ: {sorted(set(ops) ^ set(traced))}')
     counts = Counter(traced.values())
-    if counts != {(1, 8192, 64): 3, (2048, 128): 3, (64, 512): 4, (512, 512): 4}:
-        raise ValueError(f'Unexpected four-layer W4 T64 SiluPatch shapes: {dict(counts)}')
+    linear = {1: 1, 4: 3}[layers]
+    if counts != {(1, 8192, 64): linear, (2048, 128): linear, (64, 512): layers, (512, 512): layers}:
+        raise ValueError(f'Unexpected {layers}-layer W4 T64 SiluPatch shapes: {dict(counts)}')
 
     readers = defaultdict(list)
     for consumer in graph.op:

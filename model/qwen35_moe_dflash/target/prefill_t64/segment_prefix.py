@@ -20,7 +20,7 @@ def same_bits(left, right):
             and left.contiguous().numpy().tobytes() == right.contiguous().numpy().tobytes())
 
 
-def arm_prefix(frame, root, cleanup, *, attention_layers=False, trace_linear=None):
+def arm_prefix(frame, root, cleanup, *, attention_layers=False, trace_linear=None, l0_readout=False):
     caller = frame.f_back
     while caller and (caller.f_code.co_filename != frame.f_code.co_filename or 'model2' not in caller.f_locals):
         caller = caller.f_back
@@ -106,6 +106,8 @@ def arm_prefix(frame, root, cleanup, *, attention_layers=False, trace_linear=Non
             manifest['boundaries'][str(i)] = tensor_record(root, f'decoder_hidden_{i}', hidden)
             for name, value in zip(STATE_NAMES[2*i:2*i+2], pair, strict=True):
                 manifest['outputs'][name] = tensor_record(root, name, value)
+            if i == 0 and l0_readout:
+                working['l0_token18'] = cpu(hidden[:, 18, :])
             if i < 3:
                 qkv = working.pop(i)
                 history = cpu(pair[0])
@@ -132,6 +134,10 @@ def arm_prefix(frame, root, cleanup, *, attention_layers=False, trace_linear=Non
         with torch.inference_mode():
             last = working.pop('last_valid_hidden').to(values['hidden_states'].device)
             logits = module.model.lm_head(module.model.model.norm(last)).reshape(1, 1, module.vocab_size).float()
+            if l0_readout:
+                token = working.pop('l0_token18').to(values['hidden_states'].device)
+                l0 = module.model.lm_head(module.model.model.norm(token)).reshape(1, 1, module.vocab_size).float()
+                manifest['l0_logits'] = tensor_record(root, 'l0_logits', l0)
         manifest['outputs']['logits'] = tensor_record(root, 'logits', logits)
         manifest['four_layer_top1'] = int(logits.argmax(-1).item())
         manifest['segmented_model_top1'] = int(result[1][0, 0, 0].item())

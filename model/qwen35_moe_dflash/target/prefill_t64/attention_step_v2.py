@@ -133,6 +133,9 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
             hdc.shell('mkdir -p ' + shlex.join(dirs), 'weight-directories')
         hdc.send(model, remote/'model.omc')
         if slot_config is not None:
+            # Restore-only also needs external model weights. Upload them once, before querying the slots.
+            for file, rel, _ in sidecars:
+                hdc.send(file, remote/rel)
             native = observe_model_io(hdc, slot_config, runtime, remote, out, remote/'model.omc', model_sha, tool.parent)
             slots = {k: runtime_slots(native, k, v) for k, v in [('inputs', operands), ('outputs', outputs)]}
             save_json(out/'slots.json', slots)
@@ -165,7 +168,8 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
                           + f"{sha(script)}  run.sh\n")
         receipt.update(argv=argv, input_hashes=[s['sha256'] for s in operands])
         uploads = [*zip(files, input_names), (script, 'run.sh'), (hashes, 'files.sha256')]
-        uploads.extend((path, rel) for path, rel, _ in sidecars)
+        if slot_config is None:
+            uploads.extend((path, rel) for path, rel, _ in sidecars)
         for source, dest in uploads:
             hdc.send(source, remote/dest)
         hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')

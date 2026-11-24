@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / 'model'))
 
 
-def capture(root, entry, config, prior, attention_layers=False, trace_linear=None, gdr_stages=False):
+def capture(root, entry, config, prior, attention_layers=False, trace_linear=None, gdr_stages=False, l0_readout=False):
     from qwen35_moe_dflash.common.command_trace import note
     from qwen35_moe_dflash.target.layer_probe.common import save_json
     from qwen35_moe_dflash.target.prefill_t64.segment_prefix import arm_prefix
@@ -27,7 +27,8 @@ def capture(root, entry, config, prior, attention_layers=False, trace_linear=Non
             if (event == 'call' and frame.f_code.co_filename == str(entry)
                     and frame.f_code.co_name == 'prefill_chunk_segment1'):
                 sys.setprofile(previous)
-                manifest = arm_prefix(frame, root, cleanup, attention_layers=attention_layers, trace_linear=trace_linear)
+                manifest = arm_prefix(frame, root, cleanup, attention_layers=attention_layers, trace_linear=trace_linear,
+                                      l0_readout=l0_readout)
                 from trace_segment_attention import observe_l1_gdr_length
                 wrapper = frame.f_locals['model_wrapper']
                 if gdr_stages:
@@ -100,7 +101,10 @@ def main():
     p.add_argument('--trace-linear', type=int, choices=range(3), metavar='LAYER',
                    help='observe one whole linear attention module and its chunk GDR boundaries on the same call')
     p.add_argument('--gdr-stages', action='store_true', help='capture native 310P L0-L2 chunk, RMSNorm and SiLU tensors for CPro replay')
+    p.add_argument('--l0-readout', action='store_true', help='also measure token 18 through final norm/head on L0')
     a = p.parse_args()
+    if a.l0_readout:
+        a.attention_layers = True
     if a.gdr_stages:
         if a.decode_after or a.compare_cpu or a.diagnose_cpu or a.trace_linear is not None:
             p.error('--gdr-stages selects the physical64/valid19 prefill capture')
@@ -147,7 +151,7 @@ def main():
                 save_json(path, dict(report, status='FAILED', error=f'{type(exc).__name__}: {exc}'))
                 raise
         else:
-            capture(new_output(a.output), entry, config, prior, a.attention_layers, a.trace_linear, a.gdr_stages)
+            capture(new_output(a.output), entry, config, prior, a.attention_layers, a.trace_linear, a.gdr_stages, a.l0_readout)
         return 0
     # Release both segmented NPU models before loading the independent CPU prefix.
     out = a.output.resolve()
@@ -158,6 +162,8 @@ def main():
         command.extend(['--gdr-capture', str(prior)])
     if a.decode_after:
         command.extend(['--decode-after', str(a.decode_after.resolve(strict=True))])
+    if a.l0_readout:
+        command.append('--l0-readout')
     if a.attention_layers:
         command.append('--attention-layers')
     if a.trace_linear is not None:
