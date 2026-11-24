@@ -11,6 +11,7 @@ from decoder4_original import ALIGNED_KIND, EXPORT_DIR, checked, compile_omg, ou
 from export_silu_patch_air import build_air
 from qwen35_moe_dflash.target.gdn_probe import REGISTRATION
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
+from qwen35_moe_dflash.toolchain.existing_air import select_generated_omc
 
 
 def format_failure(log, names):
@@ -26,6 +27,29 @@ def format_failure(log, names):
 def ports(op):
     return [(desc.dtype, tuple(desc.shape.dim), desc.layout)
             for desc in (*op.input_desc, *op.output_desc)]
+
+
+def outcome(folder, rc, failed):
+    result = dict(returncode=rc, empty_format_node=failed)
+    if rc != 0:
+        return dict(result, status='EMPTY_OUTPUT_FORMAT' if failed == 'silu_patch' else 'OTHER_FAILURE')
+    try:
+        model = select_generated_omc(folder, required=False)
+    except ValueError as error:
+        return dict(result, status='INVALID_OMC', detail=str(error))
+    if model is None:
+        return dict(result, status='OMC_NOT_FOUND', detail=f'Check {folder}/compile.log for the save path')
+    return dict(result, status='COMPILED', model=str(model), bytes=model.stat().st_size)
+
+
+def compile_probe(folder, raw, ddk, diagnosis):
+    folder.mkdir()
+    (folder / 'export.air').write_bytes(raw)
+    rc, _, _ = compile_omg(folder, 'export.air', ddk, diagnosis, platform=None)
+    failed = format_failure(folder / 'compile.log', {'silu_patch'})
+    result = outcome(folder, rc, failed)
+    print(f'{folder.name}: {json.dumps(result)}', flush=True)
+    return result
 
 
 def isolated_cases(op, length, out):
@@ -117,16 +141,7 @@ def diagnose(base, ddk, diagnosis):
     print(f'Diagnosis directory: {out}', flush=True)
     results = {}
     for label, raw in isolated_cases(op, length, out):
-        folder = out / label
-        folder.mkdir()
-        (folder / 'export.air').write_bytes(raw)
-        rc, _, _ = compile_omg(folder, 'export.air', ddk, diagnosis, platform=None)
-        failed = format_failure(folder / 'compile.log', {'silu_patch'})
-        produced = any(p.stat().st_size for p in folder.glob('*.omc'))
-        status = ('COMPILED' if rc == 0 and produced else
-                  'EMPTY_OUTPUT_FORMAT' if rc and failed == 'silu_patch' else 'OTHER_FAILURE')
-        results[label] = dict(status=status, returncode=rc, empty_format_node=failed)
-        print(f'{label}: {status} (OMG exit={rc})', flush=True)
+        results[label] = compile_probe(out / label, raw, ddk, diagnosis)
     if 'four-layer-ports' not in results:
         print('four-layer-ports: identical to v3-static; one compile covers both.')
     (out / 'result.json').write_text(json.dumps(dict(four_layer_log=str(log), failing_node=name,
@@ -136,10 +151,104 @@ def diagnose(base, ddk, diagnosis):
     print(out / 'result.json')
 
 
+def add_output_reshape(raw, source, name):
+    """Append the exact source Reshape and its literal shape operands to the retained control."""
+    edge = name + ':0'
+    consumers = [n for n in source.op if edge in n.input]
+    if len(consumers) != 1 or consumers[0].type != 'Reshape' or consumers[0].input[0] != edge:
+        raise ValueError(f'{name}: expected one Reshape at output slot 0')
+    reshape = consumers[0]
+    nodes = {n.name: n for n in source.op}
+    message, graph = graph_message(raw, 'SiluPatch')
+    data, silu, net = graph.op
+    if (data.type, silu.name, net.type) != ('Data', 'silu_patch', 'NetOutput') or len(reshape.output_desc) != 1:
+        raise ValueError('Expected the retained single-op control and a single-output source Reshape')
+    additions = []
+    copied = {n.name for n in graph.op}
+    for arg in reshape.input[1:]:
+        if not arg:
+            continue
+        key, _, slot = arg.rpartition(':')
+        const = nodes.get(key)
+        if slot != '0' or const is None or const.type != 'Const' or any(const.input):
+            raise ValueError(f'{reshape.name}: shape operand {arg} is not a literal Const in the AIR')
+        if key not in copied:
+            additions.append(const)
+            copied.add(key)
+    if reshape.name in copied:
+        raise ValueError(f'Name collision in control: {reshape.name}')
+    # Parse through bytes because each decoded AIR owns a separate protobuf schema pool.
+    def append(src):
+        op = graph.op.add()
+        op.ParseFromString(src.SerializeToString())
+        op.id = len(graph.op) - 1
+        for field in ('src_name', 'src_index', 'dst_name', 'dst_index'):
+            op.ClearField(field)
+        return op
+    saved_net = type(net)()
+    saved_net.CopyFrom(net)
+    del graph.op[-1]
+    for const in additions:
+        append(const)
+    placed = append(reshape)
+    placed.input[0] = silu.name + ':0'
+    output = append(saved_net)
+    output.input[0] = placed.name + ':0'
+    output.input_desc[0].CopyFrom(placed.output_desc[0])
+    graph.output[:] = [output.input[0]]
+    return message.SerializeToString(deterministic=True), reshape.name
+
+
+def review(directory, base, *, ddk=None, diagnosis=None):
+    report = json.loads((directory / 'result.json').read_bytes())
+    rows = report['results']
+    if set(rows) not in ({'v3-static'}, {'v3-static', 'four-layer-ports'}):
+        raise ValueError(f'Unexpected standalone cases in {directory}')
+    results = {}
+    for label, row in rows.items():
+        result = outcome(directory / label, row['returncode'], row['empty_format_node'])
+        print(f'{label}: {json.dumps(result)}', flush=True)
+        results[label] = result
+    if not ddk or any(r['status'] != 'COMPILED' for r in results.values()):
+        return
+    bundle = base / 'air'
+    manifest = json.loads((bundle / 'manifest.json').read_bytes())
+    entry, = [r for r in manifest['files'] if r['path'] == EXPORT_DIR + '/export.air']
+    if manifest['kind'] != ALIGNED_KIND or report['air_sha256'] != entry['sha256']:
+        raise ValueError('Retained standalone report and four-layer AIR differ')
+    _, source = graph_message(checked(bundle, entry).read_bytes(), 'SiluPatch')
+    label = 'four-layer-ports' if 'four-layer-ports' in rows else 'v3-static'
+    raw, reshape = add_output_reshape((directory / label / 'export.air').read_bytes(), source, report['failing_node'])
+    out = Path(tempfile.mkdtemp(prefix='consumer-', dir=directory))
+    print(f'Reusing {label}; adding {reshape} after {report["failing_node"]}', flush=True)
+    result = compile_probe(out / 'output-reshape', raw, ddk, diagnosis)
+    path = out / 'result.json'
+    path.write_text(json.dumps(dict(controls=results, source_node=report['failing_node'], consumer=reshape,
+                                    output_reshape=result), indent=2) + '\n')
+    print(path)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', type=Path, required=True)
-    parser.add_argument('--ddk', type=Path, required=True)
+    parser.add_argument('--ddk', type=Path)
     parser.add_argument('--tbe-diagnosis', type=Path)
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument('--report', action='store_true', help='recheck saved OMG products without compiling')
+    action.add_argument('--consumer', action='store_true', help='recheck saved products, then probe the output Reshape')
+    parser.add_argument('--diagnostic-dir', type=Path, help='select a previous silu-diagnosis directory')
     args = parser.parse_args()
-    diagnose(output_path(args.run), args.ddk.resolve(strict=True), args.tbe_diagnosis)
+    base = output_path(args.run)
+    if not args.report and not args.ddk:
+        parser.error('compilation requires --ddk')
+    if args.consumer or args.report:
+        directory = args.diagnostic_dir
+        if directory is None:
+            prior = list((base / 'no-platform').glob('silu-diagnosis-*/result.json'))
+            if not prior:
+                parser.error('no saved diagnosis; run aligned-diagnose first')
+            directory = max(prior, key=lambda p: (p.stat().st_mtime_ns, p)).parent
+        review(output_path(directory), base, ddk=args.ddk.resolve(strict=True) if args.consumer else None,
+               diagnosis=args.tbe_diagnosis)
+    else:
+        diagnose(base, args.ddk.resolve(strict=True), args.tbe_diagnosis)

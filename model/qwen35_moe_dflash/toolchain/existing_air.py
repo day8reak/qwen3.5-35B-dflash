@@ -43,8 +43,6 @@ _MAX_ENTRIES, _MAX_FILES, _MAX_DEPTH = 8192, 4096, 4
 _COPY_RESERVE_BYTES = 64 << 20
 _MAX_CL_CUSTOMIZATION_BYTES = 1 << 20
 _CL_CUSTOMIZATION_OPTION = "../options/cl-customization.json"
-_PRIMARY_OMC_PATHS = (Path("compile-work/generated/model.omc"),
-                     Path("compile-work/generated/model/model.omc"))
 
 
 def _stat(path):
@@ -341,6 +339,13 @@ def _check_help(omg, env, output, options, timeout_seconds):
 
 
 def select_primary_omc(compilation_dir, *, required=True):
+    root = Path(compilation_dir).resolve()
+    if (root / "compile-work").is_symlink():
+        raise ValueError("primary OMC path contains a symlink: compile-work")
+    return select_generated_omc(root / "compile-work/generated", required=required)
+
+
+def select_generated_omc(generated, *, required=True):
     """Select the unique main output from the two observed OMG layouts.
 
     With external weights, the same ``--output=model`` can produce
@@ -348,23 +353,21 @@ def select_primary_omc(compilation_dir, *, required=True):
     hierarchy or guess among arbitrary OMC files. This validates paths only;
     compiler success and hash binding remain separate requirements.
     """
-    root = Path(compilation_dir).resolve()
-    generated = root / "compile-work/generated"
-    for ancestor in (root / "compile-work", generated, generated / "model"):
+    generated = Path(generated)
+    for ancestor in (generated, generated / "model"):
         if ancestor.is_symlink():
-            raise ValueError(f"primary OMC path contains a symlink: {ancestor.relative_to(root)}")
-    candidates = [root / relative for relative in _PRIMARY_OMC_PATHS
-                  if (root / relative).exists() or (root / relative).is_symlink()]
+            raise ValueError(f"primary OMC path contains a symlink: {ancestor}")
+    candidates = [p for p in (generated / "model.omc", generated / "model/model.omc")
+                  if p.exists() or p.is_symlink()]
     if len(candidates) > 1:
         raise ValueError("ambiguous primary OMC outputs: both model.omc and model/model.omc exist")
     if not candidates:
         if required:
-            raise ValueError("OMG succeeded without a nonempty regular model.omc at either supported output path: "
-                             "compile-work/generated/model.omc or compile-work/generated/model/model.omc")
+            raise ValueError(f"OMG succeeded without a nonempty regular model.omc in {generated} or {generated / 'model'}")
         return None
     candidate = candidates[0]
     if candidate.is_symlink() or not candidate.is_file() or not candidate.stat().st_size:
-        raise ValueError(f"primary OMC must be a nonempty regular non-symlink file: {candidate.relative_to(root)}")
+        raise ValueError(f"primary OMC must be a nonempty regular non-symlink file: {candidate}")
     return candidate
 
 
