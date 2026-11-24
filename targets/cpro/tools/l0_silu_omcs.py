@@ -215,8 +215,12 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
         raise ValueError('Expected one FP32 layer entry')
     previous, checkpoints = checkpoint_source(run, recovery, fixture_hash)
     names = [s['name'] for s in graph['stages']]
-    if from_stage == 'decoder_hidden' and 'decoder_hidden_after_w4' in names:
+    projections_split = any(s.startswith('decoder_w4_projection_') for s in names)
+    residual_split = 'decoder_attention_residual' in names
+    if from_stage == 'decoder_hidden' and projections_split:
         from_stage = next(n for n in names if n.startswith('decoder_w4_'))
+    elif from_stage == 'decoder_hidden_after_w4' and residual_split:
+        from_stage = 'decoder_attention_residual'
     if from_stage:
         if previous is None or from_stage not in names or names.index(from_stage) > len(checkpoints):
             raise ValueError(f'--from-stage needs a verified prefix in the selected replay: {from_stage}; stages={names}')
@@ -226,7 +230,8 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
     else:
         out.mkdir()
     receipt = dict(status='RUNNING', bundle_sha256=fixture_hash, stages=[], outputs={},
-                   embed_decoder_hidden=embed_decoder_hidden, split_decoder_projections='decoder_hidden_after_w4' in names)
+                   embed_decoder_hidden=embed_decoder_hidden, split_decoder_projections=projections_split,
+                   split_decoder_residual=residual_split)
     save_json(out/'chain.json', receipt)
     print('Decoder split replay:', out, flush=True)
     try:
@@ -235,6 +240,8 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
             print(f"{name}: {step['inputs']} -> {step['outputs']}", flush=True)
             if 'projection' in step:
                 print(f"Isolated {step['projection']}, weight sources: {step['weight_sources']}", flush=True)
+            if 'casts' in step:
+                print(f"{name} source AIR Cast nodes and their inputs: {step['casts']}", flush=True)
             build, model, weights = compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, fixture_hash,
                                                   shared_silu, embed_decoder_hidden)
             for spec in build['outputs']:
@@ -390,11 +397,13 @@ def main():
                    help='compile only decoder_hidden with weights embedded in its OMC')
     variant.add_argument('--split-decoder-projections', action='store_true',
                          help='execute each decoder_hidden W4 projection in a separate OMC before the residual')
+    variant.add_argument('--split-decoder-residual', action='store_true',
+                         help='keep the W4 probes and split the remainder at the post-attention residual')
     for flag in ('run', 'baseline', 'source', 'config', 'capture', 'ddk', 'diagnosis', 'runtime-config',
                  'remote-air', 'replay'):
         p.add_argument('--' + flag, type=Path, required=flag == 'run')
     a = p.parse_args()
-    if (a.embed_decoder_hidden or a.split_decoder_projections) and a.mode != 'board':
+    if (a.embed_decoder_hidden or a.split_decoder_projections or a.split_decoder_residual) and a.mode != 'board':
         p.error('decoder variants apply to board')
     run = output_path(a.run)
     run.mkdir(parents=True, exist_ok=True)
@@ -418,8 +427,10 @@ def main():
         for row in meta['files']:
             checked(bundle, row)
         raw = (bundle/L0_DIR/'export.air').read_bytes()
-        graph = plan(raw, meta['silu_patch']['nodes'], split_projections=a.split_decoder_projections)
-        save_json(run/('plan-w4-projections.json' if a.split_decoder_projections else 'plan.json'), graph)
+        graph = plan(raw, meta['silu_patch']['nodes'], split_projections=a.split_decoder_projections,
+                     split_residual=a.split_decoder_residual)
+        name = 'plan-w4-projections.json' if a.split_decoder_projections else 'plan.json'
+        save_json(run/('plan-w4-residual.json' if a.split_decoder_residual else name), graph)
         replay = execute(run, bundle, meta, graph, raw, a.ddk.resolve(strict=True), a.diagnosis,
                          a.runtime_config.resolve(strict=True), recovery=a.recovery, from_stage=a.from_stage,
                          embed_decoder_hidden=a.embed_decoder_hidden)

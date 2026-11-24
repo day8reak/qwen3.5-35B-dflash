@@ -10,10 +10,11 @@ from .decoder_pair import load
 from .decode_cache_control import graph_message
 
 
-def tail_edges(graph):
+def tail_edges(graph, *, target=None, attention=None):
     nodes = {op.name: op for op in graph.op}
-    net, = [op for op in graph.op if op.type == 'NetOutput']
-    target, = [e for e in net.input if e and not e.endswith(':-1')]
+    if target is None:
+        net, = [op for op in graph.op if op.type == 'NetOutput']
+        target, = [e for e in net.input if e and not e.endswith(':-1')]
 
     def producer(edge):
         return nodes[edge.rsplit(':', 1)[0]]
@@ -33,6 +34,17 @@ def tail_edges(graph):
     operands = [e for e in final.input if e and not e.endswith(':-1')]
     if final.type not in adds or len(operands) != 2:
         raise ValueError(f'Expected decoder output from final residual addition, got {final.name} {final.type}')
+    # The split AIR exposes out_proj directly. This also identifies the skip
+    # connection when post-attention normalization was lowered to several ops.
+    if attention is not None:
+        skips = []
+        for operand in operands:
+            skip = source_aliases(operand, views=True)[-1]
+            if producer(skip).type in adds and any(attention in source_aliases(e, views=True)
+                    for e in producer(skip).input if e and not e.endswith(':-1')):
+                skips.append(skip)
+        if len(skips) == 1:
+            return skips[0], None, target
     matches = []
     for norm in graph.op:
         if 'rmsnorm' not in norm.type.lower() or not norm.input:

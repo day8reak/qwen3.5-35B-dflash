@@ -9,7 +9,7 @@ usage() {
     echo "       bash $0 diagnose --saved DIAGNOSTICS_DIR"
     echo "       board [--recovery [REPLAY_DIR]] [--from-stage STAGE]; compare [--replay DIR]"
     echo "       board --mode linear [--embed-decoder-hidden]"
-    echo "       board [--split-decoder-projections]"
+    echo "       board [--split-decoder-projections | --split-decoder-residual]"
 }
 in_env() {
     local name="$1"
@@ -24,7 +24,7 @@ if [[ $action == diagnose ]]; then
     exit
 fi
 case "$action" in --help|-h) usage; exit 0;; air|board|compare) shift;; *) usage >&2; exit 2;; esac
-mode= run= capture= replay= restart= embed_hidden= split_projections=
+mode= run= capture= replay= restart= embed_hidden= split_variant=
 recovery=()
 while (( $# )); do
     case "$1" in
@@ -34,7 +34,9 @@ while (( $# )); do
         --replay) replay=${2:?missing replay}; shift 2;;
         --from-stage) restart=${2:?missing stage}; shift 2;;
         --embed-decoder-hidden) embed_hidden=1; shift;;
-        --split-decoder-projections) split_projections=1; shift;;
+        --split-decoder-projections|--split-decoder-residual)
+            if [[ -n "$split_variant" && "$split_variant" != "$1" ]]; then usage >&2; exit 2; fi
+            split_variant=$1; shift;;
         --recovery)
             recovery=(--recovery); shift
             if (( $# )) && [[ $1 != --* ]]; then recovery+=("$1"); shift; fi;;
@@ -42,11 +44,11 @@ while (( $# )); do
     esac
 done
 if [[ -n "$embed_hidden" && ( $action != board || $mode != linear ) ]]; then usage >&2; exit 2; fi
-if [[ -n "$split_projections" && ( $action != board || -n "$embed_hidden" ) ]]; then usage >&2; exit 2; fi
+if [[ -n "$split_variant" && ( $action != board || -n "$embed_hidden" ) ]]; then usage >&2; exit 2; fi
 if [[ $action != board && ( ${#recovery[@]} != 0 || -n "$restart" ) ]] ||
    [[ -n "$restart" && ${#recovery[@]} == 0 ]] || [[ -n "$replay" && $action != compare ]] ||
    [[ -n "$capture" && $action != air ]]; then usage >&2; exit 2; fi
-if [[ -n "$split_projections" ]]; then recovery+=(--split-decoder-projections); fi
+if [[ -n "$split_variant" ]]; then recovery+=("$split_variant"); fi
 if [[ -n "$run" ]]; then run=$(realpath -m -- "$run"); fi
 if [[ -n "$capture" ]]; then capture=$(realpath -e -- "$capture"); fi
 tests="${AI_RUN_DIR:?}/target/tests"

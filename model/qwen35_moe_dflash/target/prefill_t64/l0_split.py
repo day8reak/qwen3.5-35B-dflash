@@ -321,7 +321,62 @@ def split_decoder_projections(chain, nodes):
     steps[index:index + 1] = refined
 
 
-def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projections=False):
+def split_after_attention_residual(chain, graph, nodes):
+    """Materialize the skip connection only inside the remaining MoE/residual stage."""
+    from .decoder_tail import tail_edges
+
+    steps = chain['stages']
+    index = next(i for i, step in enumerate(steps) if step['name'] == 'decoder_hidden_after_w4')
+    old = steps[index]
+    hidden, = old['outputs']
+    attention = chain['results']['out_proj']
+    residual, _, _ = tail_edges(graph, target=hidden, attention=attention)
+    incoming = set(old['inputs'])
+    first = 'decoder_attention_residual'
+    last = 'decoder_hidden_from_residual'
+    left, left_deps = slice_dependencies(nodes, [residual], incoming, first)
+    right, right_deps = slice_dependencies(nodes, [hidden], incoming | {residual}, last)
+    if attention not in left_deps or residual not in right_deps or (left | right) != set(old['nodes']):
+        raise ValueError(f'Cannot separate {old["name"]} at the post-attention sum {residual}')
+
+    # Uninferred AIR output descriptors can say DT_FLOAT even on FP16 arithmetic.
+    # Prefer the two actual Add operands when their types can be traced.
+    def operand_dtype(edge):
+        while edge not in chain['wires']:
+            op = nodes[edge.rsplit(':', 1)[0]]
+            if op.type == 'Cast' and 'dst_type' in op.attr and op.attr['dst_type'].HasField('i'):
+                return {0: 'float32', 1: 'float16'}.get(op.attr['dst_type'].i)
+            if op.type not in ('Identity', 'TensorMove', 'Reshape', 'View', 'Squeeze', 'Unsqueeze', 'ExpandDims'):
+                return None
+            edge = data_edges(op)[0]
+        return chain['wires'][edge]['dtype']
+
+    desc = descriptor(nodes, residual)
+    operands = data_edges(nodes[residual.rsplit(':', 1)[0]])
+    types = {operand_dtype(e) for e in operands}
+    if len(operands) != 2 or (None not in types and len(types) != 1):
+        raise ValueError(f'{residual}: unexpected post-attention Add operands {operands} ({types})')
+    dtype = next(iter(types)) if None not in types else {0: None, 1: 'float32', 2: 'float16'}.get(desc.dtype)
+    if dtype not in (None, 'float32', 'float16') or desc.dtype not in (0, 1, 2):
+        raise ValueError(f'{residual}: expected a floating post-attention sum')
+    shape = list(desc.shape.dim)
+    out_shape = chain['wires'][attention]['shape']
+    if not shape or min(shape) < 1:
+        shape = out_shape
+    if [d for d in shape if d != 1] != [d for d in out_shape if d != 1]:
+        raise ValueError(f'{residual}: post-attention sum {shape} differs from attention output {out_shape}')
+    chain['wires'][residual] = dict(name=first, shape=None, dtype=dtype, source_shape=shape)
+    new_steps = []
+    for name, kept, deps, output in ((first, left, left_deps, residual), (last, right, right_deps, hidden)):
+        step = dict(name=name, inputs=sorted(deps), outputs=[output], nodes=sorted(kept))
+        if name == first:
+            step['weight_storage'] = 'embedded'
+        step['casts'] = {n: list(nodes[n].input) for n in sorted(kept) if nodes[n].type == 'Cast'}
+        new_steps.append(step)
+    steps[index:index + 1] = new_steps
+
+
+def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projections=False, split_residual=False):
     _, graph = graph_message(raw, 'SiluPatch')
     nodes = {op.name: op for op in graph.op}
     def one(kind):
@@ -483,8 +538,10 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projec
         if not required <= ancestors[key]:
             raise ValueError(f'{key}: missing upstream L0 edges for {required - ancestors[key]}')
     chain = dict(entries=entries, wires={**entries, **wires}, stages=ordered, results=result)
-    if split_projections:
+    if split_projections or split_residual:
         split_decoder_projections(chain, nodes)
+    if split_residual:
+        split_after_attention_residual(chain, graph, nodes)
     if verify_precision:
         chain['precision'] = check_split_precision(graph, layer, head)
     return chain

@@ -92,13 +92,18 @@ def run_board(args, run, layers):
             raw = (bundle/L0_DIR/'export.air').read_bytes()
             checkpoint = previous/key if previous and (previous/key/'chain.json').is_file() else None
             split = getattr(args, 'split_decoder_projections', False)
+            residual = getattr(args, 'split_decoder_residual', False)
             if checkpoint and (start_layer is None or i < start_layer):
                 prior = load(checkpoint/'chain.json')
                 if prior['status'] == 'EXECUTED':
                     split = prior.get('split_decoder_projections', False)
+                    residual = prior.get('split_decoder_residual', False)
             options = {'split_projections': True} if split else {}
+            if residual:
+                options['split_residual'] = True
             graph = plan(raw, meta['silu_patch']['nodes'], layer=i, head=meta['head'], **options)
-            save_json(case/('plan-w4-projections.json' if split else 'plan.json'), graph)
+            plan_file = 'plan-w4-projections.json' if split else 'plan.json'
+            save_json(case/('plan-w4-residual.json' if residual else plan_file), graph)
             if start_layer is not None:
                 if i < start_layer and not checkpoint:
                     raise ValueError(f'Missing {key} checkpoint before requested restart')
@@ -147,11 +152,13 @@ def main():
         p.add_argument('--' + name, type=Path)
     p.add_argument('--recovery', nargs='?', const='auto')
     p.add_argument('--from-stage')
-    p.add_argument('--split-decoder-projections', action='store_true')
+    variant = p.add_mutually_exclusive_group()
+    variant.add_argument('--split-decoder-projections', action='store_true')
+    variant.add_argument('--split-decoder-residual', action='store_true')
     p.add_argument('--replay', default='auto')
     a = p.parse_args()
-    if a.split_decoder_projections and a.action != 'board':
-        p.error('--split-decoder-projections applies to board')
+    if (a.split_decoder_projections or a.split_decoder_residual) and a.action != 'board':
+        p.error('decoder split variants apply to board')
     layers = [3] if a.mode == 'full' else list(range(40))
     run = output_path(a.run)
     run.mkdir(parents=True, exist_ok=True)
