@@ -153,6 +153,7 @@ def run_check(directory, ddk, diagnosis):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', type=Path, required=True)
+    parser.add_argument('--trace', action='store_true', help='Compare OMG format modes and trace file opens')
     parser.add_argument('--diagnostic-dir', type=Path)
     parser.add_argument('--ddk', type=Path, required=True)
     parser.add_argument('--tbe-diagnosis', type=Path)
@@ -167,4 +168,8 @@ if __name__ == '__main__':
         directory = reports[-1].parent
     if directory.parent != parent:
         parser.error('The diagnosis directory must belong to this four-layer run')
-    run_check(directory, args.ddk.resolve(strict=True), args.tbe_diagnosis)
+    if args.trace:
+        from silu_format_trace import run_trace
+        run_trace(directory, args.ddk.resolve(strict=True), args.tbe_diagnosis)
+    else:
+        run_check(directory, args.ddk.resolve(strict=True), args.tbe_diagnosis)

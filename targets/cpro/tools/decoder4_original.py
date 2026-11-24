@@ -225,7 +225,7 @@ def compile_log_text(path):
     return f'OMG log: {path}\n{excerpt}'
 
 
-def compile_omg(out, air_path, ddk, diagnosis, platform):
+def compile_omg(out, air_path, ddk, diagnosis, platform, *, use_origin_format=True, launcher=()):
     from qwen35_moe_dflash.toolchain.compile import omg_environment, prepare_tbe_compatibility, _omg_ipc_environment
 
     shape = inspect_input_shape(out / air_path)['input_shape']
@@ -234,15 +234,17 @@ def compile_omg(out, air_path, ddk, diagnosis, platform):
         env, _ = prepare_tbe_compatibility(ddk, diagnosis, out / 'tbe-compat', inherited=env)
     platform_args = [f'--platform={platform}'] if platform is not None else []
     argv = [str(omg), '--framework=1', f'--model={air_path}', '--output=model',
-            '--target=omc', *platform_args, '--use_origin_format=true', '--weight_data_type=FP16',
+            '--target=omc', *platform_args, f'--use_origin_format={str(use_origin_format).lower()}',
+            '--weight_data_type=FP16',
             '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shape]
     log_path = out / 'compile.log'
-    command = f'(cd {shlex.quote(str(out))} && {shlex.join(argv)})'
+    cmd = [*launcher, *argv]
+    command = f'(cd {shlex.quote(str(out))} && {shlex.join(cmd)})'
     invocation = f'{command}\nOMG SOC_VERSION={env.get("SOC_VERSION", "<unset>")}'
     print(f'{invocation}\nOMG log: {log_path}', flush=True)
     with _omg_ipc_environment(out, env) as (child, _), log_path.open('x') as log:
         print(invocation, file=log, flush=True)
-        result = subprocess.run(argv, cwd=out, env=child, stdout=log, stderr=subprocess.STDOUT)
+        result = subprocess.run(cmd, cwd=out, env=child, stdout=log, stderr=subprocess.STDOUT)
     return result.returncode, argv, env.get('SOC_VERSION')
 
 

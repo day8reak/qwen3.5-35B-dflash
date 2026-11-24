@@ -61,7 +61,7 @@ if (( $# > 1 )); then
     variant=(--silu-patch)
 fi
 case "${1:-}" in
-    aligned-diagnose|aligned-diagnose-report|aligned-diagnose-next|aligned-format-check)
+    aligned-diagnose|aligned-diagnose-report|aligned-diagnose-next|aligned-format-check|aligned-format-trace)
         args=(--run "${ALIGNED4_RUN:-${original}-aligned-silu-patch-native-shape}")
         diagnostic_tool=targets/cpro/tools/diagnose_silu_format.py
         if [[ "$1" == aligned-diagnose-report ]]; then
@@ -69,7 +69,8 @@ case "${1:-}" in
         else
             args+=(--ddk "${CPRO_DDK_ROOT:?}" --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}")
             if [[ "$1" == aligned-diagnose-next ]]; then args+=(--consumer); fi
-            if [[ "$1" == aligned-format-check ]]; then diagnostic_tool=targets/cpro/tools/silu_format_lookup.py; fi
+            if [[ "$1" == aligned-format-* ]]; then diagnostic_tool=targets/cpro/tools/silu_format_lookup.py; fi
+            if [[ "$1" == aligned-format-trace ]]; then args+=(--trace); fi
         fi
         if [[ "$1" != aligned-diagnose && -n "${SILU_DIAGNOSIS:-}" ]]; then
             args+=(--diagnostic-dir "$SILU_DIAGNOSIS")
@@ -181,5 +182,5 @@ case "${1:-}" in
             in_env custom_pypto python -u "$tool" board --run "$run"
         fi
         ;;
-    *) echo "Usage: bash $0 {review|air|compile|board|original-golden|aligned-{air,compile,board,compare,log,diagnose,diagnose-report,diagnose-next,format-check}} or original-{air,compile,board,compare,log} [--silu-patch]" >&2; exit 2 ;;
+    *) echo "Usage: bash $0 {review|air|compile|board|original-golden|aligned-{air,compile,board,compare,log,diagnose,diagnose-report,diagnose-next,format-check,format-trace}} or original-{air,compile,board,compare,log} [--silu-patch]" >&2; exit 2 ;;
 esac

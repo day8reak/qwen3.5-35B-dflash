@@ -219,6 +219,8 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next
 
 脚本先在当前 DDK 重编这两个保留的小 AIR。若仍复现同一错误，分别在 `SiluPatch.z`、其直接消费者的输入、或两端同时补上静态 shape 和 ND 描述，保留原连线及 dtype；字节等价的变体只编一次。结果写在 `format-lookup-*/result.json`。两个原小图均成功时可以重试原四层编译；两处均有成功的端口变体时，把对应的描述带入四层候选再验证。若某个小图在所有变体下都报相同错误，将该小图的 `export.air` 和 `compile.log` 交给 DDK 的 NPUCL 格式转换维护者。
 
+在 53 上执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-trace`，可以复用同一目录的小 AIR，在相同 DDK 下分别显式设置 `--use_origin_format=true` 和 `false`。第四个探针沿用门控 Mul，只把 SiluPatch 节点替换为单算子生成器的静态定义，可检验四层导出的自定义节点是否为复现所必需。结果保存在 `format-trace-*/result.json`。若环境支持 strace，命令还会独立记录成功和失败门控用例中 OMG 及其子进程实际打开的配置和 DDK 库。打开某个文件只能证明编译期间访问过它。小图通过编译后，还需验证四层 OMC 的实际 I/O 布局和板端精度。
+
 **单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
 
 ```bash

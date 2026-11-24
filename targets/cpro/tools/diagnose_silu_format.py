@@ -55,10 +55,11 @@ def outcome(folder, rc, failed):
     return dict(result, status='COMPILED', model=str(model), bytes=model.stat().st_size)
 
 
-def compile_probe(folder, raw, ddk, diagnosis):
+def compile_probe(folder, raw, ddk, diagnosis, *, use_origin_format=True, launcher=()):
     folder.mkdir()
     (folder / 'export.air').write_bytes(raw)
-    rc, _, _ = compile_omg(folder, 'export.air', ddk, diagnosis, platform=None)
+    rc, _, _ = compile_omg(folder, 'export.air', ddk, diagnosis, platform=None,
+                           use_origin_format=use_origin_format, launcher=launcher)
     failed = format_failure(folder / 'compile.log', {'silu_patch'})
     result = outcome(folder, rc, failed)
     print(f'{folder.name}: {json.dumps(result)}', flush=True)
