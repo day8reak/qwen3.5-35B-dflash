@@ -90,9 +90,15 @@ def run_board(args, run, layers):
             for row in meta['files']:
                 checked(bundle, row)
             raw = (bundle/L0_DIR/'export.air').read_bytes()
-            graph = plan(raw, meta['silu_patch']['nodes'], layer=i, head=meta['head'])
-            save_json(case/'plan.json', graph)
             checkpoint = previous/key if previous and (previous/key/'chain.json').is_file() else None
+            split = getattr(args, 'split_decoder_projections', False)
+            if checkpoint and (start_layer is None or i < start_layer):
+                prior = load(checkpoint/'chain.json')
+                if prior['status'] == 'EXECUTED':
+                    split = prior.get('split_decoder_projections', False)
+            options = {'split_projections': True} if split else {}
+            graph = plan(raw, meta['silu_patch']['nodes'], layer=i, head=meta['head'], **options)
+            save_json(case/('plan-w4-projections.json' if split else 'plan.json'), graph)
             if start_layer is not None:
                 if i < start_layer and not checkpoint:
                     raise ValueError(f'Missing {key} checkpoint before requested restart')
@@ -141,8 +147,11 @@ def main():
         p.add_argument('--' + name, type=Path)
     p.add_argument('--recovery', nargs='?', const='auto')
     p.add_argument('--from-stage')
+    p.add_argument('--split-decoder-projections', action='store_true')
     p.add_argument('--replay', default='auto')
     a = p.parse_args()
+    if a.split_decoder_projections and a.action != 'board':
+        p.error('--split-decoder-projections applies to board')
     layers = [3] if a.mode == 'full' else list(range(40))
     run = output_path(a.run)
     run.mkdir(parents=True, exist_ok=True)

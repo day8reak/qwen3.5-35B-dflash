@@ -36,19 +36,31 @@ def probe_abi(document, enums, meta):
     return io
 
 
-def weight_files(nodes, edge):
-    """Only traverse the selected weight operand, never the activation path."""
-    found, seen, pending = set(), set(), [edge]
+def weight_sources(nodes, edge):
+    """Describe the leaves of the selected weight operand without materializing tensor data."""
+    found, seen, pending = [], set(), [edge]
     while pending:
         op = nodes[pending.pop().rsplit(':', 1)[0]]
         if op.name in seen:
             continue
         seen.add(op.name)
-        if op.type == 'FileConstant':
-            found.add(op.attr['file_path'].s.decode())
+        inputs = [e for e in op.input if e and not e.endswith(':-1')]
+        if op.type in ('FileConstant', 'Const', 'Constant') or not inputs:
+            leaf = dict(node=op.name, type=op.type)
+            if op.type == 'FileConstant':
+                leaf['file'] = op.attr['file_path'].s.decode()
+            if 'value' in op.attr and op.attr['value'].HasField('t'):
+                leaf['shape'] = list(op.attr['value'].t.desc.shape.dim)
+            elif op.output_desc:
+                leaf['shape'] = list(op.output_desc[0].shape.dim)
+            found.append(leaf)
         else:
-            pending.extend(e for e in op.input if e and not e.endswith(':-1'))
-    return sorted(found)
+            pending.extend(inputs)
+    return sorted(found, key=lambda leaf: leaf['node'])
+
+
+def weight_files(nodes, edge):
+    return sorted({leaf['file'] for leaf in weight_sources(nodes, edge) if 'file' in leaf})
 
 
 def wire_shape(fixture, desc):

@@ -50,7 +50,15 @@ def bind(step, wires, abi):
             dtype = {'FP16': 'float16', 'FP32': 'float32'}.get(row['dtype'], row['dtype'].lower())
             key = typed_view(dtype, row['shape'])
             name = row['node'] if direction == 'inputs' else row['edge']
-            candidates = [e for e in pending if typed_view(wires[e]['dtype'], wires[e]['shape']) == key]
+            if direction == 'outputs' and len(step['outputs']) == 1 and wires[step['outputs'][0]]['shape'] is None:
+                edge, = step['outputs']
+                expected = wires[edge]['dtype']
+                if (dtype not in ('float16', 'float32') or expected not in (None, dtype)
+                        or not row['shape'] or min(row['shape']) < 1):
+                    raise ValueError(f'{step["name"]}: unexpected compiled W4 probe output at {edge}: {row}')
+                candidates = [edge]
+            else:
+                candidates = [e for e in pending if typed_view(wires[e]['dtype'], wires[e]['shape']) == key]
             if direction == 'inputs':
                 candidates = [e for e in candidates if names.get(name) == e]
             elif name in pending:
@@ -59,7 +67,7 @@ def bind(step, wires, abi):
                 raise ValueError(f'{step["name"]}: cannot bind {direction} {row} to {candidates}')
             edge, = candidates
             pending.remove(edge)
-            if prod(wires[edge]['shape']) * np.dtype(dtype).itemsize != row['logical_bytes']:
+            if prod(row['shape']) * np.dtype(dtype).itemsize != row['logical_bytes']:
                 raise ValueError(f'Compiled byte extent differs at {edge}')
             rows.append(dict(name=name, edge=edge, shape=row['shape'], dtype=dtype, bytes=row['logical_bytes']))
         if pending:
@@ -205,6 +213,8 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
         raise ValueError('Expected one FP32 layer entry')
     previous, checkpoints = checkpoint_source(run, recovery, fixture_hash)
     names = [s['name'] for s in graph['stages']]
+    if from_stage == 'decoder_hidden' and 'decoder_hidden_after_w4' in names:
+        from_stage = next(n for n in names if n.startswith('decoder_w4_'))
     if from_stage:
         if previous is None or from_stage not in names or names.index(from_stage) > len(checkpoints):
             raise ValueError(f'--from-stage needs a verified prefix in the selected replay: {from_stage}; stages={names}')
@@ -214,15 +224,28 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
     else:
         out.mkdir()
     receipt = dict(status='RUNNING', bundle_sha256=fixture_hash, stages=[], outputs={},
-                   embed_decoder_hidden=embed_decoder_hidden)
+                   embed_decoder_hidden=embed_decoder_hidden, split_decoder_projections='decoder_hidden_after_w4' in names)
     save_json(out/'chain.json', receipt)
     print('Decoder split replay:', out, flush=True)
     try:
         for i, step in enumerate(graph['stages']):
             name = step['name']
             print(f"{name}: {step['inputs']} -> {step['outputs']}", flush=True)
+            if 'projection' in step:
+                print(f"Isolated {step['projection']}, weight sources: {step['weight_sources']}", flush=True)
             build, model, weights = compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, fixture_hash,
                                                   shared_silu, embed_decoder_hidden)
+            for spec in build['outputs']:
+                w = graph['wires'][spec['edge']]
+                if w['shape'] is None:
+                    dims = w['source_shape']
+                    if dims and min(dims) > 0:
+                        if typed_view(spec['dtype'], dims) != typed_view(spec['dtype'], spec['shape']):
+                            raise ValueError(f"{name}: AIR shape {dims} differs from compiled output {spec}")
+                    else:
+                        dims = spec['shape']
+                    w.update(shape=dims, dtype=spec['dtype'])
+                    print(f"{name}: {spec['edge']} compiled {w['dtype']} {w['shape']}", flush=True)
             operands, paths = [], []
             for s in build['inputs']:
                 path = feeds[s['edge']]
@@ -259,6 +282,9 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
         receipt['status'] = 'EXECUTED'
     except Exception as exc:
         receipt.update(status='FAILED', failed_stage=name, error=str(exc))
+        if 'projection' in step:
+            receipt['projection'] = step['projection']
+            print(f"{name} failed while testing {step['projection']}. See {out}/chain.json.", flush=True)
         raise
     finally:
         save_json(out/'chain.json', receipt)
@@ -357,14 +383,17 @@ def main():
     p.add_argument('mode', choices=['air', 'board', 'compare'])
     p.add_argument('--recovery', nargs='?', const='auto', help='reuse verified prefix from latest or named replay')
     p.add_argument('--from-stage', help='with --recovery, execute again starting at this stage')
-    p.add_argument('--embed-decoder-hidden', action='store_true',
+    variant = p.add_mutually_exclusive_group()
+    variant.add_argument('--embed-decoder-hidden', action='store_true',
                    help='compile only decoder_hidden with weights embedded in its OMC')
+    variant.add_argument('--split-decoder-projections', action='store_true',
+                         help='execute each decoder_hidden W4 projection in a separate OMC before the residual')
     for flag in ('run', 'baseline', 'source', 'config', 'capture', 'ddk', 'diagnosis', 'runtime-config',
                  'remote-air', 'replay'):
         p.add_argument('--' + flag, type=Path, required=flag == 'run')
     a = p.parse_args()
-    if a.embed_decoder_hidden and a.mode != 'board':
-        p.error('--embed-decoder-hidden applies to board')
+    if (a.embed_decoder_hidden or a.split_decoder_projections) and a.mode != 'board':
+        p.error('decoder variants apply to board')
     run = output_path(a.run)
     run.mkdir(parents=True, exist_ok=True)
     bundle = run/'air'
@@ -387,8 +416,8 @@ def main():
         for row in meta['files']:
             checked(bundle, row)
         raw = (bundle/L0_DIR/'export.air').read_bytes()
-        graph = plan(raw, meta['silu_patch']['nodes'])
-        save_json(run/'plan.json', graph)
+        graph = plan(raw, meta['silu_patch']['nodes'], split_projections=a.split_decoder_projections)
+        save_json(run/('plan-w4-projections.json' if a.split_decoder_projections else 'plan.json'), graph)
         replay = execute(run, bundle, meta, graph, raw, a.ddk.resolve(strict=True), a.diagnosis,
                          a.runtime_config.resolve(strict=True), recovery=a.recovery, from_stage=a.from_stage,
                          embed_decoder_hidden=a.embed_decoder_hidden)

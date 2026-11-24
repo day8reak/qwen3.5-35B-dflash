@@ -98,7 +98,7 @@ def execution_context(folder):
 def stage_operators(build, service_lines):
     from decoder4_original import L0_DIR
     from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
-    from qwen35_moe_dflash.target.prefill_t64.decoder_projection import QUANT, weight_files
+    from qwen35_moe_dflash.target.prefill_t64.decoder_projection import QUANT, weight_sources
 
     air = Path(build['path']).parent / L0_DIR / 'export.air'
     raw = air.read_bytes()
@@ -119,7 +119,9 @@ def stage_operators(build, service_lines):
         if 'matmul' in op.type.lower():
             row = dict(name=op.name, type=op.type)
             if op.type == QUANT:
-                row['weight_files'] = weight_files(nodes, op.input[1])
+                row['weight_edge'] = op.input[1]
+                row['weight_sources'] = weight_sources(nodes, op.input[1])
+                row['weight_files'] = sorted({s['file'] for s in row['weight_sources'] if 'file' in s})
             rows.append(row)
     print(f'Matmul nodes in {air}:', *rows, sep='\n')
     return dict(stub_type_candidates=candidates, matmuls=rows)

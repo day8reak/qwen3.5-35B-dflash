@@ -7,7 +7,7 @@ import numpy as np
 
 from ..layer_probe.common import checked, identity, metrics, read_array, sha
 from ..silu_patch_air import nd_desc, port_names
-from .attention_slice import DTYPES
+from .attention_slice import DTYPES, descriptor
 from .chain_reference import VALID19_IDS_SHA256
 from .decoder_four_boundary import data_edges
 from .decode_cache_control import graph_message
@@ -243,7 +243,83 @@ def check_split_precision(graph, layer, head):
     return dict(matmuls=projections, gdr_inputs=states)
 
 
-def plan(raw, trace, *, layer=0, head=True, verify_precision=False):
+def slice_dependencies(nodes, outputs, boundaries, key):
+    kept, deps = set(), set()
+    pending = list(outputs)
+    while pending:
+        edge = pending.pop()
+        if edge in boundaries:
+            deps.add(edge)
+            continue
+        op = nodes[edge.rsplit(':', 1)[0]]
+        if op.name in kept:
+            continue
+        if op.type in ('Data', 'RefData', 'NetOutput') or op.subgraph_name:
+            raise ValueError(f'Unexpected dependency {edge} in {key}')
+        kept.add(op.name)
+        pending.extend(e for e in op.input if e)
+    return kept, deps
+
+
+def split_decoder_projections(chain, nodes):
+    """Subdivide just the failed residual/MoE stage. Keep the original prefix and its checkpoints."""
+    from .decode_cache_trace import _project_input
+    from .decoder_projection import QUANT, weight_sources
+
+    steps = chain['stages']
+    index = next(i for i, s in enumerate(steps) if s['name'] == 'decoder_hidden')
+    original = steps[index]
+    retained = set(original['nodes'])
+    incoming = set(original['inputs'])
+    hidden, = original['outputs']
+    projections = {n.name + ':0': n for n in nodes.values() if n.name in retained and n.type == QUANT}
+    if not projections:
+        raise ValueError('No W4 projections in decoder_hidden')
+    cuts = {hidden: 'decoder_hidden_after_w4'}
+    wires = chain['wires']
+    for i, edge in enumerate(projections):
+        activation = _project_input(nodes, edge)
+        if activation not in incoming:
+            cuts.setdefault(activation, f'decoder_w4_input_{i}')
+        cuts[edge] = f'decoder_w4_projection_{i}'
+    # Static graphs can omit intermediate descriptors' dimensions. Let the
+    # producing OMC establish each new wire's actual floating ABI before reuse.
+    for edge in cuts.keys() - {hidden}:
+        if edge in projections:
+            desc = descriptor(nodes, edge)
+            dtype = 'float16'  # CPro W4 QLinear output_dtype
+        else:
+            quant = next(op for op in nodes.values() if op.type == 'DynamicQuant' and op.input[0] == edge)
+            desc = quant.input_desc[0] if quant.input_desc else descriptor(nodes, edge)
+            dtype = {1: 'float32', 2: 'float16'}.get(desc.dtype)
+        wires[edge] = dict(name=cuts[edge], shape=None, dtype=dtype, source_shape=list(desc.shape.dim))
+
+    boundary = incoming | cuts.keys()
+    refined, finished = [], set()
+    def stage(edge):
+        if edge in finished:
+            return
+        name = cuts[edge]
+        kept, deps = slice_dependencies(nodes, [edge], boundary - {edge}, name)
+        expected = {projections[edge].name} if edge in projections else set()
+        actual = {n for n in kept if nodes[n].type == QUANT}
+        if actual != expected or not kept <= retained or not deps:
+            raise ValueError(f'{name}: invalid cut at {edge}, W4={sorted(actual)}, inputs={sorted(deps)}')
+        for dep in sorted(deps - incoming):
+            stage(dep)
+        step = dict(name=name, inputs=sorted(deps), outputs=[edge], nodes=sorted(kept))
+        if edge in projections:
+            step['projection'] = projections[edge].name
+            step['weight_sources'] = weight_sources(nodes, projections[edge].input[1])
+        refined.append(step)
+        finished.add(edge)
+    stage(hidden)
+    if finished != cuts.keys() or {n for s in refined for n in s['nodes']} != retained:
+        raise ValueError('W4 cuts did not cover the original decoder_hidden stage')
+    steps[index:index + 1] = refined
+
+
+def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projections=False):
     _, graph = graph_message(raw, 'SiluPatch')
     nodes = {op.name: op for op in graph.op}
     def one(kind):
@@ -374,22 +450,8 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False):
         if key in active:
             raise ValueError(f'Cyclic stage dependency at {key}')
         active.add(key)
-        kept, deps = set(), set()
-        def visit(edge):
-            if edge in entries or (edge in owners and owners[edge] != key):
-                deps.add(edge)
-                return
-            op = nodes[edge.rsplit(':', 1)[0]]
-            if op.name in kept:
-                return
-            if op.type in ('Data', 'RefData', 'NetOutput') or op.subgraph_name:
-                raise ValueError(f'Unexpected dependency {edge} in {key}')
-            kept.add(op.name)
-            for dep in op.input:
-                if dep:
-                    visit(dep)
-        for edge in groups[key]:
-            visit(edge)
+        boundaries = set(entries) | (owners.keys() - set(groups[key]))
+        kept, deps = slice_dependencies(nodes, groups[key], boundaries, key)
         patches = [n for n in kept if nodes[n].type == 'SiluPatch']
         if key.endswith('_silu'):
             if len(kept) != 1 or len(patches) != 1 or len(deps) != 1:
@@ -419,6 +481,8 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False):
         if not required <= ancestors[key]:
             raise ValueError(f'{key}: missing upstream L0 edges for {required - ancestors[key]}')
     chain = dict(entries=entries, wires={**entries, **wires}, stages=ordered, results=result)
+    if split_projections:
+        split_decoder_projections(chain, nodes)
     if verify_precision:
         chain['precision'] = check_split_precision(graph, layer, head)
     return chain
@@ -460,7 +524,15 @@ def slice_air(raw, step, wires):
     for edge in step['outputs']:
         out.input.append(edge)
         w = wires[edge]
-        nd_desc(out.input_desc.add(dtype=codes[DTYPES[w['dtype']]].number), w['shape'])
+        if w['shape'] is None:
+            # The original producer and its exact operands are retained. OMG
+            # infers this NetOutput as it would an original intermediate readout.
+            desc = out.input_desc.add()
+            desc.CopyFrom(descriptor({op.name: op for op in body}, edge))
+            if w['dtype']:
+                desc.dtype = codes[DTYPES[w['dtype']]].number
+        else:
+            nd_desc(out.input_desc.add(dtype=codes[DTYPES[w['dtype']]].number), w['shape'])
     del graph.op[:]
     graph.op.extend([*body, out])
     graph.input[:] = [name + ':0' for name in bindings.values()]
