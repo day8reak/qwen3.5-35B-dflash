@@ -223,6 +223,8 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next
 
 修改或重装 SiluPatch host 后，在 53 上运行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-host`。选择带有原 `probes.json` 的 `ALIGNED4_RUN`。命令比较两份已安装的算子注册表，列出其他声明 FP32 输出的算子，再从新编的小图 OMC 读取实际输出端口。两表均声明 FP32 时复查原门控 Mul，发现 INT32 项时另编端口声明一致的 INT32 单算子。可选的 `SILU_HOST_SO` 指向新构建的 host 库，用于和编译进程树中观测到的库比对 SHA256。结果写入 `host-check-*/result.json`。库的内容匹配只能确认该版本被加载，具体调用了哪个回调还需要回调日志。
 
+53 的实测结果中，两份注册表均声明 `SiluPatch.z` 为 ND FP32，单算子 OMC 的输出为 `FP32[2048,128]`，同一个算子连接原门控 Mul 时在格式转换阶段失败。执行 `python targets/cpro/tools/silu_format_source.py "$H/result.json"`，其中 `H` 为该次 `host-check-*` 目录。命令只读已有记录，核对 AIR 哈希，打印成功和失败小图的日志、两表中的 AddCustom 端口，以及加载记录中包含对应报错文本的 ELF 和哈希。有同版本 DDK 源码时，可追加 `--source` 和源码目录或 `format_converter_pass.cc` 路径，打印查表和取输出格式的代码。
+
 **单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
 
 ```bash
