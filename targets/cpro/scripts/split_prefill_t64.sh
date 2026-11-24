@@ -7,6 +7,7 @@ usage() {
     echo "Usage: bash $0 {air|board|compare} --mode {linear|full|40} [--run DIR] [--capture DIR]"
     echo "       bash $0 diagnose STAGE_DIR [STAGE_DIR ...]"
     echo "       board [--recovery [REPLAY_DIR]] [--from-stage STAGE]; compare [--replay DIR]"
+    echo "       board --mode linear [--embed-decoder-hidden]"
 }
 in_env() {
     local name="$1"
@@ -21,7 +22,7 @@ if [[ $action == diagnose ]]; then
     exit
 fi
 case "$action" in --help|-h) usage; exit 0;; air|board|compare) shift;; *) usage >&2; exit 2;; esac
-mode= run= capture= replay= restart=
+mode= run= capture= replay= restart= embed_hidden=
 recovery=()
 while (( $# )); do
     case "$1" in
@@ -30,12 +31,14 @@ while (( $# )); do
         --capture) capture=${2:?missing capture}; shift 2;;
         --replay) replay=${2:?missing replay}; shift 2;;
         --from-stage) restart=${2:?missing stage}; shift 2;;
+        --embed-decoder-hidden) embed_hidden=1; shift;;
         --recovery)
             recovery=(--recovery); shift
             if (( $# )) && [[ $1 != --* ]]; then recovery+=("$1"); shift; fi;;
         *) usage >&2; exit 2;;
     esac
 done
+if [[ -n "$embed_hidden" && ( $action != board || $mode != linear ) ]]; then usage >&2; exit 2; fi
 if [[ $action != board && ( ${#recovery[@]} != 0 || -n "$restart" ) ]] ||
    [[ -n "$restart" && ${#recovery[@]} == 0 ]] || [[ -n "$replay" && $action != compare ]] ||
    [[ -n "$capture" && $action != air ]]; then usage >&2; exit 2; fi
@@ -51,6 +54,7 @@ case "$mode" in
             case "$replay" in /*) export L0_SPLIT_REPLAY="$replay";; *) export L0_SPLIT_REPLAY="$L0_SPLIT_RUN/$replay";; esac
         fi
         if [[ -n "$restart" ]]; then recovery+=(--from-stage "${restart#L00/}"); fi
+        if [[ -n "$embed_hidden" ]]; then recovery+=(--embed-decoder-hidden); fi
         exec bash targets/cpro/scripts/l0_split_silu_t64.sh "$action" "${recovery[@]}";;
     full|40) run="${run:-$tests/prefill-split-$mode-t64-valid19-01}";;
     *) usage >&2; exit 2;;

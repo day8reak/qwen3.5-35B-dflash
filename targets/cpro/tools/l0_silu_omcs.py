@@ -66,18 +66,38 @@ def bind(step, wires, abi):
     return io
 
 
-def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, shared_silu=None):
+def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, shared_silu=None,
+                  embed_decoder_hidden=False):
     name = step['name']
     wires = graph['wires']
     stage_air = (build_air(shape=wires[step['inputs'][0]]['shape']) if name.endswith('_silu')
                  else slice_air(raw, step, wires))
     shared = shared_silu is not None and name.endswith('_silu')
+    embedded = embed_decoder_hidden and name == 'decoder_hidden'
     dest = (shared_silu if shared else run / 'omc') / name
     parent = dest.parent
     parent.mkdir(exist_ok=True)
     source = dict(bundle_sha256=bundle_hash, air_sha256=hashlib.sha256(stage_air).hexdigest(), ddk=str(ddk))
     if shared:
         del source['bundle_sha256']  # Singleton AIRs have no layer weights.
+    if embedded:
+        if dest.is_dir():
+            # Older split runs serialized equivalent protobuf maps in a different order.
+            # Compile the exact bytes used in the external-weight control.
+            control = load(dest/'manifest.json')['source']
+            retained = (dest/L0_DIR/'export.air').read_bytes()
+            digest = hashlib.sha256(retained).hexdigest()
+            if control != dict(source, air_sha256=digest):
+                raise ValueError(f'{dest}: external-weight build belongs to a different AIR bundle or DDK')
+            if digest != source['air_sha256']:
+                old, _ = graph_message(retained, 'NetOutput')
+                if old.SerializeToString(deterministic=True) != stage_air:
+                    raise ValueError(f'{dest}: decoder_hidden AIR differs from the current slice')
+            stage_air = retained
+            source['air_sha256'] = digest
+        source['weight_storage'] = 'embedded'
+        dest = parent / 'decoder_hidden-embedded'
+        print(f"decoder_hidden: embedded weights, AIR sha256={source['air_sha256']}", flush=True)
     if not dest.exists():
         out = Path(tempfile.mkdtemp(prefix=name + '-', dir=parent))
         folder = out / L0_DIR
@@ -86,11 +106,14 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, sh
         for p in (bundle / L0_DIR).iterdir():
             if p.name != 'export.air' and not name.endswith('_silu'):
                 (folder / p.name).symlink_to(p, target_is_directory=p.is_dir())
-        code, _, _ = compile_omg(out, L0_DIR + '/export.air', ddk, diagnosis, platform=None)
+        code, _, _ = compile_omg(out, L0_DIR + '/export.air', ddk, diagnosis, platform=None,
+                                 external_weights=not embedded)
         if code:
             raise RuntimeError(f'{name}: OMG exited {code}\n{compile_log_text(out / "compile.log")}')
         model, = out.rglob('*.omc')
         weights = [identity(p, out) for p in sorted(model.parent.rglob('*.weight'))]
+        if embedded and weights:
+            raise ValueError(f'{name}: OMG emitted external weights for an embedded build in {out}')
         abi = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)
         io = bind(step, wires, abi)
         save_json(out/'manifest.json', dict(source=source, model=identity(model, out), weights=weights, **io))
@@ -161,7 +184,7 @@ def restore_stage(previous, dest, record, model_hash, inputs, outputs, fixture_h
 
 
 def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=None, from_stage=None,
-            entry=None, out=None, shared_silu=None):
+            entry=None, out=None, shared_silu=None, embed_decoder_hidden=False):
     runtime = load(config.parent/load(config)['assets'])['environment']
     os.environ.setdefault('BOARD_HIAI_LIB_DIR', str(Path(DEFAULT_TOOL).parent))
     fixture_hash = sha(bundle/'manifest.json')
@@ -188,14 +211,16 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
         out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
     else:
         out.mkdir()
-    receipt = dict(status='RUNNING', bundle_sha256=fixture_hash, stages=[], outputs={})
+    receipt = dict(status='RUNNING', bundle_sha256=fixture_hash, stages=[], outputs={},
+                   embed_decoder_hidden=embed_decoder_hidden)
     save_json(out/'chain.json', receipt)
     print('Decoder split replay:', out, flush=True)
     try:
         for i, step in enumerate(graph['stages']):
             name = step['name']
             print(f"{name}: {step['inputs']} -> {step['outputs']}", flush=True)
-            build, model, weights = compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, fixture_hash, shared_silu)
+            build, model, weights = compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, fixture_hash,
+                                                  shared_silu, embed_decoder_hidden)
             operands, paths = [], []
             for s in build['inputs']:
                 path = feeds[s['edge']]
@@ -238,21 +263,29 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
     return out
 
 
-def compare(bundle, replay):
+def compare(bundle, replay, *, allow_failed=False):
     receipt = load(replay/'chain.json')
-    if receipt['status'] != 'EXECUTED' or receipt['bundle_sha256'] != sha(bundle/'manifest.json'):
+    partial = allow_failed and receipt['status'] == 'FAILED'
+    if (receipt['status'] != 'EXECUTED' and not partial) or receipt['bundle_sha256'] != sha(bundle/'manifest.json'):
         raise ValueError(f'Incomplete or unrelated L0 run: {replay}')
     meta = load(bundle/'manifest.json')
     reference = meta['reference']
+    specs = contracts(meta.get('layer', 0), meta.get('head', True))
+    missing = sorted(specs.keys() - receipt['outputs'].keys())
+    if partial:
+        print(f"Incomplete replay at {receipt['failed_stage']}; missing outputs: {missing}", flush=True)
+        specs = {k: v for k, v in specs.items() if k in receipt['outputs']}
     results = score({k: read_array(replay, v) for k, v in receipt['outputs'].items()},
-                    {k: read_array(bundle, v) for k, v in reference['tensors'].items()},
-                    contracts(meta.get('layer', 0), meta.get('head', True)))
-    passed = all(row['passed'] for scopes in results.values() for row in scopes.values())
-    report = dict(status='PASSED' if passed else 'FAILED_ACCURACY', physical_rows=64, valid_rows=19,
+                    {k: read_array(bundle, reference['tensors'][k]) for k in specs}, specs)
+    passed = not partial and all(row['passed'] for scopes in results.values() for row in scopes.values())
+    status = 'INCOMPLETE' if partial else ('PASSED' if passed else 'FAILED_ACCURACY')
+    report = dict(status=status, physical_rows=64, valid_rows=19,
                   output_pos=18, conv_state_control=meta['fixture']['conv_state_control'],
                   conv_history_310p=reference['conv_history'], chain_sha256=sha(replay/'chain.json'),
                   reference_capture_sha256=reference['capture_sha256'], outputs=receipt['outputs'], scores=results)
-    path = replay/'comparison.json'
+    if partial:
+        report.update(failed_stage=receipt['failed_stage'], missing_outputs=missing)
+    path = replay/('partial-comparison.json' if partial else 'comparison.json')
     save_json(path, report)
     for role, scopes in results.items():
         for scope, m in scopes.items():
@@ -272,10 +305,14 @@ def main():
     p.add_argument('mode', choices=['air', 'board', 'compare'])
     p.add_argument('--recovery', nargs='?', const='auto', help='reuse verified prefix from latest or named replay')
     p.add_argument('--from-stage', help='with --recovery, execute again starting at this stage')
+    p.add_argument('--embed-decoder-hidden', action='store_true',
+                   help='compile only decoder_hidden with weights embedded in its OMC')
     for flag in ('run', 'baseline', 'source', 'config', 'capture', 'ddk', 'diagnosis', 'runtime-config',
                  'remote-air', 'replay'):
         p.add_argument('--' + flag, type=Path, required=flag == 'run')
     a = p.parse_args()
+    if a.embed_decoder_hidden and a.mode != 'board':
+        p.error('--embed-decoder-hidden applies to board')
     run = output_path(a.run)
     run.mkdir(parents=True, exist_ok=True)
     bundle = run/'air'
@@ -294,7 +331,8 @@ def main():
         graph = plan(raw, meta['silu_patch']['nodes'])
         save_json(run/'plan.json', graph)
         replay = execute(run, bundle, meta, graph, raw, a.ddk.resolve(strict=True), a.diagnosis,
-                         a.runtime_config.resolve(strict=True), recovery=a.recovery, from_stage=a.from_stage)
+                         a.runtime_config.resolve(strict=True), recovery=a.recovery, from_stage=a.from_stage,
+                         embed_decoder_hidden=a.embed_decoder_hidden)
     else:
         if a.replay:
             replay = a.replay
@@ -303,7 +341,7 @@ def main():
             replay = next((f.parent for f in files if load(f)['status'] == 'EXECUTED'), None)
             if not replay:
                 p.error(f'No completed L0 chain in {run}')
-    return 0 if compare(bundle, replay) else 1
+    return 0 if compare(bundle, replay, allow_failed=a.mode == 'compare' and a.replay is not None) else 1
 
 
 if __name__ == '__main__':

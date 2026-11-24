@@ -251,7 +251,7 @@ def compile_log_text(path):
     return f'OMG log: {path}\n{excerpt}'
 
 
-def compile_omg(out, air_path, ddk, diagnosis, platform, *, use_origin_format=True, launcher=()):
+def compile_omg(out, air_path, ddk, diagnosis, platform, *, use_origin_format=True, launcher=(), external_weights=True):
     from qwen35_moe_dflash.toolchain.compile import omg_environment, prepare_tbe_compatibility, _omg_ipc_environment
 
     shape = inspect_input_shape(out / air_path)['input_shape']
@@ -262,7 +262,8 @@ def compile_omg(out, air_path, ddk, diagnosis, platform, *, use_origin_format=Tr
     argv = [str(omg), '--framework=1', f'--model={air_path}', '--output=model',
             '--target=omc', *platform_args, f'--use_origin_format={str(use_origin_format).lower()}',
             '--weight_data_type=FP16',
-            '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shape]
+            '--limit_partition_size=false', f'--save_weights_as_external_data={str(external_weights).lower()}',
+            '--input_shape=' + shape]
     log_path = out / 'compile.log'
     cmd = [*launcher, *argv]
     command = f'(cd {shlex.quote(str(out))} && {shlex.join(cmd)})'

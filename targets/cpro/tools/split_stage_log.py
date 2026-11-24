@@ -40,6 +40,8 @@ def compile_manifest(stage, uploaded):
         build = (root / 'silu-omc' if stage.name.endswith('_silu') else root / parent.name / 'omc') / stage.name
     else:
         build = parent.parent / 'omc' / stage.name
+    if stage.name == 'decoder_hidden' and load(parent/'chain.json').get('embed_decoder_hidden'):
+        build = build.with_name('decoder_hidden-embedded')
     path = build / 'manifest.json'
     if not path.is_file():
         return dict(path=str(path), available=False)
