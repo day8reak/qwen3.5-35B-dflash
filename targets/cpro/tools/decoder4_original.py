@@ -88,9 +88,8 @@ def export(run, source, config, reference, conv_control):
     cfg = dict(configured)
     entry = source / EXPORTER
     sources = {n: sha(source / n) for n in (EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py',
+               'models/modeling_qwen3_5_moe_hiai_nz.py',
                'models/export_model_wrapper_qwen3_5_moe.py', 'utils.py')}
-    argv = [sys.executable, '-u', str(entry), 'mode=export', 'quant_mode=enable',
-            'num_hidden_layers=4', 'seq_len=64', 'topK=16', 'config=' + str(config)]
     run.mkdir(parents=True, exist_ok=True)
     dest = run / 'air'
     if dest.exists():
@@ -104,10 +103,12 @@ def export(run, source, config, reference, conv_control):
             real = (source / original).resolve(strict=True)
             if not original.is_absolute():
                 cfg[key] = str(real)
+        export_config = config
         if cfg != configured:
-            resolved = work / 'export-config.yaml'
-            resolved.write_text(yaml.safe_dump(cfg))
-            argv[-1] = 'config=' + str(resolved)
+            export_config = work / 'export-config.yaml'
+            export_config.write_text(yaml.safe_dump(cfg))
+        argv = [sys.executable, '-u', str(entry), 'mode=export', 'quant_mode=enable',
+                'num_hidden_layers=4', 'seq_len=64', 'topK=16', f'config={export_config}', 'quant_bits=4']
         fixture = valid19_inputs(work / 'inputs', reference, cfg, conv_control)
         print(f'(cd {work} && {shlex.join(argv)})', flush=True)
         subprocess.run(argv, cwd=work, check=True)

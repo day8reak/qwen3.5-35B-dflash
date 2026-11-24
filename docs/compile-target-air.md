@@ -135,6 +135,21 @@ python "$REPO_DIR/targets/cpro/tools/parse_model_json.py" "$OMC_JSON" \
 
 `original-air` 在 78 直接运行 `CPRO_SOURCE` 下的 `export_glm_model_qwen3_5_moe.py`。原量化 wrapper 在图内把 INT8 embedding 乘以 FP32 scale，执行 L0–L3，按 `output_pos` 选行，再过 final norm 和 LM head，返回 logits 和各层 cache。另一个入口 `air` 接收 310P 的 FP16 embedding，只导出 L3 的全部 64 行 hidden。
 
+脚本在 `config=...` 后显式传入 `quant_bits=4` 选择 A8W4。支持位宽选择的原导出器默认用 8 位权重。对 L0 的 `in_proj_qkv`，W4 加载器将权重打包为 INT32 `[2048,1024]`，将分组权重 scale 整理为 FP32 `[8,8192]`。激活的逐 token scale 仍为 FP32 `[64,1]`。
+
+如需单独核对 78 的 `torch_npu` 是否接受这组 shape 和 dtype，可在读取模型权重前运行下面的 meta 检查。通过时会打印 `torch.Size([64, 8192]) torch.float16`。若报 `scale's type should be torch.int64 in A8W4`，需核对当前 CPro 导出环境对分组权重 scale 的 dtype 要求。
+
+```bash
+conda run --no-capture-output -n qwen3_5_cpro python -c '
+import torch, torch_npu
+def meta(shape, dtype):
+    return torch.empty(shape, device="meta", dtype=dtype)
+y = torch_npu.npu_quant_matmul(meta((64,2048), torch.int8), meta((2048,1024), torch.int32),
+                               meta((8,8192), torch.float32), pertoken_scale=meta((64,1), torch.float32),
+                               output_dtype=torch.float16)
+print(y.shape, y.dtype)'
+```
+
 78 导出，用现有 valid19 采集准备输入。可用 `ORIGINAL4_REFERENCE` 指定含 `manifest.json` 的采集目录。脚本打印图内乘法在主机重算后舍入到 FP16 与 310P 层入口的逐位差异数。运行时选择 `output_pos=[18]`，初始 cache 为零。`conv_state_pos` 默认按已记录的 valid64 格式推定为 `[19, 0 × 127]`，可用 `ORIGINAL4_CONV_CONTROL` 指向实测的 128 元素 INT32 文件。
 
 ```bash
