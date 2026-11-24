@@ -90,7 +90,7 @@ def main():
     build.add_argument('--gdr-source', type=Path, required=True)
     build.add_argument('--tbe-diagnosis', type=Path)
     board = stages.add_parser('board')
-    board.add_argument('--runtime-config', type=Path, required=True)
+    board.add_argument('--runtime-config', type=Path, help='explicitly run the separate HIAI slot probe')
     for stage in (air, transfer, build, board):
         stage.add_argument('--run', type=Path, required=True)
     a = parser.parse_args()
@@ -125,7 +125,8 @@ def main():
     out = case / 'L0-L3/board'
     print(f'Board attempt: {out}', flush=True)
     try:
-        result = whole_run.board(run, DEFAULT_TOOL, slot_config=a.runtime_config.resolve(strict=True), board_dir=out)
+        config = a.runtime_config.resolve(strict=True) if a.runtime_config else None
+        result = whole_run.board(run, DEFAULT_TOOL, slot_config=config, board_dir=out)
     except whole_run.HiaiRunFailure:
         diagnose_decoder_pair(case, names=('L0-L3',))
         raise

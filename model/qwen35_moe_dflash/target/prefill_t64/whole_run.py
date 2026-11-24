@@ -181,6 +181,17 @@ class HiaiRunFailure(RuntimeError):
         super().__init__(f'HIAI exited {rc} (stage={self.stage}); attempt {remote}\n{log}')
 
 
+def link_previous_payload(hdc, remote, previous):
+    """Reuse only regular files that still match this run's deployment manifest."""
+    _, result = hdc.shell(
+        f'cd {remote} && while read -r digest rel; do src={previous}/"$rel"; '
+        'if test -f "$src" && test ! -L "$src" && '
+        'printf "%s  %s\\n" "$digest" "$src" | sha256sum -c - >/dev/null 2>&1 && '
+        'ln "$src" "$rel" 2>/dev/null; then echo "$rel"; fi; done < files.sha256',
+        'reuse-verified-files')
+    return set(result.splitlines())
+
+
 def board(run, tool_path, baseline=None, *, slot_config=None, board_dir=None):
     air, omc = run / 'air', run / 'omc'
     compiled = json.loads((omc / 'manifest.json').read_text())
@@ -197,6 +208,7 @@ def board(run, tool_path, baseline=None, *, slot_config=None, board_dir=None):
     if compiled.get('weight_storage', storage) != storage or (not external_files and meta['kind'] not in _EMBEDDED_KINDS):
         raise ValueError('OMC weight storage and external file inventory disagree')
     files = [('payload/' + primary.name, primary, compiled['primary'])]
+    tool_only = meta['kind'] == _FOUR_DECODERS and slot_config is None
     for row in external_files:
         path = checked(omc, row)
         files.append(('payload/' + path.relative_to(primary.parent).as_posix(), path, row))
@@ -230,9 +242,24 @@ def board(run, tool_path, baseline=None, *, slot_config=None, board_dir=None):
     uncertain = False
     try:
         dirs = {remote / 'outputs', *((remote / rel).parent for rel, _, _ in files)}
-        hdc.shell(f'mkdir {remote} && mkdir -p ' + shlex.join(sorted(map(str, dirs))), 'create-board-dir')
+        mkdir = f'mkdir {remote} && mkdir -p ' + shlex.join(sorted(map(str, dirs)))
+        previous_io = None
+        linked = set()
+        if tool_only:
+            from .whole_slots import previous_four_replay
+            _, firmware = hdc.shell(mkdir + f' && printf %s {shlex.quote(checks.read_text())} > {remote}/files.sha256'
+                                    + ' && { param get const.ohos.fullname 2>/dev/null || true; }', 'create-board-dir')
+            previous, previous_io = previous_four_replay(
+                run, out, env[1], env[2], compiled['primary']['sha256'], primary.name, firmware.strip())
+            if previous:
+                linked = link_previous_payload(hdc, remote, previous)
+                print(f'Reusing {len(linked)}/{len(files)} verified board files', flush=True)
+        else:
+            hdc.shell(mkdir, 'create-board-dir')
         send = []
         for rel, path, row in files:
+            if rel in linked:
+                continue
             if rel.endswith('.weight') and row['sha256'] in reusable:
                 link = shlex.join(['ln', str(reusable[row['sha256']]), str(remote / rel)])
                 _, outcome = hdc.shell(f'if {link} 2>/dev/null; then echo LINKED; else echo UPLOAD; fi', 'reuse-weight')
@@ -246,20 +273,35 @@ def board(run, tool_path, baseline=None, *, slot_config=None, board_dir=None):
         print(f'Uploading {len(send)} files ({(needed-result_spec["bytes"]) / 2**30:.2f} GiB) to {remote}', flush=True)
         for rel, path, _ in send:
             hdc.send(path, remote / rel)
-        hdc.send(checks, remote / 'files.sha256')
-        hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
+        if not tool_only:
+            hdc.send(checks, remote / 'files.sha256')
+        if linked != {rel for rel, _, _ in files}:
+            hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
         model = remote / files[0][0]
-        if slot_config is not None:
+        if slot_config is not None or previous_io:
             from .attention_step_v2 import runtime_slots
-            from .whole_slots import observe_model_io, read
-            runtime = read(slot_config.parent / read(slot_config)['assets'])['environment']
-            native = observe_model_io(hdc, slot_config, runtime, remote, out, model,
-                                      compiled['primary']['sha256'], tool.parent)
+            if previous_io:
+                native = previous_io[1]
+            else:
+                from .whole_slots import observe_model_io, read
+                runtime = read(slot_config.parent / read(slot_config)['assets'])['environment']
+                native = observe_model_io(hdc, slot_config, runtime, remote, out, model,
+                                          compiled['primary']['sha256'], tool.parent)
             slots = dict(inputs=runtime_slots(native, 'inputs', inputs,
                                               equivalent_inputs=meta['kind'] in ('single-cpro-decoder', _FOUR_DECODERS)),
                          outputs=runtime_slots(native, 'outputs', [result_spec]))
+            if previous_io:
+                slots['observed_in'] = str(previous_io[0])
+                print(f'HIAI input order from {previous_io[0]}', flush=True)
             save_json(out / 'slots.json', slots)
             inputs = [inputs[row['compiled_index']] for row in slots['inputs']]
+        elif tool_only:
+            print('Using compiled GraphDef.input order (no retained HIAI slot observation)', flush=True)
+            slots = {'source': 'compiled GraphDef.input'}
+            for direction, specs in [('inputs', inputs), ('outputs', [result_spec])]:
+                slots[direction] = [dict(slot=i, compiled_index=i, name=row['name'], shape=row['shape'],
+                                         dtype=row['dtype'], bytes=row['bytes']) for i, row in enumerate(specs)]
+            save_json(out / 'slots.json', slots)
         argv = [str(tool), '--model=' + str(model),
                 *(['--weight_dir=' + str(remote / 'payload')] if external_files else []),
                 '--input=' + ','.join(str(remote / f"inputs/{s['index']:03d}.bin") for s in inputs),
@@ -272,7 +314,8 @@ def board(run, tool_path, baseline=None, *, slot_config=None, board_dir=None):
         script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\nLD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
                           + ' >tool.stdout 2>tool.stderr\nrc=$?\necho "$rc" > tool.exitcode\n'
                           + report_logs + '\nexit "$rc"\n')
-        hdc.send(script, remote / 'run.sh')
+        if not tool_only:
+            hdc.send(script, remote / 'run.sh')
         decoder = meta['kind'] in _DECODER_KINDS
         label = f"L{meta['layer']} standalone decoder" if decoder else '40-layer'
         if meta['kind'] == _FOUR_DECODERS:
@@ -288,7 +331,8 @@ def board(run, tool_path, baseline=None, *, slot_config=None, board_dir=None):
         uncertain = True
         # Use the exit record even for a tool failure. Some HDC clients turn a
         # nonzero remote status into a transport exception before returning its log.
-        _, log = hdc.shell(f'cd {remote} && {{ sh run.sh; test -s tool.exitcode; }}', 'execute')
+        write_script = f'printf %s {shlex.quote(script.read_text())} > run.sh && ' if tool_only else ''
+        _, log = hdc.shell(f'cd {remote} && {write_script}{{ sh run.sh; test -s tool.exitcode; }}', 'execute')
         _, code = hdc.shell(f'cat {remote}/tool.exitcode', 'exitcode')
         rc = int(code.strip())
         uncertain = False

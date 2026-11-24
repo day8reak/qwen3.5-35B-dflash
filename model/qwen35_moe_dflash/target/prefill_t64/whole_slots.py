@@ -86,6 +86,37 @@ def compare_inputs(supplied, native):
     return dict(status=verdict, slots=rows)
 
 
+def previous_four_replay(run, out, device, server, model_hash, model_name, firmware):
+    """Find reusable model files and observed descriptors independently."""
+    previous = observed = None
+    attempts = run.glob('replay-*/L0-L3/board/attempt.json')
+    for path in sorted(attempts, key=lambda p: p.stat().st_mtime_ns, reverse=True):
+        if path.parent == out:
+            continue
+        try:
+            attempt = read(path)
+            remote = attempt['remote']
+            if ((attempt['device'], attempt['server'], attempt['omc_sha256']) != (device, server, model_hash)
+                    or not re.fullmatch(r'/data/local/tmp/qwen35_prefill40_[a-f0-9]{32}', remote)):
+                continue
+            if previous is None:
+                previous = _board_path(remote)
+            if not firmware:
+                break
+            desc = path.with_name('model-io.json')
+            native = read(desc)
+            if (native['status'] == 'IO_DESCRIPTORS_OBSERVED' and native['evidence_kind'] == 'device-hiai'
+                    and native['run_called'] is False and native['process_called'] is False
+                    and native['model_path'] == f'{remote}/payload/{model_name}'
+                    and native['model_sha256'] == model_hash and native['firmware_id'] == firmware
+                    and native['runtime_version'] == native['expected_runtime_version']):
+                observed = desc, native
+                break
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return previous, observed
+
+
 def observe_model_io(hdc, config, env, work, out, model, model_sha, tool_lib):
     """Read V2 descriptors for the uploaded model while the caller holds the board lock."""
     cfg = read(config)

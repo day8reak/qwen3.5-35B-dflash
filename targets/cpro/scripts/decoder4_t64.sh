@@ -53,8 +53,7 @@ case "${1:-}" in
                 --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
         fi
         if [[ "$1" == board ]]; then
-            in_env custom_pypto python -u "$tool" board --run "$run" \
-                --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
+            in_env custom_pypto python -u "$tool" board --run "$run"
         fi
         ;;
     *) echo "Usage: bash $0 {review|air|compile|board}" >&2; exit 2 ;;
