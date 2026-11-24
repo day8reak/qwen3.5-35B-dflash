@@ -28,6 +28,8 @@ _BUILD_FAILURE = re.compile(rb"create OpGraphBuilder fail|opGraphBuilder is null
 _TILING_FAILURE = re.compile(rb"GetDataParam.*inputTensorPtr is NULL|\bProduceTiling failed\b|\bcompileInfo is null\b", re.I)
 _OMC_SAVE_FAILURE = re.compile(
     rb"large_memory_ops\.cpp.*memcpy_s.*false, return false|set model header failed!|Save compiled model to file failed!", re.I)
+_FORMAT_LOOKUP = re.compile(rb'format_converter_pass\.cc FindOpFormatConfig\(\d+\).*?\bnode (\S+) type \S+ getformatconfigs failed', re.I)
+_EMPTY_OUTPUT_FORMAT = re.compile(rb'format_converter_pass\.cc .*?outputTensorFormats size of node:\s*(\S+) is 0, too small', re.I)
 
 
 _OMG_TRACE_PATTERNS = tuple(re.compile(pattern) for pattern in (
@@ -98,6 +100,7 @@ def _read_excerpt(log):
         return ""
     candidates = {priority: [] for priority in range(6)}
     terminal_pass = []
+    last_lookup, format_errors = None, []
     tracebacks, active_trace = [], None
     with log.open("rb") as stream:
         line_number = 0
@@ -109,6 +112,16 @@ def _read_excerpt(log):
                 break
             scanned += len(chunk)
             line_number += 1
+            if b'format_converter_pass.cc' in chunk:
+                # A candidate lookup warning matters when the converter subsequently
+                # rejects the empty output format list of that same node.
+                lookup = _FORMAT_LOOKUP.search(chunk)
+                if lookup:
+                    last_lookup = (lookup.group(1), (line_number, chunk[:2048], len(chunk) > 2048))
+                failure = _EMPTY_OUTPUT_FORMAT.search(chunk)
+                if failure and _is_error(chunk):
+                    format_errors = [last_lookup[1]] if last_lookup and last_lookup[0] == failure.group(1) else []
+                    format_errors.append((line_number, chunk[:2048], len(chunk) > 2048))
             python_failure = bool(_PYTHON_FAILURE.search(chunk))
             # Worker exceptions can be far from EOF, after thousands of
             # recoverable constant-folding errors. Keep their frames and
@@ -154,8 +167,9 @@ def _read_excerpt(log):
     first, budget = [], 4096
     # Late pass failures can terminate compilation after early constant-folding
     # diagnostics. Show both; neither is automatically a root-cause verdict.
-    pass_lines = {row[0] for row in terminal_pass}
-    selected = (terminal_pass + [row for priority in range(6) for row in candidates[priority]
+    priority_lines = format_errors + terminal_pass
+    pass_lines = {row[0] for row in priority_lines}
+    selected = (priority_lines + [row for priority in range(6) for row in candidates[priority]
                                  if row[0] not in pass_lines])[:6]
     for number, chunk, truncated in selected:
         if budget <= 0:
@@ -164,7 +178,7 @@ def _read_excerpt(log):
         suffix = " [truncated]" if truncated or len(excerpt) < len(chunk) else ""
         first.append(f"L{number}: " + excerpt.decode("utf-8", errors="replace").rstrip() + suffix)
         budget -= len(excerpt)
-    label = "Priority error messages:" if any(candidates[p] for p in range(5)) else "First error messages:"
+    label = "Priority error messages:" if format_errors or any(candidates[p] for p in range(5)) else "First error messages:"
     initial = label + "\n" + "\n".join(first) + "\n" if first else ""
     if scan_limited:
         initial += f"Diagnostic scan limited to first {_MAX_SCAN_BYTES} bytes; raw tail retained.\n"

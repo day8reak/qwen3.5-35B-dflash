@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from functools import partial
 from pathlib import Path
 import shlex
@@ -218,14 +219,13 @@ def compile_log_text(path):
     return f'OMG log: {path}\n{excerpt}'
 
 
-def build(run, ddk, diagnosis, remote, *, kind=KIND):
+def build(run, ddk, diagnosis, remote, *, bundle, kind, platform):
     from decoder4_prefill import pull_air
     from qwen35_moe_dflash.toolchain.compile import omg_environment, prepare_tbe_compatibility, _omg_ipc_environment
 
-    bundle = run / 'air'
+    run.mkdir(parents=True, exist_ok=True)
     if not bundle.exists():
-        run.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=run, prefix='.fetch-') as tmp:
+        with tempfile.TemporaryDirectory(dir=bundle.parent, prefix='.fetch-') as tmp:
             pull_air(Path(tmp), remote, ssh_download=partial(ssh_bundle, kind=kind))
             incoming = Path(tmp) / 'air'
             if json.loads((incoming / 'manifest.json').read_bytes())['kind'] != kind:
@@ -236,21 +236,33 @@ def build(run, ddk, diagnosis, remote, *, kind=KIND):
         raise ValueError(f'Expected {kind} AIR at {bundle}, got {meta["kind"]}')
     for row in meta['files']:
         checked(bundle, row)
+    # The replay and comparator both read the AIR beside their OMC.
+    local_air = run / 'air'
+    if local_air != bundle:
+        try:
+            local_air.symlink_to(os.path.relpath(bundle, run), target_is_directory=True)
+        except FileExistsError:
+            if not local_air.samefile(bundle):
+                raise ValueError(f'{local_air} must refer to the selected AIR bundle {bundle}')
     dest = run / 'omc'
     out = Path(tempfile.mkdtemp(dir=run, prefix='omg-'))
     graph = bundle / EXPORT_DIR / 'export.air'
     shape = inspect_input_shape(graph)['input_shape']
     # Keep the directory component in the original FileConstant paths.
     (out / EXPORT_DIR).symlink_to(graph.parent, target_is_directory=True)
-    omg, env = omg_environment(ddk)
+    omg, env = omg_environment(ddk, soc_version=platform)
     if diagnosis:
         env, _ = prepare_tbe_compatibility(ddk, diagnosis, out / 'tbe-compat', inherited=env)
+    platform_args = [f'--platform={platform}'] if platform is not None else []
     argv = [str(omg), '--framework=1', f'--model={EXPORT_DIR}/export.air', '--output=model',
-            '--target=omc', '--platform=kirinx90', '--use_origin_format=true', '--weight_data_type=FP16',
+            '--target=omc', *platform_args, '--use_origin_format=true', '--weight_data_type=FP16',
             '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shape]
     log_path = out / 'compile.log'
-    print(f'(cd {out} && {shlex.join(argv)})\nOMG log: {log_path}', flush=True)
+    command = f'(cd {shlex.quote(str(out))} && {shlex.join(argv)})'
+    invocation = f'{command}\nOMG SOC_VERSION={env.get("SOC_VERSION", "<unset>")}'
+    print(f'{invocation}\nOMG log: {log_path}', flush=True)
     with _omg_ipc_environment(out, env) as (child, _), log_path.open('x') as log:
+        print(invocation, file=log, flush=True)
         result = subprocess.run(argv, cwd=out, env=child, stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
         raise RuntimeError(f'{kind}: OMG exited {result.returncode}\n{compile_log_text(log_path)}')
@@ -259,6 +271,7 @@ def build(run, ddk, diagnosis, remote, *, kind=KIND):
     if not weights:
         raise ValueError(f'OMG did not produce the requested external weights: {out}')
     save_json(out / 'manifest.json', dict(air_manifest_sha256=sha(bundle / 'manifest.json'), argv=argv,
+              soc_version=env.get('SOC_VERSION'),
               primary=identity(model, out), weights=weights))
     out.rename(dest)
     print(f'Compiled {kind} OMC: {dest / model.relative_to(out)}', flush=True)
@@ -423,14 +436,17 @@ def main():
     mode.add_argument('--aligned', action='store_true', help='native boundary, reviewed RoPE/expert fixes and SiluPatch')
     parser.add_argument('--baseline', type=Path, help='native baseline run (or its replay for board comparison)')
     args = parser.parse_args()
-    run = output_path(args.run)
+    base = output_path(args.run)
+    bundle = base / 'air'
+    run = output_path(base / 'no-platform') if args.aligned and args.action != 'air' else base
     if args.action == 'log':
-        logs = [p for p in (*run.glob('omg-*/compile.log'), run / 'omc/compile.log') if p.is_file()]
-        if not logs:
-            parser.error(f'No OMG compile.log under {run}')
-        newest = max(logs, key=lambda p: (p.stat().st_mtime_ns, p))
-        print(compile_log_text(newest))
-        return
+        for folder in (run, base):
+            logs = [p for p in (*folder.glob('omg-*/compile.log'), folder / 'omc/compile.log') if p.is_file()]
+            if logs:
+                newest = max(logs, key=lambda p: (p.stat().st_mtime_ns, p))
+                print(compile_log_text(newest))
+                return
+        parser.error(f'No OMG compile.log under {base}')
     kind = ALIGNED_KIND if args.aligned else PATCH_KIND if args.silu_patch else KIND
     if kind != KIND and args.action in ('air', 'board') and args.baseline is None:
         parser.error(f'variant {args.action} requires --baseline')
@@ -443,12 +459,17 @@ def main():
         parser.error('compile and board require --ddk')
     compiled = run / 'omc/manifest.json'
     if not compiled.exists():
-        build(run, args.ddk.resolve(), args.tbe_diagnosis, args.remote_air or run / 'air', kind=kind)
-    elif args.action == 'compile':
-        manifest = run / 'air/manifest.json'
-        if (json.loads(manifest.read_bytes())['kind'] != kind or
-                json.loads(compiled.read_bytes())['air_manifest_sha256'] != sha(manifest)):
+        build(run, args.ddk.resolve(), args.tbe_diagnosis, args.remote_air or bundle, kind=kind,
+              bundle=bundle, platform=None if args.aligned else 'kirinx90')
+    else:
+        manifest = bundle / 'manifest.json'
+        record = json.loads(compiled.read_bytes())
+        if (json.loads(manifest.read_bytes())['kind'] != kind or record['air_manifest_sha256'] != sha(manifest)
+                or not (run / 'air').samefile(bundle)):
             raise ValueError(f'Cached OMC does not match the requested {kind} AIR at {run}')
+        if args.aligned and any(arg.split('=', 1)[0] == '--platform' for arg in record['argv']):
+            raise ValueError(f'Cached OMC at {run} was built with an explicit --platform')
+        print(f'Reusing {kind} OMC from {compiled.parent}', flush=True)
     if args.action == 'board':
         if not args.runtime_config:
             parser.error('board requires --runtime-config')

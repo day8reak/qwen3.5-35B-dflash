@@ -74,12 +74,15 @@ case "${1:-}" in
             remote_air="${SILU_PATCH_REMOTE_AIR:-$run/air}"
         fi
         tool=targets/cpro/tools/decoder4_original.py
+        result_run="$run"
+        if [[ $1 == aligned-* ]]; then result_run="$run/no-platform"; fi
         action="${1#*-}"
         if [[ "$action" == log ]]; then
-            in_env custom_pypto python -u "$tool" log --run "$run"
+            in_env custom_pypto python -u "$tool" log --run "$run" "${variant[@]}"
         elif [[ "$action" == compare ]]; then
             args=()
-            if (( ${#variant[@]} )); then args+=(--modified "${MODIFIED4_REPLAY:-$run}"); fi
+            if [[ ! -d "$result_run" ]]; then result_run="$run"; fi
+            if (( ${#variant[@]} )); then args+=(--modified "${MODIFIED4_REPLAY:-$result_run}"); fi
             compare_53 "${args[@]}"
         elif [[ "$action" == air ]] && (( ${#variant[@]} )); then
             args=(--baseline "$original")
@@ -119,7 +122,7 @@ case "${1:-}" in
                 if [[ -n "${ORIGINAL_INPUT_MAP:-}" ]]; then args+=(--input-map "$ORIGINAL_INPUT_MAP"); fi
             fi
             in_env custom_pypto python -u "$tool" "$action" "${args[@]}" "${variant[@]}"
-            if [[ "$action" == board ]] && (( ${#variant[@]} )); then compare_53 --modified "$run"; fi
+            if [[ "$action" == board ]] && (( ${#variant[@]} )); then compare_53 --modified "$result_run"; fi
         fi
         ;;
     review|air)

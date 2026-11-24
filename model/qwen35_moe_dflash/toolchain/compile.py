@@ -51,8 +51,8 @@ def _foreign_cann_paths(env, ddk_root):
             env.pop(key)
 
 
-def omg_environment(ddk_root, inherited=None):
-    """Use the actual binary, avoiding the vendor wrapper's shared-tree writes."""
+def omg_environment(ddk_root, inherited=None, *, soc_version="kirinx90"):
+    """Prepare the DDK executable and libraries. None preserves the caller's SOC_VERSION."""
     ddk_root = Path(ddk_root).resolve()
     master = ddk_root / "tools/tools_omg/master"
     plugin = ddk_root / "tools/platform/kirinx90"
@@ -68,7 +68,8 @@ def omg_environment(ddk_root, inherited=None):
         if candidate.is_dir(): libs.append(candidate)
     env["LD_LIBRARY_PATH"] = _prepend_paths(libs, env.get("LD_LIBRARY_PATH", ""))
     env["CCE_LIB_DIR"] = str(master / "lib64")
-    env["SOC_VERSION"] = "kirinx90"
+    if soc_version is not None:
+        env["SOC_VERSION"] = soc_version
     env["DDK_PATH"] = str(ddk_root)
     env["TOOLCHAIN_HOME"] = str(ddk_root)
     env["HIAI_VERSION"] = str(master)
