@@ -62,7 +62,7 @@ if (( $# > 1 )); then
 fi
 case "${1:-}" in
     aligned-diagnose|aligned-diagnose-report|aligned-diagnose-next)
-        args=(--run "${ALIGNED4_RUN:-${original}-aligned-silu-patch}")
+        args=(--run "${ALIGNED4_RUN:-${original}-aligned-silu-patch-native-shape}")
         if [[ "$1" == aligned-diagnose-report ]]; then
             args+=(--report)
         else
@@ -81,10 +81,10 @@ case "${1:-}" in
         remote_air="${ORIGINAL4_REMOTE_AIR:-$run/air}"
         if [[ $1 == aligned-* ]]; then
             variant=(--aligned)
-            run="${ALIGNED4_RUN:-${original}-aligned-silu-patch}"
+            run="${ALIGNED4_RUN:-${original}-aligned-silu-patch-native-shape}"
             remote_air="${ALIGNED4_REMOTE_AIR:-$run/air}"
         elif (( ${#variant[@]} )); then
-            run="${run}-silu-patch"
+            run="${run}-silu-patch-native-shape"
             remote_air="${SILU_PATCH_REMOTE_AIR:-$run/air}"
         fi
         tool=targets/cpro/tools/decoder4_original.py

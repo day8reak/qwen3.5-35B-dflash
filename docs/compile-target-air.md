@@ -184,7 +184,7 @@ cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh aligned-air
 ```
 
-**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 `SiluPatch` 的 X90 DDK。脚本读取已成功的原版 `replay-*`，核对两份 OMC 的端口和输入文件哈希，再启动改版。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-patch`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
+**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 `SiluPatch` 的 X90 DDK。脚本读取已成功的原版 `replay-*`，核对两份 OMC 的端口和输入文件哈希，再启动改版。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-patch-native-shape`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
@@ -212,11 +212,13 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-compare
 
 ### SiluPatch 在四层图中的调用
 
-导出脚本把 `silu_patch` 的注册放在 `npu_chunk_gated_delta_rule` 旁边，两者共用 `Library("npu", "IMPL", "Meta")`。若当前 PyTorch 缺少 `npu::silu_patch` 的 schema，就用已有的 `m_fragment` 定义它。`@torch.library.impl(m, "silu_patch")` 返回等长的 FP32 Meta 张量。TorchAir 的 converter 将 `torch.ops.npu.silu_patch.default` 导出为 `SiluPatch(x) → z`。模型在调用前把输入整理成连续的一维 FP16，返回后恢复逻辑形状。卷积和专家分支随原激活 dtype 传给下游，GDN 门控直接以 FP32 乘 RMSNorm 输出。导出后只读核对 x/z 的 dtype、静态向量长度和调用次数，实际节点名与长度见 `air/manifest.json` 的 `silu_patch.nodes`。
+导出脚本把 `silu_patch` 的注册放在 `npu_chunk_gated_delta_rule` 旁边，两者共用 `Library("npu", "IMPL", "Meta")`。若当前 PyTorch 缺少 `npu::silu_patch` 的 schema，就用已有的 `m_fragment` 定义它。`@torch.library.impl(m, "silu_patch")` 返回与输入同形状的 FP32 Meta 张量。每次调用将激活转为连续 FP16，直接传入 `torch.ops.npu.silu_patch`，TorchAir 导出为 `SiluPatch(x) → z`。GDN 门控将 FP32 输出直接与 FP32 RMSNorm 结果相乘；卷积和两处专家按原激活 dtype 转回，继续执行原模型。四层实验复用原版的 valid19 输入和参考，默认写入新的 native-shape 目录。
 
-| S=64 的调用位置 | 每次传入的元素数 | 四层图中的次数 |
-|---|---:|---:|
-| L0–L2 GDN 卷积 | 524288 | 3 |
-| L0–L2 GDN RMSNorm 门控 | 262144 | 3 |
-| L0–L3 共享专家 | 32768 | 4 |
-| L0–L3 W4 路由专家 | 262144 | 4 |
+在 78 的导出日志和 `air/manifest.json` 的 `silu_patch.nodes` 中可以查看 14 个节点的输入形状、每个直接消费者的输入槽与读入和输出 dtype。若下一步是 Cast，`after_cast` 记录接收转型结果的下游节点和 dtype。形状来自静态 TorchAir 转换时的输入，AIR 显式记录的维度同时参与核对。`unrecorded` 表示该消费者的 AIR 描述未记录 dtype。
+
+| S=64 的调用位置 | SiluPatch 的 x/z 形状 | z 如何进入后续运算 | 次数 |
+|---|---|---|---:|
+| L0–L2 GDN 卷积 | `[1,8192,64]` | 转回卷积激活 dtype，再 transpose 和拆分 Q/K/V | 3 |
+| L0–L2 GDN RMSNorm 门控 | `[2048,128]` | 保持 FP32 乘 RMSNorm 输出，乘完按原逻辑转型 | 3 |
+| L0–L3 共享专家 | `[64,512]` | 转回 gate 激活 dtype，再与 up 投影相乘 | 4 |
+| L0–L3 W4 路由专家 | `[512,512]` | 转回 gate 切片 dtype，再与另一半切片相乘 | 4 |

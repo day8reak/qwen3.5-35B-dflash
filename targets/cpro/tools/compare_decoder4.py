@@ -12,7 +12,8 @@ import numpy as np
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
-from decoder4_original import ALIGNED_KIND, EXPORT_DIR, KIND, PATCH_KIND, original_filename
+from decoder4_original import (ALIGNED_KIND, EXPORT_DIR, KIND, PATCH_KIND, VECTOR_ALIGNED_KIND,
+                               VECTOR_PATCH_KIND, original_filename)
 from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
 from qwen35_moe_dflash.target.layer_probe.common import checked, read_array, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.chain_reference import VALID19_IDS_SHA256
@@ -152,7 +153,7 @@ def compare(original, modified, golden, out):
     runs = {'original': info}
     pairs = [('original_vs_310p', values, ref)]
     if modified:
-        alt, other, feeds, detail = read_replay(modified, {PATCH_KIND, ALIGNED_KIND})
+        alt, other, feeds, detail = read_replay(modified, {PATCH_KIND, ALIGNED_KIND, VECTOR_PATCH_KIND, VECTOR_ALIGNED_KIND})
         same_boundary(boundary, other)
         if (info['air_manifest_sha256'] != detail['original_manifest_sha256'] or inputs != feeds or
                 any(values[k].dtype != alt[k].dtype for k in OUTPUTS)):

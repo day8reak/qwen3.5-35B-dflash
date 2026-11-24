@@ -4,10 +4,11 @@ from collections import Counter
 from difflib import unified_diff
 import json
 from pathlib import Path
+from math import prod
 import re
 import tempfile
 
-from decoder4_original import ALIGNED_KIND, EXPORT_DIR, checked, compile_omg, output_path
+from decoder4_original import ALIGNED_KIND, EXPORT_DIR, VECTOR_ALIGNED_KIND, checked, compile_omg, output_path
 from export_silu_patch_air import build_air
 from qwen35_moe_dflash.target.gdn_probe import REGISTRATION
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
@@ -48,10 +49,10 @@ def compile_probe(folder, raw, ddk, diagnosis):
     return result
 
 
-def isolated_cases(op, length, out):
+def isolated_cases(op, shape, out):
     # Change only the op attributes and port descriptors. Producers, consumers,
     # node names and graph-level metadata are identical in the two controls.
-    raw = build_air(length)
+    raw = build_air(shape=shape)
     message, graph = graph_message(raw, 'SiluPatch')
     probe, = [n for n in graph.op if n.type == 'SiluPatch']
     canonical = probe.SerializeToString(deterministic=True)
@@ -74,7 +75,7 @@ def isolated_cases(op, length, out):
 def diagnose(base, ddk, diagnosis):
     air = base / 'air'
     manifest = json.loads((air / 'manifest.json').read_bytes())
-    if manifest['kind'] != ALIGNED_KIND:
+    if manifest['kind'] not in (ALIGNED_KIND, VECTOR_ALIGNED_KIND):
         raise ValueError(f'Expected the aligned four-layer export in {air}')
     entry, = [r for r in manifest['files'] if r['path'] == EXPORT_DIR + '/export.air']
     path = checked(air, entry)
@@ -82,9 +83,14 @@ def diagnose(base, ddk, diagnosis):
     nodes = {op.name: op for op in graph.op if op.type == 'SiluPatch'}
     print(f'AIR {path} sha256={entry["sha256"]}')
     producers = {op.name: op for op in graph.op}
-    lengths = {name: vector_length(op, producers) for name, op in nodes.items()}
-    counts = Counter(lengths.values())
-    print('Static SiluPatch FP16[N] -> FP32[N] (N: count):', dict(sorted(counts.items())))
+    if manifest['kind'] == ALIGNED_KIND:
+        shapes = {n['name']: tuple(n['shape']) for n in manifest['silu_patch']['nodes']}
+        if set(shapes) != set(nodes):
+            raise ValueError('SiluPatch manifest and AIR nodes differ')
+    else:
+        shapes = {name: (vector_length(op, producers),) for name, op in nodes.items()}
+    counts = Counter(prod(shape) for shape in shapes.values())
+    print('SiluPatch FP16 -> FP32, static shape counts:', dict(Counter(shapes.values())))
     run = base / 'no-platform'
     logs = list(run.glob('omg-*/compile.log'))
     if not logs:
@@ -94,7 +100,6 @@ def diagnose(base, ddk, diagnosis):
     if name not in nodes:
         raise ValueError(f'{log}: no SiluPatch found at the reported empty format list ({name})')
     op = nodes[name]
-    length = lengths[name]
     consumers = [f'{n.name}({n.type}):input{i}' for n in graph.op
                  for i, edge in enumerate(n.input) if edge == name + ':0']
     print(f'OMG {log}\n{name}: x={list(op.input)} z -> {consumers}')
@@ -132,12 +137,12 @@ def diagnose(base, ddk, diagnosis):
     out = Path(tempfile.mkdtemp(prefix='silu-diagnosis-', dir=run))
     print(f'Diagnosis directory: {out}', flush=True)
     results = {}
-    for label, raw in isolated_cases(op, length, out):
+    for label, raw in isolated_cases(op, shapes[name], out):
         results[label] = compile_probe(out / label, raw, ddk, diagnosis)
     if 'four-layer-ports' not in results:
         print('four-layer-ports: identical to v3-static; one compile covers both.')
     (out / 'result.json').write_text(json.dumps(dict(four_layer_log=str(log), failing_node=name,
-        air_sha256=entry['sha256'], static_lengths=counts, inputs=list(op.input), consumers=consumers,
+        air_sha256=entry['sha256'], static_lengths=counts, failing_shape=shapes[name], inputs=list(op.input), consumers=consumers,
         selection_lines=selection_lines, registration_file=str(reg), registration=registration,
         results=results), indent=2) + '\n')
     print(out / 'result.json')
@@ -231,10 +236,13 @@ def review(directory, base, *, ddk=None, diagnosis=None):
     bundle = base / 'air'
     manifest = json.loads((bundle / 'manifest.json').read_bytes())
     entry, = [r for r in manifest['files'] if r['path'] == EXPORT_DIR + '/export.air']
-    if manifest['kind'] != ALIGNED_KIND or report['air_sha256'] != entry['sha256']:
+    if manifest['kind'] not in (ALIGNED_KIND, VECTOR_ALIGNED_KIND) or report['air_sha256'] != entry['sha256']:
         raise ValueError('Retained standalone report and four-layer AIR differ')
     _, source = graph_message(checked(bundle, entry).read_bytes(), 'SiluPatch')
     label = 'four-layer-ports' if 'four-layer-ports' in rows else 'v3-static'
+    if len(report['consumers']) != 1 or not report['consumers'][0].endswith('(Reshape):input0'):
+        print(f"Actual downstream edges: {report['consumers']}; no single output Reshape for this control.")
+        return
     raw, reshape = add_output_reshape((directory / label / 'export.air').read_bytes(), source, report['failing_node'])
     details = dict(controls=results, source_node=report['failing_node'], consumer=reshape)
     print(f'Checking {label} with the original {reshape}', flush=True)

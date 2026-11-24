@@ -1,6 +1,7 @@
 """Integrate SiluPatch at the original CPro model's SiLU call sites."""
-from collections import Counter
+from collections import Counter, defaultdict
 from difflib import unified_diff
+from math import prod
 from shutil import copyfile
 
 from ..original_target_source import EXPORTER, SOURCE_FILES
@@ -16,21 +17,26 @@ REGISTRATION = '''if not hasattr(torch.ops.npu, "silu_patch"):
 
 @torch.library.impl(m, "silu_patch")
 def silu_patch_meta(x):
-    if x.ndim != 1 or x.dtype != torch.float16:
-        raise ValueError("SiluPatch expects a one-dimensional FP16 input")
+    if x.dtype != torch.float16:
+        raise ValueError("SiluPatch expects FP16 input")
     return torch.empty_like(x, dtype=torch.float32)
 
 
 @torchair.register_fx_node_ge_converter(torch.ops.npu.silu_patch.default)
 def convert_silu_patch(x: Tensor):
-    return torchair.ge.custom_op("SiluPatch", inputs={"x": x}, outputs=["z"])
+    z = torchair.ge.custom_op("SiluPatch", inputs={"x": x}, outputs=["z"])
+    # The AIR writer may omit intermediate shapes. Keep the converter's observation separately.
+    trace = os.environ.get("QWEN35_SILU_SHAPES")
+    if trace:
+        with open(trace, "a", encoding="utf-8") as stream:
+            print(z.node.name, *x.meta.shape, file=stream)
+    return z
 
 
 '''
 
 MODEL_HELPERS = '''def silu_patch(x):
-    flat = x.to(torch.float16).contiguous().view(x.numel())
-    return torch.ops.npu.silu_patch(flat).reshape(x.shape)
+    return torch.ops.npu.silu_patch(x.to(torch.float16).contiguous())
 
 
 def silu_same_dtype(x):
@@ -124,15 +130,64 @@ def vector_length(op, producers):
     return lengths.pop()
 
 
-def inspect_silu_air(path):
+def inspect_silu_air(path, shape_trace):
+    """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
     _, graph = graph_message(path.read_bytes(), GE_TYPE)
-    producers = {op.name: op for op in graph.op}
-    nodes = [dict(name=op.name, numel=vector_length(op, producers))
-             for op in graph.op if op.type == GE_TYPE]
-    sizes = Counter(n['numel'] for n in nodes)
-    if sizes != {64*8192: 3, 64*4096: 3+4, 64*512: 4}:
-        raise ValueError(f'Unexpected SiluPatch nodes in the four-layer W4 T64 AIR: {dict(sizes)}')
-    print(f'{GE_TYPE}: {len(nodes)} nodes, FP16 x -> FP32 z, vector lengths {dict(sizes)}', flush=True)
-    return dict(type=GE_TYPE, nodes=nodes, input='x:float16', output='z:float32')
+    traced = {}
+    for line in shape_trace.read_text().splitlines():
+        name, *dims = line.split()
+        shape = tuple(map(int, dims))
+        if name in traced and traced[name] != shape:
+            raise ValueError(f'{name}: inconsistent traced shapes {traced[name]} and {shape}')
+        traced[name] = shape
+    ops = {op.name: op for op in graph.op if op.type == GE_TYPE}
+    if set(ops) != set(traced):
+        raise ValueError(f'SiluPatch AIR and converter names differ: {sorted(set(ops) ^ set(traced))}')
+    counts = Counter(traced.values())
+    if counts != {(1, 8192, 64): 3, (2048, 128): 3, (64, 512): 4, (512, 512): 4}:
+        raise ValueError(f'Unexpected four-layer W4 T64 SiluPatch shapes: {dict(counts)}')
+
+    readers = defaultdict(list)
+    for consumer in graph.op:
+        for slot, edge in enumerate(consumer.input):
+            readers[edge].append((consumer, slot))
+
+    def dtype(desc):
+        enum = desc.DESCRIPTOR.file.enum_types_by_name['DataType']
+        return enum.values_by_number[desc.dtype].name if desc.dtype else 'unrecorded'
+
+    def read_edges(edge, output_dtype):
+        rows = []
+        for consumer, slot in readers[edge]:
+            desc = consumer.input_desc[slot] if slot < len(consumer.input_desc) else None
+            if output_dtype and desc is not None and desc.dtype not in (0, output_dtype):
+                raise ValueError(f'{edge} dtype={output_dtype} feeds {consumer.name}:{slot} declared {dtype(desc)}')
+            rows.append(dict(name=consumer.name, op=consumer.type, slot=slot,
+                             input_dtype=dtype(desc) if desc is not None else 'unrecorded',
+                             output_dtypes=[dtype(d) for d in consumer.output_desc]))
+        return rows
+
+    nodes = []
+    by_name = {op.name: op for op in graph.op}
+    for name, op in ops.items():
+        x, = op.input_desc
+        z, = op.output_desc
+        shape = traced[name]
+        consumers = read_edges(name + ':0', z.dtype)
+        if (x.dtype, z.dtype) != (2, 1) or not consumers:
+            raise ValueError(f'{name}: expected a connected FP16 -> FP32 SiluPatch')
+        for row in consumers:
+            if row['op'] == 'Cast':
+                cast = by_name[row['name']]
+                row['after_cast'] = read_edges(cast.name + ':0', cast.output_desc[0].dtype)
+        for desc in (x, z):
+            dims = tuple(desc.shape.dim)
+            if dims and dims != (-2,):  # GE's unknown-rank marker
+                if len(dims) != len(shape) or any(d != -1 and d != actual for d, actual in zip(dims, shape)):
+                    raise ValueError(f'{name}: AIR port {dims} differs from traced shape {shape}')
+        nodes.append(dict(name=name, shape=list(shape), numel=prod(shape), consumers=consumers))
+        print(f'{name}: FP16{shape} -> FP32{shape}; consumers={consumers}', flush=True)
+    print(f'{GE_TYPE}: {len(nodes)} nodes, native shapes {dict(counts)}', flush=True)
+    return dict(type=GE_TYPE, nodes=nodes, input='x:float16', output='z:float32', shape_source='converter')

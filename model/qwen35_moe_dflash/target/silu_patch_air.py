@@ -3,10 +3,10 @@
 GE_TYPE = 'SiluPatch'
 
 
-def vector_desc(desc, length):
+def nd_desc(desc, dims):
     desc.layout = 'ND'
     desc.device_type = 'NPU'
-    desc.shape.dim[:] = [length]
+    desc.shape.dim[:] = dims
     desc.attr['origin_format'].s = b'ND'
     desc.attr['origin_format_for_int'].i = 2
     desc.attr['format_for_int'].i = 2

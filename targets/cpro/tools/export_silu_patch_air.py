@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Write one ND vector AIR for the GE SiluPatch(x: FP16[N]) -> z: FP32[N] kernel."""
 import argparse
+from math import prod
 import os
 from pathlib import Path
 import sys
@@ -10,15 +11,20 @@ from google.protobuf import descriptor_pool, message_factory
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / 'model'))
-from qwen35_moe_dflash.target.silu_patch_air import GE_TYPE, port_names, vector_desc
+from qwen35_moe_dflash.target.silu_patch_air import GE_TYPE, nd_desc, port_names
 
 NODE_NAME = 'silu_patch'
 
 
-def build_air(numel=None):
+def build_air(numel=None, *, shape=None):
     if numel is not None and numel < 1:
         raise ValueError('numel must be positive')
-    length = -1 if numel is None else numel
+    if shape is None:
+        dims = [-1 if numel is None else numel]
+    else:
+        dims = list(shape)
+        if not dims or any(d < 1 for d in dims) or (numel is not None and prod(dims) != numel):
+            raise ValueError(f'inconsistent static shape {dims} and numel {numel}')
     pool = descriptor_pool.DescriptorPool()
     schema = pool.AddSerializedFile((REPO/'specs/torchair-ge-ir.pb').read_bytes())
     desc = schema.message_types_by_name['ModelDef']
@@ -46,7 +52,7 @@ def build_air(numel=None):
     fp16, fp32 = types['DT_FLOAT16'].number, types['DT_FLOAT'].number
     for ports, dtype in [(data.input_desc, fp16), (data.output_desc, fp16),
                          (op.input_desc, fp16), (op.output_desc, fp32), (net.input_desc, fp32)]:
-        vector_desc(ports.add(dtype=dtype), length)
+        nd_desc(ports.add(dtype=dtype), dims)
     return model.SerializeToString(deterministic=True)
 
 

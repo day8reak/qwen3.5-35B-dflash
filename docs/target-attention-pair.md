@@ -104,7 +104,7 @@ python targets/cpro/tools/export_silu_patch_air.py
 
 在当前 W4 路径，`in_proj_z` 输出 FP16，reshape 保留 dtype。对接时，GDN 的 gated RMSNorm 可以直接调用 `silu_patch(gate)`；kernel 将输入提升到 FP32 再算 SiLU，golden 可用 `F.silu(gate.float())`。FP32 结果与原 RMSNorm 的 FP32 输出相乘，乘完保留 `out.to(input_dtype)`。读完整 T64 的门控 bin 时输入应为 524288 字节，输出应为 1048576 字节。
 
-卷积和两处 W4 MoE 的调用会将 FP32 输出转回原激活 dtype。路由专家的 `x1` 是切片，模型在展平前调用 `contiguous()`，再按逻辑形状恢复输出。[四层模型的运行和精度对比](compile-target-air.md#四层原版改版与-310p-的精度对比)
+卷积和两处 W4 MoE 的调用会将 FP32 输出转回原激活 dtype。四层模型直接使用表中的逻辑形状，并将路由专家的非连续切片变成同形状的连续输入。[四层模型的运行和精度对比](compile-target-air.md#四层原版改版与-310p-的精度对比)
 
 L0–L2 的 310P 与 CPro 逐张量对比见 [GDR、RMSNorm 和门控乘法](target-gdr-prefill-stages.md)。
 

@@ -23,8 +23,10 @@ from qwen35_moe_dflash.toolchain.air_input_shape import inspect_input_shape
 EXPORTER = 'export_glm_model_qwen3_5_moe.py'
 EXPORT_DIR = 'glm_export_air_cpro_4block_64_quant'
 KIND = 'original-cpro-four-layer-prefill64'
-PATCH_KIND = KIND + '-silu-patch'
-ALIGNED_KIND = KIND + '-aligned-silu-patch'
+VECTOR_PATCH_KIND = KIND + '-silu-patch'
+VECTOR_ALIGNED_KIND = KIND + '-aligned-silu-patch'
+PATCH_KIND = VECTOR_PATCH_KIND + '-native-shape'
+ALIGNED_KIND = VECTOR_ALIGNED_KIND + '-native-shape'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
 
@@ -162,11 +164,15 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 fixture['reference_inputs'] = {k: measured[k]['sha256'] for k in REFERENCE_INPUT_NAMES}
             print(f'Reusing original valid19 input files from {base_manifest.parent / "inputs"}', flush=True)
         print(f'(cd {work} && {shlex.join(argv)})', flush=True)
-        subprocess.run(argv, cwd=work, check=True)
+        env = os.environ.copy()
+        shape_trace = work / 'silu-shapes.txt'
+        if kind != KIND:
+            env['QWEN35_SILU_SHAPES'] = str(shape_trace)
+        subprocess.run(argv, cwd=work, env=env, check=True)
         air = work / EXPORT_DIR / 'export.air'
         variant = {}
         if kind != KIND:
-            variant['silu_patch'] = inspect_silu_air(air)
+            variant['silu_patch'] = inspect_silu_air(air, shape_trace)
             boundary = inspect_air(air)
             same_boundary(base_boundary, boundary)
             variant.update(boundary=boundary, original_manifest_sha256=sha(base_manifest))
