@@ -1,4 +1,4 @@
-"""GE port metadata shared by the TorchAir converter and the single-op AIR."""
+"""GE port metadata for the standalone SiluPatch AIR."""
 
 GE_TYPE = 'SiluPatch'
 

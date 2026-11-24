@@ -212,7 +212,7 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-compare
 
 ### SiluPatch 在四层图中的调用
 
-TorchAir 将 `torch.ops.my_ops.silu_patch.default` 导出为 `SiluPatch(x) → z`。Fake 注册给出等长的 FP32 输出。模型在调用前把输入整理成连续的一维 FP16，返回后恢复逻辑形状。卷积和专家分支随原激活 dtype 传给下游，GDN 门控直接以 FP32 乘 RMSNorm 输出。形状、dtype 和 v3 的 ND 格式标记会在导出时核对，实际节点名与长度见 `air/manifest.json` 的 `silu_patch.nodes`。
+导出脚本把 `silu_patch` 的注册放在 `npu_chunk_gated_delta_rule` 旁边，两者共用 `Library("npu", "IMPL", "Meta")`。若当前 PyTorch 缺少 `npu::silu_patch` 的 schema，就用已有的 `m_fragment` 定义它。`@torch.library.impl(m, "silu_patch")` 返回等长的 FP32 Meta 张量。TorchAir 的 converter 将 `torch.ops.npu.silu_patch.default` 导出为 `SiluPatch(x) → z`。模型在调用前把输入整理成连续的一维 FP16，返回后恢复逻辑形状。卷积和专家分支随原激活 dtype 传给下游，GDN 门控直接以 FP32 乘 RMSNorm 输出。导出后只读核对 x/z 的 dtype、静态向量长度和调用次数，实际节点名与长度见 `air/manifest.json` 的 `silu_patch.nodes`。
 
 | S=64 的调用位置 | 每次传入的元素数 | 四层图中的次数 |
 |---|---:|---:|

@@ -11,6 +11,7 @@ from decoder4_original import ALIGNED_KIND, EXPORT_DIR, checked, compile_omg, ou
 from export_silu_patch_air import build_air
 from qwen35_moe_dflash.target.gdn_probe import REGISTRATION
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
+from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import vector_length
 from qwen35_moe_dflash.toolchain.existing_air import select_generated_omc
 
 
@@ -22,11 +23,6 @@ def format_failure(log, names):
             if match and match[1] in names:
                 return match[1]
     return None
-
-
-def ports(op):
-    return [(desc.dtype, tuple(desc.shape.dim), desc.layout)
-            for desc in (*op.input_desc, *op.output_desc)]
 
 
 def outcome(folder, rc, failed):
@@ -85,16 +81,10 @@ def diagnose(base, ddk, diagnosis):
     _, graph = graph_message(path.read_bytes(), 'SiluPatch')
     nodes = {op.name: op for op in graph.op if op.type == 'SiluPatch'}
     print(f'AIR {path} sha256={entry["sha256"]}')
-    counts = Counter()
-    for op in nodes.values():
-        signature = ports(op)
-        if len(op.input_desc) != 1 or len(op.output_desc) != 1:
-            raise ValueError(f'{op.name}: expected one input and one output, got {signature}')
-        shape = signature[0][1]
-        if len(shape) != 1 or shape[0] <= 0 or signature != [(2, shape, 'ND'), (1, shape, 'ND')]:
-            raise ValueError(f'{op.name}: incompatible serialized x/z (dtype, dims, layout): {signature}')
-        counts[shape[0]] += 1
-    print('Static SiluPatch FP16[N] ND -> FP32[N] ND (N: count):', dict(sorted(counts.items())))
+    producers = {op.name: op for op in graph.op}
+    lengths = {name: vector_length(op, producers) for name, op in nodes.items()}
+    counts = Counter(lengths.values())
+    print('Static SiluPatch FP16[N] -> FP32[N] (N: count):', dict(sorted(counts.items())))
     run = base / 'no-platform'
     logs = list(run.glob('omg-*/compile.log'))
     if not logs:
@@ -104,10 +94,12 @@ def diagnose(base, ddk, diagnosis):
     if name not in nodes:
         raise ValueError(f'{log}: no SiluPatch found at the reported empty format list ({name})')
     op = nodes[name]
-    length = op.input_desc[0].shape.dim[0]
+    length = lengths[name]
     consumers = [f'{n.name}({n.type}):input{i}' for n in graph.op
                  for i, edge in enumerate(n.input) if edge == name + ':0']
     print(f'OMG {log}\n{name}: x={list(op.input)} z -> {consumers}')
+    for label, desc in (('x', op.input_desc[0]), ('z', op.output_desc[0])):
+        print(f'{label}: dtype={desc.dtype}, shape={list(desc.shape.dim)}, layout={desc.layout!r}')
     selection = re.compile(r'OpCheckSupport|CheckSupported|opDeviceSupport|GetOutputMatchedFormatConfig|GetOpSupportedFormat|FindOpFormatConfig', re.I)
     token = re.compile(r'(?<!\w)' + re.escape(name) + r'(?!\w)')
     selection_lines = []

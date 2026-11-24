@@ -117,7 +117,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     if dest.exists():
         raise FileExistsError(f'Export already exists: {dest}. Use the existing AIR or choose a new run directory.')
     if kind != KIND:
-        from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import finish_air, stage
+        from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import inspect_silu_air, stage
         from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air, same_boundary
         if base['sources'] != sources or base['config_sha256'] != sha(config):
             raise ValueError(f'Source/config differs from the successful original at {baseline}')
@@ -166,14 +166,14 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         air = work / EXPORT_DIR / 'export.air'
         variant = {}
         if kind != KIND:
-            variant['silu_patch'] = finish_air(air)
+            variant['silu_patch'] = inspect_silu_air(air)
             boundary = inspect_air(air)
             same_boundary(base_boundary, boundary)
             variant.update(boundary=boundary, original_manifest_sha256=sha(base_manifest))
             print(f'Native AIR boundary matched: {len(boundary["inputs"])} inputs, '
                   f'{[row["role"] for row in boundary["outputs"]]}', flush=True)
             variant['silu_patch']['source_sha256'] = {n: sha(staged / n) for n in (
-                EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py', 'models/silu_patch.py', 'models/silu_patch_air.py')}
+                EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py')}
         abi = inspect_input_shape(air)
         files = [identity(p, work) for p in sorted(air.parent.rglob('*')) if p.is_file()]
         files.extend(identity(p, work) for p in sorted((work / 'inputs').glob('*.bin')))

@@ -1,14 +1,43 @@
 """Integrate SiluPatch at the original CPro model's SiLU call sites."""
 from collections import Counter
 from difflib import unified_diff
-from pathlib import Path
-import re
 from shutil import copyfile
 
 from ..original_target_source import EXPORTER, SOURCE_FILES
-from ..silu_patch_air import GE_TYPE, port_names, vector_desc
+from ..silu_patch_air import GE_TYPE
 
 MODELING = 'models/modeling_qwen3_5_moe_hiai_cpro.py'
+
+
+# Insert beside ChunkGatedDeltaRule and use the same npu Meta library and converter registry.
+REGISTRATION = '''if not hasattr(torch.ops.npu, "silu_patch"):
+    m_fragment.define("silu_patch(Tensor x) -> Tensor")
+
+
+@torch.library.impl(m, "silu_patch")
+def silu_patch_meta(x):
+    if x.ndim != 1 or x.dtype != torch.float16:
+        raise ValueError("SiluPatch expects a one-dimensional FP16 input")
+    return torch.empty_like(x, dtype=torch.float32)
+
+
+@torchair.register_fx_node_ge_converter(torch.ops.npu.silu_patch.default)
+def convert_silu_patch(x: Tensor):
+    return torchair.ge.custom_op("SiluPatch", inputs={"x": x}, outputs=["z"])
+
+
+'''
+
+MODEL_HELPERS = '''def silu_patch(x):
+    flat = x.to(torch.float16).contiguous().view(x.numel())
+    return torch.ops.npu.silu_patch(flat).reshape(x.shape)
+
+
+def silu_same_dtype(x):
+    return silu_patch(x).to(x.dtype)
+
+
+'''
 
 
 def stage(source, dest, *, aligned=False):
@@ -20,15 +49,11 @@ def stage(source, dest, *, aligned=False):
         copyfile(init, dest / 'models/__init__.py')
     else:
         (dest / 'models/__init__.py').touch()
-    for name in ('silu_patch.py', 'silu_patch_air.py'):
-        copyfile(Path(__file__).resolve().parents[1] / name, dest / 'models' / name)
-
+    gdr_meta = '@torch.library.impl(m, "npu_chunk_gated_delta_rule")'
     edits = {
-        EXPORTER: [('\nimport torchair\n', '\nimport torchair\nfrom models.silu_patch import register_ge\n'
-                   'register_ge(torchair)\n')],
+        EXPORTER: [(gdr_meta, REGISTRATION + gdr_meta)],
         MODELING: [
-            ('import torch.nn.functional as F\n', 'import torch.nn.functional as F\n'
-             'from .silu_patch import silu_patch, silu_same_dtype\n'),
+            ('def rotate_half(', MODEL_HELPERS + 'def rotate_half('),
             ('F.silu(gate.to(torch.float32))', 'silu_patch(gate)'),
             ('F.silu(conv_out)', 'silu_same_dtype(conv_out)'),
             ('self.act_fn = ACT2FN[config.hidden_act]',
@@ -61,54 +86,53 @@ def stage(source, dest, *, aligned=False):
             text = preserve_source(text, ast.unparse(ast.fix_missing_locations(tree)))
         path.write_text(text)
     diff = []
-    for name in (EXPORTER, MODELING, 'models/silu_patch.py', 'models/silu_patch_air.py'):
-        original = source / name
-        before = original.read_text().splitlines(True) if original.is_file() else []
+    for name in (EXPORTER, MODELING):
+        before = (source / name).read_text().splitlines(True)
         diff.extend(unified_diff(before, (dest / name).read_text().splitlines(True),
                                  fromfile='original/' + name, tofile='modified/' + name))
     (dest / 'source.diff').write_text(''.join(diff))
     return dest / EXPORTER
 
 
-def finish_air(path):
+def vector_length(op, producers):
+    """Read the native AIR descriptors or the literal used to flatten the input."""
+    inputs = [edge for edge in op.input if edge and not edge.endswith(':-1')]
+    if len(inputs) != 1 or len(op.input_desc) != 1 or len(op.output_desc) != 1:
+        raise ValueError(f'{op.name}: expected one input and one output')
+    x, z = op.input_desc[0], op.output_desc[0]
+    if (x.dtype, z.dtype) != (2, 1):  # GE proto DT_FLOAT16 / DT_FLOAT
+        raise ValueError(f'{op.name}: expected FP16 x -> FP32 z, got {x.dtype} -> {z.dtype}')
+    shapes = {tuple(d.shape.dim) for d in (x, z) if d.shape.dim}
+    if any(len(shape) != 1 or shape[0] == 0 for shape in shapes):
+        raise ValueError(f'{op.name}: expected vector ports, got {shapes}')
+    lengths = {shape[0] for shape in shapes if shape[0] > 0}
+    # TorchAir can omit intermediate dimensions even with dynamic=False.
+    # The model calls view(x.numel()), which leaves a positive one-element Const.
+    source = producers[inputs[0].rsplit(':', 1)[0]]
+    if source.type == 'Reshape' and len(source.input) >= 2:
+        shape_op = producers[source.input[1].rsplit(':', 1)[0]]
+        if shape_op.type == 'Const' and 'value' in shape_op.attr:
+            tensor = shape_op.attr['value'].t
+            types = tensor.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
+            for dtype, size in (('DT_INT32', 4), ('DT_INT64', 8)):
+                if tensor.desc.dtype == types[dtype].number and len(tensor.data) == size:
+                    n = int.from_bytes(tensor.data, 'little', signed=True)
+                    if n > 0:
+                        lengths.add(n)
+    if len(lengths) != 1:
+        raise ValueError(f'{op.name}: missing or inconsistent static vector lengths {lengths}')
+    return lengths.pop()
+
+
+def inspect_silu_air(path):
     from .decode_cache_control import graph_message
 
-    message, graph = graph_message(path.read_bytes(), GE_TYPE)
-    nodes = []
-    changed = 0
-    for op in graph.op:
-        if op.type != GE_TYPE:
-            continue
-        if (len([e for e in op.input if e and not e.endswith(':-1')]) != 1
-                or len(op.input_desc) != 1 or len(op.output_desc) != 1):
-            raise ValueError(f'{op.name}: expected one input x and one output z')
-        before = op.SerializeToString(deterministic=True)
-        x, z = op.input_desc[0], op.output_desc[0]
-        # Some TorchAir writers clear intermediate shapes. The converter names the
-        # node from the actual flat input's FakeTensor length before serialization.
-        tag = re.search(r'(?:^|/)silu_patch_n(\d+)(?:_\d+)?$', op.name)
-        shapes = {tuple(d.shape.dim) for d in (x, z) if d.shape.dim}
-        if tag:
-            shapes.add((int(tag[1]),))
-        if len(shapes) != 1:
-            raise ValueError(f'{op.name}: inconsistent or missing x/z shapes {shapes}')
-        shape = shapes.pop()
-        if len(shape) != 1 or shape[0] <= 0:
-            raise ValueError(f'{op.name}: expected a static vector, got {shape}')
-        for desc, name, dtype in ((x, 'x', 2), (z, 'z', 1)):  # GE proto DT_FLOAT16 / DT_FLOAT
-            if desc.dtype != dtype or (desc.name and desc.name != name):
-                raise ValueError(f'{op.name}: expected {name} dtype={dtype}, got {desc.name!r} dtype={desc.dtype}')
-            vector_desc(desc, shape[0])
-        port_names(op, 'x', 'z')
-        changed += before != op.SerializeToString(deterministic=True)
-        nodes.append(dict(name=op.name, numel=shape[0]))
-    # Three GDN convs, three GDN gates, four shared experts and four routed experts.
+    _, graph = graph_message(path.read_bytes(), GE_TYPE)
+    producers = {op.name: op for op in graph.op}
+    nodes = [dict(name=op.name, numel=vector_length(op, producers))
+             for op in graph.op if op.type == GE_TYPE]
     sizes = Counter(n['numel'] for n in nodes)
     if sizes != {64*8192: 3, 64*4096: 3+4, 64*512: 4}:
         raise ValueError(f'Unexpected SiluPatch nodes in the four-layer W4 T64 AIR: {dict(sizes)}')
-    if changed:
-        # Restore the v3 port-format hints on the custom nodes before hashing the AIR.
-        path.write_bytes(message.SerializeToString())
-    print(f'{GE_TYPE}: {len(nodes)} nodes, FP16 x -> FP32 z, ND vectors {dict(sizes)}', flush=True)
-    return dict(type=GE_TYPE, nodes=nodes, format='ND', input='x:float16', output='z:float32',
-                normalized_nodes=changed)
+    print(f'{GE_TYPE}: {len(nodes)} nodes, FP16 x -> FP32 z, vector lengths {dict(sizes)}', flush=True)
+    return dict(type=GE_TYPE, nodes=nodes, input='x:float16', output='z:float32')
