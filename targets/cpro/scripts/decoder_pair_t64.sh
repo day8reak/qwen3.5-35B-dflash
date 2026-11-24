@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Two independent complete native-SiLU prefill decoders on measured 310P inputs.
 set -euo pipefail
-if [[ $# != 1 || ( "$1" != air && "$1" != board ) ]]; then
-    echo "Usage: bash $0 {air|board}" >&2
+if ! [[ ( $# == 1 && ( "$1" == air || "$1" == board ) ) || ( $# == 2 && "$1" == full-chain ) ]]; then
+    echo "Usage: bash $0 {air|board}  OR  bash $0 full-chain <decoder-pair-prefill-board-run>" >&2
     exit 2
 fi
 export REPO_DIR="$(cd -- "$(dirname -- "$0")/../../.." && pwd)"
@@ -20,7 +20,17 @@ in_env() {
     else conda run --no-capture-output -n "$env_name" "$@"; fi
 }
 set -x
-if [[ "$1" == air ]]; then
+if [[ "$1" == full-chain ]]; then
+    : "${CPRO_DDK_ROOT:?}" "${SN:?}" "${BIP:?}"
+    parent="$(realpath -e -- "$2")"
+    for layer in L0 L3; do test -s "$parent/$layer/air/manifest.json"; done
+    run="$(mktemp -d "$parent/complete-decoders-XXXXXXXX")"
+    echo "Complete decoder results: $run/comparison.json"
+    in_env custom_pypto python -u "$tool" full-chain --parent "$parent" --run "$run" \
+        --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
+        --ddk-root "$CPRO_DDK_ROOT" --gdr-source "${GDR_SOURCE:-$CPRO_DDK_ROOT/ddk/ascendc/ops/impl/custom/chunk_gated_delta_rule.cpp}" \
+        --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+elif [[ "$1" == air ]]; then
     mkdir -p "$fixture"
     air="${DECODER_AIR_ON_78:-}"
     if [[ -z "$air" ]]; then

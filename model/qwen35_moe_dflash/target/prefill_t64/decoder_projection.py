@@ -28,8 +28,8 @@ def probe_abi(document, enums, meta):
         raise ValueError(f"{meta['output_edge']}: source {meta['output_dtype']} compiled to {dtype}")
     output = dict(name='readout', dtype=dtype, shape=shape)
     io = bind_compiled(document, meta['inputs'], output, enums)
-    if len(io['inputs']) != 1:
-        raise ValueError('Projection probe must consume the retained activation')
+    if len(io['inputs']) != len(meta['inputs']) or (meta['kind'] == whole_run._PROBE and len(io['inputs']) != 1):
+        raise ValueError('Compiled readout does not consume the selected inputs')
     # The descriptor above came from NetOutput. There is no numerical reference at this edge.
     del io['source_dtype_preserved'], io['outputs'][0]['golden_dtype']
     io['output_binding'] = 'SOLE_COMPILED_NETOUTPUT'

@@ -24,6 +24,8 @@ from ..prefill_smoke_plan import _TOOL_TYPES
 from . import whole_trace
 
 _PROBE = 'decoder-tail-projection-probe'
+_BLOCK_STAGE = 'complete-decoder-stage'
+_READOUT_KINDS = (_PROBE, _BLOCK_STAGE)
 _REMAINDER = 'decoder-tail-after-projections'
 _DECODER_KINDS = ('single-cpro-decoder', 'single-cpro-decoder-tail', _REMAINDER)
 
@@ -43,7 +45,7 @@ def abi(model, ddk, meta):
     schema = load_schema(ddk / 'tools/tools_omg/master/lib64/libai_fmk_graph_proto_host.so')
     part, = [p for p in read_container(model)['partitions'] if p['type'] == 0]
     graph = schema.decode(read_partition(model, part, max_bytes=max(1, part['bytes'])), 'ModelDef')
-    if meta['kind'] == _PROBE:
+    if meta['kind'] in _READOUT_KINDS:
         from .decoder_projection import probe_abi
         return probe_abi(graph, _enum_fields(schema), meta)
     output = meta['golden']
@@ -77,12 +79,12 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
     manifest = (air / 'manifest.json').read_bytes()
     manifest_sha = hashlib.sha256(manifest).hexdigest()
     meta = json.loads(manifest)
-    if meta['kind'] not in ('single-cpro-prefill40', _PROBE, *_DECODER_KINDS):
+    if meta['kind'] not in ('single-cpro-prefill40', *_READOUT_KINDS, *_DECODER_KINDS):
         raise ValueError('Expected a whole prefill or independent decoder AIR manifest')
     digest = kernel_identity(ddk, source)
     assets = shared_assets(air, meta, baseline, digest)
     air_file = checked(air, meta['air'])
-    if not meta['weights'] and meta['kind'] != _PROBE:
+    if not meta['weights'] and meta['kind'] not in _READOUT_KINDS:
         raise ValueError('Missing W4 weight inventory')
     def stamp(path):
         info = path.stat()
@@ -103,7 +105,7 @@ def compile_model(run, ddk, source, diagnosis, baseline=None):
         env, _ = prepare_tbe_compatibility(ddk, diagnosis, out / 'tbe-compat', inherited=env)
     shapes = ';'.join(s['name'] + ':' + ','.join(map(str, s['shape'])) for s in meta['inputs'])
     # Small projection diagnostics fit in one OMC, including any retained FileConstants.
-    external = meta['kind'] != _PROBE
+    external = meta['kind'] not in _READOUT_KINDS
     argv = [str(omg), '--framework=1', '--model=input.air', '--output=model', '--target=omc',
             '--platform=kirinx90', '--use_origin_format=true', '--weight_data_type=FP16',
             '--limit_partition_size=false', f'--save_weights_as_external_data={str(external).lower()}',
@@ -191,7 +193,7 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
     primary = checked(omc, compiled['primary'])
     external_files = compiled['weights']
     storage = 'external' if external_files else 'embedded'
-    if compiled.get('weight_storage', storage) != storage or (not external_files and meta['kind'] != _PROBE):
+    if compiled.get('weight_storage', storage) != storage or (not external_files and meta['kind'] not in _READOUT_KINDS):
         raise ValueError('OMC weight storage and external file inventory disagree')
     files = [('payload/' + primary.name, primary, compiled['primary'])]
     for row in external_files:
@@ -264,7 +266,7 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
                 '--direct_from_file=true', '--enable_item=1', '--output_dir=' + str(remote / 'outputs')]
         script = out / 'run.sh'
         report_logs = ('if [ "$rc" != 0 ]; then cat tool.stdout tool.stderr; else tail -n 10 tool.stdout tool.stderr; fi'
-                       if meta['kind'] in (*_DECODER_KINDS, _PROBE) else 'tail -n 10 tool.stdout tool.stderr')
+                       if meta['kind'] in (*_DECODER_KINDS, *_READOUT_KINDS) else 'tail -n 10 tool.stdout tool.stderr')
         script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\nLD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
                           + ' >tool.stdout 2>tool.stderr\nrc=$?\necho "$rc" > tool.exitcode\n'
                           + report_logs + '\nexit "$rc"\n')
@@ -275,7 +277,7 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
             label = f"L{meta['layer']} post-attention decoder tail"
         if meta['kind'] == _REMAINDER:
             label = f"L{meta['layer']} decoder tail with retained projection outputs"
-        if meta['kind'] == _PROBE:
+        if meta['kind'] in _READOUT_KINDS:
             label = f"L{meta['layer']} {meta['output_edge']} probe"
         print(f'Running one {label} HIAI V2 prefill (weight_storage={storage}, '
               f'external_files={len(external_files)})', flush=True)
@@ -296,12 +298,12 @@ def board(run, tool_path, baseline=None, *, slot_config=None):
         digest, name = matches[0]
         remote_file = _board_path(str(remote / 'outputs' / name))
         output = out / ('hidden.bin' if decoder else 'logits-and-hidden.bin' if baseline else 'logits.bin')
-        if meta['kind'] == _PROBE:
+        if meta['kind'] in _READOUT_KINDS:
             output = out / 'output.bin'
         hdc.receive(remote_file, output)
         if sha(output) != digest:
             raise ValueError('HDC output digest differs from device')
-        if meta['kind'] == _PROBE:
+        if meta['kind'] in _READOUT_KINDS:
             result = dict(status='EXECUTED', output=dict(identity(output, out), dtype=result_spec['dtype'],
                           shape=result_spec['shape']), numerical_validation='NOT_RUN')
             save_json(out / 'result.json', result)

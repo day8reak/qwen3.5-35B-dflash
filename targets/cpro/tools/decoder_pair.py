@@ -35,6 +35,10 @@ def main():
     remainder.add_argument('--run', type=Path, required=True)
     remainder.add_argument('--projections', type=Path, required=True)
     remainder.add_argument('--runtime-config', type=Path, required=True)
+    complete = actions.add_parser('full-chain', help='score both complete T64 decoders using board outputs between OMCs')
+    complete.add_argument('--parent', type=Path, required=True, help='retained complete decoder-pair board run')
+    complete.add_argument('--run', type=Path, required=True)
+    complete.add_argument('--runtime-config', type=Path, required=True)
     execute = actions.add_parser('run', help='on the DDK host, pull both cases, compile, run HIAI V2, and score',
                                  epilog='If the original board/attempt.json is missing, use a matching --trace '
                                         'or set SN (board serial) and BIP (HDC server host:port).')
@@ -45,7 +49,7 @@ def main():
     export.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
     export.add_argument('--reference', type=Path, help='measured T64/valid19 310P decoder capture')
     execute.add_argument('--remote-air', type=Path, help='two-case or 42-case AIR on the export host (default: RUN/air)')
-    for action in (execute, tail, probes, remainder):
+    for action in (execute, tail, probes, remainder, complete):
         action.add_argument('--ddk-root', required=True, type=Path)
         action.add_argument('--gdr-source', required=True, type=Path)
         action.add_argument('--tbe-diagnosis', type=Path)
@@ -62,6 +66,12 @@ def main():
         return 0
     from qwen35_moe_dflash.common.artifacts import output_path
     run = output_path(a.run)
+    if a.action == 'full-chain':
+        from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
+        from qwen35_moe_dflash.target.prefill_t64.decoder_full_chain import run_pair as run_complete
+        ok = run_complete(a.parent.resolve(), run, a.ddk_root.resolve(), a.gdr_source.resolve(), a.tbe_diagnosis,
+                          a.tool or DEFAULT_TOOL, a.runtime_config.resolve(strict=True))
+        return 0 if ok else 1
     if a.action == 'tail-remainder':
         from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
         from qwen35_moe_dflash.target.prefill_t64.decoder_remainder import run_remainder
