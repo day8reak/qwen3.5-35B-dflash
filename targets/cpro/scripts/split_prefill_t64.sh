@@ -91,7 +91,11 @@ sys.exit(not (m["status"]=="CAPTURED" and ok))' "$dir/manifest.json" "$mode"; th
         args+=(--capture "$capture" --baseline "${ORIGINAL4_RUN:-$tests/decoder4-original-t64-01}")
         if [[ -n ${CPRO_SOURCE:-} ]]; then args+=(--source "$CPRO_SOURCE"); fi
         if [[ -n ${TARGET_CONFIG:-} ]]; then args+=(--config "$TARGET_CONFIG"); fi
-        in_env qwen3_5_cpro python -u "$tool" "${args[@]}";;
+        in_env qwen3_5_cpro python -u "$tool" "${args[@]}"
+        cpu_args=(--mode "$mode" --run "$run" --capture "$capture")
+        if [[ -n ${TARGET_SOURCE:-} ]]; then cpu_args+=(--source "$TARGET_SOURCE"); fi
+        in_env qwen3_5_w4 env PYTHONPATH="$repo/model${PYTHONPATH:+:$PYTHONPATH}" python -u -m \
+            qwen35_moe_dflash.target.prefill_t64.split_cpu_reference "${cpu_args[@]}";;
     board)
         args+=(--ddk "${CPRO_DDK_ROOT:?}" --diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
                --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" "${recovery[@]}")
@@ -100,5 +104,6 @@ sys.exit(not (m["status"]=="CAPTURED" and ok))' "$dir/manifest.json" "$mode"; th
         in_env custom_pypto python -u "$tool" "${args[@]}";;
     compare)
         if [[ -n "$replay" ]]; then args+=(--replay "$replay"); fi
+        if [[ -n ${SPLIT_REMOTE_RUN:-} ]]; then args+=(--remote-run "$SPLIT_REMOTE_RUN"); fi
         in_env custom_pypto python -u "$tool" "${args[@]}";;
 esac

@@ -24,7 +24,7 @@ def norm(x, module, *, gated=False):
     return value if gated else value.to(x.dtype)
 
 
-def verify_floating_weights(model, checkpoint):
+def verify_floating_weights(model, checkpoint, *, start_layer=0):
     """The source loader can skip missing weights. Verify every floating checkpoint parameter the CPU uses."""
     names = ['norm.weight']
     for i, layer in enumerate(model.model.layers):
@@ -37,10 +37,16 @@ def verify_floating_weights(model, checkpoint):
             tail.extend(['self_attn.q_norm.weight', 'self_attn.k_norm.weight'])
         names.extend(f'layers.{i}.{suffix}' for suffix in tail)
     prefixes = ['model.language_model.', 'model.', '']
-    tensors = read_tensors(checkpoint, {prefix + name for name in names for prefix in prefixes})
+    def checkpoint_name(name):
+        if name.startswith('layers.'):
+            _, local, suffix = name.split('.', 2)
+            return f'layers.{start_layer + int(local)}.{suffix}'
+        return name
+    tensors = read_tensors(checkpoint, {prefix + checkpoint_name(name) for name in names for prefix in prefixes})
     sources = {}
     for name in names:
-        matches = [prefix + name for prefix in prefixes if prefix + name in tensors]
+        key = checkpoint_name(name)
+        matches = [prefix + key for prefix in prefixes if prefix + key in tensors]
         if len(matches) != 1:
             raise ValueError(f'Expected a unique checkpoint tensor for {name}, found {matches}')
         param = model.model.get_parameter(name).detach()
@@ -105,7 +111,7 @@ class CpuPrefill:
                               mul_output=product, gated_return=gated)
         return y, (next_history, torch.from_numpy(final).to(state.dtype))
 
-    def attention(self, x, layer, prefix, pair, args, *, stages=None):
+    def attention(self, x, layer, prefix, pair, args, *, stages=None, valid_length=None):
         heads, kv, d = layer.num_heads, layer.num_key_value_heads, layer.head_dim
         b, t = x.shape[:2]
 
@@ -136,6 +142,13 @@ class CpuPrefill:
             after = before.clone()
             after[pages, :, offsets, :] = dense.reshape(t, kv*d//16, 16).to(after.dtype)
             states.append(after)
+        if valid_length is not None:
+            if not 0 < valid_length <= t or 'kv_length' in args:
+                raise ValueError('Invalid fresh-prefill attention length')
+            # K/V writeback above covers all physical positions. Only real
+            # query rows enter softmax; padded rows can be fully masked.
+            t = valid_length
+            q, k, v, gate = (a[:, :t] for a in (q, k, v, gate))
         q = q.transpose(1, 2).double()
         length = args.get('kv_length', t)
         if 'kv_length' in args:
@@ -145,7 +158,10 @@ class CpuPrefill:
             k, v = [cache[pages, :, logical % layer.block_size, :].reshape(b, length, kv, d) for cache in states]
         k, v = [a.transpose(1, 2).repeat_interleave(heads//kv, dim=1).double() for a in (k, v)]
         logits = (q @ k.transpose(-1, -2)) * layer.scaling
-        prob = torch.softmax(logits + args['attention_mask'][..., :length].double(), dim=-1)
+        mask = args['attention_mask'][..., :length]
+        if valid_length is not None:
+            mask = mask[..., :t, :]
+        prob = torch.softmax(logits + mask.double(), dim=-1)
         core = (prob @ v).to(torch.float16).transpose(1, 2)
         y = (core * gate.sigmoid()).reshape(b, t, heads*d)
         if stages is not None:

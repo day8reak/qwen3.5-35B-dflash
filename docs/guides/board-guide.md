@@ -17,7 +17,7 @@
 | `full` | 从 310P 实测 L2 输出跑 L3，再接原模型 norm/head | L3 更新后的 K 和 V |
 | `40` | 从 embedding 跑 L0 至 L39，逐层传 CPro 的实际 hidden，在 L39 后接 norm/head | 全部 30 个 linear 层的两种状态和 10 个 full 层的 K、V |
 
-78 负责采集 310P 参考并导出 AIR，53 负责编译、上板和对比。两台主机拉取同一版代码，沿用原实验环境。以下示例中的 `MODE` 可取表中任一值，两端须相同。
+78 的 `air` 命令采集或复用 310P 参考、导出 AIR，并用原 W4 权重计算单独的 CPU 参考。已有同版 AIR 时可以再跑这条命令补 CPU 参考。53 负责编译、上板和对比。两台主机拉取同一版代码，以下示例的 `MODE` 在两端取相同值。
 
 ```bash
 # 78
@@ -41,7 +41,18 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode 40 --recovery
 ```
 
-40 层显式起点的写法如 `--from-stage L03/out_proj`，可用段名见各层 `plan.json`。运行结束会自动生成对比。linear 的报告是 `replay-*/comparison.json`，full 和 40 的汇总是 `replay-*/prefill.json`，各层明细是 `Lxx/comparison.json`。报告包括 out_proj、decoder hidden 的 valid19 与 token18、读出层 token18 的全词表 logits 与 top1，以及各层状态。K/V 分别比较 19 个有效位置，并校验物理 64 行写入范围以外的缓存页。只重算精度可在 53 执行 `compare --mode "$MODE"`，用 `--replay DIR` 可选定一次已完成的运行。
+40 层显式起点的写法如 `--from-stage L03/out_proj`，可用段名见各层 `plan.json`。运行结束会自动生成对比。linear 的报告是 `replay-*/comparison.json`，full 和 40 的汇总是 `replay-*/prefill.json`，各层明细是 `Lxx/comparison.json`。同目录的 `matrices.csv` 对每个指标给出 CPU、310P、CPro 的 3×3 矩阵，行是 actual，列是 reference。精度通过条件沿用 CPro 对 310P，logits 另要求 top1 一致。
+
+| 输出 | 比较范围 |
+| --- | --- |
+| out_proj、decoder hidden | 前 19 行合并为 valid19 |
+| norm/head 返回的 logits | 位置 18 的一行全词表，另记三方 top1 |
+| conv_state、recurrent_state | 本次 prefill 后的完整状态。卷积历史取 T64 的末四行，递归累计 19 个有效 token |
+| key_cache、value_cache | 分别比较 19 个有效位置，另校验 64 个物理写入位置以外的页 |
+
+CPU 在 40 层模式逐层传自己的 hidden，在 310P 的分段边界同步清零 padding。对 19 个位置之外的 CPU 行，attention 分支输出按零处理，残差和 MoE 仍传播。这一约定影响后续层的物理卷积历史。单测 full 模式的 CPU 和 CPro 都以同一份 L2 实测输出为入口。
+
+已有修正版板端输出时，在 53 运行 `bash targets/cpro/scripts/split_prefill_t64.sh compare --mode "$MODE"`，可加 `--replay DIR`。显式指定失败的 replay 时，只对已返回的输出生成矩阵，并标记未完成。
 
 若 V2 在同一段反复加载失败，在 53 读取已有尝试的设备日志。以下示例读取一次失败的 `decoder_hidden`，在命令末尾追加其他失败段的目录即可对比。脚本核对 OMC、外置权重和有序输入的哈希，使用每次调用的设备时间和 client_tid 从同一份 HiLog 中提取记录。命令只读取板端文件，诊断结果写到第一段回执旁的 `load-diagnostics-*`。
 

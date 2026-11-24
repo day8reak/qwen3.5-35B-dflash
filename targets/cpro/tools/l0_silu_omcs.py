@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile and replay the one-layer native CPro decoder with four singleton SiluPatch OMCs."""
 import argparse
+import csv
 from functools import partial
 import hashlib
 import json
@@ -16,15 +17,16 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 from decoder4_original import (L0_DIR, L0_KIND, compile_log_text, compile_omg, export,
                                original_filename, ssh_bundle)
-from decoder4_prefill import pull_air
+from decoder4_prefill import pull_air, ssh_file
 from export_silu_patch_air import build_air
 from parse_model_json import GE_PROTO, inspect, read_omc
+from qwen35_moe_dflash.common.accuracy import ERROR_RATIO_FIELDS, THRESHOLDS
 from qwen35_moe_dflash.common.artifacts import output_path
 from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
-from qwen35_moe_dflash.target.prefill_t64.l0_split import contracts, plan, score, slice_air
+from qwen35_moe_dflash.target.prefill_t64.l0_split import CPU_BASIS, contracts, plan, score, slice_air
 
 
 def load(path):
@@ -263,7 +265,39 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
     return out
 
 
-def compare(bundle, replay, *, allow_failed=False):
+def ssh_cpu(client, remote, staged):
+    staged.mkdir()
+    manifest = staged/'manifest.json'
+    ssh_file(client, Path(remote)/manifest.name, manifest)
+    for role, row in load(manifest)['outputs'].items():
+        filename = row['path']
+        if Path(filename).name != filename or filename != role + '.bin':
+            raise ValueError(f'Invalid CPU output path: {filename}')
+        ssh_file(client, Path(remote)/filename, staged/filename, row)
+
+
+def write_matrices(path, scores):
+    backends = ('cpu', '310p', 'cpro')
+    first = scores['cpro']['310p']
+    with tempfile.NamedTemporaryFile(mode='w', newline='', dir=path.parent, delete=False) as f:
+        writer = csv.DictWriter(f, fieldnames=['operator', 'scope', 'metric', 'actual', *backends])
+        writer.writeheader()
+        for role, scopes in first.items():
+            for scope in scopes:
+                for field in (*THRESHOLDS, 'mean_abs', 'max_abs', *ERROR_RATIO_FIELDS, 'reference_metrics_passed'):
+                    show = field in ('cosine', 'relative_l2', 'error_ratio')
+                    if show:
+                        print(f'\n{role}  {scope}  {field}\nactual\\reference              CPU           310P           CPro')
+                    for actual in backends:
+                        row = {ref: scores[actual][ref][role][scope][field] for ref in backends}
+                        writer.writerow(dict(operator=role, scope=scope, metric=field, actual=actual, **row))
+                        if show:
+                            print(actual.ljust(16), *(format(value, '14.9g') if value is not None else '           n/a'
+                                                      for value in row.values()))
+    Path(f.name).replace(path)
+
+
+def compare(bundle, replay, *, allow_failed=False, remote_air=None):
     receipt = load(replay/'chain.json')
     partial = allow_failed and receipt['status'] == 'FAILED'
     if (receipt['status'] != 'EXECUTED' and not partial) or receipt['bundle_sha256'] != sha(bundle/'manifest.json'):
@@ -275,8 +309,24 @@ def compare(bundle, replay, *, allow_failed=False):
     if partial:
         print(f"Incomplete replay at {receipt['failed_stage']}; missing outputs: {missing}", flush=True)
         specs = {k: v for k, v in specs.items() if k in receipt['outputs']}
-    results = score({k: read_array(replay, v) for k, v in receipt['outputs'].items()},
-                    {k: read_array(bundle, reference['tensors'][k]) for k in specs}, specs)
+    cpu_dir = bundle.parent/'cpu'
+    if not cpu_dir.exists():
+        remote_cpu = (remote_air or bundle).parent/'cpu'
+        print(f'Reading CPU reference from {remote_cpu} on the export host', flush=True)
+        pull_air(bundle.parent, remote_cpu, destination_name='cpu', ssh_download=ssh_cpu)
+    cpu = load(cpu_dir/'manifest.json')
+    mode = ('linear' if not meta.get('layer', 0) else 'full') if meta.get('standalone', True) else '40'
+    if ((cpu['basis'], cpu['mode'], cpu['layer'], cpu['capture_sha256']) !=
+            (CPU_BASIS, mode, meta.get('layer', 0), reference['capture_sha256'])):
+        raise ValueError(f'{cpu_dir}: CPU reference does not match the mode, layer and 310P capture')
+    if not partial and set(receipt['outputs']) != set(specs):
+        raise ValueError(f'{replay}: incomplete decoder outputs')
+    values = {backend: {k: read_array(folder, records[k]) for k in specs}
+              for backend, folder, records in [('cpu', cpu_dir, cpu['outputs']), ('310p', bundle, reference['tensors']),
+                                               ('cpro', replay, receipt['outputs'])]}
+    pairs = {a: {b: score(x, y, specs, reference_is_310p=b == '310p') for b, y in values.items()}
+             for a, x in values.items()}
+    results = pairs['cpro']['310p']
     passed = not partial and all(row['passed'] for scopes in results.values() for row in scopes.values())
     status = 'INCOMPLETE' if partial else ('PASSED' if passed else 'FAILED_ACCURACY')
     report = dict(status=status, physical_rows=64, valid_rows=19,
@@ -286,14 +336,16 @@ def compare(bundle, replay, *, allow_failed=False):
     if partial:
         report.update(failed_stage=receipt['failed_stage'], missing_outputs=missing)
     path = replay/('partial-comparison.json' if partial else 'comparison.json')
-    save_json(path, report)
-    for role, scopes in results.items():
-        for scope, m in scopes.items():
-            print(f'{role:20} {scope:10} cosine={m["cosine"]} rel_L2={m["relative_l2"]} '
-                  f'RMSE={m["rmse"]} error_ratio={m["error_ratio"]} passed={m["passed"]}')
+    matrices = replay/('partial-matrices.csv' if partial else 'matrices.csv')
+    write_matrices(matrices, pairs)
+    report.update(matrices=identity(matrices, replay), cpu_reference_sha256=sha(cpu_dir/'manifest.json'),
+                  gate_comparison='cpro_vs_310p')
     if 'logits' in results:
-        logits = results['logits']['token18']
-        print(f'Token 18 top1: CPro={logits["actual_top1"]} 310P={logits["native_top1"]}')
+        report['top1_token18'] = {b: int(v['logits'].argmax()) for b, v in values.items()}
+    save_json(path, report)
+    print('Three-backend matrices:', matrices, flush=True)
+    if 'logits' in results:
+        print('Logits token18 top1:', report['top1_token18'])
     if reference['conv_history'] is not None:
         print('ConvState control:', report['conv_state_control'], '310P history:', report['conv_history_310p'])
     print(report['status'], path, flush=True)
@@ -348,7 +400,8 @@ def main():
             replay = next((f.parent for f in files if load(f)['status'] == 'EXECUTED'), None)
             if not replay:
                 p.error(f'No completed L0 chain in {run}')
-    return 0 if compare(bundle, replay, allow_failed=a.mode == 'compare' and a.replay is not None) else 1
+    return 0 if compare(bundle, replay, allow_failed=a.mode == 'compare' and a.replay is not None,
+                        remote_air=a.remote_air) else 1
 
 
 if __name__ == '__main__':

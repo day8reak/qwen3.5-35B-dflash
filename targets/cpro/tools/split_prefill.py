@@ -77,8 +77,9 @@ def run_board(args, run, layers):
             key = f'L{i:02d}'
             case, dst = run/key, out/key
             bundle = case/'air'
+            remote_air = (args.remote_run or run)/key/'air'
             if not bundle.exists():
-                pull_air(case, (args.remote_run or run)/key/'air', ssh_download=partial(ssh_bundle, kind=SPLIT_KIND))
+                pull_air(case, remote_air, ssh_download=partial(ssh_bundle, kind=SPLIT_KIND))
             meta = load(bundle/'manifest.json')
             check_bundle(meta, i, layers)
             origin = meta['original_manifest_sha256']
@@ -117,7 +118,7 @@ def run_board(args, run, layers):
                     from_stage=start_stage if i == start_layer and checkpoint else None, out=dst, shared_silu=run/'silu-omc')
             receipt = load(dst/'chain.json')
             hidden = checked(dst, receipt['outputs']['decoder_hidden'])
-            passed = compare(bundle, dst)
+            passed = compare(bundle, dst, remote_air=remote_air)
             summary['layers'].append(dict(layer=i, passed=passed, hidden_sha256=receipt['outputs']['decoder_hidden']['sha256'],
                                           report=f'{key}/comparison.json', report_sha256=sha(dst/'comparison.json')))
             save_json(manifest, summary)
@@ -150,12 +151,22 @@ def main():
         capture(a.source.resolve(strict=True), a.config, None, a.capture, states=True)
         return True
     if a.action == 'compare':
-        replay = previous_replay(run, a.mode, a.replay, completed=True)
+        replay = previous_replay(run, a.mode, a.replay, completed=a.replay == 'auto')
         report = load(replay/'prefill.json')
-        if [s['layer'] for s in report['layers']] != layers or report['status'] not in ('PASSED', 'FAILED_ACCURACY'):
-            raise ValueError(f'Incomplete {a.mode} replay: {replay}')
-        passed = [compare(run/f'L{i:02d}'/'air', replay/f'L{i:02d}') for i in layers]
-        return all(passed)
+        finished = report['status'] in ('PASSED', 'FAILED_ACCURACY')
+        if finished and [s['layer'] for s in report['layers']] != layers:
+            raise ValueError(f'Incomplete layer list in {replay}')
+        passed = []
+        for i in layers:
+            key = f'L{i:02d}'
+            dst = replay/key
+            if not finished and not (dst/'chain.json').is_file():
+                break
+            passed.append(compare(run/key/'air', dst, allow_failed=not finished,
+                                  remote_air=(a.remote_run/key/'air' if a.remote_run else None)))
+        if not finished:
+            print(f'Incomplete {a.mode} replay: {replay}', flush=True)
+        return finished and all(passed)
     with (run/'.split-prefill.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if a.action == 'board':

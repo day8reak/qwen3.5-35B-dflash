@@ -36,6 +36,8 @@ case "${1:-}" in
         if [[ -n "${CPRO_SOURCE:-}" ]]; then args+=(--source "$CPRO_SOURCE"); fi
         if [[ -n "${TARGET_CONFIG:-}" ]]; then args+=(--config "$TARGET_CONFIG"); fi
         in_env qwen3_5_cpro python -u "$tool" air --run "$run" "${args[@]}"
+        in_env qwen3_5_w4 env PYTHONPATH="$repo/model${PYTHONPATH:+:$PYTHONPATH}" python -u -m \
+            qwen35_moe_dflash.target.prefill_t64.split_cpu_reference --mode linear --run "$run" --capture "$capture"
         ;;
     board)
         in_env custom_pypto python -u "$tool" board --run "$run" --ddk "${CPRO_DDK_ROOT:?}" \
@@ -46,7 +48,7 @@ case "${1:-}" in
     compare)
         args=()
         if [[ -n "${L0_SPLIT_REPLAY:-}" ]]; then args+=(--replay "$L0_SPLIT_REPLAY"); fi
-        in_env custom_pypto python -u "$tool" compare --run "$run" "${args[@]}"
+        in_env custom_pypto python -u "$tool" compare --run "$run" --remote-air "${L0_SPLIT_REMOTE_AIR:-$run/air}" "${args[@]}"
         ;;
     *) echo "Usage: bash $0 {air|board|compare}" >&2; exit 2 ;;
 esac
