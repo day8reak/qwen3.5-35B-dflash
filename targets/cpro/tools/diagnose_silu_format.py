@@ -191,6 +191,31 @@ def add_output_reshape(raw, source, name):
     return message.SerializeToString(deterministic=True), reshape.name
 
 
+def consumer_probe(directory, label, raw, details, ddk, diagnosis):
+    """Reuse a previous consumer result only for the identical small AIR in this diagnosis."""
+    for path in sorted(directory.glob('consumer-*/result.json'), key=lambda p: p.stat().st_mtime_ns,
+                       reverse=True):
+        folder = path.parent / label
+        air = folder / 'export.air'
+        if not air.is_file() or air.read_bytes() != raw or not (folder / 'compile.log').is_file():
+            continue
+        record = json.loads(path.read_bytes())
+        if (record.get('source_node'), record.get('consumer')) != (details['source_node'], details['consumer']):
+            continue
+        row = record['output_reshape']
+        result = outcome(folder, row['returncode'], format_failure(folder / 'compile.log', {'silu_patch'}))
+        if result['status'] in ('COMPILED', 'EMPTY_OUTPUT_FORMAT'):
+            print(f'Reusing {path}\n{label}: {json.dumps(result)}', flush=True)
+            return result
+
+    out = Path(tempfile.mkdtemp(prefix='consumer-', dir=directory))
+    result = compile_probe(out / label, raw, ddk, diagnosis)
+    path = out / 'result.json'
+    path.write_text(json.dumps(dict(details, probe=label, output_reshape=result), indent=2) + '\n')
+    print(path)
+    return result
+
+
 def review(directory, base, *, ddk=None, diagnosis=None):
     report = json.loads((directory / 'result.json').read_bytes())
     rows = report['results']
@@ -211,13 +236,15 @@ def review(directory, base, *, ddk=None, diagnosis=None):
     _, source = graph_message(checked(bundle, entry).read_bytes(), 'SiluPatch')
     label = 'four-layer-ports' if 'four-layer-ports' in rows else 'v3-static'
     raw, reshape = add_output_reshape((directory / label / 'export.air').read_bytes(), source, report['failing_node'])
-    out = Path(tempfile.mkdtemp(prefix='consumer-', dir=directory))
-    print(f'Reusing {label}; adding {reshape} after {report["failing_node"]}', flush=True)
-    result = compile_probe(out / 'output-reshape', raw, ddk, diagnosis)
-    path = out / 'result.json'
-    path.write_text(json.dumps(dict(controls=results, source_node=report['failing_node'], consumer=reshape,
-                                    output_reshape=result), indent=2) + '\n')
-    print(path)
+    details = dict(controls=results, source_node=report['failing_node'], consumer=reshape)
+    print(f'Checking {label} with the original {reshape}', flush=True)
+    result = consumer_probe(directory, 'output-reshape', raw, details, ddk, diagnosis)
+    if result['status'] == 'EMPTY_OUTPUT_FORMAT' and label == 'four-layer-ports':
+        # Complete the comparison with exactly the same Reshape, Const and NetOutput.
+        raw, _ = add_output_reshape((directory / 'v3-static/export.air').read_bytes(),
+                                    source, report['failing_node'])
+        print(f'Checking v3-static with the same {reshape}', flush=True)
+        consumer_probe(directory, 'v3-output-reshape', raw, details, ddk, diagnosis)
 
 
 if __name__ == '__main__':

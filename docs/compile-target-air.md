@@ -197,7 +197,7 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-board
 
 若错误为 `SiluPatch getformatconfigs failed` 且子图出口报告 `outputTensorFormats ... is 0`，在 53 执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose`。它直接读取四层 AIR 中每个 SiLU 的 x/z 形状、类型和布局，打印失败节点的上下游、OMG 的实现选择日志，以及当前 DDK 注册文件中的端口。随后用四层编译入口在相同固定长度下编译 v3 单算子与复制了失败节点属性和端口描述的单算子；两者相同就只编一次。小图也报 `EMPTY_OUTPUT_FORMAT` 可把问题缩小到该编译环境下的单算子；小图 `COMPILED` 而四层失败，应进一步查整图分区的出口和跨分区消费者。完整记录在 `no-platform/silu-diagnosis-*/`。
 
-已有诊断时，53 可执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next`，默认读取最近一份 `silu-diagnosis-*/result.json`，也可用 `SILU_DIAGNOSIS` 指定目录。它结合原退出码复核 `model.omc` 和 `model/model.omc`，打印模型路径和字节数。两份对照（描述相同时为一份）均确认成功后，只追加编译一个包含原下游 Reshape 及其形状常量的小图。要只读取历史结果，使用 `aligned-diagnose-report`。
+已有诊断时，53 可执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next`，默认读取最近一份 `silu-diagnosis-*/result.json`，也可用 `SILU_DIAGNOSIS` 指定目录。它结合原退出码复核 `model.omc` 和 `model/model.omc`，打印模型路径和字节数。两份对照（描述相同时为一份）均确认成功后，先检查一个包含原下游 Reshape 及其形状常量的小图。如果这个小图复现 `EMPTY_OUTPUT_FORMAT`，且两份单算子 AIR 的端口或属性有差异，脚本会把同一个 Reshape 接到 `v3-static`，打印 `v3-output-reshape`。再次执行会复用同一次诊断中 AIR 字节一致且已确认的编译结果。要只读取历史结果，使用 `aligned-diagnose-report`。
 
 **单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
 
