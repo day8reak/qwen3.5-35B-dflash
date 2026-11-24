@@ -153,7 +153,10 @@ def run_check(directory, ddk, diagnosis):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', type=Path, required=True)
-    parser.add_argument('--trace', action='store_true', help='Compare OMG format modes and trace file opens')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--host-check', action='store_true', help='Compare installed and compiled output types')
+    parser.add_argument('--host-library', type=Path, help='Optional host .so from the new build for content identity')
+    mode.add_argument('--trace', action='store_true', help='Compare OMG format modes and trace file opens')
     parser.add_argument('--diagnostic-dir', type=Path)
     parser.add_argument('--ddk', type=Path, required=True)
     parser.add_argument('--tbe-diagnosis', type=Path)
@@ -168,7 +171,10 @@ if __name__ == '__main__':
         directory = reports[-1].parent
     if directory.parent != parent:
         parser.error('The diagnosis directory must belong to this four-layer run')
-    if args.trace:
+    if args.host_check:
+        from silu_host_check import run_host_check
+        run_host_check(directory, args.ddk.resolve(strict=True), args.tbe_diagnosis, args.host_library)
+    elif args.trace:
         from silu_format_trace import run_trace
         run_trace(directory, args.ddk.resolve(strict=True), args.tbe_diagnosis)
     else:
