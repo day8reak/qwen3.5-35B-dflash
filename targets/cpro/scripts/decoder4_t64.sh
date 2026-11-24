@@ -61,6 +61,11 @@ if (( $# > 1 )); then
     variant=(--silu-patch)
 fi
 case "${1:-}" in
+    aligned-diagnose)
+        in_env custom_pypto python -u targets/cpro/tools/diagnose_silu_format.py \
+            --run "${ALIGNED4_RUN:-${original}-aligned-silu-patch}" --ddk "${CPRO_DDK_ROOT:?}" \
+            --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
+        ;;
     original-golden) golden_78 ;;
     aligned-air|aligned-compile|aligned-board|aligned-compare|aligned-log|original-air|original-compile|original-board|original-compare|original-log)
         run="$original"
@@ -166,5 +171,5 @@ case "${1:-}" in
             in_env custom_pypto python -u "$tool" board --run "$run"
         fi
         ;;
-    *) echo "Usage: bash $0 {review|air|compile|board|original-golden|aligned-{air,compile,board,compare,log}} or original-{air,compile,board,compare,log} [--silu-patch]" >&2; exit 2 ;;
+    *) echo "Usage: bash $0 {review|air|compile|board|original-golden|aligned-{air,compile,board,compare,log,diagnose}} or original-{air,compile,board,compare,log} [--silu-patch]" >&2; exit 2 ;;
 esac

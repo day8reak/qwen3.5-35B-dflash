@@ -219,9 +219,29 @@ def compile_log_text(path):
     return f'OMG log: {path}\n{excerpt}'
 
 
+def compile_omg(out, air_path, ddk, diagnosis, platform):
+    from qwen35_moe_dflash.toolchain.compile import omg_environment, prepare_tbe_compatibility, _omg_ipc_environment
+
+    shape = inspect_input_shape(out / air_path)['input_shape']
+    omg, env = omg_environment(ddk, soc_version=platform)
+    if diagnosis:
+        env, _ = prepare_tbe_compatibility(ddk, diagnosis, out / 'tbe-compat', inherited=env)
+    platform_args = [f'--platform={platform}'] if platform is not None else []
+    argv = [str(omg), '--framework=1', f'--model={air_path}', '--output=model',
+            '--target=omc', *platform_args, '--use_origin_format=true', '--weight_data_type=FP16',
+            '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shape]
+    log_path = out / 'compile.log'
+    command = f'(cd {shlex.quote(str(out))} && {shlex.join(argv)})'
+    invocation = f'{command}\nOMG SOC_VERSION={env.get("SOC_VERSION", "<unset>")}'
+    print(f'{invocation}\nOMG log: {log_path}', flush=True)
+    with _omg_ipc_environment(out, env) as (child, _), log_path.open('x') as log:
+        print(invocation, file=log, flush=True)
+        result = subprocess.run(argv, cwd=out, env=child, stdout=log, stderr=subprocess.STDOUT)
+    return result.returncode, argv, env.get('SOC_VERSION')
+
+
 def build(run, ddk, diagnosis, remote, *, bundle, kind, platform):
     from decoder4_prefill import pull_air
-    from qwen35_moe_dflash.toolchain.compile import omg_environment, prepare_tbe_compatibility, _omg_ipc_environment
 
     run.mkdir(parents=True, exist_ok=True)
     if not bundle.exists():
@@ -236,7 +256,6 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform):
         raise ValueError(f'Expected {kind} AIR at {bundle}, got {meta["kind"]}')
     for row in meta['files']:
         checked(bundle, row)
-    # The replay and comparator both read the AIR beside their OMC.
     local_air = run / 'air'
     if local_air != bundle:
         try:
@@ -246,32 +265,17 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform):
                 raise ValueError(f'{local_air} must refer to the selected AIR bundle {bundle}')
     dest = run / 'omc'
     out = Path(tempfile.mkdtemp(dir=run, prefix='omg-'))
-    graph = bundle / EXPORT_DIR / 'export.air'
-    shape = inspect_input_shape(graph)['input_shape']
     # Keep the directory component in the original FileConstant paths.
-    (out / EXPORT_DIR).symlink_to(graph.parent, target_is_directory=True)
-    omg, env = omg_environment(ddk, soc_version=platform)
-    if diagnosis:
-        env, _ = prepare_tbe_compatibility(ddk, diagnosis, out / 'tbe-compat', inherited=env)
-    platform_args = [f'--platform={platform}'] if platform is not None else []
-    argv = [str(omg), '--framework=1', f'--model={EXPORT_DIR}/export.air', '--output=model',
-            '--target=omc', *platform_args, '--use_origin_format=true', '--weight_data_type=FP16',
-            '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shape]
-    log_path = out / 'compile.log'
-    command = f'(cd {shlex.quote(str(out))} && {shlex.join(argv)})'
-    invocation = f'{command}\nOMG SOC_VERSION={env.get("SOC_VERSION", "<unset>")}'
-    print(f'{invocation}\nOMG log: {log_path}', flush=True)
-    with _omg_ipc_environment(out, env) as (child, _), log_path.open('x') as log:
-        print(invocation, file=log, flush=True)
-        result = subprocess.run(argv, cwd=out, env=child, stdout=log, stderr=subprocess.STDOUT)
-    if result.returncode:
-        raise RuntimeError(f'{kind}: OMG exited {result.returncode}\n{compile_log_text(log_path)}')
+    (out / EXPORT_DIR).symlink_to(bundle / EXPORT_DIR, target_is_directory=True)
+    code, argv, soc = compile_omg(out, EXPORT_DIR + '/export.air', ddk, diagnosis, platform)
+    if code:
+        raise RuntimeError(f'{kind}: OMG exited {code}\n{compile_log_text(out / "compile.log")}')
     model, = out.rglob('*.omc')
     weights = [identity(p, out) for p in sorted(model.parent.rglob('*.weight'))]
     if not weights:
         raise ValueError(f'OMG did not produce the requested external weights: {out}')
     save_json(out / 'manifest.json', dict(air_manifest_sha256=sha(bundle / 'manifest.json'), argv=argv,
-              soc_version=env.get('SOC_VERSION'),
+              soc_version=soc,
               primary=identity(model, out), weights=weights))
     out.rename(dest)
     print(f'Compiled {kind} OMC: {dest / model.relative_to(out)}', flush=True)
