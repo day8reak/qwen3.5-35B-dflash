@@ -9,7 +9,7 @@ usage() {
     echo "       bash $0 diagnose --saved DIAGNOSTICS_DIR"
     echo "       board [--recovery [REPLAY_DIR]] [--from-stage STAGE]; compare [--replay DIR]"
     echo "       board --mode linear [--embed-decoder-hidden]"
-    echo "       board [--split-decoder-projections | --split-decoder-residual]"
+    echo "       board [--split-decoder-projections | --split-decoder-residual] (default: --split-decoder-residual)"
 }
 in_env() {
     local name="$1"

@@ -6,7 +6,7 @@ import fcntl
 from pathlib import Path
 import tempfile
 
-from l0_silu_omcs import compare, execute, load
+from l0_silu_omcs import compare, execute, load, select_board_defaults
 from decoder4_original import L0_DIR, SPLIT_KIND, export, ssh_bundle
 from decoder4_prefill import pull_air
 from qwen35_moe_dflash.common.artifacts import output_path
@@ -51,9 +51,55 @@ def previous_replay(run, mode, selector, *, completed=False):
         paths = [(run / selector) / 'prefill.json']
     for path in paths:
         report = load(path)
-        if report['mode'] == mode and (not completed or report['status'] in ('PASSED', 'FAILED_ACCURACY')):
-            return path.parent
+        if report['mode'] != mode:
+            continue
+        if completed and report['status'] not in ('EXECUTED', 'PASSED', 'FAILED_ACCURACY'):
+            # Older runs could stop while fetching the last layer's CPU reference.
+            last = path.parent / ('L03' if mode == 'full' else 'L39') / 'chain.json'
+            if report['status'] != 'INTERRUPTED' or not last.is_file() or load(last)['status'] != 'EXECUTED':
+                continue
+        return path.parent
     raise ValueError(f'No {mode} replay matching {selector} in {run}')
+
+
+def compare_replay(run, replay, layers, remote_run=None):
+    manifest = replay/'prefill.json'
+    # Comparisons publish into this replay. Allow independent replays under the same run to be read.
+    with (replay/'.compare.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return compare_layers(run, manifest, layers, remote_run)
+
+
+def compare_layers(run, manifest, layers, remote_run):
+    replay = manifest.parent
+    summary = load(manifest)
+    finished = summary['status'] in ('EXECUTED', 'PASSED', 'FAILED_ACCURACY')
+    if finished and [s['layer'] for s in summary['layers']] != layers:
+        raise ValueError(f'Incomplete layer list in {replay}')
+    scores = []
+    for i in layers:
+        key = f'L{i:02d}'
+        case, dst = run/key, replay/key
+        if not finished and not (dst/'chain.json').is_file():
+            break
+        receipt = load(dst/'chain.json')
+        options = dict(remote_air=(remote_run or run)/key/'air')
+        if not finished and receipt['status'] != 'EXECUTED':
+            if receipt['status'] == 'FAILED':
+                compare(case/'air', dst, allow_failed=True, **options)
+            break
+        passed = compare(case/'air', dst, **options)
+        scores.append(dict(layer=i, passed=passed, hidden_sha256=receipt['outputs']['decoder_hidden']['sha256'],
+                           report=f'{key}/comparison.json', report_sha256=sha(dst/'comparison.json')))
+    if len(scores) != len(layers) or summary['status'] == 'RUNNING':
+        print(f'Incomplete {summary["mode"]} replay: {replay}', flush=True)
+        return False
+    summary.update(status='PASSED' if all(s['passed'] for s in scores) else 'FAILED_ACCURACY', layers=scores)
+    summary.pop('error', None)
+    summary.pop('layer', None)
+    save_json(manifest, summary)
+    print(summary['status'], manifest, flush=True)
+    return summary['status'] == 'PASSED'
 
 
 def run_board(args, run, layers):
@@ -129,18 +175,16 @@ def run_board(args, run, layers):
                     from_stage=start_stage if i == start_layer and checkpoint else None, out=dst, shared_silu=run/'silu-omc')
             receipt = load(dst/'chain.json')
             hidden = checked(dst, receipt['outputs']['decoder_hidden'])
-            passed = compare(bundle, dst, remote_air=remote_air)
-            summary['layers'].append(dict(layer=i, passed=passed, hidden_sha256=receipt['outputs']['decoder_hidden']['sha256'],
-                                          report=f'{key}/comparison.json', report_sha256=sha(dst/'comparison.json')))
+            summary['layers'].append(dict(layer=i, hidden_sha256=receipt['outputs']['decoder_hidden']['sha256']))
             save_json(manifest, summary)
-        summary['status'] = 'PASSED' if all(s['passed'] for s in summary['layers']) else 'FAILED_ACCURACY'
+        summary['status'] = 'EXECUTED'
     except BaseException as exc:
         summary.update(status='INTERRUPTED', layer=i, error=str(exc))
         raise
     finally:
         save_json(manifest, summary)
         print(summary['status'], manifest, flush=True)
-    return summary['status'] == 'PASSED'
+    return compare_replay(run, out, layers, args.remote_run)
 
 
 def main():
@@ -168,24 +212,11 @@ def main():
         return True
     if a.action == 'compare':
         replay = previous_replay(run, a.mode, a.replay, completed=a.replay == 'auto')
-        report = load(replay/'prefill.json')
-        finished = report['status'] in ('PASSED', 'FAILED_ACCURACY')
-        if finished and [s['layer'] for s in report['layers']] != layers:
-            raise ValueError(f'Incomplete layer list in {replay}')
-        passed = []
-        for i in layers:
-            key = f'L{i:02d}'
-            dst = replay/key
-            if not finished and not (dst/'chain.json').is_file():
-                break
-            passed.append(compare(run/key/'air', dst, allow_failed=not finished,
-                                  remote_air=(a.remote_run/key/'air' if a.remote_run else None)))
-        if not finished:
-            print(f'Incomplete {a.mode} replay: {replay}', flush=True)
-        return finished and all(passed)
+        return compare_replay(run, replay, layers, a.remote_run)
     with (run/'.split-prefill.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if a.action == 'board':
+            select_board_defaults(a)
             return run_board(a, run, layers)
         check_capture(a.capture, layers)
         capture_hash = sha(a.capture/'manifest.json')

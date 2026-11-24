@@ -41,23 +41,24 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode 40 --recovery
 ```
 
-若 `decoder_hidden` 的执行日志指向 `quant_batch_matmul_v4444__kernel0`，在 53 可给 `board` 加 `--split-decoder-projections`。例如：
+**复现 L0 分段。** 三个模式的 `board` 默认使用 L0 跑通的切法。MoE 尾部的三条 W4 投影独立执行，attention 后的残差独立读回，接着计算其余 MoE 和最终残差。linear 层有四个独立 SiluPatch。full 层的两个 SiluPatch 分别用于共享专家和路由专家。每次执行会打印当前 AIR 的 OMC 段数。独立 L0 包含最后的 norm/head，40 层连续执行时只在 L39 接 norm/head。
+
+在 53 用已有 AIR 和编译缓存从第一段重新上板，例如：
 
 ```bash
-bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
-  --run "$R" --recovery replay-p5810xp9 --from-stage decoder_hidden --split-decoder-projections
+bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear --run "$R"
 ```
 
-脚本复用通过校验的前段，在当前 AIR 里定位每条 W4 投影的浮点激活，独立执行该投影及原始动态量化和 scale 处理。激活和投影探针使用内嵌权重 OMC，编译产物保存在 `omc/decoder_w4_*-embedded/`。各段使用 CPro 实际返回的张量。终端显示 AIR 节点、权重来源和编译得到的输出类型与形状。`plan-w4-projections.json` 给出节点与段名的对应关系。投影完成后继续运行剩余 MoE、残差和本层原有的输出。要从新的 replay 继续，带上同一选项和 `--recovery 新replay目录`。
+每次从头执行都会新建 replay。各段使用 CPro 实际返回的张量，`chain.json` 的 `stages` 列出本次完成的段名和 OMC 哈希。默认切法的节点和数据依赖见 `plan-w4-residual.json`，W4 激活和投影使用内嵌权重，编译产物在 `omc/decoder_w4_*-embedded/`。复查先前只拆 W4 投影的对照实验时，可显式传 `--split-decoder-projections`。
 
-若三个 W4 投影已完成，OMG 在 `decoder_hidden_after_w4` 为 `Cast` 生成任务时失败，可以从同一 replay 单独编译 attention 后的残差加法。这个选项包含 W4 拆分，先执行 `decoder_attention_residual`，再将其板端输出送入 `decoder_hidden_from_residual`。两段保留的原始 Cast 节点及输入边记录在 `plan-w4-residual.json`。
+若旧 replay 的三个 W4 投影已完成，OMG 在 `decoder_hidden_after_w4` 为 `Cast` 生成任务时失败，下列命令会从 `decoder_attention_residual` 继续，再将其板端输出送入 `decoder_hidden_from_residual`。
 
 ```bash
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
   --run "$R" --recovery --from-stage decoder_hidden_after_w4 --split-decoder-residual
 ```
 
-40 层显式起点的写法如 `--from-stage L03/out_proj`，可用段名见各层 `plan.json`。运行结束会自动生成对比。linear 的报告是 `replay-*/comparison.json`，full 和 40 的汇总是 `replay-*/prefill.json`，各层明细是 `Lxx/comparison.json`。同目录的 `matrices.csv` 对每个指标给出 CPU、310P、CPro 的 3×3 矩阵，行是 actual，列是 reference。精度通过条件沿用 CPro 对 310P，logits 另要求 top1 一致。
+40 层显式起点的写法如 `--from-stage L03/out_proj`，可用段名见各层的计划文件。full 和 40 会先逐层保存板端输出，再自动对比。若拉取 CPU 参考时中断，补齐参考后单独运行 `compare` 即可。linear 的报告是 `replay-*/comparison.json`，full 和 40 的汇总是 `replay-*/prefill.json`，各层明细是 `Lxx/comparison.json`。同目录的 `matrices.csv` 对每个指标给出 CPU、310P、CPro 的 3×3 矩阵，行是 actual，列是 reference。精度通过条件沿用 CPro 对 310P，logits 另要求 top1 一致。
 
 | 输出 | 比较范围 |
 | --- | --- |

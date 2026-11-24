@@ -35,6 +35,12 @@ def load(path):
     return json.loads(path.read_bytes())
 
 
+def select_board_defaults(args):
+    """Use the completed L0 W4/residual plan unless a diagnostic variant was requested."""
+    if not args.split_decoder_projections and not getattr(args, 'embed_decoder_hidden', False):
+        args.split_decoder_residual = True
+
+
 def typed_view(dtype, shape):
     return dtype, tuple(d for d in shape if d != 1)
 
@@ -219,6 +225,9 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
     names = [s['name'] for s in graph['stages']]
     projections_split = any(s.startswith('decoder_w4_projection_') for s in names)
     residual_split = 'decoder_attention_residual' in names
+    silu_count = sum(name.endswith('_silu') for name in names)
+    print(f'L{meta.get("layer", 0)}: {len(names)} OMC stages including {silu_count} standalone SiluPatch',
+          flush=True)
     if from_stage == 'decoder_hidden' and projections_split:
         from_stage = next(n for n in names if n.startswith('decoder_w4_'))
     elif from_stage == 'decoder_hidden_after_w4' and residual_split:
@@ -232,6 +241,7 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
     else:
         out.mkdir()
     receipt = dict(status='RUNNING', bundle_sha256=fixture_hash, stages=[], outputs={},
+                   planned_stage_count=len(names), silu_stage_count=silu_count,
                    embed_decoder_hidden=embed_decoder_hidden, split_decoder_projections=projections_split,
                    split_decoder_residual=residual_split)
     save_json(out/'chain.json', receipt)
@@ -340,6 +350,10 @@ def compare(bundle, replay, *, allow_failed=False, remote_air=None):
     if (receipt['status'] != 'EXECUTED' and not partial) or receipt['bundle_sha256'] != sha(bundle/'manifest.json'):
         raise ValueError(f'Incomplete or unrelated L0 run: {replay}')
     meta = load(bundle/'manifest.json')
+    if 'stages' in receipt:
+        completed = receipt['stages']
+        print(f'L{meta.get("layer", 0)}: {len(completed)} completed OMC stages in {replay.name}, '
+              f'{sum(s["name"].endswith("_silu") for s in completed)} standalone SiluPatch', flush=True)
     reference = meta['reference']
     specs = contracts(meta.get('layer', 0), meta.get('head', True))
     missing = sorted(specs.keys() - receipt['outputs'].keys())
@@ -432,6 +446,7 @@ def main():
         export(run, a.source, a.config, None, None, baseline=a.baseline, kind=L0_KIND, l0_capture=a.capture)
         return 0
     if a.mode == 'board':
+        select_board_defaults(a)
         if not bundle.exists():
             pull_air(run, a.remote_air or bundle, ssh_download=partial(ssh_bundle, kind=L0_KIND))
         meta = load(bundle/'manifest.json')
