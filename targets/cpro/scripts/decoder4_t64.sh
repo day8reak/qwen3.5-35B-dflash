@@ -54,15 +54,15 @@ compare_53() {
 set -x
 variant=()
 if (( $# > 1 )); then
-    if [[ $# != 2 || ! $1 =~ ^original-(air|compile|board|compare)$ || $2 != --silu-patch ]]; then
-        echo 'Use --silu-patch with original-air, original-compile, original-board or original-compare.' >&2
+    if [[ $# != 2 || ! $1 =~ ^original-(air|compile|board|compare|log)$ || $2 != --silu-patch ]]; then
+        echo 'Use --silu-patch with original-air, original-compile, original-board, original-compare or original-log.' >&2
         exit 2
     fi
     variant=(--silu-patch)
 fi
 case "${1:-}" in
     original-golden) golden_78 ;;
-    aligned-air|aligned-compile|aligned-board|aligned-compare|original-air|original-compile|original-board|original-compare)
+    aligned-air|aligned-compile|aligned-board|aligned-compare|aligned-log|original-air|original-compile|original-board|original-compare|original-log)
         run="$original"
         remote_air="${ORIGINAL4_REMOTE_AIR:-$run/air}"
         if [[ $1 == aligned-* ]]; then
@@ -75,7 +75,9 @@ case "${1:-}" in
         fi
         tool=targets/cpro/tools/decoder4_original.py
         action="${1#*-}"
-        if [[ "$action" == compare ]]; then
+        if [[ "$action" == log ]]; then
+            in_env custom_pypto python -u "$tool" log --run "$run"
+        elif [[ "$action" == compare ]]; then
             args=()
             if (( ${#variant[@]} )); then args+=(--modified "${MODIFIED4_REPLAY:-$run}"); fi
             compare_53 "${args[@]}"
@@ -161,5 +163,5 @@ case "${1:-}" in
             in_env custom_pypto python -u "$tool" board --run "$run"
         fi
         ;;
-    *) echo "Usage: bash $0 {review|air|compile|board|original-golden|aligned-{air,compile,board,compare}} or original-{air,compile,board,compare} [--silu-patch]" >&2; exit 2 ;;
+    *) echo "Usage: bash $0 {review|air|compile|board|original-golden|aligned-{air,compile,board,compare,log}} or original-{air,compile,board,compare,log} [--silu-patch]" >&2; exit 2 ;;
 esac

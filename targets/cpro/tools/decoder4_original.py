@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, save_json, sha
 from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
+from qwen35_moe_dflash.common.tool_logs import log_excerpt
 from qwen35_moe_dflash.toolchain.air_input_shape import inspect_input_shape
 
 EXPORTER = 'export_glm_model_qwen3_5_moe.py'
@@ -210,6 +211,13 @@ def ssh_bundle(client, remote, staged, *, kind=KIND):
         ssh_file(client, remote / rel, target, row)
 
 
+def compile_log_text(path):
+    excerpt = log_excerpt(path)
+    if excerpt == 'Log tail:\n':
+        excerpt = 'OMG produced an empty compile.log.'
+    return f'OMG log: {path}\n{excerpt}'
+
+
 def build(run, ddk, diagnosis, remote, *, kind=KIND):
     from decoder4_prefill import pull_air
     from qwen35_moe_dflash.toolchain.compile import omg_environment, prepare_tbe_compatibility, _omg_ipc_environment
@@ -240,9 +248,12 @@ def build(run, ddk, diagnosis, remote, *, kind=KIND):
     argv = [str(omg), '--framework=1', f'--model={EXPORT_DIR}/export.air', '--output=model',
             '--target=omc', '--platform=kirinx90', '--use_origin_format=true', '--weight_data_type=FP16',
             '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shape]
-    print(f'(cd {out} && {shlex.join(argv)})\nOMG log: {out / "compile.log"}', flush=True)
-    with _omg_ipc_environment(out, env) as (child, _), (out / 'compile.log').open('x') as log:
-        subprocess.run(argv, cwd=out, env=child, stdout=log, stderr=subprocess.STDOUT, check=True)
+    log_path = out / 'compile.log'
+    print(f'(cd {out} && {shlex.join(argv)})\nOMG log: {log_path}', flush=True)
+    with _omg_ipc_environment(out, env) as (child, _), log_path.open('x') as log:
+        result = subprocess.run(argv, cwd=out, env=child, stdout=log, stderr=subprocess.STDOUT)
+    if result.returncode:
+        raise RuntimeError(f'{kind}: OMG exited {result.returncode}\n{compile_log_text(log_path)}')
     model, = out.rglob('*.omc')
     weights = [identity(p, out) for p in sorted(model.parent.rglob('*.weight'))]
     if not weights:
@@ -395,7 +406,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('air', 'compile', 'board'))
+    parser.add_argument('action', choices=('air', 'compile', 'board', 'log'))
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--source', type=Path)
     parser.add_argument('--reference', type=Path)
@@ -413,6 +424,13 @@ def main():
     parser.add_argument('--baseline', type=Path, help='native baseline run (or its replay for board comparison)')
     args = parser.parse_args()
     run = output_path(args.run)
+    if args.action == 'log':
+        logs = [p for p in (*run.glob('omg-*/compile.log'), run / 'omc/compile.log') if p.is_file()]
+        if not logs:
+            parser.error(f'No OMG compile.log under {run}')
+        newest = max(logs, key=lambda p: (p.stat().st_mtime_ns, p))
+        print(compile_log_text(newest))
+        return
     kind = ALIGNED_KIND if args.aligned else PATCH_KIND if args.silu_patch else KIND
     if kind != KIND and args.action in ('air', 'board') and args.baseline is None:
         parser.error(f'variant {args.action} requires --baseline')

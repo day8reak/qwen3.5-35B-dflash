@@ -191,6 +191,8 @@ cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh aligned-board
 ```
 
+53 的 OMG 编译失败时，在同一环境执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-log` 即可读取最近一次编译的错误摘录和完整日志路径。对仅替换 SiLU 的实验使用 `original-log --silu-patch`，对原版使用 `original-log`。这些命令直接读取已保存的日志。
+
 **单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
 
 ```bash
