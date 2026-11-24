@@ -199,7 +199,7 @@ def finish_segment_export(job, root, segment, manifest, runtime_names, evidence)
               scope='CPRO_L0_THROUGH_L3_AND_PREFIX_READOUT_PHYSICAL64_VALID19', selected_golden=None))
 
 
-def compare_segment_output(name, actual, native, cpu, atol=None, rtol=None):
+def compare_segment_output(name, actual, native, cpu, atol=None, rtol=None, *, reference_is_310p=True):
     """Score the native trajectory. Also report the independent propagated CPU trajectory."""
     from ..layer_probe.common import metrics
 
@@ -212,7 +212,7 @@ def compare_segment_output(name, actual, native, cpu, atol=None, rtol=None):
             raise ValueError('Unexpected segmented K/V output descriptor')
         active = (0, slice(None), slice(0, 19), slice(None))
         row = score(actual[active], native[active])
-        if np.any(native[2:].view(np.uint16)):
+        if reference_is_310p and np.any(native[2:].view(np.uint16)):
             raise ValueError('Native cache changed outside the two physical write pages')
         preserved = actual[2:].tobytes() == native[2:].tobytes()
         row.update(valid_rows=19, untouched_cache_equal_bits=preserved)

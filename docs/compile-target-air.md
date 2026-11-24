@@ -163,3 +163,52 @@ bash targets/cpro/scripts/decoder4_t64.sh original-air
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh original-board
 ```
+
+### 四层原版、改版与 310P 的精度对比
+
+三个模型入口的区别如下。每个四层模型都连续执行 L0、L1、L2 的 linear attention decoder 和 L3 的 full attention decoder，包括每层的 MoE 和残差。
+
+| 项目 | 已跑通的 `original-air` | 旧诊断入口 `air` | 本次 `aligned-air` |
+|---|---|---|---|
+| 输入 | INT8 embedding、FP32 embedding scale、位置、mask、长度、ConvState 控制及各层初始 cache | 310P 的 FP16 embedding、位置、mask、长度和初始 cache | 沿用原版 wrapper 和全部输入，板端按原版成功记录逐槽核对实际输入 SHA-256 |
+| 输出 | `output_pos` 选行，经 final norm、LM head 返回 FP32 logits 和八个状态 | L3 全部 64 行 FP16 hidden | 同原版，S=64、valid19 时取下标 18 的 248320 个 logits |
+| W4 投影与 RMSNorm | `quant_bits=4`，本次核对的原版 `utils.py` 从 NZ 模型导入 `QLinear` | 显式指定 `CproQLinear`，适配 scale 与 GDR 导出类型，并预计算 RMSNorm gamma | 使用已跑通原版的加载器、scale 和 RMSNorm 代码 |
+| GDN 历史更新 | `LinearAttentionConvstateUpdate` 读取原控制张量，随后 conv1d | 拼接、切片和 conv2d | 使用原版历史更新和控制张量，卷积、门控的 SiLU 调用 `SiluPatch` |
+| L3 RoPE 与 MoE | 原实现 | FP32 RoPE、位置 gather、专家量化 reshape 及门控 dtype 适配 | 沿用这些内部改动。L3 attention 的 sigmoid 保留原实现，共享专家和 W4 路由专家的 SiLU 使用 `SiluPatch` |
+| L3 K/V 回写 | 更新传入的 K/V，再返回两个 cache | 在副本上更新 K/V，作为计算 hidden 的中间值 | 沿用原版两路 K/V 回写与返回顺序 |
+
+**78 导出改版并准备四层 310P 参考。** 复用原版运行目录和原配置，另存一份改版 AIR。命令会打印 `silu-source-*` 路径，该目录的 `source.diff` 可直接 review。导出时核对原版和改版 AIR 的输入、输出顺序、状态来源和可见的 shape/dtype。可用 `ORIGINAL4_CAPTURE` 指向已有的四层 310P 采集目录，内含 `manifest.json`。默认先查找已有采集，缺少时才运行 310P 首次 prefill。给 53 传输的参考包只含本次需要的张量和清单。
+
+```bash
+cd "${REPO_DIR:?}" && git pull --ff-only origin main
+bash targets/cpro/scripts/decoder4_t64.sh aligned-air
+```
+
+**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 `SiluPatch` 的 X90 DDK。脚本读取已成功的原版 `replay-*`，核对两份 OMC 的端口和输入文件哈希，再启动改版。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-patch`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
+
+```bash
+cd "${REPO_DIR:?}" && git pull --ff-only origin main
+bash targets/cpro/scripts/decoder4_t64.sh aligned-board
+```
+
+**单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
+
+```bash
+bash targets/cpro/scripts/decoder4_t64.sh original-compare
+bash targets/cpro/scripts/decoder4_t64.sh aligned-compare
+```
+
+终端和脚本打印的 `comparison-*/comparison.json` 给出原版对 310P、改版对 310P、改版对原版的分项结果。logits 使用 310P 在 **L3 token18 hidden 上运行 final norm 和 LM head** 的实测值并比较 top1。每层 ConvState 和 recurrent state 比较完整返回张量。L3 K/V 比较第 0 页的有效位置 0–18，另外检查未写入的后续页。相对 L2 和逐元素超差比例在终端按百分数显示，JSON 保存原始比值。
+
+如需量出 **仅替换 SiLU** 的影响，78 和 53 分别运行 `original-air --silu-patch` 和 `original-board --silu-patch`，均通过同一个 `decoder4_t64.sh`。该组合使用独立目录，复用同一原版结果和参考。默认 `aligned` 组同时包含表中 L3 RoPE 和 MoE 的内部改动。
+
+### SiluPatch 在四层图中的调用
+
+TorchAir 将 `torch.ops.my_ops.silu_patch.default` 导出为 `SiluPatch(x) → z`。Fake 注册给出等长的 FP32 输出。模型在调用前把输入整理成连续的一维 FP16，返回后恢复逻辑形状。卷积和专家分支随原激活 dtype 传给下游，GDN 门控直接以 FP32 乘 RMSNorm 输出。形状、dtype 和 v3 的 ND 格式标记会在导出时核对，实际节点名与长度见 `air/manifest.json` 的 `silu_patch.nodes`。
+
+| S=64 的调用位置 | 每次传入的元素数 | 四层图中的次数 |
+|---|---:|---:|
+| L0–L2 GDN 卷积 | 524288 | 3 |
+| L0–L2 GDN RMSNorm 门控 | 262144 | 3 |
+| L0–L3 共享专家 | 32768 | 4 |
+| L0–L3 W4 路由专家 | 262144 | 4 |

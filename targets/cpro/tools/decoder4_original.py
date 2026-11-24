@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run the owner's unmodified four-layer Prefill64 exporter and replay its native I/O."""
+"""Export and replay the native four-layer Prefill64 graph, optionally using SiluPatch."""
 import argparse
 import hashlib
 import json
+from functools import partial
 from pathlib import Path
 import shlex
 import subprocess
@@ -19,6 +20,8 @@ from qwen35_moe_dflash.toolchain.air_input_shape import inspect_input_shape
 EXPORTER = 'export_glm_model_qwen3_5_moe.py'
 EXPORT_DIR = 'glm_export_air_cpro_4block_64_quant'
 KIND = 'original-cpro-four-layer-prefill64'
+PATCH_KIND = KIND + '-silu-patch'
+ALIGNED_KIND = KIND + '-aligned-silu-patch'
 
 
 def valid19_inputs(folder, reference, cfg, conv_control):
@@ -77,10 +80,12 @@ def valid19_inputs(folder, reference, cfg, conv_control):
     changes = int(np.count_nonzero(entry[:, :19].view(np.uint16) != measured[:, :19].view(np.uint16)))
     print(f'Original embedding * scale, rounded to FP16 vs 310P layer entry: {changes}/{19*2048} changed (valid19)')
     return dict(reference_sha256=sha(reference / 'manifest.json'), token_sha256=VALID19_IDS_SHA256,
+                reference_inputs={k: meta['inputs'][k]['sha256'] for k in (
+                    'embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')},
                 valid19_embedding_changed_fp16_elements=changes, conv_state_control=policy)
 
 
-def export(run, source, config, reference, conv_control):
+def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None):
     import yaml
     source = source.resolve(strict=True)
     config = (source / config).resolve(strict=True)
@@ -94,6 +99,19 @@ def export(run, source, config, reference, conv_control):
     dest = run / 'air'
     if dest.exists():
         raise FileExistsError(f'Original export already exists: {dest}. Select a new ORIGINAL4_RUN to re-export.')
+    if kind != KIND:
+        from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import finish_air, stage
+        from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air, same_boundary
+        base_manifest = baseline / 'air/manifest.json'
+        base = json.loads(base_manifest.read_bytes())
+        if base['kind'] != KIND or base['sources'] != sources or base['config_sha256'] != sha(config):
+            raise ValueError(f'Source/config differs from the successful original at {baseline}')
+        graph_path = EXPORT_DIR + '/export.air'
+        original = checked(base_manifest.parent, next(row for row in base['files'] if row['path'] == graph_path))
+        base_boundary = inspect_air(original)
+        staged = Path(tempfile.mkdtemp(dir=run, prefix='silu-source-'))
+        entry = stage(source, staged, aligned=kind == ALIGNED_KIND)
+        print(f'SiluPatch model and exporter for review: {staged}', flush=True)
     # The owner's exporter deletes its relative export directory on startup.
     with tempfile.TemporaryDirectory(dir=run, prefix='export-') as temp:
         work = Path(temp)
@@ -113,10 +131,26 @@ def export(run, source, config, reference, conv_control):
         print(f'(cd {work} && {shlex.join(argv)})', flush=True)
         subprocess.run(argv, cwd=work, check=True)
         air = work / EXPORT_DIR / 'export.air'
+        variant = {}
+        if kind != KIND:
+            variant['silu_patch'] = finish_air(air)
+            boundary = inspect_air(air)
+            same_boundary(base_boundary, boundary)
+            variant.update(boundary=boundary, original_manifest_sha256=sha(base_manifest))
+            print(f'Native AIR boundary matched: {len(boundary["inputs"])} inputs, '
+                  f'{[row["role"] for row in boundary["outputs"]]}', flush=True)
+            variant['silu_patch']['source_sha256'] = {n: sha(staged / n) for n in (
+                EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py', 'models/silu_patch.py', 'models/silu_patch_air.py')}
         abi = inspect_input_shape(air)
         files = [identity(p, work) for p in sorted(air.parent.rglob('*')) if p.is_file()]
         files.extend(identity(p, work) for p in sorted((work / 'inputs').glob('*.bin')))
-        save_json(work / 'manifest.json', dict(kind=KIND, argv=argv, sources=sources, fixture=fixture,
+        if kind != KIND:
+            recorded = {r['path']: r['sha256'] for r in base['files'] if r['path'].startswith('inputs/')}
+            current = {r['path']: r['sha256'] for r in files if r['path'].startswith('inputs/')}
+            if recorded != current:
+                raise ValueError('The generated input files differ from the original four-layer fixture')
+        save_json(work / 'manifest.json', dict(kind=kind, **variant,
+                  argv=argv, sources=sources, fixture=fixture,
                   config_sha256=sha(config), inputs=abi['inputs'], files=files))
         bundle = work / 'bundle'
         bundle.mkdir()
@@ -124,18 +158,18 @@ def export(run, source, config, reference, conv_control):
             (work / name).rename(bundle / name)
         bundle.rename(dest)
     share_for_transfer(dest)
-    print(f'Original AIR: {dest / EXPORT_DIR / "export.air"}')
+    print(f'{kind} AIR: {dest / EXPORT_DIR / "export.air"}')
 
 
-def ssh_bundle(client, remote, staged):
+def ssh_bundle(client, remote, staged, *, kind=KIND):
     from decoder4_prefill import ssh_file
     remote = Path(remote)
     staged.mkdir()
     manifest = staged / 'manifest.json'
     ssh_file(client, remote / manifest.name, manifest)
     meta = json.loads(manifest.read_bytes())
-    if meta['kind'] != KIND:
-        raise ValueError(f'Expected original four-layer AIR at {remote}')
+    if meta['kind'] != kind:
+        raise ValueError(f'Expected {kind} AIR at {remote}, got {meta["kind"]}')
     for row in meta['files']:
         rel = Path(row['path'])
         if rel.is_absolute() or '..' in rel.parts or len(rel.parts) < 2 or rel.parts[0] not in (EXPORT_DIR, 'inputs'):
@@ -145,16 +179,22 @@ def ssh_bundle(client, remote, staged):
         ssh_file(client, remote / rel, target, row)
 
 
-def build(run, ddk, diagnosis, remote):
+def build(run, ddk, diagnosis, remote, *, kind=KIND):
     from decoder4_prefill import pull_air
     from qwen35_moe_dflash.toolchain.compile import omg_environment, prepare_tbe_compatibility, _omg_ipc_environment
 
     bundle = run / 'air'
     if not bundle.exists():
-        pull_air(run, remote, ssh_download=ssh_bundle)
+        run.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=run, prefix='.fetch-') as tmp:
+            pull_air(Path(tmp), remote, ssh_download=partial(ssh_bundle, kind=kind))
+            incoming = Path(tmp) / 'air'
+            if json.loads((incoming / 'manifest.json').read_bytes())['kind'] != kind:
+                raise ValueError(f'Expected {kind} AIR at {remote}')
+            incoming.rename(bundle)
     meta = json.loads((bundle / 'manifest.json').read_bytes())
-    if meta['kind'] != KIND:
-        raise ValueError(f'Expected original four-layer export: {bundle}')
+    if meta['kind'] != kind:
+        raise ValueError(f'Expected {kind} AIR at {bundle}, got {meta["kind"]}')
     for row in meta['files']:
         checked(bundle, row)
     dest = run / 'omc'
@@ -179,7 +219,7 @@ def build(run, ddk, diagnosis, remote):
     save_json(out / 'manifest.json', dict(air_manifest_sha256=sha(bundle / 'manifest.json'), argv=argv,
               primary=identity(model, out), weights=weights))
     out.rename(dest)
-    print(f'Compiled original OMC: {dest / model.relative_to(out)}', flush=True)
+    print(f'Compiled {kind} OMC: {dest / model.relative_to(out)}', flush=True)
 
 
 def original_filename(name, src, dtype, *, fresh_zero_states):
@@ -204,7 +244,7 @@ def original_filename(name, src, dtype, *, fresh_zero_states):
     raise ValueError(f'Cannot identify {name} {dtype}{dims}. Supply {name}.bin or an input-map JSON.')
 
 
-def board(run, ddk, config, directory, input_map):
+def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None):
     import numpy as np
     from parse_model_json import GE_PROTO, dtype as ge_dtype, inspect, read_omc
     from qwen35_moe_dflash.target.prefill_smoke_plan import _nd_view_key
@@ -217,7 +257,7 @@ def board(run, ddk, config, directory, input_map):
 
     compiled = read_json(run / 'omc/manifest.json')
     meta = read_json(run / 'air/manifest.json')
-    if meta['kind'] != KIND or sha(run / 'air/manifest.json') != compiled['air_manifest_sha256']:
+    if meta['kind'] != kind or sha(run / 'air/manifest.json') != compiled['air_manifest_sha256']:
         raise ValueError('The compiled model belongs to a different original AIR bundle')
     model = checked(run / 'omc', compiled['primary'])
     weights = [checked(run / 'omc', row) for row in compiled['weights']]
@@ -242,12 +282,38 @@ def board(run, ddk, config, directory, input_map):
     mapping = read_json(input_map) if input_map else {}
     if mapping and set(mapping) != {s['name'] for s in inputs}:
         raise ValueError('input-map must supply one filename for every compiled input node')
+    original_inputs = {}
+    if baseline:
+        from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air, latest_replay, output_roles, view
+        prior = latest_replay(baseline)
+        original_io = read_json(prior / 'io.json')
+        receipt = read_json(prior / 'result.json')
+        original_omc = read_json(prior.parent / 'omc/manifest.json')
+        if (sha(prior.parent / 'air/manifest.json') != meta['original_manifest_sha256']
+                or original_omc['air_manifest_sha256'] != meta['original_manifest_sha256']
+                or original_omc['primary']['sha256'] != receipt['omc_sha256']
+                or [r['sha256'] for r in original_io['inputs']] != receipt['input_hashes']):
+            raise ValueError(f'Original replay is not bound to the expected baseline: {prior}')
+        original_inputs = {r['name']: r for r in original_io['inputs']}
+        def descriptors(rows):
+            return {r['name']: (r['dtype'], view(r['shape']), r['bytes']) for r in rows}
+        if descriptors(inputs) != descriptors(original_io['inputs']):
+            raise ValueError('Compiled four-layer inputs differ from the successful original replay')
+        def output_types(rows, boundary):
+            return {role: (r['dtype'], view(r['shape']), r['bytes']) for role, r in
+                    zip(output_roles(rows, boundary['outputs']), rows)}
+        original_boundary = inspect_air(prior.parent / 'air' / EXPORT_DIR / 'export.air')
+        if output_types(outputs, meta['boundary']) != output_types(original_io['outputs'], original_boundary):
+            raise ValueError('Compiled four-layer outputs differ from the successful original replay')
+        print(f'Compared compiled ports with {prior}. Reusing its input hashes.', flush=True)
     for i, spec in enumerate(outputs):
         print(f"output {i}: {spec['name']} {spec['dtype']} {spec['shape']}", flush=True)
     paths = []
     for i, spec in enumerate(inputs):
         name = spec['name']
-        if mapping:
+        if fresh and not mapping and name in original_inputs and Path(original_inputs[name]['file']).is_file():
+            path = Path(original_inputs[name]['file'])
+        elif mapping:
             path = directory / mapping[name]
         elif (directory / (name + '.bin')).is_file():
             path = directory / (name + '.bin')
@@ -267,13 +333,16 @@ def board(run, ddk, config, directory, input_map):
                 raise ValueError(f'{path}: output_pos={pos}, expected a zero-based row in [0, 63]')
         paths.append(path)
         spec.update(sha256=sha(path), file=str(path))
+        if original_inputs and spec['sha256'] != original_inputs[name]['sha256']:
+            raise ValueError(f'{name}: input bytes differ from the successful original replay')
         print(f"slot {i}: {name} {spec['dtype']} {spec['shape']} <- {path}", flush=True)
     runtime = read_json(config.parent / read_json(config)['assets'])['environment']
     out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
     save_json(out / 'io.json', dict(inputs=inputs, outputs=outputs, order=abi['input_order_basis']))
-    print(f'Original board attempt: {out}', flush=True)
+    print(f'{kind} board attempt: {out}', flush=True)
     try:
-        run_v2(out, 'original L0-L3', model, inputs, paths, outputs, runtime, external_weights=weights)
+        run_v2(out, 'original L0-L3' if kind == KIND else kind, model, inputs, paths, outputs, runtime,
+               external_weights=weights)
     except RuntimeError:
         receipt = read_json(out / 'result.json')
         if receipt.get('exitcode'):
@@ -290,7 +359,7 @@ def board(run, ddk, config, directory, input_map):
             except Exception as diagnostic_error:
                 print(f'Could not collect failure details: {diagnostic_error}', file=sys.stderr)
         raise
-    print(f'Original four-layer prefill executed: {out / "result.json"}')
+    print(f'{kind} executed: {out / "result.json"}')
 
 
 def main():
@@ -307,22 +376,36 @@ def main():
     parser.add_argument('--runtime-config', type=Path)
     parser.add_argument('--inputs', type=Path)
     parser.add_argument('--input-map', type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--silu-patch', action='store_true', help='change only the SiLU sites in the native CPro graph')
+    mode.add_argument('--aligned', action='store_true', help='native boundary, reviewed RoPE/expert fixes and SiluPatch')
+    parser.add_argument('--baseline', type=Path, help='native baseline run (or its replay for board comparison)')
     args = parser.parse_args()
     run = output_path(args.run)
+    kind = ALIGNED_KIND if args.aligned else PATCH_KIND if args.silu_patch else KIND
+    if kind != KIND and args.action in ('air', 'board') and args.baseline is None:
+        parser.error(f'variant {args.action} requires --baseline')
     if args.action == 'air':
         if not args.source or not args.reference:
             parser.error('air requires --source and --reference')
-        export(run, args.source, args.config, args.reference.resolve(), args.conv_control)
+        export(run, args.source, args.config, args.reference.resolve(), args.conv_control, kind=kind, baseline=args.baseline)
         return
     if not args.ddk:
         parser.error('compile and board require --ddk')
-    if not (run / 'omc/manifest.json').exists():
-        build(run, args.ddk.resolve(), args.tbe_diagnosis, args.remote_air or run / 'air')
+    compiled = run / 'omc/manifest.json'
+    if not compiled.exists():
+        build(run, args.ddk.resolve(), args.tbe_diagnosis, args.remote_air or run / 'air', kind=kind)
+    elif args.action == 'compile':
+        manifest = run / 'air/manifest.json'
+        if (json.loads(manifest.read_bytes())['kind'] != kind or
+                json.loads(compiled.read_bytes())['air_manifest_sha256'] != sha(manifest)):
+            raise ValueError(f'Cached OMC does not match the requested {kind} AIR at {run}')
     if args.action == 'board':
         if not args.runtime_config:
             parser.error('board requires --runtime-config')
         directory = args.inputs or run / 'air/inputs'
-        board(run, args.ddk.resolve(), args.runtime_config.resolve(), directory.resolve(), args.input_map)
+        board(run, args.ddk.resolve(), args.runtime_config.resolve(), directory.resolve(), args.input_map, kind=kind,
+              baseline=args.baseline)
 
 
 if __name__ == '__main__':
