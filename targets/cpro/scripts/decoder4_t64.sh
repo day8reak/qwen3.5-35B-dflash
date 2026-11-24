@@ -79,11 +79,18 @@ case "${1:-}" in
             args=()
             if (( ${#variant[@]} )); then args+=(--modified "${MODIFIED4_REPLAY:-$run}"); fi
             compare_53 "${args[@]}"
+        elif [[ "$action" == air ]] && (( ${#variant[@]} )); then
+            args=(--baseline "$original")
+            if [[ -n "${CPRO_SOURCE:-}" ]]; then args+=(--source "$CPRO_SOURCE"); fi
+            if [[ -n "${TARGET_CONFIG:-}" ]]; then args+=(--config "$TARGET_CONFIG"); fi
+            if [[ -n "${ORIGINAL4_CONV_CONTROL:-}" ]]; then args+=(--conv-control "$ORIGINAL4_CONV_CONTROL"); fi
+            in_env qwen3_5_cpro python -u "$tool" air --run "$run" "${args[@]}" "${variant[@]}"
+            golden_78
         elif [[ "$action" == air ]]; then
             ref="${ORIGINAL4_REFERENCE:-${DECODER_REFERENCE:-${PREFILL40_REFERENCE:-}}}"
             if [[ -z "$ref" ]]; then
                 for dir in "$tests/prefill-40l-t64-valid19-v1024-01" "$tests/prefill40-single-t64-valid19-v1024-qlate-01" \
-                           "${PREFILL40_RUN:-$tests/prefill-40l-t64-valid19-v1024-qlate-01}" "$original" "$run"; do
+                           "${PREFILL40_RUN:-$tests/prefill-40l-t64-valid19-v1024-qlate-01}" "$original"; do
                     if [[ -s "$dir/reference/manifest.json" ]] && python -c \
                         'import json,sys; m=json.load(open(sys.argv[1])); sys.exit((m.get("reference"), m.get("status")) != ("MEASURED_310P_40_DECODER_BLOCKS_T64_VALID19", "CAPTURED"))' \
                         "$dir/reference/manifest.json"; then ref="$dir/reference"; break; fi
@@ -97,14 +104,9 @@ case "${1:-}" in
             fi
             args=(--reference "$ref")
             if [[ -n "${ORIGINAL4_CONV_CONTROL:-}" ]]; then args+=(--conv-control "$ORIGINAL4_CONV_CONTROL"); fi
-            if (( ${#variant[@]} )); then
-                args+=(--baseline "$original")
-                if [[ -z "${ORIGINAL4_CONV_CONTROL:-}" ]]; then args+=(--conv-control "$original/air/inputs/conv_state_pos.bin"); fi
-            fi
             in_env qwen3_5_cpro python -u "$tool" air --run "$run" \
                 --source "${CPRO_SOURCE:-${TARGET_SOURCE:?set CPRO_SOURCE to the original project}}" \
-                --config "${TARGET_CONFIG:-config/qwen3_5_moe.yaml}" "${args[@]}" "${variant[@]}"
-            if (( ${#variant[@]} )); then golden_78; fi
+                --config "${TARGET_CONFIG:-config/qwen3_5_moe.yaml}" "${args[@]}"
         else
             args=(--run "$run" --ddk "${CPRO_DDK_ROOT:?}" --remote-air "$remote_air"
                   --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}")

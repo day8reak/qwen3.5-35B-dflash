@@ -6,6 +6,7 @@ import json
 from functools import partial
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ EXPORT_DIR = 'glm_export_air_cpro_4block_64_quant'
 KIND = 'original-cpro-four-layer-prefill64'
 PATCH_KIND = KIND + '-silu-patch'
 ALIGNED_KIND = KIND + '-aligned-silu-patch'
+REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
 
 def valid19_inputs(folder, reference, cfg, conv_control):
@@ -80,15 +82,28 @@ def valid19_inputs(folder, reference, cfg, conv_control):
     changes = int(np.count_nonzero(entry[:, :19].view(np.uint16) != measured[:, :19].view(np.uint16)))
     print(f'Original embedding * scale, rounded to FP16 vs 310P layer entry: {changes}/{19*2048} changed (valid19)')
     return dict(reference_sha256=sha(reference / 'manifest.json'), token_sha256=VALID19_IDS_SHA256,
-                reference_inputs={k: meta['inputs'][k]['sha256'] for k in (
-                    'embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')},
+                reference_inputs={k: meta['inputs'][k]['sha256'] for k in REFERENCE_INPUT_NAMES},
                 valid19_embedding_changed_fp16_elements=changes, conv_state_control=policy)
 
 
 def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None):
     import yaml
+    default_config = Path('config/qwen3_5_moe.yaml')
+    if kind != KIND:
+        base_manifest = baseline / 'air/manifest.json'
+        base = json.loads(base_manifest.read_bytes())
+        if base['kind'] != KIND:
+            raise ValueError(f'Expected the native CPro export in {baseline}')
+        if source is None:
+            source = Path(next(v for v in base['argv'] if Path(v).name == EXPORTER)).parent
+        if config is None:
+            saved = next(v.split('=', 1)[1] for v in base['argv'] if v.startswith('config='))
+            choices = [Path(base.get('config_path', saved)), source / default_config]
+            config = next((p.resolve() for p in choices if p.is_file() and sha(p) == base['config_sha256']), None)
+            if config is None:
+                raise ValueError('Set TARGET_CONFIG (or --config) to the YAML used by the successful original export')
     source = source.resolve(strict=True)
-    config = (source / config).resolve(strict=True)
+    config = (source / (config or default_config)).resolve(strict=True)
     configured = yaml.safe_load(config.read_text())
     cfg = dict(configured)
     entry = source / EXPORTER
@@ -98,13 +113,11 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     run.mkdir(parents=True, exist_ok=True)
     dest = run / 'air'
     if dest.exists():
-        raise FileExistsError(f'Original export already exists: {dest}. Select a new ORIGINAL4_RUN to re-export.')
+        raise FileExistsError(f'Export already exists: {dest}. Use the existing AIR or choose a new run directory.')
     if kind != KIND:
         from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import finish_air, stage
         from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air, same_boundary
-        base_manifest = baseline / 'air/manifest.json'
-        base = json.loads(base_manifest.read_bytes())
-        if base['kind'] != KIND or base['sources'] != sources or base['config_sha256'] != sha(config):
+        if base['sources'] != sources or base['config_sha256'] != sha(config):
             raise ValueError(f'Source/config differs from the successful original at {baseline}')
         graph_path = EXPORT_DIR + '/export.air'
         original = checked(base_manifest.parent, next(row for row in base['files'] if row['path'] == graph_path))
@@ -127,7 +140,25 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             export_config.write_text(yaml.safe_dump(cfg))
         argv = [sys.executable, '-u', str(entry), 'mode=export', 'quant_mode=enable',
                 'num_hidden_layers=4', 'seq_len=64', 'topK=16', f'config={export_config}', 'quant_bits=4']
-        fixture = valid19_inputs(work / 'inputs', reference, cfg, conv_control)
+        if kind == KIND:
+            fixture = valid19_inputs(work / 'inputs', reference, cfg, conv_control)
+        else:
+            inputs = work / 'inputs'
+            inputs.mkdir()
+            for row in base['files']:
+                rel = Path(row['path'])
+                if rel.parent == Path('inputs'):
+                    shutil.copyfile(checked(base_manifest.parent, row), inputs / rel.name)
+            if conv_control and sha(conv_control) != sha(inputs / 'conv_state_pos.bin'):
+                raise ValueError('ConvState control differs from the original fixture')
+            fixture = dict(base['fixture'])
+            if reference:
+                prior = reference / 'manifest.json'
+                if sha(prior) != fixture['reference_sha256']:
+                    raise ValueError(f'{reference} differs from the measured reference of the original export')
+                measured = json.loads(prior.read_bytes())['inputs']
+                fixture['reference_inputs'] = {k: measured[k]['sha256'] for k in REFERENCE_INPUT_NAMES}
+            print(f'Reusing original valid19 input files from {base_manifest.parent / "inputs"}', flush=True)
         print(f'(cd {work} && {shlex.join(argv)})', flush=True)
         subprocess.run(argv, cwd=work, check=True)
         air = work / EXPORT_DIR / 'export.air'
@@ -151,7 +182,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 raise ValueError('The generated input files differ from the original four-layer fixture')
         save_json(work / 'manifest.json', dict(kind=kind, **variant,
                   argv=argv, sources=sources, fixture=fixture,
-                  config_sha256=sha(config), inputs=abi['inputs'], files=files))
+                  config_path=str(config), config_sha256=sha(config), inputs=abi['inputs'], files=files))
         bundle = work / 'bundle'
         bundle.mkdir()
         for name in (EXPORT_DIR, 'inputs', 'manifest.json'):
@@ -369,7 +400,7 @@ def main():
     parser.add_argument('--source', type=Path)
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--conv-control', type=Path)
-    parser.add_argument('--config', type=Path, default=Path('config/qwen3_5_moe.yaml'))
+    parser.add_argument('--config', type=Path)
     parser.add_argument('--ddk', type=Path)
     parser.add_argument('--tbe-diagnosis', type=Path)
     parser.add_argument('--remote-air', type=Path)
@@ -386,9 +417,9 @@ def main():
     if kind != KIND and args.action in ('air', 'board') and args.baseline is None:
         parser.error(f'variant {args.action} requires --baseline')
     if args.action == 'air':
-        if not args.source or not args.reference:
-            parser.error('air requires --source and --reference')
-        export(run, args.source, args.config, args.reference.resolve(), args.conv_control, kind=kind, baseline=args.baseline)
+        if kind == KIND and (not args.source or not args.reference):
+            parser.error('native export requires --source and --reference')
+        export(run, args.source, args.config, args.reference, args.conv_control, kind=kind, baseline=args.baseline)
         return
     if not args.ddk:
         parser.error('compile and board require --ddk')

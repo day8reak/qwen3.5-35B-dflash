@@ -177,7 +177,7 @@ bash targets/cpro/scripts/decoder4_t64.sh original-board
 | L3 RoPE 与 MoE | 原实现 | FP32 RoPE、位置 gather、专家量化 reshape 及门控 dtype 适配 | 沿用这些内部改动。L3 attention 的 sigmoid 保留原实现，共享专家和 W4 路由专家的 SiLU 使用 `SiluPatch` |
 | L3 K/V 回写 | 更新传入的 K/V，再返回两个 cache | 在副本上更新 K/V，作为计算 hidden 的中间值 | 沿用原版两路 K/V 回写与返回顺序 |
 
-**78 导出改版并准备四层 310P 参考。** 复用原版运行目录和原配置，另存一份改版 AIR。命令会打印 `silu-source-*` 路径，该目录的 `source.diff` 可直接 review。导出时核对原版和改版 AIR 的输入、输出顺序、状态来源和可见的 shape/dtype。可用 `ORIGINAL4_CAPTURE` 指向已有的四层 310P 采集目录，内含 `manifest.json`。默认先查找已有采集，缺少时才运行 310P 首次 prefill。给 53 传输的参考包只含本次需要的张量和清单。
+**78 导出改版并准备四层 310P 参考。** 脚本从原版 AIR 清单恢复导出器和 YAML 路径，逐文件校验并复用既有输入，包括 ConvState 控制量。私有源码或 YAML 移动后可分别指定 `CPRO_SOURCE`、`TARGET_CONFIG`。命令会打印 `silu-source-*` 路径，该目录的 `source.diff` 可直接 review。导出时核对原版和改版 AIR 的输入、输出顺序、状态来源和可见的 shape/dtype。可用 `ORIGINAL4_CAPTURE` 指向已有的四层 310P 采集目录，内含 `manifest.json`。默认先查找已有采集，缺少时才运行 310P 首次 prefill。给 53 传输的参考包只含本次需要的张量和清单。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
