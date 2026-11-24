@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Collect device logs for retained split-prefill failures without another model run."""
 import argparse
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -15,6 +16,7 @@ from qwen35_moe_dflash.target.layer_probe.common import save_json
 from qwen35_moe_dflash.target.prefill_t64.chain_hilog import (
     _client_records, _snapshot, _window, load, retained_tool_window,
 )
+from qwen35_moe_dflash.target.prefill_t64.whole_run import hiai_failure_stage
 
 
 def payload(stage, receipt):
@@ -78,6 +80,77 @@ def service_context(window, tids):
     return matches
 
 
+def execution_context(folder):
+    """Client messages are PID-filtered by _client_records. Service records share the device window."""
+    client_log = folder / 'client.log'
+    client = client_log.read_text(errors='replace').splitlines() if client_log.is_file() else []
+    client = [line for line in client if re.search(r'rtModelExecute failed|graph executor execute return error', line, re.I)]
+    service = []
+    for line in (folder / 'window.log').read_text(errors='replace').splitlines():
+        if '/hiaiserver/' in line and re.search(
+                r'load model succ:.*modelId=|ExecuteInfoDump\(|run failed stubName|hwts exception info', line, re.I):
+            service.append(line)
+    print('Execution errors from matched client:', *client, sep='\n')
+    print('Service records in the device window:', *service, sep='\n')
+    return dict(client=client, service_window=service)
+
+
+def stage_operators(build, service_lines):
+    from decoder4_original import L0_DIR
+    from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
+    from qwen35_moe_dflash.target.prefill_t64.decoder_projection import QUANT, weight_files
+
+    air = Path(build['path']).parent / L0_DIR / 'export.air'
+    raw = air.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != build['air_sha256']:
+        raise ValueError(f'{air} differs from the compiler input')
+    _, graph = graph_message(raw, 'NetOutput')
+    nodes = {op.name: op for op in graph.op}
+    stubs = sorted({m[1] for line in service_lines if (m := re.search(r'run failed stubName\s*=\s*([\w.]+)', line))})
+    def normalize(kind):
+        return re.sub(r'[^a-z0-9]', '', kind.lower())
+
+    candidates = {stub: [op.name for op in graph.op if normalize(op.type) == normalize(stub.split('__kernel')[0])]
+                  for stub in stubs}
+    for stub, names in candidates.items():
+        print(f'Device-window stub {stub}, AIR nodes matching the operator type: {names}')
+    rows = []
+    for op in graph.op:
+        if 'matmul' in op.type.lower():
+            row = dict(name=op.name, type=op.type)
+            if op.type == QUANT:
+                row['weight_files'] = weight_files(nodes, op.input[1])
+            rows.append(row)
+    print(f'Matmul nodes in {air}:', *rows, sep='\n')
+    return dict(stub_type_candidates=candidates, matmuls=rows)
+
+
+def summarize_execution(row, folder):
+    row['failure_stage'] = hiai_failure_stage((folder / 'tool.stdout').read_text(errors='replace'))
+    print(f"HIAI failure stage: {row['failure_stage']}")
+    if row['failure_stage'] == 'execute':
+        row['execution'] = execution_context(folder)
+        build = compile_manifest(Path(row['stage']), row['payload'])
+        if build.get('matches_upload'):
+            row['air_operators'] = stage_operators(build, row['execution']['service_window'])
+        else:
+            print('Matmul inventory unavailable for the uploaded model.')
+
+
+def saved_report(path):
+    """Analyze a retained diagnose result without accessing HDC or changing the evidence."""
+    ok = True
+    for row in load(path / 'result.json'):
+        folder = path / row['directory']
+        print(f"{row['stage']} ({folder})")
+        try:
+            summarize_execution(row, folder)
+        except (OSError, ValueError, KeyError) as exc:
+            print(f'{folder}: {exc}', file=sys.stderr)
+            ok = False
+    return ok
+
+
 def diagnose(stages, hilog=None):
     env = _environment()
     stages = [output_path(stage) for stage in stages]
@@ -133,6 +206,11 @@ def diagnose(stages, hilog=None):
                 row['window_records'] = _window(snapshot, window, start, end)
                 _client_records(window, folder, tids)
                 row['service_failures'] = service_context(window, tids)
+                try:
+                    summarize_execution(row, folder)
+                except (OSError, ValueError, KeyError) as exc:
+                    row['summary_error'] = str(exc)
+                    print(f'{folder}: {exc}', file=sys.stderr)
     finally:
         save_json(out / 'result.json', report)
         print('Report:', out / 'result.json', flush=True)
@@ -141,7 +219,11 @@ def diagnose(stages, hilog=None):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('stage', nargs='+', type=Path, help='retained replay stage directory containing result.json')
+    p.add_argument('stage', nargs='*', type=Path, help='retained replay stage directory containing result.json')
     p.add_argument('--hilog', type=Path, help='existing hilog -x snapshot')
+    p.add_argument('--saved', type=Path, help='summarize an existing diagnostic directory offline')
     args = p.parse_args()
-    sys.exit(0 if diagnose(args.stage, args.hilog) else 1)
+    if (args.saved and (args.stage or args.hilog)) or not (args.stage or args.saved):
+        p.error('select stage directories or --saved DIRECTORY')
+    ok = saved_report(args.saved) if args.saved else diagnose(args.stage, args.hilog)
+    sys.exit(0 if ok else 1)

@@ -6,6 +6,7 @@ cd "$repo"
 usage() {
     echo "Usage: bash $0 {air|board|compare} --mode {linear|full|40} [--run DIR] [--capture DIR]"
     echo "       bash $0 diagnose STAGE_DIR [STAGE_DIR ...]"
+    echo "       bash $0 diagnose --saved DIAGNOSTICS_DIR"
     echo "       board [--recovery [REPLAY_DIR]] [--from-stage STAGE]; compare [--replay DIR]"
     echo "       board --mode linear [--embed-decoder-hidden]"
 }

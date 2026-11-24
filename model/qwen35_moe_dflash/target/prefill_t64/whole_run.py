@@ -168,16 +168,21 @@ def score(air, meta, output, spec, *, assets=None, original=None):
     return result
 
 
+def hiai_failure_stage(log):
+    text = log.lower()
+    for marker, stage in (('load model weight failed', 'load_weights'),
+                          ('loading model model failed', 'load_model'),
+                          ('filling input tensors failed', 'fill_inputs'),
+                          ('running model failed', 'execute'),
+                          ('inference: run model failed', 'execute')):
+        if marker in text:
+            return stage
+    return 'board'
+
+
 class HiaiRunFailure(RuntimeError):
     def __init__(self, rc, remote, log):
-        self.stage = 'board'
-        for marker, stage in (('load model weight failed', 'load_weights'),
-                              ('loading model model failed', 'load_model'),
-                              ('filling input tensors failed', 'fill_inputs'),
-                              ('running model failed', 'execute')):
-            if marker in log.lower():
-                self.stage = stage
-                break
+        self.stage = hiai_failure_stage(log)
         super().__init__(f'HIAI exited {rc} (stage={self.stage}); attempt {remote}\n{log}')
 
 
