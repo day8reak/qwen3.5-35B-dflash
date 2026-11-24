@@ -83,7 +83,7 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, sh
     stage_air = (build_air(shape=wires[step['inputs'][0]]['shape']) if name.endswith('_silu')
                  else slice_air(raw, step, wires))
     shared = shared_silu is not None and name.endswith('_silu')
-    embedded = embed_decoder_hidden and name == 'decoder_hidden'
+    embedded = step.get('weight_storage') == 'embedded' or (embed_decoder_hidden and name == 'decoder_hidden')
     dest = (shared_silu if shared else run / 'omc') / name
     parent = dest.parent
     parent.mkdir(exist_ok=True)
@@ -102,12 +102,12 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, sh
             if digest != source['air_sha256']:
                 old, _ = graph_message(retained, 'NetOutput')
                 if old.SerializeToString(deterministic=True) != stage_air:
-                    raise ValueError(f'{dest}: decoder_hidden AIR differs from the current slice')
+                    raise ValueError(f'{dest}: retained AIR differs from the current slice')
             stage_air = retained
             source['air_sha256'] = digest
         source['weight_storage'] = 'embedded'
-        dest = parent / 'decoder_hidden-embedded'
-        print(f"decoder_hidden: embedded weights, AIR sha256={source['air_sha256']}", flush=True)
+        dest = parent / (name + '-embedded')
+        print(f"{name}: embedded weights, AIR sha256={source['air_sha256']}", flush=True)
     if not dest.exists():
         out = Path(tempfile.mkdtemp(prefix=name + '-', dir=parent))
         folder = out / L0_DIR
@@ -141,6 +141,8 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, sh
                 recorded = source
     if recorded != source:
         raise ValueError(f'{dest} belongs to a different AIR or DDK. Select a new L0_SPLIT_RUN.')
+    if embedded and meta['weights']:
+        raise ValueError(f'{dest}: embedded OMC manifest lists external weights')
     if shared:
         for direction in ('inputs', 'outputs'):
             row, = meta[direction]

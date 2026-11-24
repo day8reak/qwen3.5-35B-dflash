@@ -308,6 +308,8 @@ def split_decoder_projections(chain, nodes):
         for dep in sorted(deps - incoming):
             stage(dep)
         step = dict(name=name, inputs=sorted(deps), outputs=[edge], nodes=sorted(kept))
+        if edge != hidden:
+            step['weight_storage'] = 'embedded'
         if edge in projections:
             step['projection'] = projections[edge].name
             step['weight_sources'] = weight_sources(nodes, projections[edge].input[1])

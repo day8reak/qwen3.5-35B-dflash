@@ -42,18 +42,25 @@ def compile_manifest(stage, uploaded):
         build = (root / 'silu-omc' if stage.name.endswith('_silu') else root / parent.name / 'omc') / stage.name
     else:
         build = parent.parent / 'omc' / stage.name
-    if stage.name == 'decoder_hidden' and load(parent/'chain.json').get('embed_decoder_hidden'):
-        build = build.with_name('decoder_hidden-embedded')
-    path = build / 'manifest.json'
-    if not path.is_file():
-        return dict(path=str(path), available=False)
-    m = load(path)
-    model = Path(m['model']['path'])
-    expected = {str(Path(w['path']).relative_to(model.parent)): w['sha256'] for w in m['weights']}
-    return dict(path=str(path), available=True, air_sha256=m['source']['air_sha256'], omc_bytes=m['model']['bytes'],
-                external_weight_bytes=sum(w['bytes'] for w in m['weights']),
-                matches_upload=(m['model']['sha256'] == uploaded['model_sha256']
-                                and expected == uploaded['external_weights']))
+    # Pre-fix and embedded builds can coexist across replays with the same stage name.
+    variants = [build, build.with_name(build.name + '-embedded')]
+    if not uploaded['external_weights']:
+        variants.reverse()
+    inventory = dict(path=str(build / 'manifest.json'), available=False)
+    for folder in variants:
+        path = folder / 'manifest.json'
+        if not path.is_file():
+            continue
+        m = load(path)
+        model = Path(m['model']['path'])
+        expected = {str(Path(w['path']).relative_to(model.parent)): w['sha256'] for w in m['weights']}
+        matches = m['model']['sha256'] == uploaded['model_sha256'] and expected == uploaded['external_weights']
+        inventory = dict(path=str(path), available=True, air_sha256=m['source']['air_sha256'],
+                         omc_bytes=m['model']['bytes'], external_weight_bytes=sum(w['bytes'] for w in m['weights']),
+                         matches_upload=matches)
+        if matches:
+            break
+    return inventory
 
 
 def service_context(window, tids):
