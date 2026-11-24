@@ -197,7 +197,23 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-board
 
 若错误为 `SiluPatch getformatconfigs failed` 且子图出口报告 `outputTensorFormats ... is 0`，在 53 执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose`。它直接读取四层 AIR 中每个 SiLU 的 x/z 形状、类型和布局，打印失败节点的上下游、OMG 的实现选择日志，以及当前 DDK 注册文件中的端口。随后用四层编译入口在相同固定长度下编译 v3 单算子与复制了失败节点属性和端口描述的单算子；两者相同就只编一次。小图也报 `EMPTY_OUTPUT_FORMAT` 可把问题缩小到该编译环境下的单算子；小图 `COMPILED` 而四层失败，应进一步查整图分区的出口和跨分区消费者。完整记录在 `no-platform/silu-diagnosis-*/`。
 
-已有诊断时，53 可执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next`，默认读取最近一份 `silu-diagnosis-*/result.json`，也可用 `SILU_DIAGNOSIS` 指定目录。它结合原退出码复核 `model.omc` 和 `model/model.omc`，打印模型路径和字节数。两份对照（描述相同时为一份）均确认成功后，先检查一个包含原下游 Reshape 及其形状常量的小图。如果这个小图复现 `EMPTY_OUTPUT_FORMAT`，且两份单算子 AIR 的端口或属性有差异，脚本会把同一个 Reshape 接到 `v3-static`，打印 `v3-output-reshape`。再次执行会复用同一次诊断中 AIR 字节一致且已确认的编译结果。要只读取历史结果，使用 `aligned-diagnose-report`。
+**53 一次编译多个小图探针。** `ALIGNED4_RUN` 指向本次四层运行目录。以下命令读取已有 AIR 和 OMG 日志，首次运行时自动生成单算子对照。使用同一套 DDK 时，再次执行可复用本次诊断中小图字节相同、已确认的结果。
+
+```bash
+export ALIGNED4_RUN="${AI_RUN_DIR:?}/target/tests/decoder4-native-shape-t64-valid19-01"
+bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next
+```
+
+对原形状的 L0 卷积分支，命令分别编译下列对照。某个小图的 OMG 退出失败后会继续运行其他小图。
+
+| 要验证的因素 | 比较的小图 |
+| --- | --- |
+| 张量秩 | 相同元素数的 `[8192,64]` 和 `[1,8192,64]`，各自单独输出及接相同属性的静态 ND Cast |
+| AIR 端口元数据 | 同形状下，标准 ND 描述与四层图的 SiluPatch 端口及属性，分别直接输出和接原 `Cast_3` |
+| 卷积上下游 | 原 `SiluPatch → Cast_3`、再接原 `Reshape_9`，以及直接从同形状 FP32 Data 进入这两条链的对照。如 AIR 的直接生产者是可确定输入形状的一元 Squeeze，还会测试 Squeeze 单独、接 SiluPatch、再接 Cast |
+| 门控分支 | `[2048,128]` 的 SiluPatch 单独输出、接原 FP32 Mul，以及两个 FP32 Data 直接做同一个 Mul。RMSNorm 输出用同形状的 FP32 Data 接入原槽位 |
+
+汇总文件是命令打印的 `silu-diagnosis-*/probes.json`。`COMPILED` 表示 OMG 成功并生成 OMC。`EMPTY_OUTPUT_FORMAT` 表示该小图复现了 SiluPatch 的同一条格式错误。`OTHER_FAILURE` 需读对应的 `compile.log`。`SKIPPED` 记录未能从源图确定的连线。`format_failure_contrasts` 列出一边编译成功、另一边复现错误的成对结果。若所有小图均成功，定位范围仍包括整图分区及未保留的上游上下文。历史一维用例继续使用其下游 Reshape 对照。`SILU_DIAGNOSIS` 可指定已有诊断目录，`aligned-diagnose-report` 可只读历史结果。
 
 **单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
 
