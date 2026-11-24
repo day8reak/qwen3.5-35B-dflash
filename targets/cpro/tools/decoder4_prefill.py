@@ -91,8 +91,6 @@ def main():
     build.add_argument('--tbe-diagnosis', type=Path)
     board = stages.add_parser('board')
     board.add_argument('--runtime-config', type=Path, help='explicitly run the separate HIAI slot probe')
-    for stage in (review, air, build, board):
-        stage.add_argument('--keep-weight-scale', action='store_true', help='use original loader FP32 QLinear weight scales')
     for stage in (air, transfer, build, board):
         stage.add_argument('--run', type=Path, required=True)
     a = parser.parse_args()
@@ -101,7 +99,7 @@ def main():
         from qwen35_moe_dflash.target.layer_probe.common import new_output
         from qwen35_moe_dflash.target.prefill_t64.decoder_four_source import stage
         out = new_output(a.output)
-        stage(a.source_root.resolve(), out, keep_weight_scale=a.keep_weight_scale)
+        stage(a.source_root.resolve(), out)
         print(out)
         return 0
     run = output_path(a.run)
@@ -111,15 +109,13 @@ def main():
     if a.action == 'air':
         from qwen35_moe_dflash.target.prefill_t64.whole_export import export
         export(a.source_root.resolve(), a.config, a.reference, run / 'air',
-               four_decoders=True, prepared_source=a.prepared_source, keep_weight_scale=a.keep_weight_scale)
+               four_decoders=True, prepared_source=a.prepared_source)
         return 0
     from qwen35_moe_dflash.target.prefill_t64 import whole_run
     from qwen35_moe_dflash.target.prefill_t64.decoder_pair import load
     meta = load(run / 'air/manifest.json')
     if meta['kind'] != whole_run._FOUR_DECODERS or meta['layers'] != [0, 1, 2, 3]:
         raise ValueError('Expected one complete L0–L3 decoder AIR')
-    if a.keep_weight_scale and meta.get('qlinear_weight_scale', {}).get('loaded_dtype') != 'float32':
-        raise ValueError(f'{run}/air was not exported with --keep-weight-scale')
     if a.action == 'compile':
         whole_run.compile_model(run, a.ddk_root.resolve(), a.gdr_source.resolve(), a.tbe_diagnosis)
         return 0

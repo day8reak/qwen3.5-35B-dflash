@@ -17,7 +17,7 @@ from ..export_inventory import _file_constants
 from ..layer_probe.common import checked, identity, new_output, read_array, save_json, sha
 from ..layer_probe.replay import export_input_identity, source_bindings
 from ..layer_probe.steps import working_directory
-from ..operator_air_review import _data_edges, _dtype, descriptor, port_names
+from ..operator_air_review import _data_edges, port_names
 from ..original_air_roundtrip import _attributes, _decode, _read_air
 from .chain_air import checkpoint_paths, export_progress, stage_cpro_source
 from .chain_reference import BASIS, LAYERS, VALID19_IDS_SHA256
@@ -99,8 +99,7 @@ def model_inputs(root, meta, *, layers=LAYERS):
 
 
 @torch.no_grad()
-def export(source, config, reference, output, *, baseline=None, four_decoders=False, prepared_source=None,
-           keep_weight_scale=False):
+def export(source, config, reference, output, *, baseline=None, four_decoders=False, prepared_source=None):
     reference = reference.resolve(strict=True)
     meta = json.loads((reference / 'manifest.json').read_text())
     if (meta['status'] != 'CAPTURED' or meta['reference'] != BASIS or
@@ -126,7 +125,7 @@ def export(source, config, reference, output, *, baseline=None, four_decoders=Fa
             stage = prepared_source.resolve(strict=True)
         elif four_decoders:
             from .decoder_four_source import stage as stage_four
-            stage_four(source, stage, keep_weight_scale=keep_weight_scale)
+            stage_four(source, stage)
         else:
             stage_cpro_source(source, stage, lambda s: stage_wrapper(s, segmented=True, layers=LAYERS))
         staged_sha = {n: sha(stage / n) for n in (MODELING, WRAPPER, EXPORTER, NZ, 'utils.py')}
@@ -134,8 +133,6 @@ def export(source, config, reference, output, *, baseline=None, four_decoders=Fa
         try:
             import export_glm_model_qwen3_5_moe as exporter
             from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
-            if four_decoders and getattr(exporter, 'KEEP_WEIGHT_SCALE', False) != keep_weight_scale:
-                raise ValueError('Prepared source uses a different QLinear scale mode. Regenerate the review with the matching option.')
             print(f'Loading original CPro {depth}-layer wrapper and W4 weights', flush=True)
             model = logits_wrapper(exporter.Qwen3_5MoeForCausalLMCproWrapper, trace=baseline is not None)(
                 model_path=str(paths['model_file']), device='cpu', dtype=torch.float16,
@@ -146,11 +143,6 @@ def export(source, config, reference, output, *, baseline=None, four_decoders=Fa
                 raise ValueError('Original wrapper layer or KV configuration differs from the reference')
             if four_decoders:
                 exporter.load_four_decoder_weights(model, paths['quanted_pth'])
-                if keep_weight_scale:
-                    scales = [m.scale for m in layers.modules() if isinstance(m, exporter.CproQLinear)]
-                    if not scales or any(s.dtype != torch.float32 for s in scales):
-                        raise ValueError('Expected original FP32 weight scales in all four decoder layers after loading')
-                    print(f'Loaded {len(scales)} FP32 decoder QLinear weight scales', flush=True)
             else:
                 exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.model.config.num_experts,
                                              device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
@@ -193,8 +185,7 @@ def export(source, config, reference, output, *, baseline=None, four_decoders=Fa
             sys.path.remove(str(stage))
     air = root / 'export.air'
     (root / 'weight/export.air').rename(air)
-    schema = _schema(*_producer_schema())
-    _, _, graph = _decode(schema, _read_air(air)[0])
+    _, _, graph = _decode(_schema(*_producer_schema()), _read_air(air)[0])
     if baseline is not None:
         save_json(root / 'netoutput.json', [{'name': n['name'], 'edges': n.get('input', []),
                   'data_edges': _data_edges(n)} for n in graph['op'] if n['type'] == 'NetOutput'])
@@ -228,17 +219,6 @@ def export(source, config, reference, output, *, baseline=None, four_decoders=Fa
         raise ValueError(f'Unexpected AIR ports; missing {set(data) - set(edges)}')
     manifest = dict(reference=sha(reference / 'manifest.json'), source={n: sha(source / n) for n in staged_sha},
                     air=identity(air, root), weights=files, inputs=ports, ops=dict(counts))
-    if keep_weight_scale:
-        enums = schema.enums[schema.package + '.DataType']
-        scale_dtypes = Counter()
-        for op in graph['op']:
-            if op['type'] == 'QuantBatchMatmulV4444':
-                ports_by_slot = port_names(_attributes(op), 'input')
-                descs = op.get('input_desc', [])
-                desc = next((descs[i] for i, name in ports_by_slot.items() if name == 'scale' and i < len(descs)), {})
-                scale_dtypes[_dtype(descriptor(desc, enums)) or 'unknown'] += 1
-        manifest['qlinear_weight_scale'] = dict(loaded_dtype='float32', air_v4444_scale_ports=dict(scale_dtypes))
-        print(f'AIR QuantBatchMatmulV4444 weight scale ports: {dict(scale_dtypes)}', flush=True)
     if four_decoders:
         golden = meta['blocks'][3]['hidden']
         if golden['shape'] != [1, 64, 2048] or golden['dtype'] != 'float16':

@@ -162,11 +162,10 @@ def export(source, config, reference, output, *, decoder_pair=False):
         _export_batch(source, config, reference, root, decoder_pair=decoder_pair)
 
 
-def stage_cpro_source(source, stage, adapt_wrapper, *, keep_weight_scale=False):
+def stage_cpro_source(source, stage, adapt_wrapper):
     (stage / 'models').mkdir()
     (stage / 'models/__init__.py').touch()
-    for name, transform in ((MODELING, lambda t: stage_model(t, single_token=False, keep_weight_scale=keep_weight_scale)),
-                            (WRAPPER, adapt_wrapper),
+    for name, transform in ((MODELING, lambda t: stage_model(t, single_token=False)), (WRAPPER, adapt_wrapper),
                             (EXPORTER, stage_exporter), ('utils.py', stage_utils), (NZ, lambda t: t)):
         (stage / name).write_text(transform((source / name).read_text()))
 

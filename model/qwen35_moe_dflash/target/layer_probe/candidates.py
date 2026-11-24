@@ -201,7 +201,7 @@ def adapt_qlinear(region, root):
 
 
 @contextmanager
-def qlinear_ge_scales(enabled, expected_calls=1, *, keep_weight_scale=False):
+def qlinear_ge_scales(enabled, expected_calls=1):
     """Adapt the selected converter's inputs after stock FakeTensor validation.
 
     Use the installed converter unchanged after the cast; do not replace its
@@ -234,11 +234,9 @@ def qlinear_ge_scales(enabled, expected_calls=1, *, keep_weight_scale=False):
         bound = signature.bind(*args, **kwargs)
         values = bound.arguments
         expected = dict(x1=DataType.DT_INT8, x2=DataType.DT_INT32,
-                        scale=DataType.DT_FLOAT if keep_weight_scale else DataType.DT_FLOAT16,
-                        pertoken_scale=DataType.DT_FLOAT)
+                        scale=DataType.DT_FLOAT16, pertoken_scale=DataType.DT_FLOAT)
         if any(getattr(values.get(k), 'dtype', None) != dtype for k, dtype in expected.items()):
-            dtype = 'FP32' if keep_weight_scale else 'FP16'
-            raise ValueError(f'GE candidate requires INT8 x, INT32 packed W4, {dtype} scale and frontend FP32 pertoken')
+            raise ValueError('GE candidate requires INT8 x, INT32 packed W4, FP16 scale and frontend FP32 pertoken')
         token = values['pertoken_scale']
         meta = getattr(token, 'meta', None)
         if not isinstance(meta, torch.Tensor) or meta.dtype != torch.float32:

@@ -54,16 +54,17 @@ def _convert(node, method, arguments=()):
                     args=list(arguments), keywords=[])
 
 
-def _set_qlinear_scale(tree, keep_weight_scale):
+def _register_fp16_scale(tree):
     cls = _definition(tree, 'QLinear')
     init = _definition(cls, '__init__')
     scale = _one((call for call in ast.walk(init) if isinstance(call, ast.Call)
                   and ast.unparse(call.func) == 'self.register_buffer'
                   and isinstance(call.args[0], ast.Constant) and call.args[0].value == 'scale'),
                  'registered scale')
-    scale.args[1] = _expr('scale' if keep_weight_scale else 'scale.to(torch.float16)')
-    matmul = _call(_definition(cls, 'forward'), 'torch_npu.npu_quant_matmul')
-    matmul.args[2] = _expr('self.scale.to(x.device)' if keep_weight_scale else 'self.scale.to(torch.float16).to(x.device)')
+    dtype = _expr('torch.float16')
+    scale.args[1] = _convert(scale.args[1], 'to', [dtype])
+    scale_arg = _call(_definition(cls, 'forward'), 'torch_npu.npu_quant_matmul').args[2]
+    scale_arg.func.value = _convert(scale_arg.func.value, 'to', [dtype])
 
 
 def _rotate_fp32(tree, original):
@@ -164,15 +165,15 @@ def _adapt_experts(tree):
     router.value.args[0] = _expr('router_input')
 
 
-def stage_model(text, *, single_token=True, trace_chunk=False, keep_weight_scale=False):
+def stage_model(text, *, single_token=True, trace_chunk=False):
     """Return the adapted private model source, leaving the supplied source file intact."""
     digest = sha256(text.replace('\r\n', '\n').encode('utf-8')).hexdigest()
     if digest not in (_ORIGINAL, _ADAPTED):
         raise ValueError('The CPro model source differs from both reviewed baselines')
     tree = ast.parse(text)
     original = digest == _ORIGINAL
-    if original or keep_weight_scale:
-        _set_qlinear_scale(tree, keep_weight_scale)
+    if original:
+        _register_fp16_scale(tree)
     _rotate_fp32(tree, original)
     _adapt_gdn(tree, original, single_token)
     if trace_chunk:
