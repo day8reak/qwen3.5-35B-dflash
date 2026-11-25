@@ -384,6 +384,9 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None):
     if mapping and set(mapping) != {s['name'] for s in inputs}:
         raise ValueError('input-map must supply one filename for every compiled input node')
     original_inputs = {}
+    if kind != KIND and not baseline:
+        from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import output_roles
+        output_roles(outputs, meta['boundary']['outputs'])
     if baseline:
         from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air, latest_replay, output_roles, view
         prior = latest_replay(baseline)
@@ -480,7 +483,9 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--silu-patch', action='store_true', help='change only the SiLU sites in the native CPro graph')
     mode.add_argument('--aligned', action='store_true', help='native boundary, reviewed RoPE/expert fixes and SiluPatch')
-    parser.add_argument('--baseline', type=Path, help='native baseline run (or its replay for board comparison)')
+    baselines = parser.add_mutually_exclusive_group()
+    baselines.add_argument('--baseline-if-available', type=Path, help='use a successful local original replay when present')
+    baselines.add_argument('--baseline', type=Path, help='native baseline run (or its replay for board comparison)')
     args = parser.parse_args()
     base = output_path(args.run)
     bundle = base / 'air'
@@ -494,7 +499,7 @@ def main():
                 return
         parser.error(f'No OMG compile.log under {base}')
     kind = ALIGNED_KIND if args.aligned else PATCH_KIND if args.silu_patch else KIND
-    if kind != KIND and args.action in ('air', 'board') and args.baseline is None:
+    if kind != KIND and args.action == 'air' and args.baseline is None:
         parser.error(f'variant {args.action} requires --baseline')
     if args.action == 'air':
         if kind == KIND and (not args.source or not args.reference):
@@ -519,6 +524,11 @@ def main():
     if args.action == 'board':
         if not args.runtime_config:
             parser.error('board requires --runtime-config')
+        if args.baseline_if_available:
+            from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import latest_replay
+            args.baseline = latest_replay(args.baseline_if_available, required=False)
+        if kind != KIND and args.baseline is None:
+            print('Binding board inputs using compiled slots and the exported AIR fixture.', flush=True)
         directory = args.inputs or run / 'air/inputs'
         board(run, args.ddk.resolve(), args.runtime_config.resolve(), directory.resolve(), args.input_map, kind=kind,
               baseline=args.baseline)

@@ -140,7 +140,13 @@ def read_replay(path, kinds):
 
 def compare(original, modified, golden, out):
     ref, entry, capture = read_golden(golden)
-    values, boundary, inputs, info = read_replay(original, {KIND})
+    variants = {PATCH_KIND, ALIGNED_KIND, VECTOR_PATCH_KIND, VECTOR_ALIGNED_KIND}
+    if original:
+        primary = 'original'
+        values, boundary, inputs, info = read_replay(original, {KIND})
+    else:
+        primary = 'modified'
+        values, boundary, inputs, info = read_replay(modified, variants)
     # Early original replays store this count instead of the measured entry hash.
     air = Path(info['replay']).parent / 'air'
     original_files = {r['path']: r for r in load(air / 'manifest.json')['files']}
@@ -150,10 +156,10 @@ def compare(original, modified, golden, out):
     different = int(np.count_nonzero(rounded[:, :19].view(np.uint16) != entry[:, :19].view(np.uint16)))
     if different != info['fixture']['valid19_embedding_changed_fp16_elements']:
         raise ValueError('310P L0 embedding differs from the reference used to prepare the original board inputs')
-    runs = {'original': info}
-    pairs = [('original_vs_310p', values, ref)]
-    if modified:
-        alt, other, feeds, detail = read_replay(modified, {PATCH_KIND, ALIGNED_KIND, VECTOR_PATCH_KIND, VECTOR_ALIGNED_KIND})
+    runs = {primary: info}
+    pairs = [(primary + '_vs_310p', values, ref)]
+    if original and modified:
+        alt, other, feeds, detail = read_replay(modified, variants)
         same_boundary(boundary, other)
         if (info['air_manifest_sha256'] != detail['original_manifest_sha256'] or inputs != feeds or
                 any(values[k].dtype != alt[k].dtype for k in OUTPUTS)):
@@ -185,7 +191,7 @@ def compare(original, modified, golden, out):
                   f'{number("rmse"):>12} {number("error_ratio",100):>14}')
             if name == 'logits':
                 print(f'  top1 actual={score["actual_top1"]} reference={score["reference_top1"]}')
-    if modified:
+    if original and modified:
         delta = report['delta_relative_l2_pp'] = {}
         for name in OUTPUTS:
             a = report['comparisons']['original_vs_310p'][name]['relative_l2']
@@ -207,7 +213,9 @@ def main():
     pack.add_argument('--capture', required=True, type=Path)
     pack.add_argument('--output', required=True, type=Path)
     p = modes.add_parser('compare', help='compare saved original and optional modified board outputs')
-    p.add_argument('--original', required=True, type=Path, help='original run or explicit replay directory')
+    baselines = p.add_mutually_exclusive_group()
+    baselines.add_argument('--original-if-available', type=Path, help='include the local original replay when present')
+    baselines.add_argument('--original', type=Path, help='original run or explicit replay directory')
     p.add_argument('--modified', type=Path, help='modified run or explicit replay directory')
     p.add_argument('--golden', type=Path, required=True, help='local four-layer 310P capture or published subset')
     p.add_argument('--remote-golden', type=Path, help='fetch measured tensors from 78 if the local golden is absent')
@@ -216,6 +224,10 @@ def main():
     if a.command == 'golden':
         publish_golden(a.capture.resolve(), output_path(a.output))
         return
+    if a.original_if_available:
+        a.original = latest_replay(a.original_if_available, required=False)
+    if not (a.original or a.modified):
+        parser.error('compare requires an original or modified replay')
     if not a.golden.exists() and a.remote_golden:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
         fetch_golden(a.remote_golden, output_path(a.golden))

@@ -13,7 +13,7 @@ from torch.nn import functional as F
 from ..layer_probe.capture import bound, cpu
 from ..layer_probe.common import sha
 from ..layer_probe.qlinear_math import dynamic_quant, group_matmul
-from ..original_quant import OriginalQuantWeights, pack_i4zn
+from ..original_quant import OriginalQuantWeights
 from .chain_reference import VALID19_IDS_SHA256, run_segment_prefill
 from .gdn_layer_stages import ENTRY, PROJECTIONS, SHAPES, STAGES, canonical
 from .gdr_math import compute
@@ -102,6 +102,11 @@ def capture(source, config, observe_gdr):
                 @wraps(forward)
                 def projected(x, *args, **kw):
                     def measured(x1, x2, scale, *tail, **options):
+                        if (any(t is not None for t in tail) or any(v is not None for k, v in options.items()
+                                if k not in ('pertoken_scale', 'output_dtype', 'group_sizes'))
+                                or options.get('group_sizes') not in (None, [0, 0, 256], (0, 0, 256))
+                                or options.get('output_dtype') != torch.float16):
+                            raise ValueError(f'{name}: additional matmul options outside CPU group256 model')
                         y = matmul(x1, x2, scale, *tail, **options)
                         put(p+'_a8', x1)
                         put(p+'_scale', options['pertoken_scale'])
@@ -109,10 +114,9 @@ def capture(source, config, observe_gdr):
                         raw, groups = weights.logical(key, (PROJECTIONS[p], x1.shape[-1]))
                         packed = cpu(x2).numpy()
                         group_scale = cpu(scale).numpy()
-                        if (packed.dtype != np.int32 or group_scale.dtype != np.float32
-                                or not np.array_equal(pack_i4zn(raw), packed)
-                                or not np.array_equal(groups[:, :, 0].T.astype('float32'), group_scale)):
-                            raise ValueError(f'{name}: CPU checkpoint differs from live NZ weight or scale')
+                        if packed.dtype != np.int32 or group_scale.dtype != np.float32:
+                            raise ValueError(f'{name}: unexpected live NZ weight or group-scale dtype')
+                        params[p+'_310p_operands'] = packed, group_scale
                         info['projections'][name] = dict(checkpoint_key=key,
                             packed_sha256=hashlib.sha256(packed.tobytes()).hexdigest(),
                             scale_sha256=hashlib.sha256(group_scale.tobytes()).hexdigest(),

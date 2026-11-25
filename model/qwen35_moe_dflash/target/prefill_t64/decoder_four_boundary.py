@@ -126,8 +126,8 @@ def same_boundary(original, modified):
         raise ValueError(f'Four-layer AIR boundary mismatch. Original: {original}; modified: {modified}')
 
 
-def latest_replay(path):
-    path = path.resolve(strict=True)
+def latest_replay(path, *, required=True):
+    path = path.resolve()
     if (path / 'result.json').is_file():
         if json.loads((path / 'result.json').read_bytes()).get('status') == 'EXECUTED':
             return path
@@ -135,7 +135,9 @@ def latest_replay(path):
     for f in sorted(path.glob('replay-*/result.json'), key=lambda p: (p.stat().st_mtime_ns, p), reverse=True):
         if json.loads(f.read_bytes()).get('status') == 'EXECUTED':
             return f.parent
-    raise ValueError(f'No successful four-layer replay in {path}')
+    if required:
+        raise ValueError(f'No successful four-layer replay in {path}')
+    return None
 
 
 def output_roles(compiled, source):

@@ -16,7 +16,7 @@ from qwen35_moe_dflash.target.prefill_t64.gdn_layer_stages import (
     DESCRIPTION, ENTRY, SHAPES, STAGES, STATE, WHOLE_OUTPUTS, canonical, compare_view,
 )
 
-KIND = 'l0-gdn-operator-reference-t64-valid19-v2'
+KIND = 'l0-gdn-operator-reference-t64-valid19-v3'
 BACKENDS = ('cpu', '310p', 'cpro')
 FLOAT_METRICS = ('cosine', 'relative_l2', 'kl_divergence', 'rmse', 'mean_relative_error',
                  'max_abs', 'mean_abs', 'error_ratio')
@@ -58,12 +58,22 @@ def write_arrays(root, backend, arrays, roles):
     return records
 
 
+def print_fixed(fixed):
+    for name, item in fixed.items():
+        for role in ('packed_w4', 'group_scale'):
+            pairs = item[role]['pairs']
+            print(name, role, ' '.join(f"{k}={v['status']}" for k, v in pairs.items()), flush=True)
+
+
 def prepare(args, run, bundle):
     from qwen35_moe_dflash.target.layer_probe.common import checked, metrics, read_array, save_json, sha
     from trace_segment_attention import observe_l1_gdr_length
     from qwen35_moe_dflash.target.prefill_t64.gdn_layer_reference import capture, evaluate
 
-    meta, _, steps = original(bundle)
+    from decoder4_original import L0_DIR
+    from qwen35_moe_dflash.target.prefill_t64.gdn_linear_operands import fixed_operands
+
+    meta, raw, steps = original(bundle)
     source_hash = sha(bundle/'manifest.json')
     dest = run/'reference'
     if dest.exists():
@@ -76,9 +86,12 @@ def prepare(args, run, bundle):
         for backend in existing['arrays'].values():
             for rec in backend.values():
                 checked(dest, rec)
+        print_fixed(existing['linear_parameters'])
         print('Verified retained reference:', dest)
         return
     native, params, info = capture(args.source.resolve(), args.config, observe_l1_gdr_length)
+    fixed = fixed_operands(raw, bundle/L0_DIR, steps, params)
+    print_fixed(fixed)
     # Bind the new capture to the independently retained full-layer golden.
     comparisons = {}
     for role, old in [('out', 'out_proj'), ('new_history', 'conv_state_0'), ('recurrent_cache', 'recurrent_state_0')]:
@@ -88,7 +101,7 @@ def prepare(args, run, bundle):
     temp = Path(tempfile.mkdtemp(prefix='capture-', dir=run))
     arrays = {'310p': write_arrays(temp, '310p', native, (*ENTRY, *OUTPUTS))}
     arrays['cpu'] = write_arrays(temp, 'cpu', evaluate(native, params), OUTPUTS)
-    save_json(temp/'manifest.json', dict(kind=KIND, capture=info, bundle_sha256=source_hash,
+    save_json(temp/'manifest.json', dict(kind=KIND, capture=info, linear_parameters=fixed, bundle_sha256=source_hash,
               physical_rows=64, valid_rows=19, retained_310p_checks=comparisons, arrays=arrays, stages=steps))
     temp.rename(dest)
     share_for_transfer(dest)
@@ -194,6 +207,12 @@ def write_report(run, tensor=None, metric='relative_l2', *, whole=False):
     root = run/'reference'
     ref = load(root/'manifest.json')
     digest = sha(root/'manifest.json')
+    from qwen35_moe_dflash.target.prefill_t64.gdn_linear_operands import dynamic_operands
+
+    fixed = ref.get('linear_parameters', {})
+    linear = {k: dict(v) for k, v in fixed.items()}
+    if fixed:
+        print_fixed(fixed)
     report, missing = {}, []
     lane = run/('board-whole' if whole else 'board')
     lane.mkdir(parents=True, exist_ok=True)
@@ -211,6 +230,9 @@ def write_report(run, tensor=None, metric='relative_l2', *, whole=False):
             outputs = {role: record['edge'] for role, record in checkpoint['outputs'].items()}
             if set(outputs) != set(WHOLE_OUTPUTS if whole else STAGES[name][1]):
                 raise ValueError(f'{stage}: output roles differ from the selected mode')
+            if name in fixed:
+                p, = outputs
+                linear[name]['valid19'] = dynamic_operands(p, root, ref, stage, checkpoint, fixed[name])
             if 'final_state' in outputs:
                 # Corrected AIR returns this same FP16 GDR output through an identity/view or FP16 cast.
                 outputs['recurrent_cache'] = outputs['final_state']
@@ -241,9 +263,23 @@ def write_report(run, tensor=None, metric='relative_l2', *, whole=False):
                 print(f"{k:14} {scope:10} CPro/310P rel_L2={cmp.get('relative_l2')} "
                       f"error_ratio={cmp['error_ratio']} passed={cmp['passed']}")
     failed = [k for k, row in report.items() if not row['scores']['cpro']['310p']['passed']]
-    status = 'INCOMPLETE' if missing else ('FAILED_ACCURACY' if failed else 'PASSED')
+    parameter_mismatches = [f'{name}.{role}.{pair}' for name, item in fixed.items()
+                            for role in ('packed_w4', 'group_scale') for pair, row in item[role]['pairs'].items()
+                            if row['status'] not in ('EXACT', 'FP16_ROUNDING_ONLY')]
+    if fixed:
+        save_json(lane/'linear_operands.json', dict(reference_sha256=digest,
+                  cpro_fixed_source='exported AIR constants used by OMG',
+                  cpro_dynamic_source='board stage input files with verified AIR pertoken_scale Cast applied',
+                  projections=linear, parameter_mismatches=parameter_mismatches))
+        print('Matmul operands:', lane/'linear_operands.json', 'unexplained fixed differences:', parameter_mismatches)
+    status = 'FAILED_ACCURACY' if failed else 'PASSED'
+    if parameter_mismatches:
+        status = 'PARAMETER_MISMATCH'
+    if missing:
+        status = 'INCOMPLETE'
     save_json(lane/'comparison.json', dict(mode='shared_310p_layer_entry', whole_omc=whole, status=status,
-              reference_sha256=digest, failed_cpro_vs_310p=failed, missing=missing, tensors=report))
+              reference_sha256=digest, parameter_mismatches=parameter_mismatches,
+              failed_cpro_vs_310p=failed, missing=missing, tensors=report))
     print(f'{status}  CPro vs 310P failed at {failed}')
     if tensor in report:
         table = report[tensor]['scores']

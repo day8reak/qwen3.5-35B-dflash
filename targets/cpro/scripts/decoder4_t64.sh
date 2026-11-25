@@ -48,7 +48,9 @@ compare_53() {
     if [[ ! -d "$local_ref" && -z "${ORIGINAL4_GOLDEN:-}${ORIGINAL4_REMOTE_GOLDEN:-}" ]] && is_four_capture "$tests/prefill-4l-t64-valid19"; then
         local_ref="$tests/prefill-4l-t64-valid19"
     fi
-    in_env custom_pypto python -u "$compare_tool" compare --original "${ORIGINAL4_REPLAY:-$original}" \
+    local original_flag=--original
+    if [[ -z "${ORIGINAL4_REPLAY:-}" && "${1:-}" == --modified ]]; then original_flag=--original-if-available; fi
+    in_env custom_pypto python -u "$compare_tool" compare "$original_flag" "${ORIGINAL4_REPLAY:-$original}" \
         --golden "$local_ref" --remote-golden "${ORIGINAL4_REMOTE_GOLDEN:-$golden}" "$@"
 }
 set -x
@@ -137,7 +139,10 @@ case "${1:-}" in
                   --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}")
             if [[ "$action" == board ]]; then
                 args+=(--runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}")
-                if (( ${#variant[@]} )); then args+=(--baseline "${ORIGINAL4_REPLAY:-$original}"); fi
+                if (( ${#variant[@]} )); then
+                    if [[ -n "${ORIGINAL4_REPLAY:-}" ]]; then args+=(--baseline "$ORIGINAL4_REPLAY")
+                    else args+=(--baseline-if-available "$original"); fi
+                fi
                 if [[ -n "${ORIGINAL_INPUT_DIR:-}" ]]; then args+=(--inputs "$ORIGINAL_INPUT_DIR"); fi
                 if [[ -n "${ORIGINAL_INPUT_MAP:-}" ]]; then args+=(--input-map "$ORIGINAL_INPUT_MAP"); fi
             fi

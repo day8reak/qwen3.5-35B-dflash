@@ -26,7 +26,20 @@ bash targets/cpro/scripts/gdn_layer_t64.sh board
 bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor qkv --metric relative_l2
 ```
 
-`board` 使用 53 已配置的 DDK、HDC 与板端 V2 runner，按需拉取 78 的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-t64-valid19-02`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
+`board` 使用 53 已配置的 DDK、HDC 与板端 V2 runner，按需拉取 78 的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-t64-valid19-03`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
+
+## 投影计算前的操作数
+
+`prepare` 对 `in_proj_qkv`、`in_proj_z`、`in_proj_a`、`in_proj_b`、`out_proj` 分别打印三对固定参数比较，明细在 `reference/manifest.json` 的 `linear_parameters`。CPU 使用本次 CPU 参考计算的 checkpoint，310P 取本次 NZ matmul 调用实参，CPro 沿同一个 L0 AIR 的 matmul 输入边读取编译采用的常量。CPro 固定值的证据止于编译输入。
+
+| 输出字段 | 对应操作数 | 比较范围 |
+|---|---|---|
+| `packed_w4` | `self.W_q`，matmul 的 `x2` | CPU 把逻辑 INT4 按 I4ZN 打包后，逐个比较全部 INT32 字。 |
+| `group_scale` | `self.scale`，matmul 的 `scale` | 统一按 `[K/256,N]` 排列，保留各端计算时的 dtype，比较全部元素。 |
+| `valid19.x_quant` | `x_quant`，matmul 的 `x1` | 各端自己的前 19 行 INT8。 |
+| `valid19.pertoken_scale` | matmul 接收的逐 token scale | CPU 和 310P 取计算使用值。CPro 从实际送给该段 OMC 的输入文件按核对过的 AIR Cast 转为 FP16，比较前 19 个值。 |
+
+运行 `board` 或 `compare` 后，`board/linear_operands.json` 汇总固定参数及已执行投影的动态操作数。每个 `pairs` 包含 CPU/310P、CPU/CPro、310P/CPro，给出 dtype 是否相同、不同元素数和最大绝对差。`EXACT` 表示数值相同，`FP16_ROUNDING_ONLY` 表示数值有差别且 FP32 转成 FP16 后逐元素相等，`DIFFERENT` 表示仍有差异。对于固定参数，超出舍入的差异会列入 `parameter_mismatches`。沿 QKV 分支可依次读固定参数、`qkv_a8`、`qkv_scale`、`valid19.pertoken_scale` 和 `qkv`。`out_proj` 的输入已经包含前面 GDN 的累计误差。
 
 ## 整层单 OMC
 
