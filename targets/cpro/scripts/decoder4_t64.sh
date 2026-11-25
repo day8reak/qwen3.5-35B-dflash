@@ -56,16 +56,23 @@ compare_53() {
 set -x
 variant=()
 retry_load=()
+audit_args=()
 if [[ ${1:-} == aligned-board && ${2:-} == --retry-load && $# == 3 ]]; then
     retry_load=(--retry-load "$3")
+elif [[ ${1:-} == aligned-audit && ${2:-} == --replay && $# == 3 ]]; then
+    audit_args=(--replay "$3")
 elif (( $# > 1 )); then
     if [[ $# != 2 || ! $1 =~ ^original-(air|compile|board|compare|log)$ || $2 != --silu-patch ]]; then
-        echo 'Use original-{air,compile,board,compare,log} --silu-patch or aligned-board --retry-load FAILED_REPLAY.' >&2
+        echo 'Use original-{air,compile,board,compare,log} --silu-patch, aligned-board --retry-load FAILED_REPLAY, or aligned-audit --replay FAILED_REPLAY.' >&2
         exit 2
     fi
     variant=(--silu-patch)
 fi
 case "${1:-}" in
+    aligned-audit)
+        run="${ALIGNED4_RUN:-${original}-aligned-silu-patch-native-shape-fp16}"
+        in_env custom_pypto python -u targets/cpro/tools/decoder4_original.py audit --aligned --run "$run" "${audit_args[@]}"
+        ;;
     aligned-diagnose|aligned-diagnose-report|aligned-diagnose-next|aligned-format-check|aligned-format-trace|aligned-format-host)
         args=(--run "${ALIGNED4_RUN:-${original}-aligned-silu-patch-native-shape-fp16}")
         diagnostic_tool=targets/cpro/tools/diagnose_silu_format.py

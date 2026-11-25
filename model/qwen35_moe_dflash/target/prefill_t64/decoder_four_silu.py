@@ -88,11 +88,20 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
         if name == MODELING and aligned and not l0:
             import ast
             from .decoder_four_source import preserve_source
-            from .source_model import _adapt_experts, _rotate_fp32, use_position_gathers
+            from .source_model import _adapt_experts, _register_fp16_scale, _rotate_fp32, use_position_gathers
 
-            # These reviewed internal fixes work with the native entry, state updates
-            # and readout. Keep its quantized loader and ConvState control wire.
+            # Keep native state updates, ConvState control and readout.
+            # Feed GDR the FP16 activation that the custom SiLU already produced.
+            for old, new in (
+                ('F.conv1d(padded, self.conv1d.weight,',
+                 'F.conv1d(padded.to(self.conv1d.weight.dtype), self.conv1d.weight,'),
+                ('qkv_conv = silu_same_dtype(conv_out)', 'qkv_conv = silu_patch(conv_out)'),
+            ):
+                if text.count(old) != 1:
+                    raise ValueError(f'Expected one {old!r} in native GDN')
+                text = text.replace(old, new)
             tree = ast.parse(text)
+            _register_fp16_scale(tree)
             _rotate_fp32(tree, original=True)
             use_position_gathers(tree, 'Qwen3_5MoeRotaryEmbedding',
                                  ('self.cos_cached', 'self.sin_cached'), 'position_ids')
@@ -102,15 +111,19 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
     changed = [EXPORTER, MODELING]
     if l0:
         from .l0_split import expose_l0
-        from .source_exporter import stage_split_exporter, stage_utils
         index = layer or 0
         expose_l0(dest, layer=index, head=head)
+        changed.append('models/export_model_wrapper_qwen3_5_moe.py')
+    if l0 or aligned:
+        from .decoder_four_source import preserve_source
+        from .source_exporter import stage_prefill_exporter, stage_utils
         path = dest / EXPORTER
         text = path.read_text()
-        path.write_text(preserve_source(text, stage_split_exporter(text, index)))
+        count = int(index % 4 != 3) if l0 else 3
+        path.write_text(preserve_source(text, stage_prefill_exporter(text, gdn_layers=count, split=l0)))
         utils = dest / 'utils.py'
         utils.write_text(stage_utils(utils.read_text()))
-        changed.extend(['models/export_model_wrapper_qwen3_5_moe.py', 'utils.py'])
+        changed.append('utils.py')
     diff = []
     for name in changed:
         before = (source / name).read_text().splitlines(True)

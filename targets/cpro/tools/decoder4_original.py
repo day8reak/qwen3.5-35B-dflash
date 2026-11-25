@@ -33,6 +33,19 @@ L0_DIR = 'glm_export_air_cpro_1block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
 
+def four_precision(air):
+    from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
+    from qwen35_moe_dflash.target.prefill_t64.l0_split import prefill_precision
+
+    _, graph = graph_message(air.read_bytes(), 'NetOutput')
+    result = prefill_precision(graph, range(4), head=True)
+    status = 'MISMATCH' if result['mismatches'] else 'MATCH'
+    print(f'Four-layer AIR {air} — {status}: {len(result["matmuls"])} W4 matmuls, {len(result["gdrs"])} GDRs')
+    for issue in result['mismatches']:
+        print(' ', issue)
+    return result
+
+
 def valid19_inputs(folder, reference, cfg, conv_control):
     import numpy as np
     from qwen35_moe_dflash.target.layer_probe.common import read_array
@@ -176,7 +189,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         shape_trace = work / 'silu-shapes.txt'
         if kind != KIND:
             env['QWEN35_SILU_SHAPES'] = str(shape_trace)
-        if split:
+        if split or kind == ALIGNED_KIND:
             package = str(Path(__file__).resolve().parents[3] / 'model')
             env['PYTHONPATH'] = os.pathsep.join(filter(None, (package, env.get('PYTHONPATH'))))
         subprocess.run(argv, cwd=work, env=env, check=True)
@@ -203,9 +216,15 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 variant['boundary'] = boundary
                 print(f'Native AIR boundary matched: {len(boundary["inputs"])} inputs, '
                       f'{[row["role"] for row in boundary["outputs"]]}', flush=True)
+                if kind == ALIGNED_KIND:
+                    variant['precision'] = four_precision(air)
+                    if variant['precision']['mismatches']:
+                        raise ValueError('Four-layer export differs from the reviewed W4/GDR port contracts')
             staged_files = [EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py']
+            if split or kind == ALIGNED_KIND:
+                staged_files.append('utils.py')
             if split:
-                staged_files.extend(['models/export_model_wrapper_qwen3_5_moe.py', 'utils.py'])
+                staged_files.append('models/export_model_wrapper_qwen3_5_moe.py')
             variant['silu_patch']['source_sha256'] = {n: sha(staged / n) for n in staged_files}
         abi = inspect_input_shape(air)
         files = [identity(p, work) for p in sorted(air.parent.rglob('*')) if p.is_file()]
@@ -484,7 +503,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('air', 'compile', 'board', 'log'))
+    parser.add_argument('action', choices=('air', 'compile', 'board', 'log', 'audit'))
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--source', type=Path)
     parser.add_argument('--reference', type=Path)
@@ -504,11 +523,28 @@ def main():
     baselines.add_argument('--baseline', type=Path, help='native baseline run (or its replay for board comparison)')
     parser.add_argument('--retry-load', type=Path, metavar='FAILED_REPLAY',
                         help='rebuild aligned AIR with embedded weights and replay the same inputs')
+    parser.add_argument('--replay', type=Path, help='include a retained four-layer load failure in the offline audit')
     args = parser.parse_args()
     if args.retry_load and (args.action != 'board' or not args.aligned):
         parser.error('--retry-load requires board --aligned')
+    if args.replay and args.action != 'audit':
+        parser.error('--replay requires audit')
     base = output_path(args.run)
     bundle = base / 'air'
+    if args.action == 'audit':
+        meta = json.loads((bundle/'manifest.json').read_bytes())
+        if meta['kind'] != ALIGNED_KIND:
+            parser.error('audit expects the aligned FP16 SiluPatch four-layer run')
+        if args.replay:
+            from split_stage_log import four_layer_load_report
+            replay = args.replay.resolve(strict=True)
+            if not (replay.parent/'air').samefile(bundle):
+                parser.error('the selected replay and audit run must use the same AIR bundle')
+            four_layer_load_report(replay)
+        record, = [r for r in meta['files'] if r['path'] == EXPORT_DIR + '/export.air']
+        print(f'Saved AIR sha256={record["sha256"]}')
+        four_precision(checked(bundle, record))
+        return
     run = output_path(base / 'no-platform') if args.aligned and args.action != 'air' else base
     if args.action == 'log':
         for folder in (run, base):
@@ -549,13 +585,16 @@ def main():
               bundle=bundle, platform=None if args.aligned else 'kirinx90', external_weights=not args.retry_load)
     else:
         manifest = bundle / 'manifest.json'
+        air_meta = json.loads(manifest.read_bytes())
         record = json.loads(compiled.read_bytes())
-        if (json.loads(manifest.read_bytes())['kind'] != kind or record['air_manifest_sha256'] != sha(manifest)
+        if (air_meta['kind'] != kind or record['air_manifest_sha256'] != sha(manifest)
                 or not (run / 'air').samefile(bundle)):
             raise ValueError(f'Cached OMC does not match the requested {kind} AIR at {run}')
         if args.aligned and any(arg.split('=', 1)[0] == '--platform' for arg in record['argv']):
             raise ValueError(f'Cached OMC at {run} was built with an explicit --platform')
         print(f'Reusing {kind} OMC from {compiled.parent}', flush=True)
+        if kind == ALIGNED_KIND and 'precision' not in air_meta:
+            print('This cached AIR predates the four-layer W4/GDR port check. Inspect it with aligned-audit.')
     if control:
         reference = control[2]
         trial = json.loads(compiled.read_bytes())

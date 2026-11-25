@@ -172,8 +172,8 @@ bash targets/cpro/scripts/decoder4_t64.sh original-board
 |---|---|---|---|
 | 输入 | INT8 embedding、FP32 embedding scale、位置、mask、长度、ConvState 控制及各层初始 cache | 310P 的 FP16 embedding、位置、mask、长度和初始 cache | 沿用原版 wrapper 和全部输入，板端按原版成功记录逐槽核对实际输入 SHA-256 |
 | 输出 | `output_pos` 选行，经 final norm、LM head 返回 FP32 logits 和八个状态 | L3 全部 64 行 FP16 hidden | 同原版，S=64、valid19 时取下标 18 的 248320 个 logits |
-| W4 投影与 RMSNorm | `quant_bits=4`，本次核对的原版 `utils.py` 从 NZ 模型导入 `QLinear` | 显式指定 `CproQLinear`，适配 scale 与 GDR 导出类型，并预计算 RMSNorm gamma | 使用已跑通原版的加载器、scale 和 RMSNorm 代码 |
-| GDN 历史更新 | `LinearAttentionConvstateUpdate` 读取原控制张量，随后 conv1d | 拼接、切片和 conv2d | 使用原版历史更新和控制张量，卷积、门控的 SiLU 调用 `SiluPatch` |
+| W4 投影与 RMSNorm | `quant_bits=4`，本次核对的原版 `utils.py` 从 NZ 模型导入 `QLinear` | 显式指定 `CproQLinear`，适配 scale 与 GDR 导出类型，并预计算 RMSNorm gamma | 选用 CPro QLinear，在 W4 的 GE 入口使用 FP16 权重 scale 和逐 token scale；RMSNorm 沿用原版 |
+| GDN 历史更新 | `LinearAttentionConvstateUpdate` 读取原控制张量，随后 conv1d | 拼接、切片和 conv2d | 使用原版历史更新和控制张量，卷积和门控处保留 FP16 `SiluPatch`。三个 GDR 的衰减输入和状态输出按已验证的单层接口导出 |
 | L3 RoPE 与 MoE | 原实现 | FP32 RoPE、位置 gather、专家量化 reshape 及门控 dtype 适配 | 沿用这些内部改动。L3 attention 的 sigmoid 保留原实现，共享专家和 W4 路由专家的 SiLU 使用 `SiluPatch` |
 | L3 K/V 回写 | 更新传入的 K/V，再返回两个 cache | 在副本上更新 K/V，作为计算 hidden 的中间值 | 沿用原版两路 K/V 回写与返回顺序 |
 
@@ -192,6 +192,14 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-board
 ```
 
 53 已有改版 AIR 时，直接执行 `aligned-board` 即可。此入口让 OMG 省略 `--platform`，保留 `--target=omc`，并从当前 DDK 环境继承 `SOC_VERSION`。控制台和 `compile.log` 记录实际命令以及该变量的值。编译复用上一步的 AIR 和权重，本次 OMC、板端结果分别写入改版目录的 `no-platform/omc/` 和 `no-platform/replay-*/`。若只编译，使用 `aligned-compile`。
+
+如内嵌和外置权重的四层模型都在 `OpUpdateKernelArgs` 加载失败，可在 53 用保留的 AIR 核对单层已经验证的端口。将 `ALIGNED4_RUN` 设为原四层运行目录，执行以下命令。
+
+```bash
+bash targets/cpro/scripts/decoder4_t64.sh aligned-audit
+```
+
+`MISMATCH` 会列出具体 W4 或 GDR 节点和端口。先在 78 为 `ALIGNED4_RUN` 选择新目录，再执行 `aligned-air`。新导出核对 36 个普通 W4 投影、3 个 GDR、原版输入输出边界和 14 处 FP16 SiluPatch。在 53 选择同一新目录执行 `aligned-board`。已有 AIR 报 `MATCH` 时，保留原产物，结合失败 replay 的服务线程日志进一步定位。
 
 若 V2 在加载四层模型时打印 `Initialize model manager client failed`，先在 53 上读取那次 replay 的 `window.log` 和上传清单。`FAILED_REPLAY` 取报错中的 `result.json` 所在目录。以下命令需在 `custom_pypto` 环境执行。
 

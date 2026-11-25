@@ -100,14 +100,15 @@ def stage_exporter(text):
     return _replace_functions(text, edits)
 
 
-def stage_split_exporter(text, layer):
-    """Run the native one-decoder entry with the same W4 loader and GE converters as chain_air."""
+def stage_prefill_exporter(text, *, gdn_layers, split):
+    """Bind the CPro W4 loader and checked converters around the native export call."""
     text = stage_exporter(text)
     fn = _function(ast.parse(text), 'export_air')
     quant = _only(_calls(fn, {'quant_model_inplace'}), 'split W4 load')
     quant.keywords.append(ast.keyword(arg='qlinear_cls', value=ast.Name(id='CproQLinear', ctx=ast.Load())))
-    load = _only((stmt for stmt in fn.body if quant in ast.walk(stmt)), 'quantization branch')
-    init = ast.parse('''
+    if split:
+        load = _only((stmt for stmt in fn.body if quant in ast.walk(stmt)), 'quantization branch')
+        init = ast.parse('''
 from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
 model_wrapper.model.eval().to(dtype=torch.float16)
 for module in model_wrapper.model.modules():
@@ -115,12 +116,16 @@ for module in model_wrapper.model.modules():
         gamma = (module.weight + 1.0).detach().contiguous()
         module.register_buffer('export_gamma', gamma, persistent=False)
 ''').body
-    where = fn.body.index(load) + 1
-    fn.body[where:where] = init
+        where = fn.body.index(load) + 1
+        fn.body[where:where] = init
     call, = [n for n in ast.walk(fn) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
              and ast.unparse(n.value.func) == 'torchair.dynamo_export']
     branch, = [n for n in ast.walk(fn) if isinstance(n, ast.If) and call in n.body]
-    context = ast.parse(f'cpro_export_contracts(True, chunk_size=64, gdn_layers={int(layer % 4 != 3)})',
+    context = ast.parse(f'cpro_export_contracts(True, chunk_size=64, gdn_layers={gdn_layers})',
                         mode='eval').body
     branch.body[branch.body.index(call)] = ast.With(items=[ast.withitem(context_expr=context)], body=[call])
     return _replace_functions(text, [(fn, ast.unparse(ast.fix_missing_locations(fn)))])
+
+
+def stage_split_exporter(text, layer):
+    return stage_prefill_exporter(text, gdn_layers=int(layer % 4 != 3), split=True)

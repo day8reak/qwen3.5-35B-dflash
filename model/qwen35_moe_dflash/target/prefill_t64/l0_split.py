@@ -201,47 +201,67 @@ def physical_history(nodes, outputs):
     return matches[0]
 
 
-def check_split_precision(graph, layer, head):
-    """Check serialized operand descriptors, including absent optional argument slots."""
+def prefill_precision(graph, layers, head):
+    """Inspect the consumer port contracts on the exported AIR before OMG lowering."""
     enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_number
     nodes = {n.name: n for n in graph.op}
+    problems = []
+
+    def dtype(desc):
+        entry = enum.get(desc.dtype)
+        return entry.name if entry else str(desc.dtype)
+
     def check(op, contract):
         keys = op.attr['_input_name_key'].list.s
         slots = dict(zip((k.decode() for k in keys), op.attr['_input_name_value'].list.i, strict=True))
         ports = {}
         for key, expected in contract.items():
-            slot = slots[key]
-            actual = enum[op.input_desc[slot].dtype].name
-            if actual != expected:
-                raise ValueError(f'{op.name}.{key}: {actual}, expected {expected}')
+            slot = slots.get(key, -1)
+            if not 0 <= slot < min(len(op.input_desc), len(op.input)) or not op.input[slot]:
+                problems.append(f'{op.name}.{key}: missing input or descriptor (slot {slot})')
+                continue
+            actual = dtype(op.input_desc[slot])
             ports[key] = dict(dtype=actual, edge=op.input[slot])
+            if actual != expected:
+                problems.append(f'{op.name}.{key}: {op.input[slot]} is {actual}, expected {expected}')
         return ports
 
-    projections = {}
+    matmuls, gdrs = {}, {}
     for op in graph.op:
         if op.type == 'QuantBatchMatmulV4444':
             ports = check(op, dict(x1='DT_INT8', x2='DT_INT32', scale='DT_FLOAT16', pertoken_scale='DT_FLOAT16'))
-            cast = nodes[ports['pertoken_scale']['edge'].rsplit(':', 1)[0]]
-            if (cast.type != 'Cast' or enum[cast.input_desc[0].dtype].name != 'DT_FLOAT'
-                    or enum[cast.output_desc[0].dtype].name != 'DT_FLOAT16'):
-                raise ValueError(f'{op.name}: expected an FP32 to FP16 per-token scale cast')
-            projections[op.name] = ports
-    linear = layer % 4 != 3
-    expected = (5 if linear else 4) + 4 + int(head)  # attention, shared expert/router, optional LM head
-    if len(projections) != expected:
-        raise ValueError(f'L{layer}: expected {expected} W4 projections, found {len(projections)}')
-    gdr = [n for n in graph.op if n.type == 'ChunkGatedDeltaRule']
-    if len(gdr) != int(linear):
-        raise ValueError(f'L{layer}: unexpected GDR count {len(gdr)}')
-    states = {}
-    for op in gdr:
-        expected_inputs = dict.fromkeys(('query', 'key', 'value', 'g', 'beta', 'initial_state'), 'DT_FLOAT16')
-        states = check(op, dict(expected_inputs, effective_length='DT_INT16'))
-        if op.attr['chunk_size'].i != 64 or enum[op.output_desc[1].dtype].name != 'DT_FLOAT16':
-            raise ValueError(f'{op.name}: expected chunk 64 and FP16 recurrent state output')
-    print(f'L{layer} AIR verified: {expected} W4 matmuls with FP16 weight and per-token scales, {len(gdr)} GDR',
+            matmuls[op.name] = ports
+            if 'pertoken_scale' in ports:
+                edge = ports['pertoken_scale']['edge']
+                cast = nodes.get(edge.rsplit(':', 1)[0])
+                if (cast is None or cast.type != 'Cast' or not cast.input_desc or not cast.output_desc
+                        or dtype(cast.input_desc[0]) != 'DT_FLOAT' or dtype(cast.output_desc[0]) != 'DT_FLOAT16'):
+                    problems.append(f'{op.name}.pertoken_scale: expected FP32 to FP16 Cast at {edge}')
+        elif op.type == 'ChunkGatedDeltaRule':
+            expected = dict.fromkeys(('query', 'key', 'value', 'g', 'beta', 'initial_state'), 'DT_FLOAT16')
+            ports = check(op, dict(expected, effective_length='DT_INT16'))
+            state = dtype(op.output_desc[1]) if len(op.output_desc) > 1 else None
+            chunk = op.attr['chunk_size'].i
+            gdrs[op.name] = dict(inputs=ports, state_output=state, chunk_size=chunk)
+            if chunk != 64 or state != 'DT_FLOAT16':
+                problems.append(f'{op.name}: chunk={chunk}, state output={state}; expected 64 and DT_FLOAT16')
+
+    linear = sum(layer % 4 != 3 for layer in layers)
+    expected = 8 * len(layers) + linear + int(head)  # 4/5 attention + 4 MoE projections per layer, plus head
+    if len(matmuls) != expected or len(gdrs) != linear:
+        problems.append(f'Expected {expected} W4 matmuls and {linear} GDRs, found {len(matmuls)} and {len(gdrs)}')
+    return dict(matmuls=matmuls, gdrs=gdrs, mismatches=problems)
+
+
+def check_split_precision(graph, layer, head):
+    report = prefill_precision(graph, [layer], head)
+    if report['mismatches']:
+        raise ValueError('\n'.join(report['mismatches']))
+    matmuls, gdrs = report['matmuls'], report['gdrs']
+    print(f'L{layer} AIR verified: {len(matmuls)} W4 matmuls with FP16 weight and per-token scales, {len(gdrs)} GDR',
           flush=True)
-    return dict(matmuls=projections, gdr_inputs=states)
+    states = next((g['inputs'] for g in gdrs.values()), {})
+    return dict(matmuls=matmuls, gdr_inputs=states)
 
 
 def slice_dependencies(nodes, outputs, boundaries, key):
