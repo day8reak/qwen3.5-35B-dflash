@@ -16,6 +16,7 @@ from ..layer_probe.common import checked, read_array, save_json, sha
 from .chain_reference import VALID19_IDS_SHA256
 from .cpu_reference import CpuPrefill, norm, verify_floating_weights
 from .l0_split import CPU_BASIS, contracts
+from . import last4
 from .segment_prefix import tensor_record
 
 
@@ -49,14 +50,6 @@ def prepare(run, mode, capture, source):
     m = json.loads((capture/'manifest.json').read_bytes())
     if (m['status'], m['physical_rows'], m['valid_rows'], m['output_pos']) != ('CAPTURED', 64, 19, 18):
         raise ValueError('Expected a complete T64/valid19 310P reference')
-    if 'sources' in m:
-        for row in m['sources']:
-            if sha(row['path']) != row['sha256']:
-                raise ValueError(f"Capture source changed: {row['path']}")
-        source = Path(m['sources'][0]['path']).parent
-    elif source is None or sha(source/'inference_segment.py') != m['source_sha256']:
-        raise ValueError('Set TARGET_SOURCE to the 310P source of this 40-layer capture')
-    source = source.resolve()
     cfg = m.get('resources', m)
     checkpoint = Path(cfg['model_file'])
     inputs = m['inputs']
@@ -72,6 +65,28 @@ def prepare(run, mode, capture, source):
     if hidden.dtype != torch.float16 or tuple(hidden.shape) != (1, 64, 2048):
         raise ValueError('Expected a measured physical FP16 layer entry')
     capture_hash = sha(capture/'manifest.json')
+    tail = mode == 'last4'
+    if tail:
+        # An existing 40-layer CPU reference already contains this exact decoder exit.
+        # Otherwise compute the CPU prefix without requiring 36 AIR exports.
+        saved = run/'L35/cpu'
+        if (saved/'manifest.json').is_file():
+            prior = json.loads((saved/'manifest.json').read_bytes())
+            if (prior['basis'], prior['mode'], prior['layer'], prior['capture_sha256']) != (
+                    CPU_BASIS, '40', 35, capture_hash):
+                raise ValueError(f'{saved}: unrelated CPU L35 reference')
+            hidden = torch.from_numpy(read_array(saved, prior['outputs']['decoder_hidden']))
+            layers = last4.LAYERS
+        elif (run/last4.BUNDLE/'manifest.json').exists():
+            saved = run/last4.BUNDLE
+            prior = json.loads((saved/'manifest.json').read_bytes())
+            if (prior['cpu_basis'], prior['capture_sha256'], prior['source_layer']) != (CPU_BASIS, capture_hash, 35):
+                raise ValueError(f'{saved}: unrelated CPU L35 entry')
+            hidden = torch.from_numpy(read_array(saved, prior['inputs']['cpu'])).half()
+            layers = last4.LAYERS
+        if layers == last4.LAYERS:
+            last4.publish(run, capture, m, hidden.numpy())
+        mode = '40'
     owner = None
     # At most four floating decoder layers are resident. W4 projections use
     # original checkpoint weights and CPU math, including the vocabulary head.
@@ -82,15 +97,17 @@ def prepare(run, mode, capture, source):
             if mode == '40' and i == m['split_layer']:
                 hidden[:, 19:] = 0
             case = run if mode == 'linear' else run/f'L{i:02d}'
-            bundle = json.loads((case/'air/manifest.json').read_bytes())
             head = i == layers[-1]
-            if (bundle['reference']['capture_sha256'], bundle['layer'], bundle['head'], bundle['standalone']) != (
-                    capture_hash, i, head, mode != '40'):
-                raise ValueError(f'L{i}: AIR and CPU input boundaries differ')
+            prefix_only = tail and i < 36
+            if not prefix_only:
+                bundle = json.loads((case/'air/manifest.json').read_bytes())
+                if (bundle['reference']['capture_sha256'], bundle['layer'], bundle['head'], bundle['standalone']) != (
+                        capture_hash, i, head, mode != '40'):
+                    raise ValueError(f'L{i}: AIR and CPU input boundaries differ')
             dest = case/'cpu'
             stamp = dict(basis=CPU_BASIS, capture_sha256=capture_hash, mode=mode, layer=i,
                          layer_entry_sha256=hashlib.sha256(hidden.contiguous().numpy().tobytes()).hexdigest())
-            if dest.is_dir():
+            if dest.is_dir() and not prefix_only:
                 old = json.loads((dest/'manifest.json').read_bytes())
                 if (any(old.get(k) != v for k, v in stamp.items()) or set(old['outputs']) != set(contracts(i, head))):
                     raise ValueError(f'{dest}: CPU reference belongs to a different trajectory')
@@ -101,6 +118,14 @@ def prepare(run, mode, capture, source):
                 continue
             if cpu is None:
                 if owner is None:
+                    if 'sources' in m:
+                        for row in m['sources']:
+                            if sha(row['path']) != row['sha256']:
+                                raise ValueError(f"Capture source changed: {row['path']}")
+                        source = Path(m['sources'][0]['path']).parent
+                    elif source is None or sha(source/'inference_segment.py') != m['source_sha256']:
+                        raise ValueError('Set TARGET_SOURCE to the 310P source of this 40-layer capture')
+                    source = source.resolve()
                     driver = pf.import_source(source)
                     owner = sys.modules[driver.Qwen3_5MoeForCausalLMWrapper.__module__]
                 with pf.working_directory(source), pf.hf_config_prefix(checkpoint, 4, {}):
@@ -115,6 +140,11 @@ def prepare(run, mode, capture, source):
                 del model
             print(f'L{i} CPU W4 reference', flush=True)
             outputs = decoder(cpu, cpu.model.model.layers[local], i, hidden, controls, head)
+            if prefix_only:
+                hidden = outputs['decoder_hidden']
+                if i == 35:
+                    last4.publish(run, capture, m, hidden.numpy())
+                continue
             with tempfile.TemporaryDirectory(prefix='cpu-', dir=case) as tmp:
                 staged = Path(tmp)/'cpu'
                 staged.mkdir()
@@ -132,7 +162,7 @@ def prepare(run, mode, capture, source):
 
 
 def select_capture(run, mode, capture):
-    first = run if mode == 'linear' else run / ('L03' if mode == 'full' else 'L00')
+    first = run if mode == 'linear' else run / ('L03' if mode == 'full' else ('L36' if mode == 'last4' else 'L00'))
     air_manifest = first/'air/manifest.json'
     expected = json.loads(air_manifest.read_bytes())['reference']['capture_sha256']
     if capture is not None:
@@ -152,7 +182,7 @@ def select_capture(run, mode, capture):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--mode', choices=('linear', 'full', '40'), required=True)
+    p.add_argument('--mode', choices=('linear', 'full', '40', 'last4'), required=True)
     p.add_argument('--run', type=Path, required=True)
     p.add_argument('--capture', type=Path, help='original 310P capture (default: match the AIR manifest SHA-256)')
     p.add_argument('--source', type=Path)

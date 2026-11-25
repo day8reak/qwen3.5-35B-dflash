@@ -376,7 +376,8 @@ def split_after_attention_residual(chain, graph, nodes):
     steps[index:index + 1] = new_steps
 
 
-def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projections=False, split_residual=False):
+def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projections=False, split_residual=False,
+         separate_embedding=False):
     _, graph = graph_message(raw, 'SiluPatch')
     nodes = {op.name: op for op in graph.op}
     def one(kind):
@@ -497,6 +498,23 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projec
         if n.type in ('Data', 'RefData'):
             desc, = n.output_desc
             entries[n.name + ':0'] = wire(n.name, desc.shape.dim, reverse_types[enum[desc.dtype].name])
+    if separate_embedding:
+        # Materialize the original signed INT8 times per-token FP32 scale on
+        # CPro once. All following linear bodies see a floating hidden entry.
+        def embed_origin(edge):
+            node = nodes[edge.rsplit(':', 1)[0]]
+            if node.type == 'Cast' and node.attr['dst_type'].i == 0:
+                edge, = data_edges(node)
+            return edge
+        sources = {edge for edge, w in entries.items() if (w['dtype'], tuple(w['shape'])) in {
+            ('int8', (1, 64, 2048)), ('float32', (1, 64, 1))}}
+        candidates = [op for op in graph.op if op.type == 'Mul' and
+                      {embed_origin(e) for e in data_edges(op)} == sources]
+        if layer != 0 or len(sources) != 2 or len(candidates) != 1:
+            raise ValueError('Cannot identify the signed embedding × token scale at the L0 entry')
+        edge = candidates[0].name + ':0'
+        groups['embedding'] = [edge]
+        wires[edge] = wire('embedding', (1, 64, 2048), 'float32')
     owners = {e: key for key, outputs in groups.items() for e in outputs}
     if len(owners) != sum(map(len, groups.values())):
         raise ValueError('Overlapping stage outputs')

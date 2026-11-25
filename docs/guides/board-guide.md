@@ -16,6 +16,7 @@
 | `linear` | 从原 CPro embedding 输入跑 L0，再接原模型 norm/head | L0 conv_state 和 recurrent_state |
 | `full` | 从 310P 实测 L2 输出跑 L3，再接原模型 norm/head | L3 更新后的 K 和 V |
 | `40` | 从 embedding 跑 L0 至 L39，逐层传 CPro 的实际 hidden，在 L39 后接 norm/head | 全部 30 个 linear 层的两种状态和 10 个 full 层的 K、V |
+| `last4` | 分别取 CPU 和 310P 的 L35 输出，两路独立在 CPro 连跑 L36–L39 和 norm/head | 两路各自比较 L36–L38 的 conv/recurrent state 和 L39 的 K、V |
 
 78 的 `air` 命令采集或复用 310P 参考、导出 AIR，并用原 W4 权重计算单独的 CPU 参考。53 负责编译、上板和对比。两台主机拉取同一版代码，以下示例的 `MODE` 在两端取相同值。
 
@@ -29,7 +30,11 @@ MODE=full
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode "$MODE"
 ```
 
-`--run DIR` 指定该模式的运行目录。当前默认目录分别是 `$AI_RUN_DIR/target/tests` 下的 `l0-split-silupatch-t64-valid19-02`、`prefill-split-full-t64-valid19-02` 和 `prefill-split-40-t64-valid19-02`。三个模式均使用 CPro W4 投影，导出时检查每个量化 matmul 的 weight scale 和 per-token scale 都是 FP16，并将端口记录在各层的 `air/manifest.json` 的 `precision` 字段里。linear 层返回物理序列末四行的卷积状态，按有效长度更新 GDR 状态。full 层在 FP32 计算 RoPE，再将 Q/K 转回 attention 的输入类型。各层在 FP16 计算残差，在分段接口以 FP32 传递 decoder hidden。
+`--run DIR` 指定该模式的运行目录。当前默认目录分别是 `$AI_RUN_DIR/target/tests` 下的 `l0-split-silupatch-t64-valid19-02`、`prefill-split-full-t64-valid19-02` 和 `prefill-split-40-t64-valid19-02`。各模式均使用 CPro W4 投影，导出时检查每个量化 matmul 的 weight scale 和 per-token scale 都是 FP16，并将端口记录在各层的 `air/manifest.json` 的 `precision` 字段里。linear 层返回物理序列末四行的卷积状态，按有效长度更新 GDR 状态。full 层在 FP32 计算 RoPE，再将 Q/K 转回 attention 的输入类型。各层在 FP16 计算残差，在分段接口以 FP32 传递 decoder hidden。
+
+**用两个前缀测后四层。** `last4` 默认复用同一个 `40` 运行目录。在 78 执行 `air --mode last4` 会复用或导出 L36–L39 的 AIR，并准备两个入口。若已有同次 40 层参考，脚本读 `L35/cpu` 和 310P capture 中的 L35 输出。缺少 CPU 边界时，从同一 prompt 计算 CPU 前缀。53 上的 `board --mode last4` 分别执行两路，把各自位置 18 logits 的 top1 ID 与原 tokenizer 解出的文本写入 `replay-*/prefill.json` 的 `predictions.cpu` 和 `predictions.310p`。两路的实际 CPro 输出和精度矩阵分别放在 `cpu/Lxx/`、`310p/Lxx/`。这两个目录名表示前 36 层的来源。运行中断后使用 `board --mode last4 --recovery`。
+
+**跨层复用。** `40` 和 `last4` 默认按 `templates/linear`、`templates/full` 缓存各段 OMC。每次调用从本层 AIR 绑定权重和量化 scale，通过具名 Data 端口与本层状态一起送入。模板匹配会核对运算、常量、端口类型和形状。embedding、独立 SiLU、最终 norm/head 各自执行。78 仍按层导出原始 AIR 以取得本层权重及参考。53 可以用 `board --mode last4 --per-layer-omc` 跑同一对输入，复用已有的逐层 OMC 编译方式。恢复时沿用已有回放记录的模板选择。
 
 首次导出使用 `ORIGINAL4_RUN` 的成功原版基线，默认 `decoder4-original-t64-01`。可以用 `air --capture DIR` 复用旧实验同一份 310P 参考。切换到修正版时先导出，再从第一段上板。后续在同版模型内使用恢复参数。40 层模式在 310P 捕获记录的两个模型段交界处保留上段 CPro 的前 19 行并将剩余 45 行清零。
 
@@ -41,7 +46,7 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode 40 --recovery
 ```
 
-**复现 L0 分段。** 三个模式的 `board` 默认使用 L0 跑通的切法。MoE 尾部的三条 W4 投影独立执行，attention 后的残差独立读回，接着计算其余 MoE 和最终残差。linear 层有四个独立 SiluPatch。full 层的两个 SiluPatch 分别用于共享专家和路由专家。每次执行会打印当前 AIR 的 OMC 段数。独立 L0 包含最后的 norm/head，40 层连续执行时只在 L39 接 norm/head。
+**复现 L0 分段。** 各模式的 `board` 默认使用 L0 跑通的切法。MoE 尾部的三条 W4 投影独立执行，attention 后的残差独立读回，接着计算其余 MoE 和最终残差。linear 层有四个独立 SiluPatch。full 层的两个 SiluPatch 分别用于共享专家和路由专家。每次执行会打印当前 AIR 的 OMC 段数。独立 L0 包含最后的 norm/head，40 层连续执行时只在 L39 接 norm/head。
 
 在 53 用已有 AIR 和编译缓存从第一段重新上板，例如：
 

@@ -28,6 +28,7 @@ from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
+from qwen35_moe_dflash.target.prefill_t64.layer_template import parameterize
 from qwen35_moe_dflash.target.prefill_t64.l0_split import CPU_BASIS, contracts, plan, score, slice_air
 
 
@@ -161,6 +162,40 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, sh
     return meta, checked(dest, meta['model']), [checked(dest, row) for row in meta['weights']]
 
 
+def compile_template(run, bundle, step, graph, raw, ddk, diagnosis, root):
+    sliced = slice_air(raw, step, graph['wires'])
+    air, call, specs, params = parameterize(sliced, step, graph['wires'], bundle/L0_DIR, run/'parameters')
+    name = step['name']
+    if name.startswith(('key_cache_', 'value_cache_')):
+        name = name.rsplit('_', 1)[0]
+    dest = root/name
+    root.mkdir(parents=True, exist_ok=True)
+    source = dict(air_sha256=hashlib.sha256(air).hexdigest(), ddk=str(ddk), external_weights=False)
+    if not dest.exists():
+        tmp = Path(tempfile.mkdtemp(prefix=name+'-', dir=root))
+        (tmp/'export.air').write_bytes(air)
+        code, _, _ = compile_omg(tmp, 'export.air', ddk, diagnosis, platform=None, external_weights=False)
+        if code:
+            raise RuntimeError(f'{name}: template OMG exited {code}\n{compile_log_text(tmp/"compile.log")}')
+        model, = tmp.rglob('*.omc')
+        if list(model.parent.rglob('*.weight')):
+            raise ValueError(f'{name}: unexpected external template weights')
+        abi = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)
+        bind(call, specs, abi)
+        save_json(tmp/'manifest.json', dict(source=source, model=identity(model, tmp),
+                                           abi={k: abi[k] for k in ('inputs','outputs')}))
+        tmp.rename(dest)
+    meta = load(dest/'manifest.json')
+    if meta['source'] != source:
+        raise ValueError(f'{run.name}/{name}: layer-specific computation or ABI differs from {dest}; '
+                         'use --per-layer-omc for this export')
+    io = bind(call, specs, meta['abi'])
+    original = dict(zip(call['outputs'], step['outputs'], strict=True))
+    for row in io['outputs']:
+        row['edge'] = original[row['edge']]
+    return dict(model=meta['model'], **io), checked(dest, meta['model']), params
+
+
 def checkpoint_source(run, recovery, fixture_hash):
     if recovery is None:
         return None, []
@@ -204,7 +239,7 @@ def restore_stage(previous, dest, record, model_hash, inputs, outputs, fixture_h
 
 
 def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=None, from_stage=None,
-            entry=None, out=None, shared_silu=None, embed_decoder_hidden=False):
+            entry=None, out=None, shared_silu=None, embed_decoder_hidden=False, template_root=None):
     runtime = load(config.parent/load(config)['assets'])['environment']
     os.environ.setdefault('BOARD_HIAI_LIB_DIR', str(Path(DEFAULT_TOOL).parent))
     fixture_hash = sha(bundle/'manifest.json')
@@ -254,8 +289,13 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
                 print(f"Isolated {step['projection']}, weight sources: {step['weight_sources']}", flush=True)
             if 'casts' in step:
                 print(f"{name} source AIR Cast nodes and their inputs: {step['casts']}", flush=True)
-            build, model, weights = compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, fixture_hash,
-                                                  shared_silu, embed_decoder_hidden)
+            if template_root and not name.endswith('_silu') and name not in ('embedding', 'logits'):
+                build, model, params = compile_template(run, bundle, step, graph, raw, ddk, diagnosis, template_root)
+                feeds.update(params)
+                weights = []
+            else:
+                build, model, weights = compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, fixture_hash,
+                                                      shared_silu, embed_decoder_hidden)
             for spec in build['outputs']:
                 w = graph['wires'][spec['edge']]
                 if w['shape'] is None:
@@ -344,7 +384,7 @@ def write_matrices(path, scores):
     Path(f.name).replace(path)
 
 
-def compare(bundle, replay, *, allow_failed=False, remote_air=None):
+def compare(bundle, replay, *, allow_failed=False, remote_air=None, prepare_mode=None):
     receipt = load(replay/'chain.json')
     partial = allow_failed and receipt['status'] == 'FAILED'
     if (receipt['status'] != 'EXECUTED' and not partial) or receipt['bundle_sha256'] != sha(bundle/'manifest.json'):
@@ -375,7 +415,7 @@ def compare(bundle, replay, *, allow_failed=False, remote_air=None):
             raise FileNotFoundError(
                 f'CPU reference missing or incomplete at {remote_cpu} on the export host. '
                 f'On that host run: bash targets/cpro/scripts/split_prefill_t64.sh cpu '
-                f'--mode {mode} --run {shlex.quote(str(remote_run))}\nSaved board outputs: {replay}'
+                f'--mode {prepare_mode or mode} --run {shlex.quote(str(remote_run))}\nSaved board outputs: {replay}'
             ) from exc
     cpu = load(cpu_dir/'manifest.json')
     if ((cpu['basis'], cpu['mode'], cpu['layer'], cpu['capture_sha256']) !=
