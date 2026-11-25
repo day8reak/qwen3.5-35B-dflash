@@ -126,7 +126,7 @@ def run_board(args, run, layers, *, out=None, previous=None, entry=None, entry_c
     save_json(manifest, summary)
     print('Prefill replay:', out, flush=True)
     templates = getattr(args, 'templates', False)
-    if previous and not getattr(args, 'per_layer_omc', False):
+    if entry is None and previous and not getattr(args, 'per_layer_omc', False):
         templates = load(previous/'prefill.json').get('layer_templates', False)
     summary['layer_templates'] = templates
     hidden = entry
@@ -221,6 +221,18 @@ def ssh_last4(client, remote, staged):
         ssh_file(client, Path(remote)/filename, staged/filename, row)
 
 
+def tail_model_identity(lane):
+    model = []
+    for i in last4.LAYERS:
+        chain = load(lane/f'L{i:02d}'/'chain.json')
+        if chain['status'] != 'EXECUTED' or not chain['stages']:
+            raise ValueError(f'{lane}: incomplete L{i} decoder')
+        stages = [(row['name'], row['model_sha256'], [p for p in row['inputs'] if p['edge'].startswith('weight/')])
+                  for row in chain['stages']]
+        model.append((chain['bundle_sha256'], stages))
+    return model
+
+
 def paired_last4(args, run):
     folder = run/last4.BUNDLE
     if not folder.is_dir():
@@ -233,9 +245,13 @@ def paired_last4(args, run):
     executing = args.action == 'board'
     if executing:
         previous = previous_replay(run, 'last4', args.recovery) if args.recovery else None
+        if previous and not getattr(args, 'per_layer_omc', False):
+            prior = load(previous/'prefill.json')
+            args.templates = prior.get('layer_templates', args.templates)
         out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
-        summary = dict(status='RUNNING', mode='last4', inputs_sha256=sha(folder/'manifest.json'),
-                       layers=last4.LAYERS, output_pos=18, prompt=vocab['prompt'], predictions={}, recovered_from=str(previous) if previous else None)
+        summary = dict(status='RUNNING', mode='last4', layer_templates=args.templates, inputs_sha256=sha(folder/'manifest.json'),
+                       layers=last4.LAYERS, output_pos=18, prompt=vocab['prompt'], predictions={},
+                       recovered_from=str(previous) if previous else None)
         save_json(out/'prefill.json', summary)
     else:
         out = previous_replay(run, 'last4', args.replay, completed=args.replay == 'auto')
@@ -245,6 +261,7 @@ def paired_last4(args, run):
     print('Last four decoder layers, paired replay:', out, flush=True)
     with (out/'.last4.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        expected_model = None
         try:
             for source in last4.SOURCES:
                 lane = out/source
@@ -256,6 +273,10 @@ def paired_last4(args, run):
                 if chain['status'] != 'EXECUTED' or load(lane/'prefill.json')['initial_hidden'] != dict(
                         source=source, after_layer=35, sha256=meta['inputs'][source]['sha256']):
                     raise ValueError(f'{lane}: incomplete or unrelated CPro tail')
+                model = tail_model_identity(lane)
+                if expected_model is not None and model != expected_model:
+                    raise ValueError('CPU and 310P prefixes were replayed with different decoder models or weights')
+                expected_model = model
                 logits = read_array(lane/'L39', chain['outputs']['logits'])
                 token = last4.token_result(logits, vocab)
                 summary['predictions'][source] = token
