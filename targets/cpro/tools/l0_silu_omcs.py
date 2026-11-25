@@ -93,7 +93,7 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, sh
                  else slice_air(raw, step, wires))
     shared = shared_silu is not None and name.endswith('_silu')
     embedded = step.get('weight_storage') == 'embedded' or (embed_decoder_hidden and name == 'decoder_hidden')
-    dest = (shared_silu if shared else run / 'omc') / name
+    dest = (shared_silu if shared else run / 'omc') / step.get('build_name', name)
     parent = dest.parent
     parent.mkdir(exist_ok=True)
     source = dict(bundle_sha256=bundle_hash, air_sha256=hashlib.sha256(stage_air).hexdigest(), ddk=str(ddk))
@@ -115,7 +115,7 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, sh
             stage_air = retained
             source['air_sha256'] = digest
         source['weight_storage'] = 'embedded'
-        dest = parent / (name + '-embedded')
+        dest = dest.with_name(dest.name + '-embedded')
         print(f"{name}: embedded weights, AIR sha256={source['air_sha256']}", flush=True)
     if not dest.exists():
         out = Path(tempfile.mkdtemp(prefix=name + '-', dir=parent))
@@ -289,7 +289,8 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
                 print(f"Isolated {step['projection']}, weight sources: {step['weight_sources']}", flush=True)
             if 'casts' in step:
                 print(f"{name} source AIR Cast nodes and their inputs: {step['casts']}", flush=True)
-            if template_root and not name.endswith('_silu') and name not in ('embedding', 'logits'):
+            if (template_root and step.get('compiler') != 'per_layer' and
+                    not name.endswith('_silu') and name not in ('embedding', 'logits')):
                 build, model, params = compile_template(run, bundle, step, graph, raw, ddk, diagnosis, template_root)
                 feeds.update(params)
                 weights = []

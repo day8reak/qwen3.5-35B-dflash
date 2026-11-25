@@ -36,6 +36,8 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode "$MODE"
 
 **跨层复用。** `40` 和 `last4` 默认按 `templates/linear`、`templates/full` 缓存各段 OMC。每次调用从本层 AIR 绑定权重和量化 scale，通过具名 Data 端口与本层状态一起送入。模板匹配会核对运算、常量、端口类型和形状。embedding、独立 SiLU、最终 norm/head 各自执行。78 仍按层导出原始 AIR 以取得本层权重及参考。53 可以用 `board --mode last4 --per-layer-omc` 跑同一对输入，复用已有的逐层 OMC 编译方式。恢复时沿用已有回放记录的模板选择。
 
+如果 `last4` 在 `L36/conv_input` 加载失败，在 53 用 `diagnose "$R/$REPLAY/cpu/L36/conv_input"` 核对失败回执对应的编译清单并收集板端 HiLog。若显示 `Matched template OMC`，用 `board --mode last4 --run "$R" --recovery "$REPLAY" --from-stage L36/conv_input --conv-input-weights external` 继续。这个选项把 L36–L38 的 `conv_input` 按各层原始 AIR 编译，由 OMG 保存外置权重。两路共用同一组逐层产物。如果失败回执已匹配 `external`，可把参数换成 `embedded`，用同一份切片将权重编入 OMC。
+
 首次导出使用 `ORIGINAL4_RUN` 的成功原版基线，默认 `decoder4-original-t64-01`。可以用 `air --capture DIR` 复用旧实验同一份 310P 参考。切换到修正版时先导出，再从第一段上板。后续在同版模型内使用恢复参数。40 层模式在 310P 捕获记录的两个模型段交界处保留上段 CPro 的前 19 行并将剩余 45 行清零。
 
 **恢复上板。** 在 53 用 `--recovery` 接着最近一次运行，或显式指定旧 replay。脚本将已完成段的 OMC、输入和输出与回执核对，在新 replay 中使用校验通过的输出，每段成功后写入 `chain.json`。有意重跑某段时加 `--from-stage`，其前面的输入必须能从已完成的前缀恢复。

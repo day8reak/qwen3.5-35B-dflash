@@ -36,31 +36,45 @@ def payload(stage, receipt):
 
 
 def compile_manifest(stage, uploaded):
-    parent = stage.parent
-    if re.fullmatch(r'L[0-9]{2}', parent.name):
-        root = parent.parent.parent
-        build = (root / 'silu-omc' if stage.name.endswith('_silu') else root / parent.name / 'omc') / stage.name
+    from decoder4_original import L0_DIR
+
+    layer = stage.parent
+    replay = layer.parent
+    template = None
+    if re.fullmatch(r'L[0-9]{2}', layer.name):
+        if replay.name in ('cpu', '310p') and replay.parent.name.startswith('replay-'):
+            replay = replay.parent
+        run = replay.parent
+        family = 'full' if int(layer.name[1:]) % 4 == 3 else 'linear'
+        name = re.sub(r'^(key_cache|value_cache)_\d+$', r'\1', stage.name)
+        template = run/'templates'/family/name
+        base = run/'silu-omc' if stage.name.endswith('_silu') else run/layer.name/'omc'
     else:
-        build = parent.parent / 'omc' / stage.name
-    # Pre-fix and embedded builds can coexist across replays with the same stage name.
-    variants = [build, build.with_name(build.name + '-embedded')]
-    if not uploaded['external_weights']:
-        variants.reverse()
-    inventory = dict(path=str(build / 'manifest.json'), available=False)
-    for folder in variants:
-        path = folder / 'manifest.json'
+        base = layer.parent/'omc'
+    names = [stage.name]
+    if layer.name == 'L00' and stage.name == 'conv_input':
+        names.append('conv_input-after-embedding')
+
+    variants = [(base/n, 'external') for n in names] + [(base/(n+'-embedded'), 'embedded') for n in names]
+    if template is not None:
+        variants.append((template, 'template'))
+    seen = []
+    for folder, kind in variants:
+        path = folder/'manifest.json'
         if not path.is_file():
             continue
+        seen.append(str(path))
         m = load(path)
         model = Path(m['model']['path'])
-        expected = {str(Path(w['path']).relative_to(model.parent)): w['sha256'] for w in m['weights']}
-        matches = m['model']['sha256'] == uploaded['model_sha256'] and expected == uploaded['external_weights']
-        inventory = dict(path=str(path), available=True, air_sha256=m['source']['air_sha256'],
-                         omc_bytes=m['model']['bytes'], external_weight_bytes=sum(w['bytes'] for w in m['weights']),
-                         matches_upload=matches)
-        if matches:
-            break
-    return inventory
+        weights = [] if kind == 'template' else m['weights']
+        expected = {str(Path(w['path']).relative_to(model.parent)): w['sha256'] for w in weights}
+        if m['model']['sha256'] == uploaded['model_sha256'] and expected == uploaded['external_weights']:
+            air = folder/'export.air' if kind == 'template' else folder/L0_DIR/'export.air'
+            return dict(path=str(path), available=True, matches_upload=True, build_kind=kind, air=str(air),
+                        air_sha256=m['source']['air_sha256'], omc_bytes=m['model']['bytes'],
+                        external_weight_bytes=sum(w['bytes'] for w in weights))
+    return dict(path=str(base/stage.name/'manifest.json'), available=bool(seen), matches_upload=False,
+                checked_manifests=seen)
 
 
 def service_context(window, tids):
@@ -103,11 +117,11 @@ def execution_context(folder):
 
 
 def stage_operators(build, service_lines):
-    from decoder4_original import L0_DIR
+    from qwen35_moe_dflash.target.prefill_t64.qkv_silu import CONVS
     from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
     from qwen35_moe_dflash.target.prefill_t64.decoder_projection import QUANT, weight_sources
 
-    air = Path(build['path']).parent / L0_DIR / 'export.air'
+    air = Path(build['air'])
     raw = air.read_bytes()
     if hashlib.sha256(raw).hexdigest() != build['air_sha256']:
         raise ValueError(f'{air} differs from the compiler input')
@@ -121,8 +135,11 @@ def stage_operators(build, service_lines):
                   for stub in stubs}
     for stub, names in candidates.items():
         print(f'Device-window stub {stub}, AIR nodes matching the operator type: {names}')
-    rows = []
+    rows, convolutions = [], []
     for op in graph.op:
+        if op.type in CONVS and len(op.input) > 1:
+            convolutions.append(dict(name=op.name, type=op.type, filter_edge=op.input[1],
+                                     filter_sources=weight_sources(nodes, op.input[1])))
         if 'matmul' in op.type.lower():
             row = dict(name=op.name, type=op.type)
             if op.type == QUANT:
@@ -131,7 +148,9 @@ def stage_operators(build, service_lines):
                 row['weight_files'] = sorted({s['file'] for s in row['weight_sources'] if 'file' in s})
             rows.append(row)
     print(f'Matmul nodes in {air}:', *rows, sep='\n')
-    return dict(stub_type_candidates=candidates, matmuls=rows)
+    if convolutions:
+        print('Convolution filter operands in the compiler AIR:', *convolutions, sep='\n')
+    return dict(stub_type_candidates=candidates, matmuls=rows, convolutions=convolutions)
 
 
 def summarize_execution(row, folder):
@@ -139,11 +158,15 @@ def summarize_execution(row, folder):
     print(f"HIAI failure stage: {row['failure_stage']}")
     if row['failure_stage'] == 'execute':
         row['execution'] = execution_context(folder)
+    conv_load = row['failure_stage'] == 'load_model' and Path(row['stage']).name == 'conv_input'
+    if conv_load or row['failure_stage'] == 'execute':
         build = compile_manifest(Path(row['stage']), row['payload'])
+        row['compile'] = build
         if build.get('matches_upload'):
-            row['air_operators'] = stage_operators(build, row['execution']['service_window'])
+            print(f"Matched {build['build_kind']} OMC: {build['path']}")
+            row['air_operators'] = stage_operators(build, row.get('execution', {}).get('service_window', []))
         else:
-            print('Matmul inventory unavailable for the uploaded model.')
+            print('No matching compiler manifest for the uploaded model and weights.')
 
 
 def saved_report(path):
@@ -153,6 +176,8 @@ def saved_report(path):
         folder = path / row['directory']
         print(f"{row['stage']} ({folder})")
         try:
+            for failure in row.get('service_failures', []):
+                print(f"Saved hiaiserver context for client {failure['client']}:", *failure['lines'], sep='\n')
             summarize_execution(row, folder)
         except (OSError, ValueError, KeyError) as exc:
             print(f'{folder}: {exc}', file=sys.stderr)
