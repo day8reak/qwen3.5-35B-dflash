@@ -6,27 +6,32 @@
 
 ## 运行
 
-沿用单层 linear 测试的环境变量。在 78 的代码仓库运行：
+本地开发机无法连接 78、35 或板端。源代码补丁、静态 AIR 和单元测试可在本地检查。在 78 和 35 的项目仓库先执行 `git fetch origin main`、`git switch main` 和 `git pull --ff-only origin main`，然后沿用单层 linear 测试的环境变量。在 78 的代码仓库运行：
 
 ```bash
-git pull --ff-only
-export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-03"
+export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-softpluspatch-t64-valid19-01"
+export GDN_LAYER_RUN="${AI_RUN_DIR:?}/target/tests/l0-gdn-ops-softpluspatch-t64-valid19-01"
 bash targets/cpro/scripts/split_prefill_t64.sh air --mode linear
 bash targets/cpro/scripts/gdn_layer_t64.sh prepare
 ```
 
-`prepare` 使用 `TARGET_SOURCE` 下的原版 310P NZ 驱动，以及 `NZ_CONFIG`（默认 `config/qwen3_5_moe.yaml`）。读取新导出、采用 FP16 SiLU 输出的 `$L0_SPLIT_RUN/air/manifest.json`。它检查 W4 权重、逐 token scale 的 FP16 转换、物理卷积历史、chunk 长度和 GDR 状态接口，并绑定两个原生 shape 的 `SiluPatch`。CPU 复用项目的 A8 ties-to-even / W4 group256 数学参考，组内整数点积、FP32 缩放和累加，最后转 FP16。五次投影各自核对原始 checkpoint 与本次 310P 调用实际读取的打包权重和组 scale。
+`prepare` 使用 `TARGET_SOURCE` 下的原版 310P NZ 驱动，以及 `NZ_CONFIG`（默认 `config/qwen3_5_moe.yaml`）。读取新导出、含 FP16 SiluPatch 和 FP16 SoftplusPatch 的 `$L0_SPLIT_RUN/air/manifest.json`。它检查 W4 权重、逐 token scale 的 FP16 转换、物理卷积历史、chunk 长度和 GDR 状态接口，并绑定两个原生 shape 的 `SiluPatch` 和衰减分支的一个 `SoftplusPatch`。CPU 复用项目的 A8 ties-to-even / W4 group256 数学参考，组内整数点积、FP32 缩放和累加，最后转 FP16。五次投影各自核对原始 checkpoint 与本次 310P 调用实际读取的打包权重和组 scale。
 
-在 53 的代码仓库运行：
+在装有 FP16 `SoftplusPatch`、`SiluPatch` 的 DDK 编译/上板机运行（本次为 35）。两台服务器使用同一版项目脚本。
 
 ```bash
-git pull --ff-only
-export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-03"
+export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-softpluspatch-t64-valid19-01"
+export GDN_LAYER_RUN="${AI_RUN_DIR:?}/target/tests/l0-gdn-ops-softpluspatch-t64-valid19-01"
 bash targets/cpro/scripts/gdn_layer_t64.sh board
-bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor qkv --metric relative_l2
+bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor softplus --metric relative_l2
+python targets/cpro/tools/gdn_matrices_txt.py "$GDN_LAYER_RUN/board/matrices.csv"
 ```
 
-`board` 使用 53 已配置的 DDK、HDC 与板端 V2 runner，按需拉取 78 的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-t64-valid19-03`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
+`board` 使用编译机已配置的 DDK、HDC 与板端 V2 runner，按需拉取 78 的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-softpluspatch-t64-valid19-01`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
+
+本次逐段计划共 24 个 OMC、33 个观测张量。比较结束后，`board/comparison.json` 的 `cpro_softplus` 应为 `SoftplusPatch`，`missing` 应为空。重点看 `biased_a`、`softplus`、`g`、`out_scale`、`out` 以及 `recurrent_cache`。上一轮原生 Softplus 结果在 `l0-gdn-ops-t64-valid19-03/board/`。
+
+在 78 的 `$L0_SPLIT_RUN/silu-source-*/source.diff` 可以查看对 `CPRO_SOURCE` 私有源文件的改动。单独生成 GDN 形状的 FP16 算子 AIR 可执行 `python targets/cpro/tools/export_silu_patch_air.py --op softplus_patch --shape 1,64,32 --output "$GDN_LAYER_RUN/standalone"`，得到 `softplus_patch.air`。单算子输入为加偏置后的 `biased_a` 转 FP16，输出是 FP16 `z`；整段报告中 `softplus` 取其转回 FP32 后的值。
 
 ## 投影计算前的操作数
 
@@ -43,7 +48,7 @@ bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor qkv --metric relativ
 
 ## 整层单 OMC
 
-在 53 执行 `bash targets/cpro/scripts/gdn_layer_t64.sh board --whole`。它使用同一份 310P 入口，保留整层 GDN 的两处 FP16 SiluPatch 和门控乘法前的 FP32 Cast，只在 out_proj 与两份返回状态处读出。三端结果存入 `board-whole/comparison.json` 和 `board-whole/matrices.csv`。读取输出矩阵可执行 `bash targets/cpro/scripts/gdn_layer_t64.sh compare --whole --tensor out`。
+在编译机执行 `bash targets/cpro/scripts/gdn_layer_t64.sh board --whole`。它使用同一份 310P 入口，保留整层 GDN 的两处 SiluPatch、一处 SoftplusPatch 及两条门控/衰减分支各自的 FP32 转换，只在 out_proj 与两份返回状态处读出。三端结果存入 `board-whole/comparison.json` 和 `board-whole/matrices.csv`。读取输出矩阵可执行 `bash targets/cpro/scripts/gdn_layer_t64.sh compare --whole --tensor out`。
 
 ## OMC、代码变量与统计范围
 
@@ -56,7 +61,7 @@ bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor qkv --metric relativ
 | 1 | `conv` | `conv_out`，逐通道因果卷积输出，SiLU 之前。 |
 | 1 | `conv_silu` | `F.silu(conv_out)` 的激活，对应 `qkv_conv` 中的 SiLU 结果。CPro 调用独立的 FP16 输入和输出的自定义 OMC，按原模型的激活 dtype 继续拆分 Q/K/V。 |
 | 3 | `query`、`key`、`value` | 卷积激活拆分、整理 heads 后送入 GDR 的三个实参。Q 和 K 已重复到 32 个 value heads。 |
-| 3 | `biased_a`、`softplus`、`g` | 依次是 `a.float() + self.dt_bias`、`F.softplus(...)`、`-self.A_log.float().exp() * softplus`。权重侧的指数和负号在计算 `g` 的阶段内。 |
+| 3 | `biased_a`、`softplus`、`g` | 依次是 `a.float() + self.dt_bias`、`F.softplus(...)`、`-self.A_log.float().exp() * softplus`。CPU/310P 保留原生 Softplus。CPro 的 `decay_softplus` 段将已加偏置的 FP32 输入转连续 FP16，执行 `SoftplusPatch`，再将结果转回 FP32。下一段使用原权重计算衰减乘积。 |
 | 1 | `beta` | `beta = b.sigmoid()`，控制每个 head 的 delta 更新幅度。 |
 | 1 | `core`、`final_state`、`recurrent_cache` | 分别对应 `core_attn_out`、GDR 输出 1 的 `last_recurrent_state` 和层返回的 `past_key_values[1]`。状态比较整个 `[1,32,128,128]`。逐算子模式读取板端 GDR 的 FP16 状态，按 AIR 校验从该状态到缓存的每一步。导出器可以先转 FP32 对齐 fake meta，再转回 FP16 写缓存，数值相同。`--whole` 直接读取整层返回的缓存。 |
 | 1 | `rms` | `self.norm.forward` 中的 `hidden_states = npu_rms_norm(...)[0]`，已乘归一化权重，尚未乘门值。 |

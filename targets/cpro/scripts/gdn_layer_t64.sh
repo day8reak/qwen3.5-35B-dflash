@@ -10,7 +10,7 @@ case "$action" in
     *) echo "Usage: bash $0 {plan|prepare|board|compare} [--run DIR]" >&2; exit 2;;
 esac
 tests="${AI_RUN_DIR:?}/target/tests"
-args=(--run "${GDN_LAYER_RUN:-$tests/l0-gdn-ops-t64-valid19-03}" --l0-run "${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-03}")
+args=(--run "${GDN_LAYER_RUN:-$tests/l0-gdn-ops-softpluspatch-t64-valid19-01}" --l0-run "${L0_SPLIT_RUN:-$tests/l0-split-softpluspatch-t64-valid19-01}")
 env_name=custom_pypto
 case "$action" in
     prepare) env_name=qwen3_5_w4

@@ -63,9 +63,10 @@ if [[ -n "$capture" ]]; then capture=$(realpath -e -- "$capture"); fi
 tests="${AI_RUN_DIR:?}/target/tests"
 export QWEN35_TRACE_COMMANDS=1
 case "$mode" in
-    linear) run="${run:-${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-03}}";;
-    last4) run="${run:-$tests/prefill-split-40-t64-valid19-03}";;
-    full|40) run="${run:-$tests/prefill-split-$mode-t64-valid19-03}";;
+    linear) run="${run:-${L0_SPLIT_RUN:-$tests/l0-split-softpluspatch-t64-valid19-01}}";;
+    last4) run="${run:-$tests/prefill-split-40-softpluspatch-t64-valid19-01}";;
+    full) run="${run:-$tests/prefill-split-full-t64-valid19-03}";;
+    40) run="${run:-$tests/prefill-split-40-softpluspatch-t64-valid19-01}";;
     *) usage >&2; exit 2;;
 esac
 cpu_reference() {
@@ -111,7 +112,7 @@ PY_CAPTURE
 )
         fi
         if [[ -z "$capture" ]]; then
-            candidates=("$run"/capture-*/310p "$tests/prefill-split-$mode-t64-valid19-02"/capture-*/310p "$tests/prefill-split-$mode-t64-valid19-01"/capture-*/310p)
+            candidates=("$run"/capture-*/310p "$tests/prefill-split-$mode-t64-valid19-03"/capture-*/310p "$tests/prefill-split-$mode-t64-valid19-02"/capture-*/310p "$tests/prefill-split-$mode-t64-valid19-01"/capture-*/310p)
             if [[ $mode == last4 ]]; then
                 candidates+=("$tests"/prefill-split-40-*/capture-*/310p)
             fi

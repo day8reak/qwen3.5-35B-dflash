@@ -70,7 +70,7 @@ elif (( $# > 1 )); then
 fi
 case "${1:-}" in
     aligned-audit)
-        run="${ALIGNED4_RUN:-${original}-aligned-silu-patch-native-shape-fp16}"
+        run="${ALIGNED4_RUN:-${original}-aligned-silu-softplus-patch-fp16}"
         in_env custom_pypto python -u targets/cpro/tools/decoder4_original.py audit --aligned --run "$run" "${audit_args[@]}"
         ;;
     aligned-diagnose|aligned-diagnose-report|aligned-diagnose-next|aligned-format-check|aligned-format-trace|aligned-format-host)
@@ -99,7 +99,7 @@ case "${1:-}" in
         remote_air="${ORIGINAL4_REMOTE_AIR:-$run/air}"
         if [[ $1 == aligned-* ]]; then
             variant=(--aligned)
-            run="${ALIGNED4_RUN:-${original}-aligned-silu-patch-native-shape-fp16}"
+            run="${ALIGNED4_RUN:-${original}-aligned-silu-softplus-patch-fp16}"
             remote_air="${ALIGNED4_REMOTE_AIR:-$run/air}"
         elif (( ${#variant[@]} )); then
             run="${run}-silu-patch-native-shape-fp16"

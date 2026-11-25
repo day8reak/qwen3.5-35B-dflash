@@ -139,7 +139,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     if dest.exists():
         raise FileExistsError(f'Export already exists: {dest}. Use the existing AIR or choose a new run directory.')
     if kind != KIND:
-        from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import inspect_silu_air, stage
+        from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import inspect_activation_air, stage
         from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air, same_boundary
         if base['sources'] != sources or base['config_sha256'] != sha(config):
             raise ValueError(f'Source/config differs from the successful original at {baseline}')
@@ -196,8 +196,9 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         air = work / export_dir / 'export.air'
         variant = {}
         if kind != KIND:
-            variant['silu_patch'] = inspect_silu_air(air, shape_trace, layers=layers,
-                                                      full_only=layer is not None and layer % 4 == 3)
+            variant.update(inspect_activation_air(
+                air, shape_trace, layers=layers, full_only=layer is not None and layer % 4 == 3,
+                softplus=split or kind == ALIGNED_KIND))
             variant['original_manifest_sha256'] = sha(base_manifest)
             if split:
                 from qwen35_moe_dflash.target.prefill_t64.l0_split import pack_reference, plan
@@ -517,7 +518,7 @@ def main():
     parser.add_argument('--input-map', type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--silu-patch', action='store_true', help='change only the SiLU sites in the native CPro graph')
-    mode.add_argument('--aligned', action='store_true', help='native boundary, reviewed RoPE/expert fixes and SiluPatch')
+    mode.add_argument('--aligned', action='store_true', help='native boundary, reviewed RoPE/expert fixes, SiluPatch and SoftplusPatch')
     baselines = parser.add_mutually_exclusive_group()
     baselines.add_argument('--baseline-if-available', type=Path, help='use a successful local original replay when present')
     baselines.add_argument('--baseline', type=Path, help='native baseline run (or its replay for board comparison)')

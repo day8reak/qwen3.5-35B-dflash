@@ -38,6 +38,7 @@ def original(bundle, *, fetch=False, whole=False):
     meta = load(bundle/'manifest.json')
     if meta['kind'] != L0_KIND or meta.get('layer', 0) != 0:
         raise ValueError(f'Expected the corrected L0 split AIR at {bundle}')
+    print('L0 CPro decay:', 'SoftplusPatch' if 'softplus_patch' in meta else 'native Softplus (retained AIR)')
     for row in meta['files']:
         checked(bundle, row)
     raw = (bundle/L0_DIR/'export.air').read_bytes()
@@ -102,6 +103,7 @@ def prepare(args, run, bundle):
     arrays = {'310p': write_arrays(temp, '310p', native, (*ENTRY, *OUTPUTS))}
     arrays['cpu'] = write_arrays(temp, 'cpu', evaluate(native, params), OUTPUTS)
     save_json(temp/'manifest.json', dict(kind=KIND, capture=info, linear_parameters=fixed, bundle_sha256=source_hash,
+              cpro_softplus='SoftplusPatch' if 'softplus_patch' in meta else 'native',
               physical_rows=64, valid_rows=19, retained_310p_checks=comparisons, arrays=arrays, stages=steps))
     temp.rename(dest)
     share_for_transfer(dest)
@@ -152,7 +154,7 @@ def run_board(args, run, bundle):
     lane = run/('board-whole' if args.whole else 'board')
     lane.mkdir(exist_ok=True)
     if args.whole:
-        print('1 OMC: complete L0 GDN including both SiluPatch nodes', flush=True)
+        print('1 OMC: complete L0 GDN', flush=True)
     for step in steps:
         name, wires = step['name'], step['wires']
         build, model, weights = compile_stage(run, bundle, step, step, raw, args.ddk.resolve(strict=True),
@@ -281,6 +283,7 @@ def write_report(run, tensor=None, metric='relative_l2', *, whole=False):
     if missing:
         status = 'INCOMPLETE'
     save_json(lane/'comparison.json', dict(mode='shared_310p_layer_entry', whole_omc=whole, status=status,
+              cpro_softplus=ref.get('cpro_softplus', 'native'),
               reference_sha256=digest, parameter_mismatches=parameter_mismatches,
               failed_cpro_vs_310p=failed, missing=missing, tensors=report))
     print(f'{status}  CPro vs 310P failed at {failed}')

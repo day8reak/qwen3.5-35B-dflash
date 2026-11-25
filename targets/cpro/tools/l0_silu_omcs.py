@@ -481,7 +481,8 @@ def main():
     if a.mode == 'air':
         if (bundle/'manifest.json').is_file():
             meta = load(bundle/'manifest.json')
-            if (meta['kind'] != L0_KIND or meta['original_manifest_sha256'] != sha(a.baseline/'air/manifest.json')
+            if (not meta.get('softplus_patch', {}).get('nodes') or meta['kind'] != L0_KIND
+                    or meta['original_manifest_sha256'] != sha(a.baseline/'air/manifest.json')
                     or meta['reference']['capture_sha256'] != sha(a.capture/'manifest.json')):
                 raise ValueError(f'{bundle}: different export version, baseline or capture. Use a new --run.')
             print(f'Existing corrected L0 AIR: {bundle}', flush=True)

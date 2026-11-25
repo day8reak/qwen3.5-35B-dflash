@@ -101,6 +101,13 @@ def stages(raw, meta, *, whole=False):
     for p, op in quant.items():
         if op.type != 'DynamicQuant':
             raise ValueError(f'{p}: expected DynamicQuant, found {op.type}')
+    softplus_nodes = {n.name for n in graph.op if n.type == 'SoftplusPatch'}
+    recorded = meta.get('softplus_patch')
+    expected = set() if recorded is None else {n['name'] for n in recorded['nodes']}
+    if softplus_nodes != expected or (recorded is not None and len(expected) != 1):
+        raise ValueError(f'L0 SoftplusPatch differs from its export manifest: {sorted(softplus_nodes)}')
+    if softplus_nodes and not walk.depends(gdr['g'], next(iter(softplus_nodes)) + ':0'):
+        raise ValueError('SoftplusPatch output must contribute to GDR decay g')
     if whole:
         return [whole_stage(graph, decoder, quant, conv_patch, gate_patch, gdr)]
     # Decay is a product of a weight-only factor and a data-dependent softplus term.
@@ -153,6 +160,8 @@ def stages(raw, meta, *, whole=False):
         patches = [n for n in retained if nodes[n].type == 'SiluPatch']
         if bool(patches) != name.endswith('_silu') or (patches and len(retained) != 1):
             raise ValueError(f'{name}: unexpected SiluPatch slice {patches}')
+        if softplus_nodes and bool(softplus_nodes.intersection(retained)) != (name == 'decay_softplus'):
+            raise ValueError(f'{name}: SoftplusPatch must belong to the decay_softplus stage')
         wires = {}
         for key in (*inputs, *outputs):
             edge = selected[key]

@@ -372,6 +372,8 @@ def main():
             if (case/'air/manifest.json').is_file():
                 meta = load(case/'air/manifest.json')
                 check_bundle(meta, i, layers)
+                if i % 4 != 3 and not meta.get('softplus_patch', {}).get('nodes'):
+                    raise ValueError(f'L{i}: existing AIR predates SoftplusPatch. Export into a new --run.')
                 if (meta['reference']['capture_sha256'], meta['original_manifest_sha256']) != (capture_hash, baseline_hash):
                     raise ValueError(f'L{i}: existing AIR belongs to another reference or CPro baseline')
                 continue

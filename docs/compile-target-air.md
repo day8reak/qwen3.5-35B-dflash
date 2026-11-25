@@ -184,7 +184,7 @@ cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh aligned-air
 ```
 
-**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 FP16 输入和 FP16 输出版本 `SiluPatch` 的 X90 DDK。如果 53 保留了成功的原版 replay，脚本还会核对两份 OMC 的端口和输入文件哈希。缺少原版 replay 时，脚本按改版 OMC 的编译槽位读取导出包中的输入。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-patch-native-shape-fp16`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
+**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 FP16 输入和 FP16 输出版本 `SiluPatch` 的 X90 DDK。如果 53 保留了成功的原版 replay，脚本还会核对两份 OMC 的端口和输入文件哈希。缺少原版 replay 时，脚本按改版 OMC 的编译槽位读取导出包中的输入。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-softplus-patch-fp16`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
@@ -255,6 +255,10 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-compare
 终端和脚本打印的 `comparison-*/comparison.json` 给出原版对 310P、改版对 310P、改版对原版的分项结果。logits 使用 310P 在 **L3 token18 hidden 上运行 final norm 和 LM head** 的实测值并比较 top1。每层 ConvState 和 recurrent state 比较完整返回张量。L3 K/V 比较第 0 页的有效位置 0–18，另外检查未写入的后续页。相对 L2 和逐元素超差比例在终端按百分数显示，JSON 保存原始比值。
 
 如需量出 **仅替换 SiLU** 的影响，78 和 53 分别运行 `original-air --silu-patch` 和 `original-board --silu-patch`，均通过同一个 `decoder4_t64.sh`。该组合使用独立目录，复用同一原版结果和参考。默认 `aligned` 组同时包含表中 L3 RoPE 和 MoE 的内部改动。
+
+### SoftplusPatch 与 GDN 衰减
+
+新导出的 `aligned-air` 在 L0、L1、L2 各调用一次 `SoftplusPatch`。保持 `a.float() + self.dt_bias` 的计算顺序，随后转成连续 FP16（T64 的形状为 `[1,64,32]`），调用 `torch.ops.npu.softplus_patch`。输出 `z` 转 FP32，再与 `-exp(A_log)` 相乘。算子和 GDR 共用 npu Meta 注册方式；导出检查实际 x/z 类型、两个 Cast、消费端和节点数，记录在 `air/manifest.json` 的 `softplus_patch.nodes`。编译机同时需要 FP16 版本的 SiluPatch 和 SoftplusPatch。独立的原版及 SiLU 对照仍可从原入口运行。L0 分模块的重跑命令见 [GDN 逐算子对比](guides/gdn-layer-t64.md)。
 
 ### SiluPatch 在四层图中的调用
 
