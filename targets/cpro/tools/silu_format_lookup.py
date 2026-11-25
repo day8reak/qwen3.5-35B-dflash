@@ -10,7 +10,7 @@ from diagnose_silu_format import REGISTRATION, compile_probe, downstream, format
 from qwen35_moe_dflash.toolchain.compile import omg_environment
 
 
-CASES = {'gate-mul': ('Mul', 1, (2048, 128)), 'output-cast-reshape': ('Cast', 0, (1, 8192, 64))}
+CASES = {'gate-mul': ('Mul', 'Cast'), 'output-cast-reshape': ('Cast',), 'output-reshape': ('Reshape',)}
 PORTS = {'producer': (0,), 'consumer': (1,), 'both': (0, 1)}
 
 
@@ -67,19 +67,20 @@ def edge_variant(raw, case, sides):
     if len(edges) != 1:
         raise ValueError(f'{case}: expected one SiluPatch consumer, found {len(edges)}')
     consumer, slot = edges[0]
-    kind, expected_slot, shape = CASES[case]
+    first_ops = CASES[case]
     x = next(op for op in graph.op if op.name + ':0' == silu.input[0])
-    if ((consumer.type, slot) != (kind, expected_slot)
-            or x.type != 'Data' or tuple(x.output_desc[0].shape.dim) != shape
+    shape = tuple(x.output_desc[0].shape.dim)
+    if (consumer.type not in first_ops or (consumer.type != 'Mul' and slot != 0)
+            or x.type != 'Data' or not shape or min(shape) <= 0
             or (x.output_desc[0].dtype, silu.input_desc[0].dtype) != (2, 2)):
         raise ValueError(f'{case}: unexpected SiLU input or consumer in retained AIR')
     descs = [silu.output_desc[0], consumer.input_desc[slot]]
     for i in sides:
         desc = descs[i]
         dims = tuple(desc.shape.dim)
-        if desc.dtype != 1 or (dims and dims != (-2,) and (
+        if desc.dtype not in (1, 2) or desc.dtype != silu.output_desc[0].dtype or (dims and dims != (-2,) and (
                 len(dims) != len(shape) or any(d >= 0 and d != n for d, n in zip(dims, shape)))):
-            raise ValueError(f'{case}: FP32 {shape} conflicts with {desc.dtype} {dims}')
+            raise ValueError(f'{case}: SiluPatch edge {shape} conflicts with {desc.dtype} {dims}')
         if desc.layout not in ('', 'ND'):
             raise ValueError(f'{case}: explicit {desc.layout} on edge; cannot fill ND')
         desc.shape.dim[:] = shape
@@ -101,7 +102,9 @@ def run_check(directory, ddk, diagnosis):
     result = dict(input_report=str(directory / 'probes.json'), air_sha256=saved['air_sha256'],
                   ddk=inspect_ddk(ddk), cases={})
     for case in CASES:
-        old = saved['cases'][case]
+        old = saved['cases'].get(case, {})
+        if old.get('status') != 'EMPTY_OUTPUT_FORMAT':
+            continue
         log = Path(old['log']).resolve(strict=True)
         if (directory not in log.parents or old['status'] != 'EMPTY_OUTPUT_FORMAT'
                 or format_failure(log, {'silu_patch'}) != 'silu_patch'):
@@ -135,10 +138,12 @@ def run_check(directory, ddk, diagnosis):
         rows = evidence['results']
         passed[case] = [n for n, row in rows.items() if row['status'] == 'COMPILED']
         print(f'{case}: ' + ', '.join(f'{n}={v["status"]}' for n, v in rows.items()))
-    if all('original' in names for names in passed.values()):
-        decision = 'Both original reproducers compile with the current DDK. Retry the unmodified four-layer compile.'
+    if not passed:
+        decision = 'No retained case reproduced the empty output-format error.'
+    elif all('original' in names for names in passed.values()):
+        decision = 'The retained reproducers compile with the current DDK. Retry the unmodified four-layer compile.'
     elif all(passed.values()):
-        decision = 'Both sites have a compiling candidate. Validate the passing port choices in a four-layer AIR.'
+        decision = 'Each retained site has a compiling candidate. Validate the passing port choices in a four-layer AIR.'
     elif any(all(row['status'] == 'EMPTY_OUTPUT_FORMAT' for row in c['results'].values())
              for c in result['cases'].values()):
         decision = 'At least one reproducer still fails with all tested ND edge variants. Inspect the DDK format lookup with that AIR and log.'

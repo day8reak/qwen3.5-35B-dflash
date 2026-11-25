@@ -68,10 +68,24 @@ def compile_probe(folder, raw, ddk, diagnosis, *, use_origin_format=True, launch
     return result
 
 
+def standalone_for_ports(shape, output_dtype):
+    # Retained diagnoses can carry the previous FP32 ABI. Match their source
+    # for A/B comparisons without changing the model exporter.
+    raw = build_air(shape=shape)
+    if output_dtype == 2:
+        return raw
+    if output_dtype != 1:
+        raise ValueError(f'Unsupported SiluPatch output dtype {output_dtype}')
+    message, graph = graph_message(raw, 'SiluPatch')
+    _, patch, net = graph.op
+    patch.output_desc[0].dtype = net.input_desc[0].dtype = output_dtype
+    return message.SerializeToString(deterministic=True)
+
+
 def isolated_cases(op, shape, out=None):
     # Change only the op attributes and port descriptors. Producers, consumers,
     # node names and graph-level metadata are identical in the two controls.
-    raw = build_air(shape=shape)
+    raw = standalone_for_ports(shape, op.output_desc[0].dtype)
     message, graph = graph_message(raw, 'SiluPatch')
     probe, = [n for n in graph.op if n.type == 'SiluPatch']
     canonical = probe.SerializeToString(deterministic=True)
@@ -95,7 +109,7 @@ def isolated_cases(op, shape, out=None):
 def diagnose(base, ddk, diagnosis):
     air = base / 'air'
     manifest = json.loads((air / 'manifest.json').read_bytes())
-    if manifest['kind'] not in (ALIGNED_KIND, VECTOR_ALIGNED_KIND):
+    if manifest['kind'] not in (ALIGNED_KIND, VECTOR_ALIGNED_KIND + '-native-shape', VECTOR_ALIGNED_KIND):
         raise ValueError(f'Expected the aligned four-layer export in {air}')
     entry, = [r for r in manifest['files'] if r['path'] == EXPORT_DIR + '/export.air']
     path = checked(air, entry)
@@ -103,14 +117,18 @@ def diagnose(base, ddk, diagnosis):
     nodes = {op.name: op for op in graph.op if op.type == 'SiluPatch'}
     print(f'AIR {path} sha256={entry["sha256"]}')
     producers = {op.name: op for op in graph.op}
-    if manifest['kind'] == ALIGNED_KIND:
+    if manifest['kind'] != VECTOR_ALIGNED_KIND:
         shapes = {n['name']: tuple(n['shape']) for n in manifest['silu_patch']['nodes']}
         if set(shapes) != set(nodes):
             raise ValueError('SiluPatch manifest and AIR nodes differ')
     else:
         shapes = {name: (vector_length(op, producers),) for name, op in nodes.items()}
     counts = Counter(prod(shape) for shape in shapes.values())
-    print('SiluPatch FP16 -> FP32, static shape counts:', dict(Counter(shapes.values())))
+    port_types = {(op.input_desc[0].dtype, op.output_desc[0].dtype) for op in nodes.values()}
+    if len(port_types) != 1 or not port_types <= {(2, 1), (2, 2)}:
+        raise ValueError(f'Unexpected SiluPatch ports: {port_types}')
+    precision = 'FP16' if port_types == {(2, 2)} else 'FP32'
+    print(f'SiluPatch FP16 -> {precision}, static shape counts:', dict(Counter(shapes.values())))
     run = base / 'no-platform'
     logs = list(run.glob('omg-*/compile.log'))
     if not logs:
@@ -216,74 +234,80 @@ def native_probes(directory, source, manifest, report, results, ddk, diagnosis):
             rows[label] = dict(status='PROBE_ERROR', detail=str(error))
             print(f'{label}: {error}', flush=True)
 
-    cast, slot = downstream(source, source_node)[0]
-    if slot != 0 or cast.type != 'Cast':
-        raise ValueError(f'Unexpected native convolution consumer {cast.name}:{slot}')
+    edges = downstream(source, source_node)
+    if len(edges) == 1 and edges[0][0].type == 'Cast' and edges[0][1] == 0:
+        cast = edges[0][0]
+        raw = with_consumer(standalone, source, cast)
+        probe('output-cast', raw, cast.name)
+        probe('output-cast-without-silu', without_silu(raw), cast.name)
+        if ports != 'v3-static':
+            probe('v3-output-cast', with_consumer(std, source, cast), cast.name)
 
-    raw = with_consumer(standalone, source, cast)
-    probe('output-cast', raw, cast.name)
-    probe('output-cast-without-silu', without_silu(raw), cast.name)
-    if ports != 'v3-static':
-        probe('v3-output-cast', with_consumer(std, source, cast), cast.name)
-
-    try:
-        squeeze_only, upstream = with_source_squeeze(standalone, source, source_node)
-    except ValueError as error:
-        rows['squeeze-silu'] = dict(status='SKIPPED', detail=str(error))
-    else:
-        probe('squeeze-only', squeeze_only, None)
-        probe('squeeze-silu', upstream, None)
-        probe('squeeze-silu-cast', with_consumer(upstream, source, cast), cast.name)
-
-    following = downstream(source, cast.name)
-    if len(following) == 1 and following[0][1] == 0 and following[0][0].type == 'Reshape':
-        reshape = following[0][0]
         try:
-            chain = with_consumer(raw, source, reshape)
+            squeeze_only, upstream = with_source_squeeze(standalone, source, source_node)
         except ValueError as error:
-            rows['output-cast-reshape'] = dict(status='SKIPPED', detail=str(error))
+            rows['squeeze-silu'] = dict(status='SKIPPED', detail=str(error))
         else:
-            names = [cast.name, reshape.name]
-            probe('output-cast-reshape', chain, names)
-            probe('output-cast-reshape-without-silu', without_silu(chain), names)
-    else:
-        rows['output-cast-reshape'] = dict(status='SKIPPED', detail=f'{cast.name} lacks a single downstream Reshape')
+            probe('squeeze-only', squeeze_only, None)
+            probe('squeeze-silu', upstream, None)
+            probe('squeeze-silu-cast', with_consumer(upstream, source, cast), cast.name)
 
-    # Both ranks use the same Cast attributes and explicit ND port metadata.
-    # Only the tensor dimensions change. The source-descriptor cases above are independent.
-    for shape in ((8192, 64), (1, 8192, 64)):
-        rank = len(shape)
-        base = build_air(shape=shape)
-        if rank == 2:
-            probe('nd-2d-standalone', base, None)
-        static_cast = type(cast)()
-        static_cast.CopyFrom(cast)
-        for desc in (static_cast.input_desc[0], static_cast.output_desc[0]):
-            dtype = desc.dtype
-            desc.Clear()
-            desc.dtype = dtype
-            nd_desc(desc, shape)
-        probe(f'nd-{rank}d-cast', with_consumer(base, source, static_cast), cast.name)
+        following = downstream(source, cast.name)
+        if len(following) == 1 and following[0][1] == 0 and following[0][0].type == 'Reshape':
+            reshape = following[0][0]
+            try:
+                chain = with_consumer(raw, source, reshape)
+            except ValueError as error:
+                rows['output-cast-reshape'] = dict(status='SKIPPED', detail=str(error))
+            else:
+                names = [cast.name, reshape.name]
+                probe('output-cast-reshape', chain, names)
+                probe('output-cast-reshape-without-silu', without_silu(chain), names)
+        else:
+            rows['output-cast-reshape'] = dict(status='SKIPPED', detail=f'{cast.name} lacks a single downstream Reshape')
+
+        # Both ranks use the same Cast attributes and explicit ND port metadata.
+        # Only the tensor dimensions change. The source-descriptor cases above are independent.
+        rank_controls = ((8192, 64), (1, 8192, 64)) if report.get('failing_shape') == [1, 8192, 64] else ()
+        for shape in rank_controls:
+            rank = len(shape)
+            base = standalone_for_ports(shape, cast.input_desc[0].dtype)
+            if rank == 2:
+                probe('nd-2d-standalone', base, None)
+            static_cast = type(cast)()
+            static_cast.CopyFrom(cast)
+            for desc in (static_cast.input_desc[0], static_cast.output_desc[0]):
+                dtype = desc.dtype
+                desc.Clear()
+                desc.dtype = dtype
+                nd_desc(desc, shape)
+            probe(f'nd-{rank}d-cast', with_consumer(base, source, static_cast), cast.name)
+
+    elif len(edges) == 1 and edges[0][0].type == 'Reshape' and edges[0][1] == 0:
+        reshape = edges[0][0]
+        chain = with_consumer(standalone, source, reshape)
+        probe('output-reshape', chain, reshape.name)
+        probe('output-reshape-without-silu', without_silu(chain), reshape.name)
 
     gate = next((r for r in manifest['silu_patch']['nodes'] if r['shape'] == [2048, 128]), None)
     if gate is not None:
+        gate_op = next(op for op in source.op if op.name == gate['name'])
+        base = dict(isolated_cases(gate_op, gate['shape']))
+        gate_raw = base.get('four-layer-ports', base['v3-static'])
+        probe('gate-standalone', gate_raw, None, gate['name'])
         edges = downstream(source, gate['name'])
-        if len(edges) == 1 and edges[0][0].type == 'Mul' and edges[0][1] == 1:
-            mul = edges[0][0]
-            gate_op = next(op for op in source.op if op.name == gate['name'])
-            # Use the original gate ports and attributes, in the same standalone harness.
-            base = dict(isolated_cases(gate_op, gate['shape']))
-            gate_raw = base.get('four-layer-ports', base['v3-static'])
-            probe('gate-standalone', gate_raw, None, gate['name'])
-            try:
-                gate_mul = with_consumer(gate_raw, source, mul)
-            except ValueError as error:
-                rows['gate-mul'] = dict(status='SKIPPED', detail=str(error))
-            else:
-                probe('gate-mul', gate_mul, mul.name, gate['name'])
-                probe('gate-mul-without-silu', without_silu(gate_mul), mul.name, gate['name'])
+        if len(edges) == 1 and edges[0][0].type == 'Cast':
+            cast, slot = edges[0]
+            gate_raw = with_consumer(gate_raw, source, cast, slot=slot)
+            probe('gate-cast', gate_raw, cast.name, gate['name'])
+            edges = downstream(source, cast.name)
+        if len(edges) == 1 and edges[0][0].type == 'Mul':
+            mul, slot = edges[0]
+            gate_mul = with_consumer(gate_raw, source, mul, slot=slot)
+            probe('gate-mul', gate_mul, mul.name, gate['name'])
+            probe('gate-mul-without-silu', without_silu(gate_mul), mul.name, gate['name'])
     if 'gate-mul' not in rows:
-        rows['gate-mul'] = dict(status='SKIPPED', detail='No matching [2048,128] gate at Mul input 1')
+        rows['gate-mul'] = dict(status='SKIPPED', detail='No matching [2048,128] gate feeding Mul')
 
     path = directory / 'probes.json'
     pairs = [
@@ -292,13 +316,15 @@ def native_probes(directory, source, manifest, report, results, ddk, diagnosis):
         ('v3-static', ports, 'canonical vs exported SiluPatch ports and attributes'),
         ('v3-output-cast', 'output-cast', 'canonical vs exported SiluPatch ports and attributes with Cast'),
         (ports, 'output-cast', 'adding the original Cast'),
-        ('output-cast-without-silu', 'output-cast', 'feeding Cast from FP32 Data vs SiluPatch'),
+        ('output-cast-without-silu', 'output-cast', 'feeding Cast from matching Data vs SiluPatch'),
         ('output-cast', 'output-cast-reshape', 'adding the original Reshape after Cast'),
-        ('output-cast-reshape-without-silu', 'output-cast-reshape', 'feeding Cast and Reshape from FP32 Data vs SiluPatch'),
+        ('output-cast-reshape-without-silu', 'output-cast-reshape', 'feeding Cast and Reshape from matching Data vs SiluPatch'),
+        (ports, 'output-reshape', 'adding the original Reshape'),
+        ('output-reshape-without-silu', 'output-reshape', 'feeding Reshape from matching Data vs SiluPatch'),
         (ports, 'squeeze-silu', 'adding the upstream Squeeze'),
         ('output-cast', 'squeeze-silu-cast', 'adding the upstream Squeeze with Cast'),
         ('gate-standalone', 'gate-mul', 'adding the original FP32 gate Mul and RMSNorm input'),
-        ('gate-mul-without-silu', 'gate-mul', 'feeding gate Mul from FP32 Data vs SiluPatch'),
+        ('gate-mul-without-silu', 'gate-mul', 'feeding gate Mul from matching Data vs SiluPatch'),
     ]
     contrasts = []
     for a, b, change in pairs:
@@ -340,14 +366,13 @@ def review(directory, base, *, ddk=None, diagnosis=None):
     bundle = base / 'air'
     manifest = json.loads((bundle / 'manifest.json').read_bytes())
     entry, = [r for r in manifest['files'] if r['path'] == EXPORT_DIR + '/export.air']
-    if manifest['kind'] not in (ALIGNED_KIND, VECTOR_ALIGNED_KIND) or report['air_sha256'] != entry['sha256']:
+    if manifest['kind'] not in (ALIGNED_KIND, VECTOR_ALIGNED_KIND + '-native-shape', VECTOR_ALIGNED_KIND) or report['air_sha256'] != entry['sha256']:
         raise ValueError('Retained standalone report and four-layer AIR differ')
     _, source = graph_message(checked(bundle, entry).read_bytes(), 'SiluPatch')
     label = 'four-layer-ports' if 'four-layer-ports' in rows else 'v3-static'
     source_node = report['failing_node']
     edges = downstream(source, source_node)
-    if (report.get('failing_shape') == [1, 8192, 64] and manifest['kind'] == ALIGNED_KIND
-            and len(edges) == 1 and edges[0][0].type == 'Cast' and edges[0][1] == 0):
+    if manifest['kind'] != VECTOR_ALIGNED_KIND:
         return native_probes(directory, source, manifest, report, results, ddk, diagnosis)
     if any(r['status'] != 'COMPILED' for r in results.values()):
         print('Standalone control failed. Diagnose its compile.log before adding a consumer.')

@@ -5,7 +5,7 @@ repo=$(cd -- "$(dirname -- "$0")/../../.." && pwd)
 cd "$repo"
 export QWEN35_TRACE_COMMANDS=1
 tests="${AI_RUN_DIR:?}/target/tests"
-run="${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-02}"
+run="${L0_SPLIT_RUN:-$tests/l0-split-silupatch-t64-valid19-03}"
 baseline="${ORIGINAL4_RUN:-$AI_RUN_DIR/target/tests/decoder4-original-t64-01}"
 tool="$repo/targets/cpro/tools/l0_silu_omcs.py"
 in_env() {
@@ -19,7 +19,7 @@ case "${1:-}" in
         mkdir -p "$run"
         capture="${L0_SPLIT_CAPTURE:-}"
         if [[ -z "$capture" ]]; then
-            for f in "$run"/capture-*/310p/manifest.json "$tests"/l0-split-silupatch-t64-valid19-01/capture-*/310p/manifest.json; do
+            for f in "$run"/capture-*/310p/manifest.json "$tests"/l0-split-silupatch-t64-valid19-02/capture-*/310p/manifest.json "$tests"/l0-split-silupatch-t64-valid19-01/capture-*/310p/manifest.json; do
                 if [[ -s "$f" ]] && python -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.exit(m.get("status") != "CAPTURED" or "l0_logits" not in m)' "$f"; then
                     capture="${f%/manifest.json}"; break
                 fi

@@ -10,22 +10,27 @@
 
 ```bash
 git pull --ff-only
-export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-02"
+export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-03"
+bash targets/cpro/scripts/split_prefill_t64.sh air --mode linear
 bash targets/cpro/scripts/gdn_layer_t64.sh prepare
 ```
 
-`prepare` 使用 `TARGET_SOURCE` 下的原版 310P NZ 驱动，以及 `NZ_CONFIG`（默认 `config/qwen3_5_moe.yaml`）。要求原有修正版本的 `$L0_SPLIT_RUN/air/manifest.json`。它检查 W4 权重、逐 token scale 的 FP16 转换、物理卷积历史、chunk 长度和 GDR 状态接口，并绑定两个原生 shape 的 `SiluPatch`。CPU 复用项目的 A8 ties-to-even / W4 group256 数学参考，组内整数点积、FP32 缩放和累加，最后转 FP16。五次投影各自核对原始 checkpoint 与本次 310P 调用实际读取的打包权重和组 scale。
+`prepare` 使用 `TARGET_SOURCE` 下的原版 310P NZ 驱动，以及 `NZ_CONFIG`（默认 `config/qwen3_5_moe.yaml`）。读取新导出、采用 FP16 SiLU 输出的 `$L0_SPLIT_RUN/air/manifest.json`。它检查 W4 权重、逐 token scale 的 FP16 转换、物理卷积历史、chunk 长度和 GDR 状态接口，并绑定两个原生 shape 的 `SiluPatch`。CPU 复用项目的 A8 ties-to-even / W4 group256 数学参考，组内整数点积、FP32 缩放和累加，最后转 FP16。五次投影各自核对原始 checkpoint 与本次 310P 调用实际读取的打包权重和组 scale。
 
 在 53 的代码仓库运行：
 
 ```bash
 git pull --ff-only
-export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-02"
+export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-03"
 bash targets/cpro/scripts/gdn_layer_t64.sh board
 bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor qkv --metric relative_l2
 ```
 
-`board` 使用 53 已配置的 DDK、HDC 与板端 V2 runner，按需拉取 78 的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-t64-valid19-01`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
+`board` 使用 53 已配置的 DDK、HDC 与板端 V2 runner，按需拉取 78 的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-t64-valid19-02`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
+
+## 整层单 OMC
+
+在 53 执行 `bash targets/cpro/scripts/gdn_layer_t64.sh board --whole`。它使用同一份 310P 入口，保留整层 GDN 的两处 FP16 SiluPatch 和门控乘法前的 FP32 Cast，只在 out_proj 与两份返回状态处读出。三端结果存入 `board-whole/comparison.json` 和 `board-whole/matrices.csv`。读取输出矩阵可执行 `bash targets/cpro/scripts/gdn_layer_t64.sh compare --whole --tensor out`。
 
 ## OMC、代码变量与统计范围
 
@@ -36,13 +41,13 @@ bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor qkv --metric relativ
 | 8 | 对 `p=qkv,z,a,b` 各有 `p_a8`、`p_scale`、`p` | 每个 `self.in_proj_p(hidden_states)` 分为 DynamicQuant 和 W4 matmul。前两项是 `x_quant` 与转换前的 `pertoken_scale`。matmul 的四个输出分别对应 `mixed_qkv`、`z`、`a`、`b`。 |
 | 1 | `window`、`new_history` | `padded` 是卷积使用的 67 个物理位置。310P 从本次 `F.conv1d` 实际输入取对应窗口。报告对齐窗口中本次 token 0–18。`new_conv_state` 是此次写回的四行卷积历史，比较完整 `[1,8192,4]`，对应当前 QKV 的物理行 60–63。 |
 | 1 | `conv` | `conv_out`，逐通道因果卷积输出，SiLU 之前。 |
-| 1 | `conv_silu` | `F.silu(conv_out)` 的激活，对应 `qkv_conv` 中的 SiLU 结果。CPro 调用独立的 FP16 入、FP32 出自定义 OMC；传给 Q/K/V 时执行模型内原有的回转。 |
+| 1 | `conv_silu` | `F.silu(conv_out)` 的激活，对应 `qkv_conv` 中的 SiLU 结果。CPro 调用独立的 FP16 输入和输出的自定义 OMC，按原模型的激活 dtype 继续拆分 Q/K/V。 |
 | 3 | `query`、`key`、`value` | 卷积激活拆分、整理 heads 后送入 GDR 的三个实参。Q 和 K 已重复到 32 个 value heads。 |
 | 3 | `biased_a`、`softplus`、`g` | 依次是 `a.float() + self.dt_bias`、`F.softplus(...)`、`-self.A_log.float().exp() * softplus`。权重侧的指数和负号在计算 `g` 的阶段内。 |
 | 1 | `beta` | `beta = b.sigmoid()`，控制每个 head 的 delta 更新幅度。 |
 | 1 | `core`、`final_state`、`recurrent_cache` | `npu_chunk_gated_delta_rule` 返回的 `core_attn_out` 和原始 `last_recurrent_state`，以及层实际返回的 FP16 `past_key_values[1]`。状态比较整个 `[1,32,128,128]`。CPro 的 GDR 原始状态已是 FP16；脚本校验其至公开缓存的路径。 |
 | 1 | `rms` | `self.norm.forward` 中的 `hidden_states = npu_rms_norm(...)[0]`，已乘归一化权重，尚未乘门值。 |
-| 1 | `gate_silu` | `self.norm.forward` 中的 `F.silu(gate.to(torch.float32))`，其中 `gate` 来自 z 投影。CPro 使用第二个独立 SiluPatch OMC。 |
+| 1 | `gate_silu` | `self.norm.forward` 中的 `F.silu(gate.to(torch.float32))`，其中 `gate` 来自 z 投影。CPro 从第二个独立 SiluPatch OMC 读回 FP16 激活，和两份原生参考按各自实际 dtype 对比。下一段在乘法前将该激活转为 FP32。 |
 | 1 | `product`、`gated` | `out = hidden_states * SiLU(gate)` 的 FP32 乘积，以及 `return out.to(input_dtype)` 整理成 `out_proj` 输入后的值。 |
 | 2 | `out_a8`、`out_scale`、`out` | 最后一次 DynamicQuant 和 W4 matmul。`out` 对应整个 GDN 返回的 `output`，每个 token 有 2048 个分量。 |
 

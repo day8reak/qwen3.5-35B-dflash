@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write one ND vector AIR for the GE SiluPatch(x: FP16[N]) -> z: FP32[N] kernel."""
+"""Write one ND vector AIR for the GE SiluPatch(x: FP16[N]) -> z: FP16[N] kernel."""
 import argparse
 from math import prod
 import os
@@ -49,10 +49,8 @@ def build_air(numel=None, *, shape=None):
     graph.output.append('silu_patch:0')
 
     types = schema.enum_types_by_name['DataType'].values_by_name
-    fp16, fp32 = types['DT_FLOAT16'].number, types['DT_FLOAT'].number
-    for ports, dtype in [(data.input_desc, fp16), (data.output_desc, fp16),
-                         (op.input_desc, fp16), (op.output_desc, fp32), (net.input_desc, fp32)]:
-        nd_desc(ports.add(dtype=dtype), dims)
+    for ports in (data.input_desc, data.output_desc, op.input_desc, op.output_desc, net.input_desc):
+        nd_desc(ports.add(dtype=types['DT_FLOAT16'].number), dims)
     return model.SerializeToString(deterministic=True)
 
 
@@ -67,7 +65,7 @@ def main():
     if folder is None:
         if not os.getenv('AI_RUN_DIR'):
             parser.error('set --output or AI_RUN_DIR')
-        folder = Path(os.environ['AI_RUN_DIR'])/'target/tests/silu_patch_fp16_fp32'
+        folder = Path(os.environ['AI_RUN_DIR'])/'target/tests/silu_patch_fp16_fp16'
         if args.numel is not None:
             folder = folder/f'n{args.numel}'
     folder.mkdir(parents=True, exist_ok=True)
@@ -83,7 +81,7 @@ def main():
             if path.read_bytes() != raw:
                 parser.error(f'{path} already contains a different AIR; select a new --output directory')
     length = 'N' if args.numel is None else args.numel
-    print(f'{path.resolve()}  {GE_TYPE}: x FP16[{length}] -> z FP32[{length}]')
+    print(f'{path.resolve()}  {GE_TYPE}: x FP16[{length}] -> z FP16[{length}]')
 
 
 if __name__ == '__main__':

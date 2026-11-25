@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 
-from diagnose_silu_format import REGISTRATION, build_air, compile_probe, graph_message
+from diagnose_silu_format import REGISTRATION, compile_probe, downstream, graph_message, standalone_for_ports
 
 
 def handwritten_gate(raw):
@@ -16,9 +16,12 @@ def handwritten_gate(raw):
     silu, = [op for op in graph.op if op.type == 'SiluPatch']
     data, = [op for op in graph.op if [op.name + ':0'] == list(silu.input)]
     shape = tuple(data.output_desc[0].shape.dim)
-    if shape != (2048, 128) or not any(op.type == 'Mul' and silu.name + ':0' in op.input for op in graph.op):
+    edges = downstream(graph, silu.name)
+    if len(edges) == 1 and edges[0][0].type == 'Cast':
+        edges = downstream(graph, edges[0][0].name)
+    if shape != (2048, 128) or len(edges) != 1 or edges[0][0].type != 'Mul':
         raise ValueError('Expected the retained native [2048,128] gate feeding Mul')
-    _, manual = graph_message(build_air(shape=shape), 'SiluPatch')
+    _, manual = graph_message(standalone_for_ports(shape, silu.output_desc[0].dtype), 'SiluPatch')
     new, = [op for op in manual.op if op.type == 'SiluPatch']
     new.name, new.id = silu.name, silu.id
     new.input[:] = silu.input
@@ -50,7 +53,9 @@ def run_trace(directory, ddk, diagnosis):
     out = Path(tempfile.mkdtemp(prefix='format-trace-', dir=directory))
     report = dict(source=str(directory / 'probes.json'), ddk=str(ddk), cases={})
     inputs = {}
-    for name in ('gate-standalone', 'gate-mul', 'output-cast-reshape'):
+    for name in ('gate-standalone', 'gate-mul', 'output-reshape', 'output-cast-reshape'):
+        if name.startswith('output-') and 'log' not in saved['cases'].get(name, {}):
+            continue
         path = Path(saved['cases'][name]['log']).with_name('export.air').resolve(strict=True)
         if directory not in path.parents:
             raise ValueError(f'{name}: probe belongs to another diagnosis: {path}')

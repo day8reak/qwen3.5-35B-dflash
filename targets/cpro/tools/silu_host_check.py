@@ -102,13 +102,15 @@ def run_host_check(directory, ddk, diagnosis, host_library):
         _, graph = graph_message(raw, 'SiluPatch')
         node, = [op for op in graph.op if op.type == 'SiluPatch']
         port = (GE_PROTO.get(node.input_desc[0].dtype), GE_PROTO.get(node.output_desc[0].dtype))
-        if port != ('FP16', 'FP32'):
-            raise ValueError(f'{name} retained AIR port is {port}, expected FP16 -> FP32')
+        if port not in (('FP16', 'FP16'), ('FP16', 'FP32')):
+            raise ValueError(f'{name} retained AIR port is {port}, expected FP16 input and FP16 or historical FP32 output')
         print(f'{name} retained AIR: {port[0]} -> {port[1]}')
-        return raw
+        return raw, port[1]
 
-    gate = retained('gate-mul')
-    standalone = retained('gate-standalone')
+    gate, gate_dtype = retained('gate-mul')
+    standalone, output_dtype = retained('gate-standalone')
+    if output_dtype != gate_dtype:
+        raise ValueError('The retained gate probes have different SiluPatch outputs')
     ports = []
     for path, item in report['registrations'].items():
         entry = item.get('entries', {}).get('SiluPatch')
@@ -132,19 +134,19 @@ def run_host_check(directory, ddk, diagnosis, host_library):
         decision = 'The two installed SiluPatch output entries are incomplete or disagree. Verify the host package and the two output0 entries against the intended ABI.'
     elif types == {'INT32'}:
         decision = 'Both installed entries declare INT32. The original gate Mul takes FP32. Inspect both standalone OMC descriptors before designing any bit-preserving consumer.'
-    elif types == {'FP32'}:
+    elif types == {output_dtype}:
         mul = compile_case('gate-mul', gate)
         actual = [port['dtype'] for port in single.get('compiled_outputs', [])]
-        if actual != ['FP32']:
-            decision = f'The singleton FP32 ABI was not confirmed (status={single["status"]}, outputs={actual}); inspect its compile log and descriptor dump result.'
+        if actual != [output_dtype]:
+            decision = f'The singleton {output_dtype} ABI was not confirmed (status={single["status"]}, outputs={actual}); inspect its compile log and descriptor dump result.'
         elif mul['status'] == 'EMPTY_OUTPUT_FORMAT':
-            decision = 'Singleton OMC output is FP32. The same gate producer with Mul still fails at the subgraph output format lookup. Use the gate-mul AIR and log to inspect FindOpFormatConfig in this DDK.'
+            decision = f'Singleton OMC output is {output_dtype}. The same gate producer with Mul still fails at the subgraph output format lookup. Use the gate-mul AIR and log to inspect FindOpFormatConfig in this DDK.'
         elif mul['status'] == 'COMPILED':
-            decision = 'The FP32 gate pair now compiles. Test the retained output-cast-reshape case before recompiling four layers.'
+            decision = 'The FP32 gate pair now compiles. Recompile the full four-layer graph to test its partition boundaries.'
         else:
             decision = f'Gate compile status is {mul["status"]}. Inspect its compile.log for the current failure.'
     else:
-        decision = f'Unsupported installed output0: {ports}. Verify the intended ABI.'
+        decision = f'Retained AIR expects {output_dtype}, installed output0: {ports}. Select a run exported for the installed ABI.'
     report['decision'] = decision
     path = folder / 'result.json'
     path.write_text(json.dumps(report, indent=2) + '\n')

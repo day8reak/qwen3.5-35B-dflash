@@ -7,7 +7,7 @@ def downstream(source, name):
     return [(n, i) for n in source.op for i, arg in enumerate(n.input) if arg == edge]
 
 
-def with_consumer(raw, source, consumer):
+def with_consumer(raw, source, consumer, *, slot=0):
     """Append the source Cast, Reshape or GDN gate Mul to the small AIR's output."""
     nodes = {n.name: n for n in source.op}
     message, graph = graph_message(raw, 'SiluPatch')
@@ -15,10 +15,12 @@ def with_consumer(raw, source, consumer):
     previous, = graph.output
     if net.type != 'NetOutput' or list(net.input) != [previous] or len(consumer.output_desc) != 1:
         raise ValueError('Expected a single output for the probe and consumer')
+    if slot >= len(consumer.input_desc) or consumer.input_desc[slot].dtype != net.input_desc[0].dtype:
+        raise ValueError(f'{consumer.name}: input {slot} dtype differs from the preceding output')
     if consumer.type == 'Cast':
         if len(consumer.input) != 1 or len(consumer.input_desc) != 1 or (
-                consumer.input_desc[0].dtype, consumer.output_desc[0].dtype) != (1, 2):
-            raise ValueError(f'{consumer.name}: expected the original FP32 to FP16 Cast')
+                consumer.input_desc[0].dtype, consumer.output_desc[0].dtype) not in ((1, 2), (2, 1)):
+            raise ValueError(f'{consumer.name}: expected a Cast between FP16 and FP32')
     elif consumer.type == 'Mul':
         if (len(consumer.input) != 2 or [d.dtype for d in consumer.input_desc] != [1, 1]
                 or consumer.output_desc[0].dtype != 1):
@@ -56,7 +58,7 @@ def with_consumer(raw, source, consumer):
         # In RMSNormGated the other operand is the FP32 normalized tensor of the same shape.
         data = graph.op[0]
         dims = tuple(data.output_desc[0].shape.dim)
-        declared = tuple(consumer.input_desc[0].shape.dim)
+        declared = tuple(consumer.input_desc[1-slot].shape.dim)
         if declared and all(d > 0 for d in declared) and declared != dims:
             raise ValueError(f'{consumer.name}: RMSNorm operand {declared} differs from gate {dims}')
         peer = append(data)
@@ -67,7 +69,8 @@ def with_consumer(raw, source, consumer):
         graph.input.append(peer.name + ':0')
     placed = append(consumer)
     if consumer.type == 'Mul':
-        placed.input[:] = [peer.name + ':0', previous]
+        placed.input[1-slot] = peer.name + ':0'
+        placed.input[slot] = previous
     else:
         placed.input[0] = previous
     output = append(saved_net)
@@ -78,12 +81,12 @@ def with_consumer(raw, source, consumer):
 
 
 def without_silu(raw):
-    """Replace only SiluPatch and its FP16 Data by an FP32 Data at z's shape."""
+    """Replace only SiluPatch and its FP16 Data by Data with z's dtype and shape."""
     message, graph = graph_message(raw, 'SiluPatch')
     data, silu = graph.op[:2]
     edges = downstream(graph, silu.name)
-    if (data.type, silu.type) != ('Data', 'SiluPatch') or len(edges) != 1 or edges[0][0].type not in ('Cast', 'Mul'):
-        raise ValueError('Expected a single Cast or Mul after SiluPatch')
+    if (data.type, silu.type) != ('Data', 'SiluPatch') or len(edges) != 1 or edges[0][0].type not in ('Cast', 'Mul', 'Reshape'):
+        raise ValueError('Expected a single Cast, Mul or Reshape after SiluPatch')
     consumer, slot = edges[0]
     for desc in (data.input_desc[0], data.output_desc[0]):
         desc.dtype = silu.output_desc[0].dtype

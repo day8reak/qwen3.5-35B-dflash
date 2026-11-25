@@ -184,7 +184,7 @@ cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh aligned-air
 ```
 
-**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 `SiluPatch` 的 X90 DDK。脚本读取已成功的原版 `replay-*`，核对两份 OMC 的端口和输入文件哈希，再启动改版。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-patch-native-shape`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
+**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 FP16 输入和 FP16 输出版本 `SiluPatch` 的 X90 DDK。脚本读取已成功的原版 `replay-*`，核对两份 OMC 的端口和输入文件哈希，再启动改版。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-patch-native-shape-fp16`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
@@ -200,7 +200,7 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-board
 **53 一次编译多个小图探针。** `ALIGNED4_RUN` 指向本次四层运行目录。以下命令读取已有 AIR 和 OMG 日志，首次运行时自动生成单算子对照。使用同一套 DDK 时，再次执行可复用本次诊断中小图字节相同、已确认的结果。
 
 ```bash
-export ALIGNED4_RUN="${AI_RUN_DIR:?}/target/tests/decoder4-native-shape-t64-valid19-01"
+export ALIGNED4_RUN="${AI_RUN_DIR:?}/target/tests/decoder4-original-t64-01-aligned-silu-patch-native-shape-fp16"
 bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next
 ```
 
@@ -209,9 +209,9 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next
 | 要验证的因素 | 比较的小图 |
 | --- | --- |
 | 张量秩 | 相同元素数的 `[8192,64]` 和 `[1,8192,64]`，各自单独输出及接相同属性的静态 ND Cast |
-| AIR 端口元数据 | 同形状下，标准 ND 描述与四层图的 SiluPatch 端口及属性，分别直接输出和接原 `Cast_3` |
-| 卷积上下游 | 原 `SiluPatch → Cast_3`、再接原 `Reshape_9`，以及直接从同形状 FP32 Data 进入这两条链的对照。如 AIR 的直接生产者是可确定输入形状的一元 Squeeze，还会测试 Squeeze 单独、接 SiluPatch、再接 Cast |
-| 门控分支 | `[2048,128]` 的 SiluPatch 单独输出、接原 FP32 Mul，以及两个 FP32 Data 直接做同一个 Mul。RMSNorm 输出用同形状的 FP32 Data 接入原槽位 |
+| AIR 端口元数据 | 同形状下，标准 ND 描述与四层图的 SiluPatch 端口及属性，分别直接输出和接源图消费者 |
+| 卷积上下游 | 读取源图实际相连的 Reshape 或 Cast，并用同 shape、同 dtype 的 Data 对照。如 AIR 的直接生产者是可确定输入形状的一元 Squeeze，还会测试 Squeeze 单独、接 SiluPatch、再接 Cast |
+| 门控分支 | `[2048,128]` 的 SiluPatch 单独输出、通过源图的 FP16→FP32 Cast 接原 FP32 Mul，并用同 dtype 的 Data 替换 SiLU 做对照。RMSNorm 输出用同形状的 FP32 Data 接入原槽位 |
 
 汇总文件是命令打印的 `silu-diagnosis-*/probes.json`。`COMPILED` 表示 OMG 成功并生成 OMC。`EMPTY_OUTPUT_FORMAT` 表示该小图复现了 SiluPatch 的同一条格式错误。`OTHER_FAILURE` 需读对应的 `compile.log`。`SKIPPED` 记录未能从源图确定的连线。`format_failure_contrasts` 列出一边编译成功、另一边复现错误的成对结果。若所有小图均成功，定位范围仍包括整图分区及未保留的上游上下文。历史一维用例继续使用其下游 Reshape 对照。`SILU_DIAGNOSIS` 可指定已有诊断目录，`aligned-diagnose-report` 可只读历史结果。
 
@@ -221,9 +221,9 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next
 
 在 53 上执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-trace`，可以复用同一目录的小 AIR，在相同 DDK 下分别显式设置 `--use_origin_format=true` 和 `false`。第四个探针沿用门控 Mul，只把 SiluPatch 节点替换为单算子生成器的静态定义，可检验四层导出的自定义节点是否为复现所必需。结果保存在 `format-trace-*/result.json`。若环境支持 strace，命令还会独立记录成功和失败门控用例中 OMG 及其子进程实际打开的配置和 DDK 库。打开某个文件只能证明编译期间访问过它。小图通过编译后，还需验证四层 OMC 的实际 I/O 布局和板端精度。
 
-修改或重装 SiluPatch host 后，在 53 上运行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-host`。选择带有原 `probes.json` 的 `ALIGNED4_RUN`。命令比较两份已安装的算子注册表，列出其他声明 FP32 输出的算子，再从新编的小图 OMC 读取实际输出端口。两表均声明 FP32 时复查原门控 Mul，发现 INT32 项时另编端口声明一致的 INT32 单算子。可选的 `SILU_HOST_SO` 指向新构建的 host 库，用于和编译进程树中观测到的库比对 SHA256。结果写入 `host-check-*/result.json`。库的内容匹配只能确认该版本被加载，具体调用了哪个回调还需要回调日志。
+修改或重装 SiluPatch host 后，在 53 上运行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-host`。选择带有原 `probes.json` 的 `ALIGNED4_RUN`。命令比较两份已安装的算子注册表，列出其他声明 FP32 输出的算子，再从新编的小图 OMC 读取实际输出端口。两表和保留 AIR 的输出 dtype 一致时复查门控 Mul，发现 INT32 项时另编端口声明一致的 INT32 单算子。可选的 `SILU_HOST_SO` 指向新构建的 host 库，用于和编译进程树中观测到的库比对 SHA256。结果写入 `host-check-*/result.json`。库的内容匹配只能确认该版本被加载，具体调用了哪个回调还需要回调日志。
 
-53 的实测结果中，两份注册表均声明 `SiluPatch.z` 为 ND FP32，单算子 OMC 的输出为 `FP32[2048,128]`，同一个算子连接原门控 Mul 时在格式转换阶段失败。执行 `python targets/cpro/tools/silu_format_source.py "$H/result.json"`，其中 `H` 为该次 `host-check-*` 目录。命令只读已有记录，核对 AIR 哈希，打印成功和失败小图的日志、两表中的 AddCustom 端口，以及加载记录中包含对应报错文本的 ELF 和哈希。有同版本 DDK 源码时，可追加 `--source` 和源码目录或 `format_converter_pass.cc` 路径，打印查表和取输出格式的代码。
+旧版 FP32 输出算子在 53 的实测结果中，两份注册表均声明 `SiluPatch.z` 为 ND FP32，单算子 OMC 的输出为 `FP32[2048,128]`，同一个算子连接原门控 Mul 时在格式转换阶段失败。执行 `python targets/cpro/tools/silu_format_source.py "$H/result.json"`，其中 `H` 为该次 `host-check-*` 目录。命令只读已有记录，核对 AIR 哈希，打印成功和失败小图的日志、两表中的 AddCustom 端口，以及加载记录中包含对应报错文本的 ELF 和哈希。有同版本 DDK 源码时，可追加 `--source` 和源码目录或 `format_converter_pass.cc` 路径，打印查表和取输出格式的代码。
 
 **单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
 
@@ -238,13 +238,13 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-compare
 
 ### SiluPatch 在四层图中的调用
 
-导出脚本把 `silu_patch` 的注册放在 `npu_chunk_gated_delta_rule` 旁边，两者共用 `Library("npu", "IMPL", "Meta")`。若当前 PyTorch 缺少 `npu::silu_patch` 的 schema，就用已有的 `m_fragment` 定义它。`@torch.library.impl(m, "silu_patch")` 返回与输入同形状的 FP32 Meta 张量。每次调用将激活转为连续 FP16，直接传入 `torch.ops.npu.silu_patch`，TorchAir 导出为 `SiluPatch(x) → z`。GDN 门控将 FP32 输出直接与 FP32 RMSNorm 结果相乘；卷积和两处专家按原激活 dtype 转回，继续执行原模型。四层实验复用原版的 valid19 输入和参考，默认写入新的 native-shape 目录。
+导出脚本把 `silu_patch` 的注册放在 `npu_chunk_gated_delta_rule` 旁边，两者共用 `Library("npu", "IMPL", "Meta")`。若当前 PyTorch 缺少 `npu::silu_patch` 的 schema，就用已有的 `m_fragment` 定义它。`@torch.library.impl(m, "silu_patch")` 返回与输入同形状的 FP16 Meta 张量。每次调用将激活转为连续 FP16，直接传入 `torch.ops.npu.silu_patch`，TorchAir 导出为 `SiluPatch(x) → z`。GDN 门控在乘法前将 FP16 的 z 显式转为 FP32，与 RMSNorm 的 FP32 输出相乘。卷积与两处专家按原激活 dtype 继续运算。四层实验复用原版的 valid19 输入和参考，默认写入新的 native-shape 目录。
 
 在 78 的导出日志和 `air/manifest.json` 的 `silu_patch.nodes` 中可以查看 14 个节点的输入形状、每个直接消费者的输入槽与读入和输出 dtype。若下一步是 Cast，`after_cast` 记录接收转型结果的下游节点和 dtype。形状来自静态 TorchAir 转换时的输入，AIR 显式记录的维度同时参与核对。`unrecorded` 表示该消费者的 AIR 描述未记录 dtype。
 
 | S=64 的调用位置 | SiluPatch 的 x/z 形状 | z 如何进入后续运算 | 次数 |
 |---|---|---|---:|
 | L0–L2 GDN 卷积 | `[1,8192,64]` | 转回卷积激活 dtype，再 transpose 和拆分 Q/K/V | 3 |
-| L0–L2 GDN RMSNorm 门控 | `[2048,128]` | 保持 FP32 乘 RMSNorm 输出，乘完按原逻辑转型 | 3 |
+| L0–L2 GDN RMSNorm 门控 | `[2048,128]` | 将 FP16 输出转为 FP32，乘 RMSNorm 输出，乘完按原逻辑转型 | 3 |
 | L0–L3 共享专家 | `[64,512]` | 转回 gate 激活 dtype，再与 up 投影相乘 | 4 |
 | L0–L3 W4 路由专家 | `[512,512]` | 转回 gate 切片 dtype，再与另一半切片相乘 | 4 |

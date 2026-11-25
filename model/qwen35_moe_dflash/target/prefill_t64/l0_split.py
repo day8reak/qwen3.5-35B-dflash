@@ -10,6 +10,7 @@ from ..silu_patch_air import nd_desc, port_names
 from .attention_slice import DTYPES, descriptor
 from .chain_reference import VALID19_IDS_SHA256
 from .decoder_four_boundary import data_edges
+from .decoder_four_silu import gate_product
 from .decode_cache_control import graph_message
 from .segment_export import compare_segment_output
 
@@ -455,9 +456,11 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projec
         op = nodes[by_shape[shape]]
         x, = data_edges(op)
         z = op.name + ':0'
+        if [d.dtype for d in op.input_desc] != [2] or [d.dtype for d in op.output_desc] != [2]:
+            raise ValueError(f'{op.name}: expected FP16 input and output. Re-export the CPro AIR.')
         groups[name + '_input'] = [x]
         groups[name + '_silu'] = [z]
-        wires[x], wires[z] = wire(name + '_x', shape, 'float16'), wire(name + '_z', shape, 'float32')
+        wires[x], wires[z] = wire(name + '_x', shape, 'float16'), wire(name + '_z', shape, 'float16')
     # Carry the state and the activation from the *same* ConvState/GDR invocation.
     if linear:
         if not legacy:
@@ -468,8 +471,7 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projec
                 raise ValueError('Convolution and returned history must consume the same QKV history')
         groups['conv_input'].append(result[f'conv_state_{layer}'])
         gate, = groups['gate_silu']
-        mul, = [n for n in graph.op if n.type == 'Mul' and gate in n.input]
-        norm, = [e for e in data_edges(mul) if e != gate]
+        _, norm = gate_product(graph, gate)
         groups['gdr_norm'] = [norm, result[f'recurrent_state_{layer}']]
         wires[norm] = wire('norm', (2048, 128), 'float32')
     for role, edge in result.items():

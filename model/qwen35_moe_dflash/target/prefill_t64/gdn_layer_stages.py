@@ -2,6 +2,7 @@
 
 PROJECTIONS = {'qkv': 8192, 'z': 4096, 'a': 32, 'b': 32, 'out': 2048}
 ENTRY = ('hidden', 'history', 'state', 'length')
+WHOLE_OUTPUTS = ('out', 'new_history', 'recurrent_cache')
 STATE = {'history', 'state', 'new_history', 'final_state', 'recurrent_cache'}
 STAGES = {}
 DESCRIPTION = {
