@@ -58,7 +58,7 @@ bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor qkv --metric relativ
 | 3 | `query`、`key`、`value` | 卷积激活拆分、整理 heads 后送入 GDR 的三个实参。Q 和 K 已重复到 32 个 value heads。 |
 | 3 | `biased_a`、`softplus`、`g` | 依次是 `a.float() + self.dt_bias`、`F.softplus(...)`、`-self.A_log.float().exp() * softplus`。权重侧的指数和负号在计算 `g` 的阶段内。 |
 | 1 | `beta` | `beta = b.sigmoid()`，控制每个 head 的 delta 更新幅度。 |
-| 1 | `core`、`final_state`、`recurrent_cache` | `npu_chunk_gated_delta_rule` 返回的 `core_attn_out` 和原始 `last_recurrent_state`，以及层实际返回的 FP16 `past_key_values[1]`。状态比较整个 `[1,32,128,128]`。CPro 的 GDR 原始状态已是 FP16；脚本校验其至公开缓存的路径。 |
+| 1 | `core`、`final_state`、`recurrent_cache` | 分别对应 `core_attn_out`、GDR 输出 1 的 `last_recurrent_state` 和层返回的 `past_key_values[1]`。状态比较整个 `[1,32,128,128]`。逐算子模式读取板端 GDR 的 FP16 状态，按 AIR 校验从该状态到缓存的每一步。导出器可以先转 FP32 对齐 fake meta，再转回 FP16 写缓存，数值相同。`--whole` 直接读取整层返回的缓存。 |
 | 1 | `rms` | `self.norm.forward` 中的 `hidden_states = npu_rms_norm(...)[0]`，已乘归一化权重，尚未乘门值。 |
 | 1 | `gate_silu` | `self.norm.forward` 中的 `F.silu(gate.to(torch.float32))`，其中 `gate` 来自 z 投影。CPro 从第二个独立 SiluPatch OMC 读回 FP16 激活，和两份原生参考按各自实际 dtype 对比。下一段在乘法前将该激活转为 FP32。 |
 | 1 | `product`、`gated` | `out = hidden_states * SiLU(gate)` 的 FP32 乘积，以及 `return out.to(input_dtype)` 整理成 `out_proj` 输入后的值。 |

@@ -234,7 +234,7 @@ def write_report(run, tensor=None, metric='relative_l2', *, whole=False):
                 p, = outputs
                 linear[name]['valid19'] = dynamic_operands(p, root, ref, stage, checkpoint, fixed[name])
             if 'final_state' in outputs:
-                # Corrected AIR returns this same FP16 GDR output through an identity/view or FP16 cast.
+                # The split plan proved that the returned FP16 cache is a lossless writeback.
                 outputs['recurrent_cache'] = outputs['final_state']
             for k, edge in outputs.items():
                 values = {key: compare_view(k, read_array(root, ref['arrays'][key][k]))
@@ -255,6 +255,9 @@ def write_report(run, tensor=None, metric='relative_l2', *, whole=False):
                             result['max_abs'] = int(np.abs(values[b].astype('int32') - values[other]).max())
                         table[b][other] = result
                 report[k] = dict(stage=name, air_edge=edge, variable=DESCRIPTION[k], scope=scope, scores=table)
+                if k == 'recurrent_cache':
+                    report[k]['cpro_source'] = ('returned_cache_output' if whole else
+                                                'measured_gdr_final_state_after_verified_lossless_writeback')
                 for field in (('error_ratio','max_abs') if integer else FLOAT_METRICS):
                     for b in BACKENDS:
                         writer.writerow((name, k, DESCRIPTION[k], scope, field, b,

@@ -9,6 +9,43 @@ from .gdr_stage_air import stage_edges
 from .l0_split import plan, slice_dependencies, wire
 
 
+def recurrent_writeback(graph, nodes, state, cache):
+    """Prove that the exposed GDR state and the returned FP16 cache have the same values."""
+    initial = port_info(graph, descriptor(nodes, state))['dtype']
+    if initial != 'DT_FLOAT16':
+        raise ValueError(f'{state}: expected FP16 GDR state, got {initial}')
+    trace = []
+    seen = set()
+    edge = cache
+    while edge != state:
+        name, _, slot = edge.rpartition(':')
+        op = nodes.get(name)
+        if edge in seen or slot != '0' or op is None or not op.input or not op.input[0]:
+            raise ValueError(f'{cache}: invalid recurrent writeback edge {edge}, expected a path to {state}')
+        seen.add(edge)
+        target = None
+        if op.type == 'Cast':
+            attr = op.attr.get('dst_type')
+            code = attr.i if attr is not None and attr.HasField('i') else None
+            target = {0: 'DT_FLOAT', 1: 'DT_FLOAT16'}.get(code)
+            if target is None:
+                raise ValueError(f'{edge}: unsupported recurrent cache Cast dst_type={code} on path to {cache}')
+        elif op.type not in {'Identity', 'TensorMove', 'Reshape', 'View'}:
+            raise ValueError(f'{edge}: unexpected {op.type} on recurrent cache path from {state} to {cache}')
+        trace.append((edge, target))
+        edge = op.input[0]
+    # The export converter widens FP16 to match the stock FP32 fake meta. The
+    # source then narrows to FP16 at writeback. Check the actual GE Cast attributes.
+    dtype = initial
+    path = [f'{state} ({dtype})']
+    for edge, target in reversed(trace):
+        dtype = target or dtype
+        path.append(f'{edge} ({dtype})')
+    if dtype != 'DT_FLOAT16':
+        raise ValueError(f'Expected FP16 at returned recurrent cache: {" -> ".join(path)}')
+    return ' -> '.join(path)
+
+
 def whole_stage(graph, decoder, quant, conv_patch, gate_patch, gdr):
     nodes = {op.name: op for op in graph.op}
 
@@ -52,6 +89,8 @@ def stages(raw, meta, *, whole=False):
     gate_edge = gate_patch.name + ':0'
     mul, rms = gate_product(graph, gate_edge)
     gdr = stage_edges(graph, 'gdr')
+    writeback = recurrent_writeback(graph, nodes, gdr['final_state'], decoder['results']['recurrent_state_0'])
+    print(f'L0 recurrent cache writeback: {writeback}', flush=True)
     conv = walk.node(walk.nearest(conv_patch.input[0], CONVS))
     projections = dict(qkv=walk.nearest(conv.input[0], {MATMUL}), z=walk.nearest(gate_patch.input[0], {MATMUL}),
                        a=walk.nearest(gdr['g'], {MATMUL}), b=walk.nearest(gdr['beta'], {MATMUL}),
@@ -76,14 +115,6 @@ def stages(raw, meta, *, whole=False):
                  new_history=decoder['results']['conv_state_0'], biased_a=bias, softplus=soft, g=g_product.name+':0',
                  core=gdr['core'], final_state=gdr['final_state'], rms=rms, gate_silu=gate_edge, product=mul.name+':0',
                  gated=_project_input(nodes, projections['out']), state=gdr['initial_state'], length=gdr['effective_length'])
-    public_state = decoder['results']['recurrent_state_0']
-    while public_state != gdr['final_state']:
-        alias = walk.node(public_state)
-        if alias.type not in {'Cast', 'Identity', 'TensorMove', 'Reshape', 'View'}:
-            raise ValueError(f'Unexpected recurrent cache producer {alias.name}')
-        if alias.type == 'Cast' and port_info(graph, alias.output_desc[0])['dtype'] != 'DT_FLOAT16':
-            raise ValueError(f'Unexpected recurrent cache cast at {alias.name}')
-        public_state = alias.input[0]
     for k in ('query', 'key', 'value', 'beta'):
         edges[k] = gdr[k]
     edges['history'] = only((e for e,v in decoder['entries'].items() if v['shape'] == [1,8192,4]), 'conv history')
