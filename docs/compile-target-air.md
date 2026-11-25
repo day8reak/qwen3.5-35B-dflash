@@ -184,7 +184,7 @@ cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh aligned-air
 ```
 
-**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 FP16 输入和 FP16 输出版本 `SiluPatch` 的 X90 DDK。脚本读取已成功的原版 `replay-*`，核对两份 OMC 的端口和输入文件哈希，再启动改版。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-patch-native-shape-fp16`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
+**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 FP16 输入和 FP16 输出版本 `SiluPatch` 的 X90 DDK。如果 53 保留了成功的原版 replay，脚本还会核对两份 OMC 的端口和输入文件哈希。缺少原版 replay 时，脚本按改版 OMC 的编译槽位读取导出包中的输入。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-patch-native-shape-fp16`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
@@ -192,6 +192,18 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-board
 ```
 
 53 已有改版 AIR 时，直接执行 `aligned-board` 即可。此入口让 OMG 省略 `--platform`，保留 `--target=omc`，并从当前 DDK 环境继承 `SOC_VERSION`。控制台和 `compile.log` 记录实际命令以及该变量的值。编译复用上一步的 AIR 和权重，本次 OMC、板端结果分别写入改版目录的 `no-platform/omc/` 和 `no-platform/replay-*/`。若只编译，使用 `aligned-compile`。
+
+若 V2 在加载四层模型时打印 `Initialize model manager client failed`，先在 53 上读取那次 replay 的 `window.log` 和上传清单。`FAILED_REPLAY` 取报错中的 `result.json` 所在目录。以下命令需在 `custom_pypto` 环境执行。
+
+```bash
+python targets/cpro/tools/split_stage_log.py --four-layer-replay "$FAILED_REPLAY"
+```
+
+若同一服务线程出现 `OpUpdateKernelArgs failed`，可用已导出的 AIR 单独测试内嵌权重。命令核对已有回执、DDK 路径、OMG 参数、SOC_VERSION、设备以及逐个具名输入的 SHA-256，在 `no-platform/embedded/` 编译和运行一份四层 OMC。两种权重模式由 OMG 分别编译。通过加载后脚本继续推理并比较九个输出。如果仍在同一处失败，可对照两次 replay 的服务线程日志。
+
+```bash
+bash targets/cpro/scripts/decoder4_t64.sh aligned-board --retry-load "$FAILED_REPLAY"
+```
 
 53 的 OMG 编译失败时，在同一环境执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-log` 即可读取最近一次编译的错误摘录和完整日志路径。对仅替换 SiLU 的实验使用 `original-log --silu-patch`，对原版使用 `original-log`。这些命令直接读取已保存的日志。
 

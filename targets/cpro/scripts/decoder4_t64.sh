@@ -55,9 +55,12 @@ compare_53() {
 }
 set -x
 variant=()
-if (( $# > 1 )); then
+retry_load=()
+if [[ ${1:-} == aligned-board && ${2:-} == --retry-load && $# == 3 ]]; then
+    retry_load=(--retry-load "$3")
+elif (( $# > 1 )); then
     if [[ $# != 2 || ! $1 =~ ^original-(air|compile|board|compare|log)$ || $2 != --silu-patch ]]; then
-        echo 'Use --silu-patch with original-air, original-compile, original-board, original-compare or original-log.' >&2
+        echo 'Use original-{air,compile,board,compare,log} --silu-patch or aligned-board --retry-load FAILED_REPLAY.' >&2
         exit 2
     fi
     variant=(--silu-patch)
@@ -98,6 +101,7 @@ case "${1:-}" in
         tool=targets/cpro/tools/decoder4_original.py
         result_run="$run"
         if [[ $1 == aligned-* ]]; then result_run="$run/no-platform"; fi
+        if (( ${#retry_load[@]} )); then result_run="$result_run/embedded"; fi
         action="${1#*-}"
         if [[ "$action" == log ]]; then
             in_env custom_pypto python -u "$tool" log --run "$run" "${variant[@]}"
@@ -138,7 +142,7 @@ case "${1:-}" in
             args=(--run "$run" --ddk "${CPRO_DDK_ROOT:?}" --remote-air "$remote_air"
                   --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}")
             if [[ "$action" == board ]]; then
-                args+=(--runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}")
+                args+=(--runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" "${retry_load[@]}")
                 if (( ${#variant[@]} )); then
                     if [[ -n "${ORIGINAL4_REPLAY:-}" ]]; then args+=(--baseline "$ORIGINAL4_REPLAY")
                     else args+=(--baseline-if-available "$original"); fi

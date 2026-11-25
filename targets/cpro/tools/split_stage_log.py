@@ -169,6 +169,42 @@ def summarize_execution(row, folder):
             print('No matching compiler manifest for the uploaded model and weights.')
 
 
+def four_layer_load_report(replay):
+    """Inspect one aligned V2 replay using only its saved receipt, upload list and HiLog."""
+    from decoder4_original import ALIGNED_KIND
+    from qwen35_moe_dflash.target.layer_probe.common import sha
+
+    replay = replay.resolve(strict=True)
+    root = replay.parent
+    receipt = load(replay/'result.json')
+    manifest = load(root/'omc/manifest.json')
+    stdout = (replay/'tool.stdout').read_text(errors='replace')
+    if (receipt.get('case') != ALIGNED_KIND or receipt.get('status') != 'FAILED'
+            or not receipt.get('exitcode') or hiai_failure_stage(stdout) != 'load_model'):
+        raise ValueError(f'{replay}: expected a failed aligned four-layer model load')
+    uploaded = payload(replay, receipt)
+    model = manifest['primary']
+    folder = Path(model['path']).parent
+    weights = {str(Path(w['path']).relative_to(folder)): w['sha256'] for w in manifest['weights']}
+    io = load(replay/'io.json')
+    if (uploaded['model_sha256'] != model['sha256'] or uploaded['external_weights'] != weights
+            or uploaded['input_hashes'] != [r['sha256'] for r in io['inputs']]
+            or manifest['air_manifest_sha256'] != sha(root/'air/manifest.json')
+            or load(root/'air/manifest.json')['kind'] != ALIGNED_KIND):
+        raise ValueError(f'{replay}: failed receipt or upload list differs from the compiled model, AIR or inputs')
+    print(f'{replay}: load_model, V2 exit={receipt["exitcode"]}; OMC {model["sha256"]}')
+    print(f'Upload matched: {len(io["inputs"])} ordered inputs, {len(weights)} external weight files, '
+          f'{sum(row["bytes"] for row in manifest["weights"]):,} external weight bytes.')
+    tids = re.findall(r'\bclient_tid=(\d+)', stdout)
+    window = replay/'window.log'
+    if window.is_file():
+        if not service_context(window, tids):
+            print('No failed service Load RPC matched this client in the saved window.')
+    else:
+        print(f'No saved HiLog window at {window}')
+    return io, receipt, manifest
+
+
 def saved_report(path):
     """Analyze a retained diagnose result without accessing HDC or changing the evidence."""
     ok = True
@@ -256,7 +292,13 @@ if __name__ == '__main__':
     p.add_argument('stage', nargs='*', type=Path, help='retained replay stage directory containing result.json')
     p.add_argument('--hilog', type=Path, help='existing hilog -x snapshot')
     p.add_argument('--saved', type=Path, help='summarize an existing diagnostic directory offline')
+    p.add_argument('--four-layer-replay', type=Path, help='inspect a retained aligned four-layer load failure offline')
     args = p.parse_args()
+    if args.four_layer_replay:
+        if args.stage or args.saved or args.hilog:
+            p.error('--four-layer-replay takes only the saved replay directory')
+        four_layer_load_report(args.four_layer_replay)
+        sys.exit(0)
     if (args.saved and (args.stage or args.hilog)) or not (args.stage or args.saved):
         p.error('select stage directories or --saved DIRECTORY')
     ok = saved_report(args.saved) if args.saved else diagnose(args.stage, args.hilog)

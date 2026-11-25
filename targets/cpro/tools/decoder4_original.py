@@ -282,7 +282,7 @@ def compile_omg(out, air_path, ddk, diagnosis, platform, *, use_origin_format=Tr
     return result.returncode, argv, env.get('SOC_VERSION')
 
 
-def build(run, ddk, diagnosis, remote, *, bundle, kind, platform):
+def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weights=True):
     from decoder4_prefill import pull_air
 
     run.mkdir(parents=True, exist_ok=True)
@@ -309,13 +309,14 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform):
     out = Path(tempfile.mkdtemp(dir=run, prefix='omg-'))
     # Keep the directory component in the original FileConstant paths.
     (out / EXPORT_DIR).symlink_to(bundle / EXPORT_DIR, target_is_directory=True)
-    code, argv, soc = compile_omg(out, EXPORT_DIR + '/export.air', ddk, diagnosis, platform)
+    code, argv, soc = compile_omg(out, EXPORT_DIR + '/export.air', ddk, diagnosis, platform,
+                                  external_weights=external_weights)
     if code:
         raise RuntimeError(f'{kind}: OMG exited {code}\n{compile_log_text(out / "compile.log")}')
     model, = out.rglob('*.omc')
     weights = [identity(p, out) for p in sorted(model.parent.rglob('*.weight'))]
-    if not weights:
-        raise ValueError(f'OMG did not produce the requested external weights: {out}')
+    if bool(weights) != external_weights:
+        raise ValueError(f'Unexpected OMG weight files for external_weights={external_weights}: {out}')
     save_json(out / 'manifest.json', dict(air_manifest_sha256=sha(bundle / 'manifest.json'), argv=argv,
               soc_version=soc,
               primary=identity(model, out), weights=weights))
@@ -345,7 +346,7 @@ def original_filename(name, src, dtype, *, fresh_zero_states):
     raise ValueError(f'Cannot identify {name} {dtype}{dims}. Supply {name}.bin or an input-map JSON.')
 
 
-def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None):
+def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, load_control=None):
     import numpy as np
     from parse_model_json import GE_PROTO, dtype as ge_dtype, inspect, read_omc
     from qwen35_moe_dflash.target.prefill_smoke_plan import _nd_view_key
@@ -412,11 +413,13 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None):
         print(f'Compared compiled ports with {prior}. Reusing its input hashes.', flush=True)
     for i, spec in enumerate(outputs):
         print(f"output {i}: {spec['name']} {spec['dtype']} {spec['shape']}", flush=True)
+    failed_inputs = {r['name']: r for r in load_control[0]['inputs']} if load_control else {}
     paths = []
     for i, spec in enumerate(inputs):
         name = spec['name']
-        if fresh and not mapping and name in original_inputs and Path(original_inputs[name]['file']).is_file():
-            path = Path(original_inputs[name]['file'])
+        recorded_input = failed_inputs.get(name) or original_inputs.get(name)
+        if fresh and not mapping and recorded_input and Path(recorded_input['file']).is_file():
+            path = Path(recorded_input['file'])
         elif mapping:
             path = directory / mapping[name]
         elif (directory / (name + '.bin')).is_file():
@@ -440,9 +443,22 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None):
         if original_inputs and spec['sha256'] != original_inputs[name]['sha256']:
             raise ValueError(f'{name}: input bytes differ from the successful original replay')
         print(f"slot {i}: {name} {spec['dtype']} {spec['shape']} <- {path}", flush=True)
+    io = dict(inputs=inputs, outputs=outputs, order=abi['input_order_basis'])
+    if load_control:
+        previous_io, previous_receipt, _ = load_control
+        def signature(rows):
+            return {row['name']: (row['dtype'], tuple(row['shape']), row['sha256']) for row in rows}
+        if (len(previous_io['inputs']) != len(inputs) or signature(previous_io['inputs']) != signature(inputs)
+                or len(signature(inputs)) != len(inputs)):
+            raise ValueError('Embedded-weight control must use the same named input slots and bytes as the failed run')
+        if tuple(_environment()[1:3]) != (previous_receipt['device'], previous_receipt['server']):
+            raise ValueError('Select the SN and BIP of the failed run for the embedded-weight control')
+        io['load_control'] = dict(external_omc_sha256=previous_receipt['omc_sha256'],
+                                  previous_board_attempt=previous_receipt['remote'],
+                                  previous_exitcode=previous_receipt['exitcode'])
     runtime = read_json(config.parent / read_json(config)['assets'])['environment']
     out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
-    save_json(out / 'io.json', dict(inputs=inputs, outputs=outputs, order=abi['input_order_basis']))
+    save_json(out / 'io.json', io)
     print(f'{kind} board attempt: {out}', flush=True)
     try:
         run_v2(out, 'original L0-L3' if kind == KIND else kind, model, inputs, paths, outputs, runtime,
@@ -486,7 +502,11 @@ def main():
     baselines = parser.add_mutually_exclusive_group()
     baselines.add_argument('--baseline-if-available', type=Path, help='use a successful local original replay when present')
     baselines.add_argument('--baseline', type=Path, help='native baseline run (or its replay for board comparison)')
+    parser.add_argument('--retry-load', type=Path, metavar='FAILED_REPLAY',
+                        help='rebuild aligned AIR with embedded weights and replay the same inputs')
     args = parser.parse_args()
+    if args.retry_load and (args.action != 'board' or not args.aligned):
+        parser.error('--retry-load requires board --aligned')
     base = output_path(args.run)
     bundle = base / 'air'
     run = output_path(base / 'no-platform') if args.aligned and args.action != 'air' else base
@@ -508,10 +528,25 @@ def main():
         return
     if not args.ddk:
         parser.error('compile and board require --ddk')
+    control = None
+    if args.retry_load:
+        from split_stage_log import four_layer_load_report
+        replay = args.retry_load.resolve(strict=True)
+        if replay.parent != run:
+            parser.error(f'--retry-load must identify a replay directly under {run}')
+        control = four_layer_load_report(replay)
+        command = control[2]['argv']
+        if '--save_weights_as_external_data=true' not in command or not control[2]['weights']:
+            parser.error('--retry-load requires an external-weight compiler control')
+        if (Path(command[0]).resolve() != (args.ddk/'tools/tools_omg/master/omg').resolve()
+                or control[2]['soc_version'] != os.environ.get('SOC_VERSION')):
+            parser.error('use the same DDK and SOC_VERSION as the failed external-weight build')
+        print(f'Available host space before control build: {shutil.disk_usage(run).free:,} bytes', flush=True)
+        run = run/'embedded'
     compiled = run / 'omc/manifest.json'
     if not compiled.exists():
         build(run, args.ddk.resolve(), args.tbe_diagnosis, args.remote_air or bundle, kind=kind,
-              bundle=bundle, platform=None if args.aligned else 'kirinx90')
+              bundle=bundle, platform=None if args.aligned else 'kirinx90', external_weights=not args.retry_load)
     else:
         manifest = bundle / 'manifest.json'
         record = json.loads(compiled.read_bytes())
@@ -521,6 +556,15 @@ def main():
         if args.aligned and any(arg.split('=', 1)[0] == '--platform' for arg in record['argv']):
             raise ValueError(f'Cached OMC at {run} was built with an explicit --platform')
         print(f'Reusing {kind} OMC from {compiled.parent}', flush=True)
+    if control:
+        reference = control[2]
+        trial = json.loads(compiled.read_bytes())
+        expected = ['--save_weights_as_external_data=false' if a == '--save_weights_as_external_data=true' else a
+                    for a in reference['argv']]
+        if (trial['argv'] != expected or trial['weights'] or trial['soc_version'] != reference['soc_version']
+                or trial['air_manifest_sha256'] != reference['air_manifest_sha256']):
+            raise ValueError('Embedded control differs in compiler command, SOC_VERSION, AIR bundle or weight mode')
+        print(f'Embedded-weight comparison with {args.retry_load}: same AIR and compiler options except weight storage.')
     if args.action == 'board':
         if not args.runtime_config:
             parser.error('board requires --runtime-config')
@@ -531,7 +575,7 @@ def main():
             print('Binding board inputs using compiled slots and the exported AIR fixture.', flush=True)
         directory = args.inputs or run / 'air/inputs'
         board(run, args.ddk.resolve(), args.runtime_config.resolve(), directory.resolve(), args.input_map, kind=kind,
-              baseline=args.baseline)
+              baseline=args.baseline, load_control=control)
 
 
 if __name__ == '__main__':
