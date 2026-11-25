@@ -8,7 +8,7 @@ usage() {
     echo "       bash $0 diagnose STAGE_DIR [STAGE_DIR ...]"
     echo "       bash $0 diagnose --saved DIAGNOSTICS_DIR"
     echo "       board [--recovery [REPLAY_DIR]] [--from-stage STAGE]; compare [--replay DIR]"
-    echo "       board --mode {40|last4} [--per-layer-omc] [--conv-input-weights {external|embedded}]; last4 tests CPU and 310P L35 exits on CPro L36-L39"
+    echo "       board --mode {40|last4} [--per-layer-omc] [--per-layer-experts] [--conv-input-weights {external|embedded}]; last4 tests CPU and 310P L35 exits on CPro L36-L39"
     echo "       board --mode linear [--embed-decoder-hidden]"
     echo "       board [--split-decoder-projections | --split-decoder-residual] (default: --split-decoder-residual)"
 }
@@ -25,7 +25,7 @@ if [[ $action == diagnose ]]; then
     exit
 fi
 case "$action" in --help|-h) usage; exit 0;; air|cpu|board|compare) shift;; *) usage >&2; exit 2;; esac
-mode= run= capture= replay= restart= embed_hidden= split_variant= per_layer= conv_weights=
+mode= run= capture= replay= restart= embed_hidden= split_variant= per_layer= per_layer_experts= conv_weights=
 recovery=()
 while (( $# )); do
     case "$1" in
@@ -35,6 +35,7 @@ while (( $# )); do
         --replay) replay=${2:?missing replay}; shift 2;;
         --from-stage) restart=${2:?missing stage}; shift 2;;
         --conv-input-weights) conv_weights=${2:?missing weight storage}; shift 2;;
+        --per-layer-experts) per_layer_experts=1; shift;;
         --per-layer-omc) per_layer=1; shift;;
         --embed-decoder-hidden) embed_hidden=1; shift;;
         --split-decoder-projections|--split-decoder-residual)
@@ -47,7 +48,7 @@ while (( $# )); do
     esac
 done
 if [[ -n "$conv_weights" && $conv_weights != external && $conv_weights != embedded ]]; then usage >&2; exit 2; fi
-if [[ -n "$per_layer$conv_weights" && ( $action != board || ( $mode != 40 && $mode != last4 ) ) ]]; then usage >&2; exit 2; fi
+if [[ -n "$per_layer$per_layer_experts$conv_weights" && ( $action != board || ( $mode != 40 && $mode != last4 ) ) ]]; then usage >&2; exit 2; fi
 if [[ -n "$embed_hidden" && ( $action != board || $mode != linear ) ]]; then usage >&2; exit 2; fi
 if [[ -n "$split_variant" && ( $action != board || -n "$embed_hidden" ) ]]; then usage >&2; exit 2; fi
 if [[ $action != board && ( ${#recovery[@]} != 0 || -n "$restart" ) ]] ||
@@ -55,6 +56,7 @@ if [[ $action != board && ( ${#recovery[@]} != 0 || -n "$restart" ) ]] ||
    [[ -n "$capture" && $action != air && $action != cpu ]]; then usage >&2; exit 2; fi
 if [[ -n "$conv_weights" ]]; then recovery+=(--conv-input-weights "$conv_weights"); fi
 if [[ -n "$per_layer" ]]; then recovery+=(--per-layer-omc); fi
+if [[ -n "$per_layer_experts" ]]; then recovery+=(--per-layer-experts); fi
 if [[ -n "$split_variant" ]]; then recovery+=("$split_variant"); fi
 if [[ -n "$run" ]]; then run=$(realpath -m -- "$run"); fi
 if [[ -n "$capture" ]]; then capture=$(realpath -e -- "$capture"); fi

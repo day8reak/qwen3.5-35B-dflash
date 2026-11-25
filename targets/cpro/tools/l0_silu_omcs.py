@@ -285,6 +285,8 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
         for i, step in enumerate(graph['stages']):
             name = step['name']
             print(f"{name}: {step['inputs']} -> {step['outputs']}", flush=True)
+            if step.get('grouped_matmuls'):
+                print(f"{name}: using L{meta['layer']:02d} weights for {', '.join(step['grouped_matmuls'])}", flush=True)
             if 'projection' in step:
                 print(f"Isolated {step['projection']}, weight sources: {step['weight_sources']}", flush=True)
             if 'casts' in step:

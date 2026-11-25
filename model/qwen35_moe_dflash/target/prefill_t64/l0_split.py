@@ -377,7 +377,7 @@ def split_after_attention_residual(chain, graph, nodes):
 
 
 def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projections=False, split_residual=False,
-         separate_embedding=False):
+         separate_embedding=False, per_layer_experts=False):
     _, graph = graph_message(raw, 'SiluPatch')
     nodes = {op.name: op for op in graph.op}
     def one(kind):
@@ -560,6 +560,13 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projec
         split_decoder_projections(chain, nodes)
     if split_residual:
         split_after_attention_residual(chain, graph, nodes)
+    if per_layer_experts:
+        for step in chain['stages']:
+            grouped = [name for name in step['nodes'] if nodes[name].type == 'GroupedMatmulV555']
+            if grouped:
+                step.update(compiler='per_layer', grouped_matmuls=grouped)
+                if separate_embedding:
+                    step['build_name'] = step['name'] + '-after-embedding'
     if verify_precision:
         chain['precision'] = check_split_precision(graph, layer, head)
     return chain

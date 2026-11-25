@@ -52,8 +52,8 @@ def compile_manifest(stage, uploaded):
     else:
         base = layer.parent/'omc'
     names = [stage.name]
-    if layer.name == 'L00' and stage.name == 'conv_input':
-        names.append('conv_input-after-embedding')
+    if layer.name == 'L00':
+        names.append(stage.name + '-after-embedding')
 
     variants = [(base/n, 'external') for n in names] + [(base/(n+'-embedded'), 'embedded') for n in names]
     if template is not None:

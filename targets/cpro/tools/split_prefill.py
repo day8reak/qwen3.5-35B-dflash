@@ -127,12 +127,15 @@ def run_board(args, run, layers, *, out=None, previous=None, entry=None, entry_c
     print('Prefill replay:', out, flush=True)
     templates = getattr(args, 'templates', False)
     conv_weights = getattr(args, 'conv_input_weights', None)
+    per_layer_experts = getattr(args, 'per_layer_experts', False)
     if entry is None and previous:
         prior = load(previous/'prefill.json')
         if not getattr(args, 'per_layer_omc', False):
             templates = prior.get('layer_templates', False)
         conv_weights = conv_weights or prior.get('conv_input_weights')
+        per_layer_experts = per_layer_experts or prior.get('per_layer_experts', False)
     summary['conv_input_weights'] = conv_weights
+    summary['per_layer_experts'] = per_layer_experts
     summary['layer_templates'] = templates
     hidden = entry
     if entry is not None:
@@ -171,6 +174,8 @@ def run_board(args, run, layers, *, out=None, previous=None, entry=None, entry_c
                 options['split_residual'] = True
             if templates and i == 0:
                 options['separate_embedding'] = True
+            if templates and per_layer_experts:
+                options['per_layer_experts'] = True
             graph = plan(raw, meta['silu_patch']['nodes'], layer=i, head=meta['head'], **options)
             if conv_weights and i % 4 != 3:
                 conv, = [s for s in graph['stages'] if s['name'] == 'conv_input']
@@ -262,9 +267,11 @@ def paired_last4(args, run):
             if not getattr(args, 'per_layer_omc', False):
                 args.templates = prior.get('layer_templates', args.templates)
             args.conv_input_weights = getattr(args, 'conv_input_weights', None) or prior.get('conv_input_weights')
+            args.per_layer_experts = getattr(args, 'per_layer_experts', False) or prior.get('per_layer_experts', False)
         out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
         summary = dict(status='RUNNING', mode='last4', layer_templates=args.templates, inputs_sha256=sha(folder/'manifest.json'),
                        conv_input_weights=getattr(args, 'conv_input_weights', None),
+                       per_layer_experts=getattr(args, 'per_layer_experts', False),
                        layers=last4.LAYERS, output_pos=18, prompt=vocab['prompt'], predictions={},
                        recovered_from=str(previous) if previous else None)
         save_json(out/'prefill.json', summary)
@@ -324,6 +331,8 @@ def main():
     p.add_argument('--from-stage')
     p.add_argument('--conv-input-weights', choices=('external', 'embedded'),
                    help='compile only conv_input with its own layer constants and selected OMG weight storage')
+    p.add_argument('--per-layer-experts', action='store_true',
+                   help='use layer-specific OMCs for slices containing GroupedMatmulV555')
     p.add_argument('--per-layer-omc', action='store_true',
                    help='use the original layer-specific compiler recipe instead of shared runtime-weight templates')
     variant = p.add_mutually_exclusive_group()
@@ -333,8 +342,8 @@ def main():
     a = p.parse_args()
     if (a.split_decoder_projections or a.split_decoder_residual) and a.action != 'board':
         p.error('decoder split variants apply to board')
-    if (a.per_layer_omc or a.conv_input_weights) and (a.action != 'board' or a.mode not in ('40', 'last4')):
-        p.error('--per-layer-omc and --conv-input-weights apply to board --mode 40 or last4')
+    if (a.per_layer_omc or a.per_layer_experts or a.conv_input_weights) and (a.action != 'board' or a.mode not in ('40', 'last4')):
+        p.error('layer-specific weight options apply to board --mode 40 or last4')
     a.templates = a.mode in ('40', 'last4') and not a.per_layer_omc
     layers = [3] if a.mode == 'full' else (last4.LAYERS if a.mode == 'last4' else list(range(40)))
     run = output_path(a.run)

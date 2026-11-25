@@ -38,6 +38,13 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode "$MODE"
 
 如果 `last4` 在 `L36/conv_input` 加载失败，在 53 用 `diagnose "$R/$REPLAY/cpu/L36/conv_input"` 核对失败回执对应的编译清单并收集板端 HiLog。若显示 `Matched template OMC`，用 `board --mode last4 --run "$R" --recovery "$REPLAY" --from-stage L36/conv_input --conv-input-weights external` 继续。这个选项把 L36–L38 的 `conv_input` 按各层原始 AIR 编译，由 OMG 保存外置权重。两路共用同一组逐层产物。如果失败回执已匹配 `external`，可把参数换成 `embedded`，用同一份切片将权重编入 OMC。
 
+如果共享模板 `experts_input` 在 OMG 编译时报告 `GroupedMatmulV555` 的 `outputTensorFormats size ... is 0`，可在 53 加 `--per-layer-experts`。脚本按原 AIR 的算子类型查找包含该分组矩阵乘的段，并用本层权重编译这些段。CPU 和 310P 前缀复用同一层的 OMC。下例从已有的 CPU 分支检查点恢复，并沿用该 replay 的卷积权重设置。
+
+```bash
+bash targets/cpro/scripts/split_prefill_t64.sh board --mode last4 --run "$R" \
+  --recovery "$REPLAY" --from-stage L36/experts_input --per-layer-experts
+```
+
 首次导出使用 `ORIGINAL4_RUN` 的成功原版基线，默认 `decoder4-original-t64-01`。可以用 `air --capture DIR` 复用旧实验同一份 310P 参考。切换到修正版时先导出，再从第一段上板。后续在同版模型内使用恢复参数。40 层模式在 310P 捕获记录的两个模型段交界处保留上段 CPro 的前 19 行并将剩余 45 行清零。
 
 **恢复上板。** 在 53 用 `--recovery` 接着最近一次运行，或显式指定旧 replay。脚本将已完成段的 OMC、输入和输出与回执核对，在新 replay 中使用校验通过的输出，每段成功后写入 `chain.json`。有意重跑某段时加 `--from-stage`，其前面的输入必须能从已完成的前缀恢复。
