@@ -5,9 +5,15 @@ tool=targets/cpro/tools/gdn_layer_compare.py
 action=${1:-plan}
 if (( $# )); then shift; fi
 case "$action" in
-    plan|-h|--help) exec python "$tool" "$action" "$@";;
+    -h|--help) echo "78: bash $0 air   |   35: bash $0 board"
+        exec python "$tool" --help;;
+    plan) exec python "$tool" "$action" "$@";;
+    air)
+        if (( $# )); then echo "Usage: bash $0 air (set GDN_LAYER_RUN to choose the output directory)" >&2; exit 2; fi
+        bash targets/cpro/scripts/split_prefill_t64.sh air --mode linear
+        action=prepare;;
     prepare|board|compare) ;;
-    *) echo "Usage: bash $0 {plan|prepare|board|compare} [--run DIR]" >&2; exit 2;;
+    *) echo "Usage: bash $0 {air|plan|prepare|board|compare}" >&2; exit 2;;
 esac
 tests="${AI_RUN_DIR:?}/target/tests"
 args=(--run "${GDN_LAYER_RUN:-$tests/l0-gdn-ops-softpluspatch-t64-valid19-01}" --l0-run "${L0_SPLIT_RUN:-$tests/l0-split-softpluspatch-t64-valid19-01}")

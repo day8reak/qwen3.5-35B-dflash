@@ -6,26 +6,21 @@
 
 ## 运行
 
-本地开发机无法连接 78、35 或板端。源代码补丁、静态 AIR 和单元测试可在本地检查。在 78 和 35 的项目仓库先执行 `git fetch origin main`、`git switch main` 和 `git pull --ff-only origin main`，然后沿用单层 linear 测试的环境变量。在 78 的代码仓库运行：
+两台服务器沿用上次单层测试的环境和连接配置，项目代码同步到 `main`。在 78 的仓库根目录执行：
 
 ```bash
-export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-softpluspatch-t64-valid19-01"
-export GDN_LAYER_RUN="${AI_RUN_DIR:?}/target/tests/l0-gdn-ops-softpluspatch-t64-valid19-01"
-bash targets/cpro/scripts/split_prefill_t64.sh air --mode linear
-bash targets/cpro/scripts/gdn_layer_t64.sh prepare
+bash targets/cpro/scripts/gdn_layer_t64.sh air
 ```
 
-`prepare` 使用 `TARGET_SOURCE` 下的原版 310P NZ 驱动，以及 `NZ_CONFIG`（默认 `config/qwen3_5_moe.yaml`）。读取新导出、含 FP16 SiluPatch 和 FP16 SoftplusPatch 的 `$L0_SPLIT_RUN/air/manifest.json`。它检查 W4 权重、逐 token scale 的 FP16 转换、物理卷积历史、chunk 长度和 GDR 状态接口，并绑定两个原生 shape 的 `SiluPatch` 和衰减分支的一个 `SoftplusPatch`。CPU 复用项目的 A8 ties-to-even / W4 group256 数学参考，组内整数点积、FP32 缩放和累加，最后转 FP16。五次投影各自核对原始 checkpoint 与本次 310P 调用实际读取的打包权重和组 scale。
+`air` 先调用现有的 linear 导出脚本，再执行 `prepare` 采集两端参考。`prepare` 使用 `TARGET_SOURCE` 下的原版 310P NZ 驱动，以及 `NZ_CONFIG`（默认 `config/qwen3_5_moe.yaml`）。读取新导出、含 FP16 SiluPatch 和 FP16 SoftplusPatch 的 `$L0_SPLIT_RUN/air/manifest.json`。它检查 W4 权重、逐 token scale 的 FP16 转换、物理卷积历史、chunk 长度和 GDR 状态接口，并绑定两个原生 shape 的 `SiluPatch` 和衰减分支的一个 `SoftplusPatch`。CPU 复用项目的 A8 ties-to-even / W4 group256 数学参考，组内整数点积、FP32 缩放和累加，最后转 FP16。五次投影各自核对原始 checkpoint 与本次 310P 调用实际读取的打包权重和组 scale。
 
-在装有 FP16 `SoftplusPatch`、`SiluPatch` 的 DDK 编译/上板机运行（本次为 35）。两台服务器使用同一版项目脚本。
+等 78 成功后，在装有 FP16 `SoftplusPatch` 和 `SiluPatch` 的 35 仓库根目录执行：
 
 ```bash
-export L0_SPLIT_RUN="${AI_RUN_DIR:?}/target/tests/l0-split-softpluspatch-t64-valid19-01"
-export GDN_LAYER_RUN="${AI_RUN_DIR:?}/target/tests/l0-gdn-ops-softpluspatch-t64-valid19-01"
 bash targets/cpro/scripts/gdn_layer_t64.sh board
-bash targets/cpro/scripts/gdn_layer_t64.sh compare --tensor softplus --metric relative_l2
-python targets/cpro/tools/gdn_matrices_txt.py "$GDN_LAYER_RUN/board/matrices.csv"
 ```
+
+跑完会在该次运行的 `board/` 下生成 `error_ratio.txt` 和 `cosine.txt`，按变量列出三端矩阵和说明。本地开发机无法连接 78、35 或板端。
 
 `board` 使用编译机已配置的 DDK、HDC 与板端 V2 runner，按需拉取 78 的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-softpluspatch-t64-valid19-01`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
 

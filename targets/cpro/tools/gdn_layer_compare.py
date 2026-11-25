@@ -345,7 +345,11 @@ def main():
     if not args.ddk or not args.runtime_config:
         parser.error('board needs --ddk and --runtime-config')
     run_board(args, run, bundle)
-    return write_report(run, args.tensor, args.metric, whole=args.whole)
+    if not write_report(run, args.tensor, args.metric, whole=args.whole):
+        return False
+    from gdn_matrices_txt import render
+    render(run / ('board-whole' if args.whole else 'board') / 'matrices.csv')
+    return True
 
 
 if __name__ == '__main__':
