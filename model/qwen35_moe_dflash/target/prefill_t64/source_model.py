@@ -93,6 +93,20 @@ def _rotate_fp32(tree, original):
     forward.body[where:where] = casts
 
 
+def physical_conv_history(forward):
+    update = _call(forward, 'torch.ops.my_ops.linear_attention_convstate_update')
+    site = _one((s for s in forward.body if getattr(s, 'value', None) is update), 'history update')
+    projected, old = map(ast.unparse, update.args[:2])
+    # Match the original wrapper’s physical-tail ConvState writeback.
+    history, window = [target.id for target in site.targets[0].elts]
+    index = forward.body.index(site)
+    forward.body[index:index+1] = ast.parse(
+        f'conv_width = {old}.shape[2]\n'
+        f'joined = torch.cat(({old}, {projected}.transpose(1, 2)), dim=2)\n'
+        f'{history} = joined[:, :, -conv_width:].contiguous()\n'
+        f'{window} = joined[:, :, -(seq_len + conv_width - 1):].contiguous()').body
+
+
 def _adapt_gdn(tree, original, single_token):
     cls = _definition(tree, 'Qwen3_5MoeGatedDeltaNet')
     if single_token:
@@ -106,17 +120,7 @@ def _adapt_gdn(tree, original, single_token):
     forward = _definition(cls, 'forward')
     conv = _assignment(forward, 'conv_out')
     if original:
-        update = _call(forward, 'torch.ops.my_ops.linear_attention_convstate_update')
-        site = _one((s for s in forward.body if getattr(s, 'value', None) is update), 'history update')
-        projected, old = map(ast.unparse, update.args[:2])
-        # Match the original wrapper’s physical-tail ConvState writeback.
-        history, window = [target.id for target in site.targets[0].elts]
-        index = forward.body.index(site)
-        forward.body[index:index+1] = ast.parse(
-            f'conv_width = {old}.shape[2]\n'
-            f'joined = torch.cat(({old}, {projected}.transpose(1, 2)), dim=2)\n'
-            f'{history} = joined[:, :, -conv_width:].contiguous()\n'
-            f'{window} = joined[:, :, -(seq_len + conv_width - 1):].contiguous()').body
+        physical_conv_history(forward)
         call = conv.value
         call.func.attr = 'conv2d'
         call.args[0] = _convert(call.args[0], 'reshape', [

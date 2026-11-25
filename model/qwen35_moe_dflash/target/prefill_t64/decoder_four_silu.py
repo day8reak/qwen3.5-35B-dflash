@@ -49,7 +49,7 @@ def silu_same_dtype(x):
 '''
 
 
-def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
+def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layers=4):
     (dest / 'models').mkdir(parents=True)
     for name in SOURCE_FILES:
         copyfile(source / name, dest / name)
@@ -99,7 +99,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
             from .decoder_four_source import preserve_source
             from .source_model import _adapt_experts, _register_fp16_scale, _rotate_fp32, use_position_gathers
 
-            # Keep native state updates, ConvState control and readout.
+            # Keep the native wrapper and readout.
             # Feed GDR the FP16 activation that the custom SiLU already produced.
             for old, new in (
                 ('F.conv1d(padded, self.conv1d.weight,',
@@ -110,6 +110,9 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
                     raise ValueError(f'Expected one {old!r} in native GDN')
                 text = text.replace(old, new)
             tree = ast.parse(text)
+            if layers == 40:
+                from .source_model import _definition, physical_conv_history
+                physical_conv_history(_definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward'))
             _register_fp16_scale(tree)
             _rotate_fp32(tree, original=True)
             use_position_gathers(tree, 'Qwen3_5MoeRotaryEmbedding',
@@ -128,7 +131,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True):
         from .source_exporter import stage_prefill_exporter, stage_utils
         path = dest / EXPORTER
         text = path.read_text()
-        count = int(index % 4 != 3) if l0 else 3
+        count = int(index % 4 != 3) if l0 else layers - layers // 4
         path.write_text(preserve_source(text, stage_prefill_exporter(text, gdn_layers=count, split=l0)))
         utils = dest / 'utils.py'
         utils.write_text(stage_utils(utils.read_text()))
@@ -197,7 +200,7 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, soft
         if name in traced and traced[name] != shape:
             raise ValueError(f'{name}: inconsistent traced shapes {traced[name]} and {shape}')
         traced[name] = shape
-    linear = 0 if full_only else {1: 1, 4: 3}[layers]
+    linear = 0 if full_only else layers - layers // 4
     expected = {GE_TYPE: Counter({(1, 8192, 64): linear, (2048, 128): linear,
                                   (64, 512): layers, (512, 512): layers}),
                 "SoftplusPatch": Counter({(1, 64, 32): linear if softplus else 0})}

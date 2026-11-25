@@ -46,7 +46,7 @@ def decoder(cpu, block, i, hidden, controls, with_head):
 
 
 @torch.inference_mode()
-def prepare(run, mode, capture, source):
+def prepare(run, mode, capture, source, *, per_layer_air=True):
     m = json.loads((capture/'manifest.json').read_bytes())
     if (m['status'], m['physical_rows'], m['valid_rows'], m['output_pos']) != ('CAPTURED', 64, 19, 18):
         raise ValueError('Expected a complete T64/valid19 310P reference')
@@ -99,7 +99,9 @@ def prepare(run, mode, capture, source):
             case = run if mode == 'linear' else run/f'L{i:02d}'
             head = i == layers[-1]
             prefix_only = tail and i < 36
-            if not prefix_only:
+            if not per_layer_air:
+                case.mkdir(parents=True, exist_ok=True)
+            elif not prefix_only:
                 bundle = json.loads((case/'air/manifest.json').read_bytes())
                 if (bundle['reference']['capture_sha256'], bundle['layer'], bundle['head'], bundle['standalone']) != (
                         capture_hash, i, head, mode != '40'):

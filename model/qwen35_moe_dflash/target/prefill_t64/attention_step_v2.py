@@ -94,7 +94,7 @@ def runtime_slots(native, direction, specs, *, equivalent_inputs=False):
 
 
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
-           external_weights=(), release_after_pull=False):
+           external_weights=(), release_after_pull=False, hdc_timeout=660):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -114,7 +114,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
     if len(operands) == 1:
         receipt['input_sha256'] = operands[0]['sha256']
     save_json(out/'result.json', receipt)
-    hdc = Hdc(*env, out, 660)
+    hdc = Hdc(*env, out, hdc_timeout)
     held = uncertain = False
     try:
         _acquire_global(hdc, GLOBAL_LOCK, token, 0)
