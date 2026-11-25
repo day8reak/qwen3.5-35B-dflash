@@ -17,10 +17,33 @@ LAYERS = 40
 VALID19_IDS_SHA256 = 'ec5119e4b49de3c9e0cd48b7cff7faf13b18a0a10dda89c2a5180b194f05eaf7'
 
 
+def run_segment_prefill(entry, config, arm):
+    """Attach an observer on entry to the original W4 segmented prefill driver."""
+    from ..layer_probe.steps import working_directory
+
+    old_profile = sys.getprofile()
+
+    def entered(frame, event, _):
+        if (event == 'call' and frame.f_code.co_filename == str(entry)
+                and frame.f_code.co_name == 'prefill_chunk_segment1'):
+            sys.setprofile(old_profile)
+            arm(frame)
+
+    with ExitStack() as cleanup:
+        cleanup.callback(sys.setprofile, old_profile)
+        cleanup.callback(setattr, sys, 'argv', sys.argv)
+        sys.path.insert(0, str(entry.parent))
+        cleanup.callback(sys.path.remove, str(entry.parent))
+        sys.argv = [str(entry), '--max_token=0', '--quant_mode=enable', '--quant_bits=4',
+                    '--prefill_chunk_size=64', '--config', str(config)]
+        with working_directory(entry.parent):
+            sys.setprofile(entered)
+            runpy.run_path(str(entry), run_name='__main__')
+
+
 def capture(source, config, baseline, output, *, decoder_tails=False, states=False):
     import torch
     from ..layer_probe.capture import bound, cpu
-    from ..layer_probe.steps import working_directory
     from .segment_prefix import tensor_record
 
     entry = (source / 'inference_segment.py').resolve(strict=True)
@@ -167,21 +190,8 @@ def capture(source, config, baseline, output, *, decoder_tails=False, states=Fal
                 raise Captured()
             hook(wrappers[1], first_token)
 
-        old_profile, old_argv = sys.getprofile(), sys.argv
-        def entered(frame, event, _):
-            if event == 'call' and frame.f_code.co_filename == str(entry) and frame.f_code.co_name == 'prefill_chunk_segment1':
-                sys.setprofile(old_profile)
-                arm(frame)
-        cleanup.callback(sys.setprofile, old_profile)
-        cleanup.callback(setattr, sys, 'argv', old_argv)
-        sys.path.insert(0, str(entry.parent))
-        cleanup.callback(sys.path.remove, str(entry.parent))
-        sys.argv = [str(entry), '--max_token=0', '--quant_mode=enable', '--quant_bits=4',
-                    '--prefill_chunk_size=64', '--config', str(config)]
         try:
-            with working_directory(entry.parent):
-                sys.setprofile(entered)
-                runpy.run_path(str(entry), run_name='__main__')
+            run_segment_prefill(entry, config, arm)
         except Captured:
             pass
         if report['status'] != 'CAPTURED':
