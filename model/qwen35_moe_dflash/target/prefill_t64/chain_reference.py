@@ -17,7 +17,7 @@ LAYERS = 40
 VALID19_IDS_SHA256 = 'ec5119e4b49de3c9e0cd48b7cff7faf13b18a0a10dda89c2a5180b194f05eaf7'
 
 
-def run_segment_prefill(entry, config, arm):
+def run_segment_prefill(entry, config, arm, *, decode=False):
     """Attach an observer on entry to the original W4 segmented prefill driver."""
     from ..layer_probe.steps import working_directory
 
@@ -34,7 +34,7 @@ def run_segment_prefill(entry, config, arm):
         cleanup.callback(setattr, sys, 'argv', sys.argv)
         sys.path.insert(0, str(entry.parent))
         cleanup.callback(sys.path.remove, str(entry.parent))
-        sys.argv = [str(entry), '--max_token=0', '--quant_mode=enable', '--quant_bits=4',
+        sys.argv = [str(entry), f'--max_token={int(decode)}', '--quant_mode=enable', '--quant_bits=4',
                     '--prefill_chunk_size=64', '--config', str(config)]
         with working_directory(entry.parent):
             sys.setprofile(entered)

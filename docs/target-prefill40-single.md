@@ -1,5 +1,7 @@
 # 原 CPro 整网的 40 层 prefill 首 token
 
+单层、四层、40 层整图和 40 层逐层的 prefill/decode 共用[统一运行入口](decoder-compare.md)。
+
 ## 原 CPro 的 40 层整图，使用 SiluPatch 和 SoftplusPatch
 
 78 上沿用 `TARGET_SOURCE`、`CPRO_SOURCE` 和 `AI_RUN_DIR`。在仓库根目录执行：

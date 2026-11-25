@@ -366,7 +366,7 @@ def ssh_cpu(client, remote, staged):
         ssh_file(client, Path(remote)/filename, staged/filename, row)
 
 
-def write_matrices(path, scores):
+def write_matrices(path, scores, *, display=True):
     backends = ('cpu', '310p', 'cpro')
     first = scores['cpro']['310p']
     with tempfile.NamedTemporaryFile(mode='w', newline='', dir=path.parent, delete=False) as f:
@@ -375,7 +375,7 @@ def write_matrices(path, scores):
         for role, scopes in first.items():
             for scope in scopes:
                 for field in (*THRESHOLDS, 'mean_abs', 'max_abs', *ERROR_RATIO_FIELDS, 'reference_metrics_passed'):
-                    show = field in ('cosine', 'relative_l2', 'error_ratio')
+                    show = display and field in ('cosine', 'relative_l2', 'error_ratio')
                     if show:
                         print(f'\n{role}  {scope}  {field}\nactual\\reference              CPU           310P           CPro')
                     for actual in backends:

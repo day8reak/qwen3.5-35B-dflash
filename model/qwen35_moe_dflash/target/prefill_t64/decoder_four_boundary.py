@@ -3,11 +3,7 @@ import json
 
 from .decode_cache_control import graph_message
 from .segment_export import OUTPUTS
-
-
-def state_roles(layer):
-    names = ('key_cache', 'value_cache') if layer % 4 == 3 else ('conv_state', 'recurrent_state')
-    return tuple(f'{name}_{layer}' for name in names)
+from .decoder_cases import state_roles
 
 
 def output_shape(name):

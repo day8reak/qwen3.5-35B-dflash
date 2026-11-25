@@ -188,7 +188,7 @@ def gate_product(graph, gate):
     return mul, norm
 
 
-def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, softplus=False):
+def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, softplus=False, rows=64):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -201,9 +201,9 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, soft
             raise ValueError(f'{name}: inconsistent traced shapes {traced[name]} and {shape}')
         traced[name] = shape
     linear = 0 if full_only else layers - layers // 4
-    expected = {GE_TYPE: Counter({(1, 8192, 64): linear, (2048, 128): linear,
-                                  (64, 512): layers, (512, 512): layers}),
-                "SoftplusPatch": Counter({(1, 64, 32): linear if softplus else 0})}
+    expected = {GE_TYPE: Counter({(1, 8192, rows): linear, (rows * 32, 128): linear,
+                                  (rows, 512): layers, (rows * 8, 512): layers}),
+                "SoftplusPatch": Counter({(1, rows, 32): linear if softplus else 0})}
     ops = {op.name: op for op in graph.op if op.type in expected}
     if set(ops) != set(traced):
         raise ValueError(f'Activation AIR and converter names differ: {sorted(set(ops) ^ set(traced))}')
@@ -248,7 +248,7 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, soft
                     or [d.dtype for d in cast_in.output_desc] != [2]):
                 raise ValueError(f'{name}: expected a FP32 to FP16 cast of biased_a')
             gate_product(graph, name + ':0')
-        elif shape == (2048, 128):
+        elif shape == (rows * 32, 128):
             gate_product(graph, name + ':0')
         for row in consumers:
             if row['op'] == 'Cast':

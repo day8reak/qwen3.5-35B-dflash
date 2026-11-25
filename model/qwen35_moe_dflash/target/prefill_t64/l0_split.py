@@ -26,32 +26,36 @@ OUTPUTS = {
 SITES = {(1, 8192, 64): 'conv', (2048, 128): 'gate', (64, 512): 'shared', (512, 512): 'experts'}
 
 
-def expose_l0(folder, *, layer=0, head=True):
-    """Edit only the staged source. Return the values written by the fresh, single-call prefill."""
-    def edit(file, scope, changes):
-        path = folder / 'models' / file
-        before, separator, after = path.read_text().partition('class ' + scope + '(')
-        if not separator:
-            raise ValueError(f'{path}: missing {scope}')
-        body, following, rest = after.partition('\nclass ')
-        for old, new in changes:
-            if body.count(old) != 1:
-                raise ValueError(f'{scope}: expected a single {old!r}')
-            body = body.replace(old, new)
-        path.write_text(before + separator + body + following + rest)
+def edit_class(path, scope, changes):
+    before, separator, after = path.read_text().partition('class ' + scope + '(')
+    if not separator:
+        raise ValueError(f'{path}: missing {scope}')
+    body, following, rest = after.partition('\nclass ')
+    for old, new in changes:
+        if body.count(old) != 1:
+            raise ValueError(f'{scope}: expected a single {old!r}')
+        body = body.replace(old, new)
+    path.write_text(before + separator + body + following + rest)
 
-    model = 'modeling_qwen3_5_moe_hiai_cpro.py'
-    edit(model, 'Qwen3_5MoeGatedDeltaNet', [
-        ('        conv_state.copy_(new_conv_state)', ''),
-        ('        recurrent_state.copy_(last_recurrent_state)', ''),
-        ('return output, past_key_values', 'return output, (new_conv_state.to(conv_state.dtype), last_recurrent_state)'),
-    ])
-    edit(model, 'Qwen3_5MoeDecoderLayer', [
+
+def expose_projection(path):
+    edit_class(path, 'Qwen3_5MoeDecoderLayer', [
         ('        hidden_states = residual + hidden_states\n\n        # MoE',
          '        attention_output = hidden_states\n        hidden_states = residual + hidden_states\n\n        # MoE'),
         ('return hidden_states, present_key_value', 'return hidden_states, present_key_value, attention_output'),
     ])
-    edit('export_model_wrapper_qwen3_5_moe.py', 'Qwen3_5MoeForCausalLMCproWrapper', [
+
+
+def expose_l0(folder, *, layer=0, head=True):
+    """Edit only the staged source. Return the values written by the fresh, single-call prefill."""
+    model = 'modeling_qwen3_5_moe_hiai_cpro.py'
+    edit_class(folder / 'models' / model, 'Qwen3_5MoeGatedDeltaNet', [
+        ('        conv_state.copy_(new_conv_state)', ''),
+        ('        recurrent_state.copy_(last_recurrent_state)', ''),
+        ('return output, past_key_values', 'return output, (new_conv_state.to(conv_state.dtype), last_recurrent_state)'),
+    ])
+    expose_projection(folder / 'models' / model)
+    edit_class(folder / 'models/export_model_wrapper_qwen3_5_moe.py', 'Qwen3_5MoeForCausalLMCproWrapper', [
         ('        hidden_states = inputs_embeds\n', '        hidden_states = inputs_embeds.to(torch.float16)\n'),
         ('        hidden_states = hidden_states.to(torch.float32)',
          '        hidden_states = hidden_states.to(torch.float32)\n        decoder_hidden = hidden_states'),
@@ -82,12 +86,12 @@ def expose_l0(folder, *, layer=0, head=True):
     if not head:
         begin = owner.index('        bsz, q_len, hidden_state_len = hidden_states.size()')
         wrapper.append((owner[begin:].rstrip(), '        return hidden_states.float(), *kv_caches_out, layer_outputs[2]'))
-    edit('export_model_wrapper_qwen3_5_moe.py', 'Qwen3_5MoeForCausalLMCproWrapper', wrapper)
+    edit_class(folder / 'models/export_model_wrapper_qwen3_5_moe.py', 'Qwen3_5MoeForCausalLMCproWrapper', wrapper)
     if layer % 4 == 3:
         # The owner's Functionalize rule lowers to this op then copy_ back into
         # the input. Use its returned CacheUpdate tensor for both attention and
         # readout so the same updated bytes can cross an OMC boundary.
-        edit(model, 'Qwen3_5MoeAttention', [
+        edit_class(folder / 'models' / model, 'Qwen3_5MoeAttention', [
             ('        torch_npu.npu_cache_update_(past_key_value.to(new_k.device),',
              '        return torch.ops.npu.npu_cache_update__functional(past_key_value.to(new_k.device),'),
             ('        return past_key_value\n', ''),
@@ -201,7 +205,7 @@ def physical_history(nodes, outputs):
     return matches[0]
 
 
-def prefill_precision(graph, layers, head):
+def prefill_precision(graph, layers, head, *, rows=64):
     """Inspect the consumer port contracts on the exported AIR before OMG lowering."""
     enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_number
     nodes = {n.name: n for n in graph.op}
@@ -243,8 +247,8 @@ def prefill_precision(graph, layers, head):
             state = dtype(op.output_desc[1]) if len(op.output_desc) > 1 else None
             chunk = op.attr['chunk_size'].i
             gdrs[op.name] = dict(inputs=ports, state_output=state, chunk_size=chunk)
-            if chunk != 64 or state != 'DT_FLOAT16':
-                problems.append(f'{op.name}: chunk={chunk}, state output={state}; expected 64 and DT_FLOAT16')
+            if chunk != rows or state != 'DT_FLOAT16':
+                problems.append(f'{op.name}: chunk={chunk}, state output={state}; expected {rows} and DT_FLOAT16')
 
     linear = sum(layer % 4 != 3 for layer in layers)
     expected = 8 * len(layers) + linear + int(head)  # 4/5 attention + 4 MoE projections per layer, plus head

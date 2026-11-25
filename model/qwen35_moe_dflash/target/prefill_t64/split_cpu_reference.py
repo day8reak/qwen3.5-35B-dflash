@@ -20,27 +20,32 @@ from . import last4
 from .segment_prefix import tensor_record
 
 
-def decoder(cpu, block, i, hidden, controls, with_head):
+def decoder(cpu, block, i, hidden, controls, with_head, *, before=None):
     names = (('key_cache', 'value_cache') if i % 4 == 3 else ('conv_state', 'recurrent_state'))
     roles = [f'{name}_{i}' for name in names]
-    before = [torch.zeros(contracts(i, False)[role][0], dtype=torch.float16) for role in roles]
+    valid = 1 if hidden.shape[1] == 1 else 19
+    if before is None and valid == 1:
+        raise ValueError("Decode requires the observed prefill caches")
+    if before is None:
+        before = [torch.zeros(contracts(i, False)[role][0], dtype=torch.float16) for role in roles]
     x = norm(hidden, block.input_layernorm)
     prefix = f'layers.{i}.'
     if i % 4 == 3:
         attn = block.self_attn
         if not torch.equal(attn.block_table, torch.arange(64).reshape(1, 64)):
-            raise ValueError(f'L{i}: expected the sequential fresh-prefill page table')
-        mix, states = cpu.attention(x, attn, prefix + 'self_attn', before, controls, valid_length=19)
+            raise ValueError(f'L{i}: expected the sequential cache page table')
+        mix, states = cpu.attention(x, attn, prefix + 'self_attn', before, controls,
+                                    valid_length=None if valid == 1 else valid)
     else:
-        # QKV and conv history see T64. Only 19 rows advance the recurrence.
-        mix, states = cpu.gdn(x, block.linear_attn, prefix + 'linear_attn', before, valid_length=19)
+        # The QKV projection sees the physical input. Only valid rows advance GDR.
+        mix, states = cpu.gdn(x, block.linear_attn, prefix + 'linear_attn', before, valid_length=valid)
     physical_mix = torch.zeros_like(hidden)
-    physical_mix[:, :19] = mix
+    physical_mix[:, :valid] = mix
     residual = hidden + physical_mix
     final = residual + cpu.moe(norm(residual, block.post_attention_layernorm), block.mlp, prefix + 'mlp')
     outputs = dict(zip(roles, states, strict=True), out_proj=physical_mix, decoder_hidden=final)
     if with_head:
-        last = norm(final[:, 18:19], cpu.model.model.norm)
+        last = norm(final[:, valid-1:valid], cpu.model.model.norm)
         outputs['logits'] = cpu.project(last, 'lm_head', cpu.model.lm_head).float()
     return outputs
 

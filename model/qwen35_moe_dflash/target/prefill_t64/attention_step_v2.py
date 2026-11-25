@@ -1,6 +1,7 @@
 """Run one independent attention step with the X90 board's existing HIAI V2 tool."""
 from pathlib import Path, PurePosixPath
 import math
+import os
 import re
 import shlex
 import tempfile
@@ -103,7 +104,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         raise ValueError(f'{name}: missing model inputs or outputs')
     token = uuid.uuid4().hex
     remote = PurePosixPath('/data/local/tmp') / ('qwen35_step_' + token)
-    tool = _board_path(DEFAULT_TOOL)
+    tool = _board_path(os.environ.get('CPRO_BOARD_TOOL', DEFAULT_TOOL))
     model_sha = sha(model)
     # Paths in the model are relative to its weight directory.
     sidecars = [(p, p.relative_to(model.parent), sha(p)) for p in external_weights]
