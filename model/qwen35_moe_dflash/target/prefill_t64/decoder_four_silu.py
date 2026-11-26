@@ -61,14 +61,15 @@ SOFTPLUS_CALL = ('F.softplus(a.float() + self.dt_bias)',
 CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])', 'silu_same_dtype(out[:, :, -seq_len:])')
 
 
-def restore_native_activations(exporter, model, *, keep_silu=False):
+def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplus=False):
     """Undo only this adapter's activation edits in a copy of the selected aligned sources."""
-    exporter = exporter.replace(activation_registration('softplus_patch', 'SoftplusPatch'), '')
-    original, patched = SOFTPLUS_CALL
-    model = model.replace(patched, original)
-    for symbol in ('softplus_patch', 'SoftplusPatch'):
-        if symbol in model or symbol in exporter:
-            raise ValueError(f'Unsupported activation edit in selected CPro source: {symbol} remains')
+    if not keep_softplus:
+        exporter = exporter.replace(activation_registration('softplus_patch', 'SoftplusPatch'), '')
+        original, patched = SOFTPLUS_CALL
+        model = model.replace(patched, original)
+        for symbol in ('softplus_patch', 'SoftplusPatch'):
+            if symbol in model or symbol in exporter:
+                raise ValueError(f'Unsupported activation edit in selected CPro source: {symbol} remains')
     if keep_silu:
         return exporter, model
     exporter = exporter.replace(activation_registration('silu_patch', GE_TYPE), '')
@@ -249,12 +250,12 @@ def inspect_gdn_convs(graph, count, rows):
     return dict(nodes=count, operands_with_shapes=observed, expected_shapes=expected)
 
 
-def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, softplus=False, rows=64,
+def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
                            check_convs=False, gdn_conv="conv2d"):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
-    _, graph = graph_message(path.read_bytes(), GE_TYPE)
+    _, graph = graph_message(path.read_bytes(), GE_TYPE if silu else 'SoftplusPatch')
     traced = {}
     for line in shape_trace.read_text().splitlines():
         name, *dims = line.split()
@@ -266,6 +267,8 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, soft
     expected = {GE_TYPE: Counter({(1, 8192, rows): linear, (rows * 32, 128): linear,
                                   (rows, 512): layers, (rows * 8, 512): layers}),
                 "SoftplusPatch": Counter({(1, rows, 32): linear if softplus else 0})}
+    if not silu:
+        expected[GE_TYPE].clear()
     ops = {op.name: op for op in graph.op if op.type in expected}
     if set(ops) != set(traced):
         raise ValueError(f'Activation AIR and converter names differ: {sorted(set(ops) ^ set(traced))}')
@@ -331,8 +334,8 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, soft
             result['gdn_convs'] = inspect_taps(graph, conv_silus, linear)
         else:
             result['gdn_convs'] = inspect_gdn_convs(graph, linear, rows)
-    for name, op_type in (("silu_patch", GE_TYPE), ("softplus_patch", "SoftplusPatch")):
-        if name == "softplus_patch" and not softplus:
+    for name, op_type, enabled in (("silu_patch", GE_TYPE, silu), ("softplus_patch", "SoftplusPatch", softplus)):
+        if not enabled:
             continue
         nodes = records[op_type]
         print(f'{op_type}: {len(nodes)} nodes, native shapes {dict(+expected[op_type])}', flush=True)

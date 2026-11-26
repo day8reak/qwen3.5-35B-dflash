@@ -81,7 +81,7 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 同一运行目录中保留了成功的 `--no-patch` 记录时，板端执行服务器会先保存其输入槽位，再逐项对照本次的角色、shape、dtype 和已有 bin 内容标识。该对照使用服务器上的清单与执行记录。
 
-上面两条命令在原 ConvState 更新之后显式调用分组 `F.conv2d`。L0、L1、L2 各导出一个 Conv2D，卷积窗口为 `[1,8192,1,67]`，卷积核为 `[8192,1,1,4]`。两种激活对照都从 `CPRO_ORIGINAL_PATCHED_SOURCE`（或自动生成的原 ConvState 源码）导出，使用相同的四层配置、OMG 参数和 V2 输入接口。在这两种激活对照中，省略 `--gdn-conv` 会沿用此前的 `original` 卷积配置。
+上面两条命令在原 ConvState 更新之后显式调用分组 `F.conv2d`。L0、L1、L2 各导出一个 Conv2D，卷积窗口为 `[1,8192,1,67]`，卷积核为 `[8192,1,1,4]`。三种激活对照都从 `CPRO_ORIGINAL_PATCHED_SOURCE`（或自动生成的原 ConvState 源码）导出，使用相同的四层配置、OMG 参数和 V2 输入接口。省略 `--gdn-conv` 会沿用此前的 `original` 卷积配置。
 
 ### 四层只启用 SiluPatch
 
@@ -100,6 +100,24 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 模型使用 FP16 `SiluPatch` 和原生 `F.softplus`。导出检查 14 个 `SiluPatch` 和 0 个 `SoftplusPatch`，包括 L0–L2 的 6 个卷积与门控激活，以及四层 MoE 的 8 个激活。在同一用例目录保留了基线的成功执行记录时，运行器还会对照两次运行的输入槽位。
 
 V2 执行完毕后，终端以 `PASSED` 或 `FAILED_ACCURACY` 打印 `comparison.json` 的路径。精度未达标时会列出未通过项并以状态码 1 退出。加载或执行阶段的异常仍可从该阶段的报错和 `replay/result.json` 定位。
+
+### 四层只启用 SoftplusPatch
+
+在 AIR 生成服务器执行
+
+```bash
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --softplus-only
+```
+
+在 OMC 生成和板端执行服务器执行
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --softplus-only
+```
+
+SiLU 使用原生实现。导出检查 0 个 `SiluPatch`、3 个 `SoftplusPatch`，L0–L2 的 GDN 衰减分支各一处。`a.float() + dt_bias` 转为 FP16 后进入 `SoftplusPatch`，其 FP16 输出转回 FP32 后与 `-exp(A_log)` 相乘。三处激活的输入和输出形状均为 `[1,64,32]`。
+
+对照三次运行时固定源码、Conv2D、权重、输入和编译环境。若原生激活和 `--softplus-only` 均能加载执行，只有 `--silu-only` 在 `UpdateArgsForAicore` 处失败，就优先排查引入 SiluPatch 后的编译任务及其参数。加载阶段还没有产生可比较的推理输出。
 
 ### 用原 CPro 的板端命令重跑已有 OMC
 

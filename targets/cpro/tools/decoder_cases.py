@@ -28,8 +28,8 @@ def patched_source_variable(gdn_conv):
 
 
 def source_convolution(args):
-    # Both activation controls start from the editable model with native ConvState.
-    if getattr(args, 'native_activations', False) or getattr(args, 'silu_only', False):
+    # All four-layer controls use the source with native ConvState.
+    if any(getattr(args, key, False) for key in FOUR_LAYER_CONTROLS):
         return 'original'
     return args.gdn_conv
 
@@ -295,6 +295,8 @@ def main():
                                  help='keep the aligned four-layer native GDN graph and restore stock SiLU and Softplus')
     activation_mode.add_argument('--silu-only', action='store_true',
                                  help='use FP16 SiluPatch and stock Softplus in the aligned four-layer T64 model')
+    activation_mode.add_argument('--softplus-only', action='store_true',
+                                 help='use stock SiLU and FP16 SoftplusPatch in the aligned four-layer T64 model')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
     parser.add_argument('--run', type=Path, help='explicit path ending in the canonical case name')
     parser.add_argument('--remote-run', type=Path, help='case directory on the export host')
@@ -336,7 +338,7 @@ def main():
         schedule = groups(a.mode)
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
                               prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations,
-                              silu_only=a.silu_only, omcs=len(schedule),
+                              silu_only=a.silu_only, softplus_only=a.softplus_only, omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
         return 0
     if a.action == 'source':
@@ -377,7 +379,7 @@ def main():
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
                          original_board_args=a.original_board_args, no_patch=a.no_patch,
-                         native_activations=a.native_activations, silu_only=a.silu_only):
+                         native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only):
                 return 1
         else:
             prepare_stage(a, site)
@@ -398,9 +400,9 @@ def main():
         if a.action == 'diagnose':
             worker(a, 'diagnose', root, remote)
             return 0
-        if (a.native_activations or a.silu_only) and a.action in ('board', 'compile', 'execute', 'transfer'):
+        if (a.native_activations or a.silu_only or a.softplus_only) and a.action in ('board', 'compile', 'execute', 'transfer'):
             from decoder_four_inputs import remember_original_inputs
-            remember_original_inputs(root, baseline='native_activations' if a.silu_only else 'no_patch')
+            remember_original_inputs(root, baseline='no_patch' if a.native_activations else 'native_activations')
         if a.action in ('prepare', 'golden'):
             source_config('reference')
             if a.action == 'prepare':
