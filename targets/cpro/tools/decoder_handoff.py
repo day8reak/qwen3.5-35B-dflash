@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 
+from qwen35_moe_dflash.common.artifacts import share_for_transfer
 from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, groups
 
@@ -72,9 +73,13 @@ def publish(root, role, args):
     if role != 'golden':
         header['gdn_conv'] = args.gdn_conv
     dest = receipt(root, role)
-    tmp = dest.with_suffix('.tmp')
-    tmp.write_text(json.dumps(header, ensure_ascii=False) + '\n')
-    tmp.replace(dest)
+    with tempfile.TemporaryDirectory(prefix='.publish-', dir=root) as staging:
+        tmp = Path(staging)/dest.name
+        tmp.write_text(json.dumps(header, ensure_ascii=False) + '\n')
+        if role in ('golden', 'air'):
+            print(f'[{role}] 发布前设置本次运行目录和清单权限 chmod -R 777 {root}', flush=True)
+            share_for_transfer(root)
+        tmp.replace(dest)
     print(f'{role} transfer manifest: {len(records)} files → {dest}', flush=True)
 
 

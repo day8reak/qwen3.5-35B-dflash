@@ -28,6 +28,8 @@ cp -n targets/cpro/scripts/decoder.env.example ~/.config/qwen35-cpro/compile.env
 
 ## 环境间传输
 
+golden 和 AIR 生成成功时，脚本对本次 case 目录递归执行 `chmod -R 777`，然后发布同样权限的 `.handoff-golden.json` 或 `.handoff-air.json`。已有 case 手动修复权限后，在接收方重试即可复用这份数据。
+
 在接收方运行 `decoder_transfer.sh golden|air|omc`。SSH 配置默认为 `~/.config/qwen35-cpro/transfer.json`（权限 600），可用 `CPRO_TRANSFER_CONFIG` 更改。已有 `air` 端点的两机部署可直接沿用。新环境可交互创建配置
 
 ```bash
