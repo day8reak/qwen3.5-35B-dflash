@@ -35,6 +35,10 @@ def input_wire(node, fallback_shape):
 
 
 def probe_cases(raw, meta, mode):
+    if mode == 'gdn-bisect':
+        from qwen35_moe_dflash.target.prefill_t64.gdn_layer_air import gdn_load_sections
+        yield from gdn_load_sections(raw, meta)
+        return
     if mode in ('gdn-export', 'gdn-whole'):
         from qwen35_moe_dflash.target.prefill_t64.gdn_layer_air import four_layer_gdn
         step = four_layer_gdn(raw, meta)
@@ -102,6 +106,12 @@ def compile_cases(folder, case, meta, record, ddk, mode):
     external = {op.name: op.attr['file_path'].s.decode() for op in original.op if op.type == 'FileConstant'}
     for label, step, wires in probe_cases(raw, meta, mode):
         base = folder/label
+        if 'error' in step:
+            report['cases'][label] = dict(status='CUT_FAILED', error=step['error'], nodes=[],
+                                          input_edges=step['inputs'], output_edges=step['outputs'])
+            save_json(index, report)
+            print(f'[{label}] CUT_FAILED {step["error"]}', flush=True)
+            continue
         directory = 'weight' if mode == 'slices' else meta['air_directory']
         air = base/directory/'export.air'
         air.parent.mkdir(parents=True)
@@ -136,6 +146,8 @@ def compile_cases(folder, case, meta, record, ddk, mode):
                                          inputs=feeds, outputs=outputs, source_air=record))
         print(f'[{label}] 已导出 AIR：{air}（{len(nodes)} 个节点）', flush=True)
         row = dict(nodes=nodes, source=source['sha256'], feeds=feeds, outputs=outputs)
+        if mode == 'gdn-bisect':
+            row.update(input_edges=step['inputs'], output_edges=step['outputs'])
         if mode == 'gdn-export':
             report['cases'][label] = dict(row, status='EXPORTED')
             continue
@@ -152,7 +164,7 @@ def compile_cases(folder, case, meta, record, ddk, mode):
     save_json(index, report)
 
 
-def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights, valid_rows=None):
+def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights, valid_rows=None, board_case=None):
     build, model, weights = compiled(base, base, None, None, row['source'])
     replay = base/'replay'
     if replay.exists():
@@ -177,14 +189,15 @@ def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights,
         elif role == 'length':
             data = np.full(shape, valid_rows, dtype=dtype)
         else:
-            low, high = (-2, 2) if name == 'l0_feed_0' else (0.5, 1.5)
+            low, high = {'g': (-1, -0.01), 'beta': (0.1, 0.9)}.get(
+                role, (-2, 2) if name == 'l0_feed_0' else (0.5, 1.5))
             data = np.linspace(low, high, num=prod(shape), dtype=dtype)
         data.tofile(path)
         operands.append(dict(spec, sha256=sha(path)))
         paths.append(path)
     try:
         run_v2(replay, base.name, model, operands, paths, build['outputs'], runtime,
-               board_case='4-prefill-t64-gate-' + base.name, decoder_shapes=(named_shapes(operands), build['output_shape']),
+               board_case=board_case or '4-prefill-t64-gate-' + base.name, decoder_shapes=(named_shapes(operands), build['output_shape']),
                shape_config=config, original_board_args=True, replace_inputs=replace_inputs, external_weights=weights,
                replace_weights=replace_weights,
                build_records=(build['model'], build['weights']))
@@ -212,37 +225,115 @@ def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights,
     return dict(status='EXECUTED', exitcode=0)
 
 
-def probe(root, action, ddk, config, *, mode='slices', replace_inputs=False, replace_weights=False):
-    case = root/'board/package/L00-L03'
+def localize_gdn(folder, case, report, summary):
+    """Compare observations for nested cuts, including the retained whole-module control."""
+    builds = dict(report['cases'])
+    observations = dict(summary)
+    baseline = case.name
+    whole_build, whole_result = case.parent/'compile.json', case.parent/'result.json'
+    if whole_build.is_file() and whole_result.is_file():
+        parent = read(whole_build)['cases'].get(baseline, {})
+        observed = read(whole_result).get(baseline)
+        if observed and parent.get('source') == report['air']['sha256']:
+            builds[baseline], observations[baseline] = parent, observed
+
+    matched = {k: set(builds[k]['nodes']) for k, row in observations.items()
+               if row['status'] == 'LOAD_MODEL_FAILED' and row.get('kernel_args_error')}
+    minimal = sorted((k for k, nodes in matched.items() if not any(other < nodes for other in matched.values())),
+                     key=lambda k: (len(matched[k]), k))
+    splits = {baseline: ('gdn-front', 'gdn-tail'),
+              'gdn-front': ('pre-gdr', 'gdr-state'), 'pre-gdr': ('qkv-path', 'decay-beta'),
+              'qkv-path': ('qkv-project', 'conv-to-qkv'), 'decay-beta': ('decay-path', 'beta-path'),
+              'gdn-tail': ('gate-product', 'out-proj'), 'gate-product': ('z-gate', 'rms-mul'),
+              'z-gate': ('z-project', 'gate-activation')}
+    joins = {parent: children for parent, children in splits.items() if parent in matched
+             and all(observations.get(k, {}).get('status') == 'EXECUTED' for k in children)}
+    cases = {}
+    for label, row in observations.items():
+        base = case if label == baseline else folder/label
+        cases[label] = dict(status=row['status'], exitcode=row.get('exitcode'),
+                            matched_kernel_args=label in matched, nodes=builds[label]['nodes'],
+                            inputs=builds[label].get('input_edges'), outputs=builds[label].get('output_edges'),
+                            case=str(base/'case.json') if (base/'case.json').is_file() else None,
+                            diagnosis=row.get('diagnosis'))
+    path = folder/'localization.json'
+    save_json(path, dict(source_air=str(case/report['air']['path']), baseline_observed=baseline in observations,
+                         cases=cases, minimal_reproductions=minimal, passing_halves=joins))
+    if minimal:
+        print('复现同一加载错误的最小已测切片：' + '、'.join(minimal), flush=True)
+        for k in minimal:
+            print(f'  {k}：{len(matched[k])} 个源图节点，{cases[k]["case"]}', flush=True)
+    else:
+        print('已有记录中没有同时匹配 load_model 和本次 hiaiserver 的 OpUpdateKernelArgs failed。', flush=True)
+    for k, children in joins.items():
+        print(f'  {k} 复现，两段各自执行成功：{" + ".join(children)}', flush=True)
+    print(f'二分定位报告 {path}', flush=True)
+
+
+def air_bundle(case, alternate=None):
     meta = read(case/'case.json')
     record, = [r for r in meta['files'] if r['path'] == meta['air_directory'] + '/export.air']
+    if alternate is not None and not (case/record['path']).is_file():
+        case = alternate
+        if record not in read(case/'case.json')['files']:
+            raise ValueError('The local AIR export differs from the model on the board host')
+    return case, meta, record
+
+
+def probe(root, action, ddk, config, *, mode='slices', replace_inputs=False, replace_weights=False):
+    parent = root/'board/L00-L03'
+    case = root/'board/package/L00-L03'
+    alternate = root/'export/package/L00-L03' if action == 'compile' else None
+    bisect = mode == 'gdn-bisect'
+    make_control = bisect and not (parent/'gdn/linear-attention/case.json').is_file()
+    if bisect:
+        source = parent/('gdn-bisect-source' if make_control else 'gdn')
+        if make_control and action == 'compile':
+            print('从四层包切出完整 L0 GDN，作为本批对照', flush=True)
+            compile_cases(source, *air_bundle(case, alternate), ddk, 'gdn-whole')
+        case, alternate = source/'linear-attention', None
+    case, meta, record = air_bundle(case, alternate)
     whole = mode in ('gdn-export', 'gdn-whole')
-    directory = 'gdn' if whole else ('gate-upstream' if mode == 'upstream' else 'gate-probes')
-    folder = root/'board/L00-L03'/directory
+    directory = {'gdn-bisect': 'gdn-bisect', 'upstream': 'gate-upstream',
+                 'gdn-whole': 'gdn', 'gdn-export': 'gdn'}.get(mode, 'gate-probes')
+    folder = parent/directory
     if action == 'compile':
-        if not (case/record['path']).is_file():
-            case = root/'export/package/L00-L03'
-            if record not in read(case/'case.json')['files']:
-                raise ValueError('The local AIR export differs from the model on the board host')
         compile_cases(folder, case, meta, record, ddk, mode)
         return True
     report = read(folder/'compile.json')
     if report['kind'] != KIND or not report['complete'] or report['air'] != record:
         raise ValueError('Compile gate probes for the current four-layer AIR before executing')
     runtime = read(config.parent/read(config)['assets'])['environment']
-    valid_rows = read(case.parent/'fixture/reference.json')['valid_rows'] if whole else None
-    if whole and not 1 <= valid_rows <= 64:
+    valid_rows = read(root/'board/package/fixture/reference.json')['valid_rows'] if whole or bisect else None
+    if (whole or bisect) and not 1 <= valid_rows <= 64:
         raise ValueError(f'Unexpected T64 prefill length: {valid_rows}')
+
+    def observe(base, row, board_case=None):
+        if row['status'] != 'COMPILED':
+            return row
+        try:
+            return execute_case(base, row, runtime, config, replace_inputs=replace_inputs,
+                                replace_weights=replace_weights, valid_rows=valid_rows, board_case=board_case)
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as err:
+            if not bisect or 'BOARD_MODEL_IO_BUSY' in str(err):
+                raise
+            print(f'[{base.name}] PROBE_ERROR {err}', flush=True)
+            return dict(status='PROBE_ERROR', error=str(err))
+
+    if make_control:
+        control = read(case.parent/'compile.json')['cases'][case.name]
+        save_json(case.parent/'result.json', {case.name: observe(case, control, '4-prefill-t64-gdn-bisect-control')})
     summary = {}
     save_json(folder/'result.json', summary)
     for label, row in report['cases'].items():
-        summary[label] = row
-        if row['status'] == 'COMPILED':
-            summary[label] = execute_case(folder/label, row, runtime, config, replace_inputs=replace_inputs,
-                                          replace_weights=replace_weights, valid_rows=valid_rows)
+        summary[label] = observe(folder/label, row)
         save_json(folder/'result.json', summary)
     print(f'上板结果 {folder}/result.json', flush=True)
     for label, row in summary.items():
         matched = '  OpUpdateKernelArgs failed' if row.get('kernel_args_error') else ''
         print(f'{label:16} {row["status"]}{matched}', flush=True)
+    if bisect:
+        localize_gdn(folder, case, report, summary)
+        # Reproducing a model failure is a completed diagnostic observation.
+        return all(row['status'] in ('EXECUTED', 'LOAD_MODEL_FAILED') for row in summary.values())
     return all(row['status'] == 'EXECUTED' for row in summary.values())

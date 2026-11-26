@@ -251,6 +251,18 @@ bash targets/cpro/scripts/decoder_compare.sh gdn-whole
 
 这一条命令包含切图、编译一个 OMC 和 V2 上板。使用固定合成 hidden、零初始缓存和当前四层 fixture 的有效长度。执行状态保存在 `board/L00-L03/gdn/result.json`，适合排查加载故障。早先基于三端真实输入的 GDN 精度对照另见 [GDN 层对比](guides/gdn-layer-t64.md)。
 
+### 从已复现加载错误的 L0 GDN 分段定位
+
+在保留本次 `gdn-whole` 产物或对应四层 T64 物理 ConvState 包的 CPro OMC 生成和板端执行服务器，运行一次：
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh gdn-bisect
+```
+
+脚本优先复用 `board/L00-L03/gdn/linear-attention` 的单层 AIR 和权重。如果目前只有四层包，会先在 `board/L00-L03/gdn-bisect-source` 生成完整 L0 对照，并在本批上板。第一层分别测到 GDR 输出为止的前段，以及从 core 和 hidden 到 out_proj 的后段。第二层分开 QKV 投影、卷积到 Q/K/V、衰减、beta、GDR 状态、门控两支和 out_proj。另有跨切口的图保留原来的生产者和消费者。在 L0 RMS 门控使用 SiluPatch 时，`cut-before-silu` 和 `cut-after-silu` 分别把该节点的输入或输出作为 FP16 外部输入，保留其余 GDN 路径及三个原始输出。切片使用合成输入测试 OMC 加载和执行。
+
+结果写入 `board/L00-L03/gdn-bisect/localization.json`。对每张图保留源节点、切口、退出码和诊断路径。`minimal_reproductions` 列出本批按源节点集合包含关系最小、且当前客户端的 HiLog 能关联到 `OpUpdateKernelArgs failed` 的加载失败图。`passing_halves` 列出同一父图复现但两个子图分别执行成功的组合。如果只有完整 GDN 复现，仍需检查在切口两侧一起编译时生成的任务和参数。单项切图、编译或执行异常单独记录，其他有效切片继续上板。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

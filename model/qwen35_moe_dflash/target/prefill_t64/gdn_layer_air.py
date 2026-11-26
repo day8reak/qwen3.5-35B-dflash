@@ -161,6 +161,113 @@ def four_layer_gdn(raw, meta):
     return dict(nodes=[op.name for op in graph.op if op.name in kept], inputs=inputs, outputs=outputs, wires=wires)
 
 
+def gdn_load_sections(raw, meta):
+    """Partition the retained standalone L0 AIR at the GDR core and gated product."""
+    from .attention_steps import operands
+    from .decoder_four_silu import activation_port_shape
+    from .gdr_stage_data import GDR, shapes
+
+    _, graph = graph_message(raw, 'ChunkGatedDeltaRule')
+    nodes = {op.name: op for op in graph.op}
+    net, = [op for op in graph.op if op.type == 'NetOutput']
+    gdr, = [op for op in graph.op if op.type == 'ChunkGatedDeltaRule']
+    inputs = {spec['name']: name + ':0' for name, spec in meta['inputs'].items()}
+    outputs = {spec['name']: edge for edge, spec in zip(operands(net), meta['outputs'], strict=True)}
+    if set(inputs) != set(ENTRY) or set(outputs) != set(WHOLE_OUTPUTS):
+        raise ValueError('Expected the four inputs and three outputs of the standalone L0 GDN')
+    wires = {name + ':0': spec for name, spec in meta['inputs'].items()}
+    wires.update(zip(operands(net), meta['outputs'], strict=True))
+    edges = stage_edges(graph, 'gdr')
+    walk = AttentionSteps(graph, nodes, [])
+    product = walk.strip(_project_input(nodes, outputs['out']))
+    mul = walk.expect(product, {'Mul'})
+    if not walk.depends(product, edges['core']):
+        raise ValueError(f'{product} is not downstream of the GDR core')
+
+    wire_errors = {}
+
+    def add_wire(edge, role, desc, views, expected_dtype):
+        info = activation_port_shape(desc)
+        shape = next((v for v in (info['ge_dims'], info['fx_dims']) if v and min(v) > 0), views[0])
+        if list(shape) not in views or port_info(graph, desc)['dtype'] != DTYPES[expected_dtype]:
+            wire_errors[edge] = f'{edge}: unexpected {role} descriptor {port_info(graph, desc)}, FX {info["fx_dims"]}'
+            return
+        # state/length or a returned cache can also be a public port of the whole AIR.
+        wires.setdefault(edge, wire(role, shape, expected_dtype))
+
+    for role in GDR:
+        edge = edges[role]
+        if role in ('core', 'final_state'):
+            desc = descriptor(nodes, edge)
+        else:
+            desc = gdr.input_desc[list(gdr.input).index(edge)]
+        add_wire(edge, role, desc, shapes(role), 'int16' if role == 'effective_length' else 'float16')
+    add_wire(product, 'product', mul.output_desc[0], [[2048, 128]], 'float32')
+
+    hidden, history = inputs['hidden'], inputs['history']
+    entry = [inputs[k] for k in ENTRY]
+    core = edges['core']
+    caches = [outputs['new_history'], outputs['recurrent_cache']]
+    gdr_inputs = [edges[k] for k in GDR[:-2]]
+    qkv = walk.nearest(outputs['new_history'], {MATMUL})
+    add_wire(qkv, 'qkv', descriptor(nodes, qkv), [[64, 8192], [1, 64, 8192]], 'float16')
+    qkv_results = [edges[k] for k in ('query', 'key', 'value')] + [outputs['new_history']]
+    decay_results = [edges['g'], edges['beta']]
+    gate_operand = only((e for e in operands(mul) if not walk.depends(e, core)), 'z gate operand')
+    add_wire(gate_operand, 'gate_operand', descriptor(nodes, gate_operand), [[2048, 128]], 'float32')
+    out = outputs['out']
+
+    # Cuts follow data edges. Cross-cut cases keep both producers at a join or
+    # replace only one side of the gate, which can change OMG task construction.
+    cases = [
+        ('gdn-front', entry, [core, *caches], 3, True),
+        ('gdn-tail', [hidden, core], [out], 2, False),
+        ('pre-gdr', [hidden, history], qkv_results + decay_results, 3, False),
+        ('gdr-state', gdr_inputs, [core, outputs['recurrent_cache']], 0, True),
+        ('qkv-path', [hidden, history], qkv_results, 1, False),
+        ('decay-beta', [hidden], decay_results, 2, False),
+        ('qkv-project', [hidden], [qkv], 1, False),
+        ('conv-to-qkv', [qkv, history], qkv_results, 0, False),
+        ('decay-path', [hidden], [edges['g']], 1, False),
+        ('beta-path', [hidden], [edges['beta']], 1, False),
+        ('gate-product', [hidden, core], [product], 1, False),
+        ('out-proj', [product], [out], 1, False),
+        ('z-gate', [hidden], [gate_operand], 1, False),
+        ('rms-mul', [core, gate_operand], [product], 0, False),
+        ('through-gate', entry, [product, *caches], 4, True),
+        ('gdr-to-gate', [hidden, *gdr_inputs], [product], 1, True),
+        ('gdr-to-out', [hidden, *gdr_inputs], [out], 2, True),
+    ]
+    if outputs['recurrent_cache'] != edges['final_state']:
+        cases.append(('gdr-only', gdr_inputs, [core, edges['final_state']], 0, True))
+    gate = walk.node(walk.strip(gate_operand))
+    if gate.type == 'SiluPatch':
+        before, = operands(gate)
+        after = gate.name + ':0'
+        add_wire(before, 'gate_input', gate.input_desc[0], [[2048, 128]], 'float16')
+        add_wire(after, 'gate_silu', gate.output_desc[0], [[2048, 128]], 'float16')
+        cases.extend([
+            ('z-project', [hidden], [before], 1, False),
+            ('gate-activation', [before], [gate_operand], 0, False),
+            ('cut-before-silu', [*entry, before], [out, *caches], 4, True),
+            ('cut-after-silu', [*entry, after], [out, *caches], 4, True),
+        ])
+    print(f'[L0 GDN] RMS 门控源节点 {gate.name} ({gate.type})，计划编译 {len(cases)} 个切片 OMC', flush=True)
+    for label, feeds, results, matmuls, has_gdr in cases:
+        try:
+            for edge in feeds + results:
+                if edge in wire_errors:
+                    raise ValueError(wire_errors[edge])
+            kept, used = slice_dependencies(nodes, results, set(feeds), label)
+            if (used != set(feeds) or sum(nodes[n].type == MATMUL for n in kept) != matmuls
+                    or (gdr.name in kept) != has_gdr or (label == 'gdr-only' and kept != {gdr.name})):
+                raise ValueError(f'{label}: cut differs from the expected L0 dependencies')
+            step = dict(inputs=feeds, outputs=results, nodes=[name for name in nodes if name in kept])
+        except ValueError as err:
+            step = dict(inputs=feeds, outputs=results, error=str(err))
+        yield label, step, wires
+
+
 def stages(raw, meta, *, whole=False):
     trace = meta['silu_patch']['nodes']
     decoder = plan(raw, trace, layer=0, head=True, verify_precision=True)
