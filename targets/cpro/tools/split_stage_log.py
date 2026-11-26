@@ -36,9 +36,27 @@ def payload(stage, receipt):
 
 
 def compile_manifest(stage, uploaded):
-    from decoder4_original import L0_DIR
+    from decoder4_original import FULL_DIR, L0_DIR
 
     layer = stage.parent
+    grouped = re.fullmatch(r'L\d{2}(?:-L\d{2})?', layer.name)
+    native = layer.name == 'board' and layer.parent.name == '40-prefill-t64'
+    if stage.name == 'replay' and (grouped or native):
+        path = layer/'omc'/('manifest.json' if native else 'build.json')
+        m = load(path)
+        model = m['primary' if native else 'model']
+        weights = {str(Path(w['path']).relative_to(Path(model['path']).parent)): w['sha256'] for w in m['weights']}
+        result = dict(path=str(path), available=True, build_kind='decoder',
+                      matches_upload=(uploaded['model_sha256'] == model['sha256'] and uploaded['external_weights'] == weights),
+                      omc_bytes=model['bytes'], external_weight_bytes=sum(w['bytes'] for w in m['weights']))
+        package = layer/'air' if native else layer.parent/'package'/layer.name
+        case = load(package/('manifest.json' if native else 'case.json'))
+        directory = FULL_DIR if native else case.get('air_directory', 'weight')
+        air = package/directory/'export.air'
+        if air.is_file():
+            row, = [r for r in case['files'] if r['path'] == f'{directory}/export.air']
+            result.update(air=str(air), air_sha256=row['sha256'])
+        return result
     replay = layer.parent
     template = None
     if re.fullmatch(r'L[0-9]{2}', layer.name):
@@ -97,7 +115,8 @@ def service_context(window, tids):
         context = [' '.join(r) for r in worker[max(prior_rpc+1, first-16):]]
         matches.append(dict(client=rpc[1], pid=row[2], tid=row[3],
                             op_update_kernel_args_seen=bool(relevant), lines=context))
-        print(f'Failure context from hiaiserver {row[2]}/{row[3]} for client {rpc[1]}:', *context, sep='\n')
+        print(f'Failure context from hiaiserver {row[2]}/{row[3]} for client {rpc[1]}:',
+              *(line for line in context if '~ElfProgram:' not in line), sep='\n')
     return matches
 
 
@@ -164,7 +183,8 @@ def summarize_execution(row, folder):
         row['compile'] = build
         if build.get('matches_upload'):
             print(f"Matched {build['build_kind']} OMC: {build['path']}")
-            row['air_operators'] = stage_operators(build, row.get('execution', {}).get('service_window', []))
+            if 'air' in build:
+                row['air_operators'] = stage_operators(build, row.get('execution', {}).get('service_window', []))
         else:
             print('No matching compiler manifest for the uploaded model and weights.')
 
@@ -229,6 +249,26 @@ def saved_report(path):
     return ok
 
 
+def diagnose_case(root, mode, phase):
+    from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, groups
+
+    board = root/'board'
+    if (mode, phase) == ('40', 'prefill'):
+        stages_to_check = [board/'replay']
+    else:
+        stages_to_check = [board/case_name(group)/'replay' for group in groups(mode)]
+    stages = []
+    for replay in stages_to_check:
+        path = replay/'result.json'
+        if path.is_file():
+            receipt = load(path)
+            if receipt.get('status') == 'FAILED' and receipt.get('exitcode'):
+                stages.append(replay)
+    if not stages:
+        raise ValueError(f'{board}: no retained failed V2 execution receipt with a tool exit code')
+    return diagnose(stages)
+
+
 def diagnose(stages, hilog=None):
     env = _environment()
     stages = [output_path(stage) for stage in stages]
@@ -244,14 +284,20 @@ def diagnose(stages, hilog=None):
         try:
             r = load(stage / 'result.json')
             remote = r['remote']
-            if (r['case'] != stage.name or r['status'] != 'FAILED' or not r.get('exitcode')
+            expected_case = stage.parent.name if stage.name == 'replay' else stage.name
+            allowed_cases = (expected_case,)
+            if stage.name == 'replay' and stage.parent.name == 'board' and stage.parent.parent.name == '40-prefill-t64':
+                from decoder4_original import FULL_KINDS
+                allowed_cases = FULL_KINDS
+            if (r['case'] not in allowed_cases or r['status'] != 'FAILED' or not r.get('exitcode')
                     or (r['device'], r['server']) != env[1:3]
                     or not re.fullmatch(r'/data/local/tmp/(?:qwen35_step_[a-f0-9]{32}|qwen35_case_[A-Za-z0-9_-]+/work)', remote)):
                 raise ValueError('Expected a failed split stage from the selected SN and BIP')
-            row.update(remote=remote, exitcode=r['exitcode'], payload=payload(stage, r))
-            print(f'{stage}: OMC {r["omc_sha256"]}, {len(r["input_hashes"])} inputs, '
-                  f'{len(row["payload"]["external_weights"])} external weight files', flush=True)
+            row.update(remote=remote, exitcode=r['exitcode'], attempt=r.get('attempt'))
             try:
+                row['payload'] = payload(stage, r)
+                print(f'{stage}: OMC {r["omc_sha256"]}, {len(r["input_hashes"])} inputs, '
+                      f'{len(row["payload"]["external_weights"])} external weight files', flush=True)
                 row['compile'] = compile_manifest(stage, row['payload'])
                 print('Compiled model and weight inventory:', row['compile'])
                 if (stage / 'model-io.json').is_file():
@@ -286,8 +332,10 @@ def diagnose(stages, hilog=None):
                 window = folder / 'window.log'
                 print(f'\nDevice-window candidates (shared across processes): {row["stage"]}', flush=True)
                 row['window_records'] = _window(snapshot, window, start, end)
-                _client_records(window, folder, tids)
-                row['service_failures'] = service_context(window, tids)
+                row['client_pids'] = _client_records(window, folder, tids)
+                row['service_failures'] = service_context(window, row['client_pids'])
+                if not row['service_failures'] and hiai_failure_stage((folder/'tool.stdout').read_text()) == 'load_model':
+                    print('No failed hiaiserver Load RPC matched the observed client PID in this window.')
                 try:
                     summarize_execution(row, folder)
                 except (OSError, ValueError, KeyError) as exc:

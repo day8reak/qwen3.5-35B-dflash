@@ -156,13 +156,14 @@ def _client_records(window, out, tids):
         pids = {m[1] for line in stream if (m := header.match(line)) and m[2] in tids}
     if not pids:
         print(f'No matching model_run_tool thread in this window for client_tid={",".join(tids) or "unknown"}.')
-        return
+        return []
     client_log = out / 'client.log'
     with window.open() as stream, client_log.open('x') as client:
         for line in stream:
             if (m := header.match(line)) and m[1] in pids:
                 client.write(line)
     print(f'V2 client_tid={",".join(tids)} matched PID {", ".join(sorted(pids))}. Client records: {client_log}')
+    return sorted(pids)
 
 
 def retained_tool_window(hdc, name, remote, board, folder, *, expected_exit=None):

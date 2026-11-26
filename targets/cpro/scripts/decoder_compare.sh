@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-decoder_compare.sh {golden|air|compile|execute|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
+decoder_compare.sh {golden|air|compile|execute|diagnose|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
                    [--gdn-conv {conv2d|taps}] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data.
@@ -12,6 +12,7 @@ compile     Compile the local AIR package with OMG and record OMC I/O.
 transfer {golden|air|omc}  Receive a stage from its producer on this downstream host.
             --local-source DIR reads a mounted upstream case directory.
 execute     Run compiled OMCs through HDC and compare CPU / 310P / CPro.
+diagnose    Read retained board failure logs for the case.
 prepare     On the combined reference/export host: capture reference, compute CPU golden, export static AIR.
 board       On the DDK host: fetch, compile, run on device and compare CPU / 310P / CPro.
 plan        Print the layers, sequence length and number of OMCs without running the model.
@@ -24,7 +25,7 @@ HELP
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
-    golden|air|compile|execute|transfer|source|prepare|board|plan) action=$1; shift ;;
+    golden|air|compile|execute|diagnose|transfer|source|prepare|board|plan) action=$1; shift ;;
     *) usage >&2; exit 2 ;;
 esac
 
@@ -32,6 +33,7 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 cd "$repo"
 config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/qwen35-cpro
 role=$action
+if [[ $action == diagnose ]]; then role=execute; fi
 if [[ $action == source ]]; then role=air; fi
 if [[ $action == transfer ]]; then
     case ${1:-} in golden) role=air ;; air) role=compile ;; omc) role=execute ;; esac

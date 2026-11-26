@@ -66,3 +66,11 @@ bash targets/cpro/scripts/decoder_board.sh --mode 40 --phase prefill --gdn-conv 
 ```
 
 用 `--replace-weights` 强制重传所有外置权重，两项可以一起使用。嵌入 OMC 的权重会随 OMC 更新。这两个参数同样适用于组合入口 `decoder_run.sh`。手动覆盖同名同大小文件且没有重新生成清单时，使用对应参数。逐层模式显式替换时会重新执行各层，即使同时给了 `--recovery`。
+
+四层用例在板端工具退出失败后会自动读取该次运行的 HiLog。已有失败现场可在板端执行服务器单独取日志：
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh diagnose --mode 4 --phase prefill
+```
+
+先取日志再重跑，同名板端工作目录会在下次运行时覆盖。诊断使用本次板端时间和工具线程号关联客户端 PID，再查找 hiaiserver 同一请求的加载错误。运行输出会打印报告、完整时间窗口和匹配的客户端日志路径。

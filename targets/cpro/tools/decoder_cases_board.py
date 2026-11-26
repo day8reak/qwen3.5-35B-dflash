@@ -148,9 +148,19 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
         if folder.exists():
             shutil.rmtree(folder)
         folder.mkdir()
-        result = run_v2(folder, case.name, model, operands, paths, build['outputs'], runtime,
-                        fixture_sha256=stamp, external_weights=weights, build_records=(build['model'], build['weights']),
-                        board_case=board_case, hdc_timeout=7200, replace_inputs=replace_inputs, replace_weights=replace_weights)
+        try:
+            result = run_v2(folder, case.name, model, operands, paths, build['outputs'], runtime,
+                            fixture_sha256=stamp, external_weights=weights, build_records=(build['model'], build['weights']),
+                            board_case=board_case, hdc_timeout=7200, replace_inputs=replace_inputs, replace_weights=replace_weights)
+        except RuntimeError:
+            try:
+                from split_stage_log import diagnose
+                receipt = folder/'result.json'
+                if receipt.is_file() and read(receipt).get('exitcode'):
+                    diagnose([folder])
+            except Exception as exc:
+                print(f'{case.name}: 无法读取本次板端失败日志：{exc}', flush=True)
+            raise
         save_json(saved, dict(binding=key, replay=folder.name, receipt=identity(folder/'result.json', folder)))
     values = {}
     for role, spec, row in zip(names, build['outputs'], result['outputs'], strict=True):

@@ -194,6 +194,7 @@ def worker(args, action, root, remote):
         'execute': ('DECODER_EXECUTE_ENV', os.getenv('DECODER_BOARD_ENV', 'custom_pypto'), 'DECODER_EXECUTE_SETUP'),
         'board': ('DECODER_BOARD_ENV', 'custom_pypto', 'DECODER_DDK_SETUP'),
     }
+    selection['diagnose'] = selection['execute']
     environment_key, default_env, setup_key = selection[receiver if action == 'transfer' else action]
     if action == 'transfer':
         default_env = os.getenv(environment_key, default_env)
@@ -233,7 +234,7 @@ def worker(args, action, root, remote):
         cmd.append('--recovery')
     label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
              'compile': '编译 OMC 并保存 I/O 描述', 'execute': '上板执行已编译 OMC 并比较三端结果',
-             'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
+             'diagnose': '读取已失败的板端运行日志', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
     print(f'[{directory_name(args.mode, args.phase)}] {label}', flush=True)
     if setup:
         print(f'  加载环境脚本 {script}（{name}）', flush=True)
@@ -243,7 +244,7 @@ def worker(args, action, root, remote):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan', 'source', 'prepare', 'board', 'golden', 'air', 'compile', 'execute',
-                                           'transfer', '_transfer', '_reference', '_air', '_compile', '_execute', '_board'))
+                                           'diagnose', '_diagnose', 'transfer', '_transfer', '_reference', '_air', '_compile', '_execute', '_board'))
     parser.add_argument('artifact', nargs='?', choices=('golden', 'air', 'omc'), help='upstream output to receive')
     parser.add_argument('--local-source', type=Path, help='transfer from a mounted source case directory')
     parser.add_argument('--mode', choices=MODES, default=os.getenv('DECODER_MODE', '40'))
@@ -291,6 +292,9 @@ def main():
     if not remote.is_absolute() or '..' in remote.parts:
         parser.error('remote case must be an absolute path on the export host')
     native = (a.mode, a.phase) == ('40', 'prefill')
+    if a.action == '_diagnose':
+        from split_stage_log import diagnose_case
+        return 0 if diagnose_case(root, a.mode, a.phase) else 1
     if a.action.startswith('_'):
         a.action = a.action[1:]
         site = root/('board' if a.action in ('compile', 'execute', 'board') else 'export')
@@ -324,6 +328,9 @@ def main():
                     'CPRO_TRANSFER_CONFIG', 'RUNTIME_CONFIG', 'TBE_DIAGNOSIS'):
             if os.getenv(key) and Path(os.environ[key]).expanduser().resolve().is_relative_to(root):
                 raise ValueError(f'{key} must be outside the replaceable result directory {root}')
+        if a.action == 'diagnose':
+            worker(a, 'diagnose', root, remote)
+            return 0
         if a.action in ('prepare', 'golden'):
             source_config('reference')
             if a.action == 'prepare':
