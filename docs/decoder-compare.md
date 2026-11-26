@@ -205,6 +205,14 @@ bash targets/cpro/scripts/decoder_compare.sh gate-report
 
 `[AIR shape]` 段分别读取卷积 SiLU 和 RMS 门控 SiLU 的输入、输出及直接消费端。每个端口的 `ge_dims` 来自 `TensorDescriptor.shape.dim`，`fx_dims` 来自 `_meta` 字符串，`fx_tensor` 是 FX 张量名。对照卷积端口、下游转置的输入输出和同次 OMG 的 `BuildSingleOp` 记录，可以定位 `[1,8192,64]` 与 `[1,64,8192]` 首次出现差异的位置。单独的导出器 shape trace 只记录了自定义算子的输入。
 
+若 `silu-cast-mul` 在板上执行成功，可以在同一服务器接回第一处 RMS 门控的原始上游，复用该结果作为两侧均从 bin 输入的基线。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh gate-upstream
+```
+
+三张 OMC 都以同一个 FP32 门控乘积为输出。`z-branch` 保留原 `in_proj_z` 的 DynamicQuant、W4 投影、Reshape 和权重，乘法的 RMS 侧直接读取 bin。`rms-branch` 保留原 RMSNorm 和 gamma，SiLU 输入直接读取 bin。`both-branches` 同时保留两侧。切口使用固定合成输入验证加载和执行。结果在 `board/L00-L03/gate-upstream/result.json`。比较四层故障时，核对失败阶段和该次 HiLog 的 `OpUpdateKernelArgs failed`。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

@@ -323,7 +323,7 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
-    parser.add_argument('--gate-probe', nargs='?', const='slices', choices=('slices', 'report'), help=argparse.SUPPRESS)
+    parser.add_argument('--gate-probe', nargs='?', const='slices', choices=('slices', 'upstream', 'report'), help=argparse.SUPPRESS)
     a = parser.parse_args()
     if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
                          a.action not in ('compile', 'execute', '_compile', '_execute')):
@@ -397,7 +397,8 @@ def main():
                 return 0
             from decoder_gate_probe import probe
             ddk, config, _ = board_config(a.action)
-            return 0 if probe(root, a.action, ddk, config, replace_inputs=a.replace_inputs) else 1
+            return 0 if probe(root, a.action, ddk, config, upstream=a.gate_probe == 'upstream',
+                              replace_inputs=a.replace_inputs, replace_weights=a.replace_weights) else 1
         site = root/('board' if a.action in ('compile', 'execute', 'board') else 'export')
         from decoder_handoff import publish, receive
         if a.action == 'transfer':
