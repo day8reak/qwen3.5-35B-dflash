@@ -12,18 +12,29 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 
 
-def ssh_file(client, remote, local, record=None):
+def ssh_file(client, remote, local, record=None, *, offset=0, length=None):
     """Stream one file on an SSH exec channel and verify the exporter's receipt."""
     with client.get_transport().open_session(timeout=20) as channel:
         channel.settimeout(120)
-        channel.exec_command('exec cat -- ' + shlex.quote(str(remote)))
+        path = shlex.quote(str(remote))
+        if length is None:
+            command = 'exec cat -- ' + path
+        else:
+            command = (f'exec dd if={path} bs=1M iflag=skip_bytes,count_bytes '
+                       f'skip={offset} count={length} status=none')
+        channel.exec_command(command)
         channel.shutdown_write()
-        digest = hashlib.sha256()
-        with local.open('xb') as dst:
+        digest = hashlib.sha256() if record is not None else None
+        mode = 'xb' if length is None else ('ab' if offset else 'wb')
+        with local.open(mode) as dst:
             for chunk in iter(lambda: channel.recv(1 << 20), b''):
                 dst.write(chunk)
-                digest.update(chunk)
-        if channel.recv_exit_status() != 0:
+                if digest is not None:
+                    digest.update(chunk)
+        status = channel.recv_exit_status()
+        if status == -1:
+            raise EOFError(f'SSH channel closed before reporting status for {remote}')
+        if status != 0:
             error = channel.recv_stderr(4096).decode(errors='replace').strip()
             raise OSError(f'Could not read {remote} via SSH: {error}')
     if record is not None and (local.stat().st_size != record['bytes'] or digest.hexdigest() != record['sha256']):

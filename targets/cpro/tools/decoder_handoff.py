@@ -1,11 +1,13 @@
 """Publish and receive only the files required by the next decoder stage."""
-from contextlib import nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
+import time
 
 from qwen35_moe_dflash.common.artifacts import share_for_transfer
 from qwen35_moe_dflash.common.hashing import sha256_file
@@ -87,8 +89,76 @@ def valid_file(path, row):
     return path.is_file() and path.stat().st_size == row['bytes'] and sha256_file(path) == row['sha256']
 
 
-def receive(root, remote, role, args):
+SSH_CHUNK = 256 << 20
+SSH_SESSION_BYTES = 512 << 20
+
+
+@contextmanager
+def ssh_reader(role):
+    import paramiko
     from decoder4_prefill import ssh_file
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
+    from pull_artifacts import DEFAULT_CONFIG, connection
+
+    with ExitStack() as session:
+        client = None
+        transferred = 0
+
+        def fetch(src, dst, size=None):
+            nonlocal client, transferred
+            failures = 0
+            while True:
+                offset = dst.stat().st_size if size is not None and dst.exists() else 0
+                length = None if size is None else min(SSH_CHUNK, size - offset)
+                if client is not None and transferred + (length or 0) > SSH_SESSION_BYTES:
+                    session.close()
+                    client = None
+                try:
+                    if client is None:
+                        client = session.enter_context(connection(DEFAULT_CONFIG, role))
+                        transferred = 0
+                    ssh_file(client, src, dst, offset=offset, length=length)
+                except (paramiko.AuthenticationException, paramiko.BadHostKeyException):
+                    raise
+                except (paramiko.SSHException, paramiko.ssh_exception.NoValidConnectionsError,
+                        EOFError, ConnectionError, TimeoutError) as error:
+                    session.close()
+                    client = None
+                    if size is None:
+                        dst.unlink(missing_ok=True)
+                    failures += 1
+                    if failures == 3:
+                        raise
+                    print(f'SSH interrupted ({error}); reconnecting to read {src}', flush=True)
+                    time.sleep(failures)
+                    continue
+                received = dst.stat().st_size
+                if length is not None and received != offset + length:
+                    dst.unlink()
+                    raise ValueError(f'Unexpected byte count for {src} at offset {offset}')
+                transferred += received - offset
+                if size is None or received == size:
+                    return
+                failures = 0
+        yield fetch
+
+
+def resume_directory(root, role, manifest):
+    # The outer case lock serializes receivers. A different manifest has its own payload.
+    cache = root/f'.receive-{role}'
+    if cache.is_symlink():
+        raise ValueError(f'Unexpected transfer directory link: {cache}')
+    cache.mkdir(mode=0o700, exist_ok=True)
+    staged = cache/sha256_file(manifest)
+    for old in cache.iterdir():
+        if old.is_symlink() or not old.is_dir() or not re.fullmatch('[0-9a-f]{64}', old.name):
+            raise ValueError(f'Unexpected entry in transfer directory: {old}')
+        if old != staged:
+            shutil.rmtree(old)
+    return staged
+
+
+def receive(root, remote, role, args):
     local = args.local_source
     configured = os.getenv(f'DECODER_{role.upper()}_LOCAL_ROOT')
     if local is None and configured:
@@ -101,27 +171,20 @@ def receive(root, remote, role, args):
         raise ValueError(f'Unexpected stage directory link: {dest}')
     if local:
         local = local.resolve(strict=True)
-        channel = nullcontext(None)
+        reader = nullcontext(shutil.copyfile)
         source = local
     else:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
-        from pull_artifacts import DEFAULT_CONFIG, connection
-        channel = connection(DEFAULT_CONFIG, role)
+        reader = ssh_reader(role)
         source = remote
-    with channel as client, tempfile.TemporaryDirectory(dir=root, prefix='.handoff-') as temp:
+    with reader as fetch, tempfile.TemporaryDirectory(dir=root, prefix='.handoff-') as temp:
         temp = Path(temp)
-        def fetch(src, dst):
-            if local:
-                shutil.copyfile(src, dst)
-            else:
-                ssh_file(client, src, dst)
         index = receipt(source, role)
         fetch(index, temp/'manifest')
         data = json.loads((temp/'manifest').read_bytes())
         if (data['stage'], data['case']) != (role, root.name) or data.get('gdn_conv', args.gdn_conv) != args.gdn_conv:
             raise ValueError(f'{index}: stage, case or GDN convolution mismatch')
-        staged = temp/'incoming'
-        staged.mkdir()
+        staged = temp/'incoming' if local else resume_directory(root, role, temp/'manifest')
+        staged.mkdir(exist_ok=True)
         roles = {'golden': 'air', 'air': 'omc', 'omc': 'board'}
         print(f'[{role} → {roles[role]}] {source/site_name} → {dest}, {len(data["files"])} files, '
               f'{sum(r["bytes"] for r in data["files"])/2**30:.2f} GiB', flush=True)
@@ -129,6 +192,7 @@ def receive(root, remote, role, args):
             raise ValueError(f'Empty transfer manifest {index}')
         seen = set()
         missing = []
+        needed = 0
         for row in data['files']:
             rel = Path(row['path'])
             if rel.is_absolute() or '..' in rel.parts or not rel.parts or rel in seen:
@@ -140,20 +204,33 @@ def receive(root, remote, role, args):
                     raise ValueError(f'Shared artifact changed: {previous}')
                 continue
             target = staged/rel
+            if target.is_symlink() or target.resolve() != target:
+                raise ValueError(f'Unexpected transfer path: {target}')
             target.parent.mkdir(exist_ok=True, parents=True)
+            if valid_file(target, row):
+                continue
+            if target.exists() and (target.stat().st_size >= row['bytes'] or target.stat().st_nlink > 1):
+                target.unlink()
             if previous.exists() and previous.resolve().is_relative_to(root) and valid_file(previous, row):
+                target.unlink(missing_ok=True)
                 os.link(previous.resolve(), target)
             else:
                 missing.append((rel, target, row))
-        needed = sum(row['bytes'] for _, _, row in missing)
+                needed += row['bytes'] - (target.stat().st_size if target.exists() else 0)
         free = shutil.disk_usage(root).free
         print(f'To receive: {needed/2**30:.2f} GiB, free: {free/2**30:.2f} GiB', flush=True)
         if needed > free:
             raise OSError(f'{root}: insufficient space for {needed:,} bytes')
-        for rel, target, row in missing:
-            fetch(source/site_name/rel, target)
+        for number, (rel, target, row) in enumerate(missing, 1):
+            if local:
+                fetch(source/site_name/rel, target)
+            else:
+                fetch(source/site_name/rel, target, row['bytes'])
             if not valid_file(target, row):
+                target.unlink(missing_ok=True)
                 raise ValueError(f'Size or SHA-256 differs from {index}: {rel}')
+            if number % 64 == 0 or number == len(missing):
+                print(f'已校验 {len(seen) - len(missing) + number}/{len(seen)} 个文件', flush=True)
         if local == root:
             print('Producer and receiver share this verified case directory.', flush=True)
             return
@@ -170,6 +247,8 @@ def receive(root, remote, role, args):
             if previous_dir.exists():
                 previous_dir.rename(dest)
             raise
+        if not local:
+            staged.parent.rmdir()
         for later in {'golden': ('golden', 'air', 'omc'), 'air': ('golden', 'air', 'omc'), 'omc': ('omc',)}[role]:
             receipt(root, later).unlink(missing_ok=True)
         print(f'Checked and received {dest}', flush=True)
