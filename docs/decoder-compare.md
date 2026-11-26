@@ -56,4 +56,13 @@ bash targets/cpro/scripts/decoder_run.sh
 - `board/matrices.csv` 包含三端的 3×3 矩阵，行是 actual，列是 reference。`board/comparison.json` 包含 prompt、logits 位置、预测 token 和未达阈值的张量。逐层模式还有 `board/Lxx/matrices.csv`。
 - 线性层比较完整 conv/recurrent 状态，full 层比较有效 K/V。逐层模式另外检查写入区以外的 KV。单层和四层的 logits 取所测最后一层输出并接原模型 head。
 - 整网 T64 沿用原 CPro wrapper 和量化 embedding。其它组合从实测入口 hidden 和状态开始。W4 scale、RoPE、MoE、GDN、FP16 SiluPatch 和 SoftplusPatch 的整网检查见[原 CPro 整网 prefill](target-prefill40-single.md)。
-- 上板日志标出传输、执行、回收和清理步骤。一次 `hdc file send` 发送模型、外置权重与输入，一次 `hdc file recv` 拉回输出目录。收到并验证各文件后保存 `result.json`，再清理本次板端临时目录。执行或回收失败时，从回执的 `remote` 字段找到保留的现场。
+- 板端固定使用 `/data/local/tmp/qwen35_case_<用例>/work`，例如 `qwen35_case_40-prefill-t64/work`。逐层模式在用例名后追加层号，例如 `40x1-prefill-t64-L00`。
+- 每次上传当前 OMC。脚本按清单里的文件标识和板上的字节数复用输入、外置权重，缺失或变化的文件随 OMC 一次上传。成功后一次拉回输出目录并按槽位绑定，删除板端 OMC 和输出，留下当前输入和权重。失败现场保留到同用例下次启动，路径见 `result.json` 的 `remote` 字段。
+
+在板端执行服务器，已有编译产物时可以直接重跑。例如，手动改了输入 bin 后用下面的命令强制重传所有输入：
+
+```bash
+bash targets/cpro/scripts/decoder_board.sh --mode 40 --phase prefill --gdn-conv taps --replace-inputs
+```
+
+用 `--replace-weights` 强制重传所有外置权重，两项可以一起使用。嵌入 OMC 的权重会随 OMC 更新。这两个参数同样适用于组合入口 `decoder_run.sh`。手动覆盖同名同大小文件且没有重新生成清单时，使用对应参数。逐层模式显式替换时会重新执行各层，即使同时给了 `--recovery`。

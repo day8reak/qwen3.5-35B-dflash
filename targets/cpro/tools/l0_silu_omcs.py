@@ -330,7 +330,7 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
             if i >= len(checkpoints):
                 result = run_v2(stage, name, model, operands, paths, build['outputs'], runtime,
                                 external_weights=weights, build_records=(build['model'], build.get('weights', [])),
-                                fixture_sha256=fixture_hash,
+                                fixture_sha256=fixture_hash, board_case=f"split-L{meta.get('layer', 0):02d}-{name}",
                                 slot_config=config if len(operands) > 1 or len(build['outputs']) > 1 else None)
             for s, r in zip(build['outputs'], result['outputs'], strict=True):
                 if r['bytes'] != s['bytes']:

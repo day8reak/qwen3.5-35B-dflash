@@ -10,6 +10,14 @@
 
 默认补丁检查 351 个 W4 matmul、30 个 GDR、140 个 FP16 SiluPatch 和 30 个 FP16 SoftplusPatch。默认 Conv2D 使用窗口 `[1,8192,1,67]` 与卷积核 `[8192,1,1,4]`。可选 `--gdn-conv taps` 从相同窗口取四项逐通道乘加，两种实现均把 `[1,8192,64]` 送入 SiluPatch。可用 `CPRO_PATCHED_SOURCE` 指定个人源码目录。
 
+如果日志在 `UpdateArgsForAicore / OpUpdateKernelArgs failed` 后报 `GraphOp Prepare` 失败，HIAI 停在加载模型、初始化 AICore 任务参数的阶段。已有的 Conv2D 和 taps 两种 40 层 prefill 都出现了这一调用链。可在执行服务器直接从这次保存的回执和完整 HiLog 中提取属于该客户端的服务端线程上下文：
+
+```bash
+python3 targets/cpro/tools/split_stage_log.py --load-replay "${DECODER_RUN_ROOT:-${AI_RUN_DIR:?}/target/tests}/40-prefill-t64/board/replay"
+```
+
+在重复运行覆盖 `board/replay` 前查看这份记录。`SubGraph_0` 是子图名。要定位内部具体算子，需要服务端记录的任务编号、kernel 名或算子名以及对应的编译映射。
+
 ## 既有的单 logits 导出流程
 
 

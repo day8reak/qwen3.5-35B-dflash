@@ -12,8 +12,8 @@ import numpy as np
 
 from ...common.command_trace import note
 from ...draft.profile_board import GLOBAL_LOCK
-from ...execution.hdc_run import Hdc, _cleanup_remote
-from ...execution.lock import _acquire_global, _release_global, _space
+from ...execution.hdc_run import Hdc
+from ...execution.lock import _acquire_global, _release_global
 from ...execution.runtime_config import read_json
 from ...execution.serial_transport import _environment
 from ..board_tool_inspect import DEFAULT_TOOL
@@ -21,6 +21,7 @@ from ..layer_probe.batch import prepare_fixture
 from ..layer_probe.common import DTYPES, checked, read_array, save_json, sha
 from ..original_target_board import _board_path
 from ..prefill_smoke_plan import _TOOL_TYPES, _nd_view_key, _shape
+from .board_replay_files import bind_files, deploy, shell_steps
 from .whole_slots import observe_model_io
 
 
@@ -96,7 +97,8 @@ def runtime_slots(native, direction, specs, *, equivalent_inputs=False):
 
 
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
-           external_weights=(), build_records=None, release_after_pull=True, hdc_timeout=660):
+           external_weights=(), build_records=None, release_after_pull=True, hdc_timeout=660, board_case=None,
+           replace_inputs=False, replace_weights=False):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -104,7 +106,11 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
     if not operands or len(operands) != len(files) or not outputs:
         raise ValueError(f'{name}: missing model inputs or outputs')
     token = uuid.uuid4().hex
-    remote = PurePosixPath('/data/local/tmp') / ('qwen35_step_' + token)
+    case = board_case or name.replace(' ', '-')
+    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}', case):
+        raise ValueError(f'Invalid board case name: {case!r}')
+    root = PurePosixPath('/data/local/tmp') / ('qwen35_case_' + case)
+    remote = root/'work'
     tool = _board_path(os.environ.get('CPRO_BOARD_TOOL', DEFAULT_TOOL))
     model_sha = build_records[0]['sha256'] if build_records is not None else sha(model)
     # Paths in the model are relative to its weight directory.
@@ -114,7 +120,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
                 for p, digest in zip(external_weights, weight_digests, strict=True)]
     output_order = list(range(len(outputs)))
     receipt = dict(status='PREPARED', case=name, device=env[1], server=env[2], remote=str(remote),
-                   omc_sha256=model_sha, input_hashes=[s['sha256'] for s in operands],
+                   attempt=token, board_case=case, omc_sha256=model_sha, input_hashes=[s['sha256'] for s in operands],
                    fixture_sha256=fixture_sha256)
     if len(operands) == 1:
         receipt['input_sha256'] = operands[0]['sha256']
@@ -128,20 +134,15 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         _, fw = hdc.shell('param get const.ohos.fullname', 'firmware')
         if fw.strip() != runtime['firmware_id'].strip():
             raise ValueError(f"Board firmware {fw.strip()!r} differs from {runtime['firmware_id']!r}")
-        _, space = hdc.shell(f'test -x {tool} && df -Pk {remote.parent}', 'preflight')
-        needed = model.stat().st_size + sum(p.stat().st_size for p in files) + sum(s['bytes'] for s in outputs)
-        needed += sum(p.stat().st_size for p, _, _ in sidecars)
-        if _space(space) < needed:
-            raise OSError(f'Insufficient board storage for {name}: need {needed:,} bytes')
-        create = f'mkdir {remote} && mkdir {remote}/outputs'
-        if release_after_pull:
-            create += f' && echo {token} > {remote}/.qwen35-hdc-owner'
-        hdc.shell(create, 'create-board-dir')
-        model_files = [(model, 'model.omc'), *((path, rel) for path, rel, _ in sidecars)]
+        weight_keys = [f'weight-{i}-{digest}' for i, (_, _, digest) in enumerate(sidecars)]
+        input_keys = [f"input-{i}-{s['sha256']}" for i, s in enumerate(operands)]
+        assets = [(path, key) for (path, _, _), key in zip(sidecars, weight_keys, strict=True)]
+        assets.extend(zip(files, input_keys, strict=True))
+        replace = {role for role, force in [('input', replace_inputs), ('weight', replace_weights)] if force}
+        receipt['board_transfer'] = deploy(hdc, root, token, tool, model, assets, sum(s['bytes'] for s in outputs), replace)
+        bind_files(hdc, remote, [(key, rel) for key, (_, rel, _) in zip(weight_keys, sidecars, strict=True)])
         if slot_config is not None:
-            # The descriptor probe must restore the model before runtime slots can order the inputs.
-            print(f'[{name}] 向板端传输 OMC 和 {len(sidecars)} 个外置权重文件，准备读取模型 I/O 槽位', flush=True)
-            hdc.send_tree(model_files, remote)
+            print(f'[{name}] 读取板端模型 I/O 槽位', flush=True)
             native = observe_model_io(hdc, slot_config, runtime, remote, out, remote/'model.omc', model_sha, tool.parent)
             slots = {k: runtime_slots(native, k, v) for k, v in [('inputs', operands), ('outputs', outputs)]}
             save_json(out/'slots.json', slots)
@@ -153,6 +154,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
             output_order = [s['compiled_index'] for s in slots['outputs']]
             operands = [operands[i] for i in input_order]
             files = [files[i] for i in input_order]
+            input_keys = [input_keys[i] for i in input_order]
             outputs = [outputs[i] for i in output_order]
             for row, path in zip(slots['inputs'], files, strict=True):
                 if path.stat().st_size != row['bytes']:
@@ -164,7 +166,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
                 '--direct_from_file=true', '--enable_item=1', f'--output_dir={remote}/outputs']
         command = f'timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
         script = out/'run.sh'
-        script.write_text(f'cd {remote} || exit 1\ntouch tool.started || exit 1\n{command} >tool.stdout 2>tool.stderr\n'
+        script.write_text(f'# attempt {token}\ncd {remote} || exit 1\ntouch tool.started || exit 1\n{command} >tool.stdout 2>tool.stderr\n'
                           'rc=$?\necho "$rc" >tool.exitcode\ntail -n 20 tool.stdout tool.stderr\nexit "$rc"\n')
         note(f'[V2 board script] {script}\n{script.read_text()}')
         hashes = out/'files.sha256'
@@ -173,12 +175,11 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
                           + ''.join(f"{digest}  {rel}\n" for _, rel, digest in sidecars)
                           + f"{sha(script)}  run.sh\n")
         receipt.update(argv=argv, input_hashes=[s['sha256'] for s in operands])
-        uploads = [*zip(files, input_names), (script, 'run.sh')]
-        if slot_config is None:
-            uploads.extend(model_files)
-        content = f'OMC、{len(sidecars)} 个外置权重文件、' if slot_config is None else ''
-        print(f'[{name}] 向板端传输{content}{len(files)} 个输入和执行脚本 → {remote}', flush=True)
-        hdc.send_tree(uploads, remote)
+        bind_files(hdc, remote, zip(input_keys, input_names, strict=True))
+        # Write the small launch command through HDC shell; a warm file send contains just model.omc.
+        body = script.read_text()
+        shell_steps(hdc, remote, ["printf %s " + shlex.quote(body[i:i+1400]) + " >> run.sh"
+                                  for i in range(0, len(body), 1400)], 'write-board-script')
         receipt['status'] = 'RUN_REQUESTED'
         save_json(out/'result.json', receipt)
         uncertain = True
@@ -219,9 +220,11 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         if release_after_pull:
             save_json(out/'result.json', receipt)
             try:
-                print(f'[{name}] 输出已回收并核对，清理本次板端执行目录 {remote}', flush=True)
-                _cleanup_remote(hdc, remote, token)
-                receipt['board_cleanup'] = 'REMOVED'
+                print(f'[{name}] 输出已回收并核对，清理本次执行文件，保留板端缓存 {root}/cache', flush=True)
+                hdc.shell(f'cd {remote} && test ! -L {remote} && '
+                          f'test "$(cat .qwen35-hdc-owner)" = {token} && '
+                          'rm -rf outputs model.omc draft-runner lib', 'cleanup-board')
+                receipt['board_cleanup'] = 'OUTPUTS_REMOVED_CACHE_RETAINED'
             except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
                 receipt['board_cleanup'] = 'UNCONFIRMED'
                 receipt['board_cleanup_error'] = str(exc)

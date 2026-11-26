@@ -13,7 +13,7 @@ from parse_model_json import GE_PROTO, inspect, read_omc
 from qwen35_moe_dflash.execution.serial_transport import _environment
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, metrics, read_tensor, save_json, sha, sized_file
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
-from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, comparison_view, groups, preserved_cache
+from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, comparison_view, directory_name, groups, preserved_cache
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import view
 
 
@@ -105,7 +105,8 @@ def output_order(descriptors, source, golden):
     return names
 
 
-def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, recovery):
+def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, recovery, board_case=None,
+           replace_inputs=False, replace_weights=False):
     meta = read(case/'case.json')
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
         raise ValueError(f'{case}: compiled input names differ from AIR')
@@ -126,7 +127,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     key = dict(bundle=stamp, model=build['model']['sha256'], weights=[w['sha256'] for w in build['weights']],
                inputs=[r['sha256'] for r in operands], runtime=runtime, serial=serial, server=server)
     saved = base/'completed.json'
-    if recovery and saved.exists():
+    if recovery and saved.exists() and not (replace_inputs or replace_weights):
         record = read(saved)
         if record['binding'] != key:
             raise ValueError(f'{base}: saved result has different inputs, runtime, board or weights')
@@ -142,7 +143,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
         folder.mkdir()
         result = run_v2(folder, case.name, model, operands, paths, build['outputs'], runtime,
                         fixture_sha256=stamp, external_weights=weights, build_records=(build['model'], build['weights']),
-                        release_after_pull=True, hdc_timeout=7200)
+                        board_case=board_case, hdc_timeout=7200, replace_inputs=replace_inputs, replace_weights=replace_weights)
         save_json(saved, dict(binding=key, replay=folder.name, receipt=identity(folder/'result.json', folder)))
     values = {}
     for role, spec, row in zip(names, build['outputs'], result['outputs'], strict=True):
@@ -151,7 +152,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     return values
 
 
-def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board'):
+def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board',
+          replace_inputs=False, replace_weights=False):
     bundle = run/'package'
     if step == 'execute' and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -197,7 +199,11 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         save_json(run/'comparison.json', dict(status='RUNNING', **progress))
         try:
             build, model, weights = compiled(case, base, ddk, diagnosis, stamp)
-            values = replay(base, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, recovery)
+            board_case = directory_name(mode, phase)
+            if mode == 'layerwise':
+                board_case += '-' + case.name
+            values = replay(base, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, recovery,
+                            board_case, replace_inputs, replace_weights)
         except Exception as exc:
             save_json(run/'comparison.json', dict(status='INTERRUPTED', message=str(exc), **progress))
             raise

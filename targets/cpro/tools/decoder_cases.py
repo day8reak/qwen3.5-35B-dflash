@@ -79,9 +79,20 @@ def prepared_source(run):
     return dest
 
 
+def board_upload_flags(args):
+    flags = []
+    if getattr(args, 'replace_inputs', False):
+        flags.append('--replace-inputs')
+    if getattr(args, 'replace_weights', False):
+        flags.append('--replace-weights')
+    return flags
+
+
 def native40(args, run, remote):
     tool = Path(__file__).with_name('decoder4_original.py')
     argv = [sys.executable, '-u', str(tool), args.action, '--aligned40', '--gdn-conv', args.gdn_conv, '--run', str(run)]
+    if args.action in ('board', 'execute'):
+        argv.extend(board_upload_flags(args))
     if args.action in ('compile', 'execute', 'board'):
         ddk, config, diag = board_config(args.action)
         if ddk:
@@ -211,6 +222,8 @@ def worker(args, action, root, remote):
             cmd.extend(['--local-source', str(args.local_source)])
     if getattr(args, 'gdn_conv', 'conv2d') == 'taps':
         cmd.extend(['--gdn-conv', 'taps'])
+    if action in ('board', 'execute'):
+        cmd.extend(board_upload_flags(args))
     if args.recovery:
         cmd.append('--recovery')
     label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
@@ -236,6 +249,8 @@ def main():
     parser.add_argument('--run', type=Path, help='explicit path ending in the canonical case name')
     parser.add_argument('--remote-run', type=Path, help='case directory on the export host')
     parser.add_argument('--patched-source', type=Path, help='editable CPro source directory on the export host')
+    parser.add_argument('--replace-inputs', action='store_true', help='upload every board input again')
+    parser.add_argument('--replace-weights', action='store_true', help='upload every external board weight again')
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     a = parser.parse_args()
     if (a.action in ('transfer', '_transfer')) != bool(a.artifact) or (a.local_source and not a.artifact):
@@ -286,7 +301,7 @@ def main():
             from decoder_cases_board import board
             ddk, config, diag = board_config(a.action)
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
-                         gdn_conv=a.gdn_conv, step=a.action):
+                         gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights):
                 return 1
         else:
             prepare_stage(a, site)

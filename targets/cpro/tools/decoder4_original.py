@@ -484,7 +484,8 @@ def original_filename(name, src, dtype, *, fresh_zero_states):
     raise ValueError(f'Cannot identify {name} {dtype}{dims}. Supply {name}.bin or an input-map JSON.')
 
 
-def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, load_control=None, replace_replay=False):
+def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, load_control=None, replace_replay=False,
+          replace_inputs=False, replace_weights=False):
     import numpy as np
     from parse_model_json import GE_PROTO, dtype as ge_dtype, inspect, read_omc
     from qwen35_moe_dflash.target.prefill_smoke_plan import _nd_view_key
@@ -609,6 +610,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
     try:
         run_v2(out, 'original L0-L3' if kind == KIND else kind, model, inputs, paths, outputs, runtime,
                external_weights=weights, build_records=(compiled['primary'], compiled['weights']),
+               replace_inputs=replace_inputs, replace_weights=replace_weights,
+               board_case='40-prefill-t64' if kind in FULL_KINDS else '4-prefill-t64',
                hdc_timeout=7200 if kind in FULL_KINDS else 660)
     except RuntimeError:
         if not (out / 'result.json').is_file():
@@ -618,9 +621,13 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
             hdc = Hdc(*_environment(), out, 60)
             try:
                 remote = receipt['remote']
+                attempt = receipt['attempt']
                 for filename in ('tool.stdout', 'tool.stderr'):
-                    hdc.receive(remote + '/' + filename, out / filename)
-                _, markers = hdc.shell(f'cd {remote} && stat -c "%y" tool.started tool.exitcode', 'times')
+                    _, body = hdc.shell(f'cd {remote} && test "$(cat .qwen35-hdc-owner)" = {attempt} && '
+                                        f'cat {filename}', filename)
+                    (out/filename).write_text(body + '\n' if body else '')
+                _, markers = hdc.shell(f'cd {remote} && test "$(cat .qwen35-hdc-owner)" = {attempt} && '
+                                       'stat -c "%y" tool.started tool.exitcode', 'times')
                 start, end = [datetime.fromisoformat(t[:19]) for t in markers.splitlines()]
                 from qwen35_moe_dflash.target.prefill_t64.chain_hilog import _snapshot
                 _window(_snapshot(hdc, out, None), out / 'window.log', start, end)
@@ -634,6 +641,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--replace-inputs', action='store_true')
+    parser.add_argument('--replace-weights', action='store_true')
     parser.add_argument('action', choices=('air', 'compile', 'execute', 'board', 'log', 'audit', 'reference'))
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--source', type=Path)
@@ -769,7 +778,8 @@ def main():
             print('Binding board inputs using compiled slots and the exported AIR fixture.', flush=True)
         directory = args.inputs or run / 'air/inputs'
         replay = board(run, args.ddk.resolve() if args.ddk else None, args.runtime_config.resolve(), directory.resolve(), args.input_map, kind=kind,
-              baseline=args.baseline, load_control=control, replace_replay=args.action == 'execute')
+              baseline=args.baseline, load_control=control, replace_replay=args.action == 'execute',
+              replace_inputs=args.replace_inputs, replace_weights=args.replace_weights)
         if args.aligned40:
             from qwen35_moe_dflash.target.prefill_t64.native_40 import compare
             from l0_silu_omcs import write_matrices

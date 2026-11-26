@@ -169,9 +169,9 @@ def summarize_execution(row, folder):
             print('No matching compiler manifest for the uploaded model and weights.')
 
 
-def four_layer_load_report(replay):
+def load_report(replay, expected_kinds=None):
     """Inspect one aligned V2 replay using only its saved receipt, upload list and HiLog."""
-    from decoder4_original import ALIGNED_KIND
+    from decoder4_original import ALIGNED_KIND, FULL_KINDS
     from qwen35_moe_dflash.target.layer_probe.common import sha
 
     replay = replay.resolve(strict=True)
@@ -179,9 +179,11 @@ def four_layer_load_report(replay):
     receipt = load(replay/'result.json')
     manifest = load(root/'omc/manifest.json')
     stdout = (replay/'tool.stdout').read_text(errors='replace')
-    if (receipt.get('case') != ALIGNED_KIND or receipt.get('status') != 'FAILED'
+    if expected_kinds is None:
+        expected_kinds = (ALIGNED_KIND, *FULL_KINDS)
+    if (receipt.get('case') not in expected_kinds or receipt.get('status') != 'FAILED'
             or not receipt.get('exitcode') or hiai_failure_stage(stdout) != 'load_model'):
-        raise ValueError(f'{replay}: expected a failed aligned four-layer model load')
+        raise ValueError(f'{replay}: expected a failed native decoder model load')
     uploaded = payload(replay, receipt)
     model = manifest['primary']
     folder = Path(model['path']).parent
@@ -190,19 +192,25 @@ def four_layer_load_report(replay):
     if (uploaded['model_sha256'] != model['sha256'] or uploaded['external_weights'] != weights
             or uploaded['input_hashes'] != [r['sha256'] for r in io['inputs']]
             or manifest['air_manifest_sha256'] != sha(root/'air/manifest.json')
-            or load(root/'air/manifest.json')['kind'] != ALIGNED_KIND):
+            or load(root/'air/manifest.json')['kind'] != receipt['case']):
         raise ValueError(f'{replay}: failed receipt or upload list differs from the compiled model, AIR or inputs')
-    print(f'{replay}: load_model, V2 exit={receipt["exitcode"]}; OMC {model["sha256"]}')
-    print(f'Upload matched: {len(io["inputs"])} ordered inputs, {len(weights)} external weight files, '
+    print(f'{replay}: {receipt["case"]} load_model, V2 exit={receipt["exitcode"]}; OMC {model["sha256"]}')
+    print(f'Manifests and replay receipt agree: {len(io["inputs"])} ordered inputs, {len(weights)} external weight files, '
           f'{sum(row["bytes"] for row in manifest["weights"]):,} external weight bytes.')
     tids = re.findall(r'\bclient_tid=(\d+)', stdout)
     window = replay/'window.log'
     if window.is_file():
-        if not service_context(window, tids):
+        matches = service_context(window, tids)
+        if not matches:
             print('No failed service Load RPC matched this client in the saved window.')
     else:
         print(f'No saved HiLog window at {window}')
     return io, receipt, manifest
+
+
+def four_layer_load_report(replay):
+    from decoder4_original import ALIGNED_KIND
+    return load_report(replay, (ALIGNED_KIND,))
 
 
 def saved_report(path):
@@ -238,7 +246,7 @@ def diagnose(stages, hilog=None):
             remote = r['remote']
             if (r['case'] != stage.name or r['status'] != 'FAILED' or not r.get('exitcode')
                     or (r['device'], r['server']) != env[1:3]
-                    or not re.fullmatch(r'/data/local/tmp/qwen35_step_[a-f0-9]{32}', remote)):
+                    or not re.fullmatch(r'/data/local/tmp/(?:qwen35_step_[a-f0-9]{32}|qwen35_case_[A-Za-z0-9_-]+/work)', remote)):
                 raise ValueError('Expected a failed split stage from the selected SN and BIP')
             row.update(remote=remote, exitcode=r['exitcode'], payload=payload(stage, r))
             print(f'{stage}: OMC {r["omc_sha256"]}, {len(r["input_hashes"])} inputs, '
@@ -255,6 +263,10 @@ def diagnose(stages, hilog=None):
                 row['metadata_error'] = str(exc)
                 print(f'{stage}: local metadata unavailable: {exc}', file=sys.stderr)
             start, end, tids = retained_tool_window(hdc, folder.name, remote, stage, folder, expected_exit=r['exitcode'])
+            if r.get('attempt'):
+                _, owner = hdc.shell(f'cat {remote}/.qwen35-hdc-owner', folder.name + '-owner')
+                if owner != r['attempt']:
+                    raise ValueError(f'{remote}: another attempt has replaced the device logs')
             row.update(start=start.isoformat(), end=end.isoformat(), client_tids=tids)
             windows.append((row, folder, start, end, tids))
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -292,12 +304,12 @@ if __name__ == '__main__':
     p.add_argument('stage', nargs='*', type=Path, help='retained replay stage directory containing result.json')
     p.add_argument('--hilog', type=Path, help='existing hilog -x snapshot')
     p.add_argument('--saved', type=Path, help='summarize an existing diagnostic directory offline')
-    p.add_argument('--four-layer-replay', type=Path, help='inspect a retained aligned four-layer load failure offline')
+    p.add_argument('--load-replay', '--four-layer-replay', type=Path, help='read a saved native decoder load failure offline')
     args = p.parse_args()
-    if args.four_layer_replay:
+    if args.load_replay:
         if args.stage or args.saved or args.hilog:
-            p.error('--four-layer-replay takes only the saved replay directory')
-        four_layer_load_report(args.four_layer_replay)
+            p.error('--load-replay takes only the saved replay directory')
+        load_report(args.load_replay)
         sys.exit(0)
     if (args.saved and (args.stage or args.hilog)) or not (args.stage or args.saved):
         p.error('select stage directories or --saved DIRECTORY')
