@@ -27,14 +27,17 @@ def patched_source_variable(gdn_conv):
     return 'CPRO_ORIGINAL_PATCHED_SOURCE' if gdn_conv == 'original' else 'CPRO_PATCHED_SOURCE'
 
 
-def source_config(action, gdn_conv='conv2d'):
+def source_config(action, gdn_conv='conv2d', *, no_patch=False):
     nz = action == 'reference'
     if nz:
         src = required('TARGET_SOURCE')
-    elif os.getenv('CPRO_SOURCE'):
+    elif no_patch or os.getenv('CPRO_SOURCE'):
         src = required('CPRO_SOURCE')
     else:
         src = required(patched_source_variable(gdn_conv))
+    if no_patch and not nz:
+        from qwen35_moe_dflash.target.original_target_source import EXPORTER
+        (src/EXPORTER).resolve(strict=True)
     cfg = os.environ.get('NZ_CONFIG' if nz else 'TARGET_CONFIG', 'config/qwen3_5_moe.yaml')
     return src, (src/cfg).resolve(strict=True)
 
@@ -119,7 +122,7 @@ def native40(args, run, remote):
 def prepare_stage(args, run):
     from qwen35_moe_dflash.common.artifacts import files_under, share_for_transfer
     from qwen35_moe_dflash.target.layer_probe.common import checked, save_json, sha
-    src, cfg = source_config(args.action, args.gdn_conv)
+    src, cfg = source_config(args.action, args.gdn_conv, no_patch=args.no_patch)
     fixture = run/'fixture'
     package = run/'package'
     stamp = dict(mode=args.mode, phase=args.phase)
@@ -146,10 +149,8 @@ def prepare_stage(args, run):
             decoder_case_reference.cpu_reference(working, ref, src)
             working.rename(fixture)
         return
-    from qwen35_moe_dflash.target.prefill_t64 import decoder_case_air
     from qwen35_moe_dflash.target.original_target_source import cpro_python_files
-    from qwen35_moe_dflash.target.prefill_t64 import source_model, source_exporter, decoder_four_silu
-    prepared = prepared_source(run, args.gdn_conv)
+    prepared = src if args.no_patch else prepared_source(run, args.gdn_conv)
     ref = json.loads((fixture/'reference.json').read_bytes())
     if (ref['mode'], ref['phase']) != (args.mode, args.phase):
         raise ValueError('Reference differs from selected case')
@@ -161,18 +162,28 @@ def prepare_stage(args, run):
         stamp['gdn_conv'] = args.gdn_conv
     if args.gdn_conv == 'original' and os.getenv('DECODER_CONV_CONTROL'):
         stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
+    if args.no_patch:
+        stamp['no_patch'] = True
     stamp.update(reference_sha256=sha(fixture/'reference.json'), config=sha(cfg),
                  cpro_source=str(prepared),
                  cpro_sources={str(p.relative_to(prepared)): sha(p) for p in cpro_python_files(prepared)},
-                 adapters={m.__name__: sha(m.__file__) for m in (decoder_case_air, source_model, source_exporter, decoder_four_silu)})
-    exporter = decoder_case_air.export
+                 adapters={})
+    from qwen35_moe_dflash.target.prefill_t64 import decoder_case_air
+    if not args.no_patch:
+        from qwen35_moe_dflash.target.prefill_t64 import source_model, source_exporter, decoder_four_silu
+        stamp['adapters'] = {m.__name__: sha(m.__file__)
+                             for m in (decoder_case_air, source_model, source_exporter, decoder_four_silu)}
+    options = dict(gdn_conv=args.gdn_conv)
     if (args.mode, args.phase) == ('4', 'prefill'):
         import decoder_four_native_case
         exporter = decoder_four_native_case.export
+        options['no_patch'] = args.no_patch
         stamp['adapters']['decoder_four_native_case'] = sha(decoder_four_native_case.__file__)
+    else:
+        exporter = decoder_case_air.export
     if package.exists():
         prior = json.loads((package/'manifest.json').read_bytes())
-        if any(prior.get(k) != v for k, v in stamp.items()):
+        if prior.get('no_patch', False) != args.no_patch or any(prior.get(k) != v for k, v in stamp.items()):
             raise ValueError('Existing export uses different sources or reference')
         for row in prior['files']:
             checked(package, row)
@@ -188,7 +199,7 @@ def prepare_stage(args, run):
             staged.rename(working)
     if json.loads((working/'binding.json').read_bytes()) != stamp:
         raise ValueError(f'{working}: interrupted export belongs to another source or fixture. Run prepare again.')
-    exporter(working, fixture, ref, src, cfg, prepared, gdn_conv=args.gdn_conv)
+    exporter(working, fixture, ref, src, cfg, prepared, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
     save_json(working/'manifest.json', dict(**stamp, files=files))
     share_for_transfer(working)
@@ -241,6 +252,8 @@ def worker(args, action, root, remote):
             cmd.extend(['--local-source', str(args.local_source)])
     if getattr(args, 'gdn_conv', 'conv2d') != 'conv2d':
         cmd.extend(['--gdn-conv', args.gdn_conv])
+    if getattr(args, 'no_patch', False):
+        cmd.append('--no-patch')
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
     if args.recovery:
@@ -262,8 +275,10 @@ def main():
     parser.add_argument('--local-source', type=Path, help='transfer from a mounted source case directory')
     parser.add_argument('--mode', choices=MODES, default=os.getenv('DECODER_MODE', '40'))
     parser.add_argument('--phase', choices=PHASES, default=os.getenv('DECODER_PHASE', 'prefill'))
-    parser.add_argument('--gdn-conv', choices=('conv2d', 'taps', 'original'), default=os.getenv('DECODER_GDN_CONV', 'conv2d'),
+    parser.add_argument('--gdn-conv', choices=('conv2d', 'taps', 'original'),
                         help='CPro implementation of the GDN depthwise convolution')
+    parser.add_argument('--no-patch', action='store_true',
+                        help='run the exporter directly from CPRO_SOURCE for four-layer T64 prefill')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
     parser.add_argument('--run', type=Path, help='explicit path ending in the canonical case name')
     parser.add_argument('--remote-run', type=Path, help='case directory on the export host')
@@ -274,6 +289,14 @@ def main():
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     a = parser.parse_args()
+    if a.no_patch:
+        if (a.mode, a.phase) != ('4', 'prefill'):
+            parser.error('--no-patch selects the original four-layer model; use --mode 4 --phase prefill')
+        if a.action == 'source' or a.patched_source or a.gdn_conv not in (None, 'original'):
+            parser.error('--no-patch uses CPRO_SOURCE directly with the original GDN convolution')
+        a.gdn_conv = 'original'
+    else:
+        a.gdn_conv = a.gdn_conv or os.getenv('DECODER_GDN_CONV', 'conv2d')
     if (a.action in ('transfer', '_transfer')) != bool(a.artifact) or (a.local_source and not a.artifact):
         parser.error('transfer requires one of golden, air or omc; --local-source applies to transfer only')
     patch_variable = patched_source_variable(a.gdn_conv)
@@ -289,7 +312,7 @@ def main():
     if a.action == 'plan':
         schedule = groups(a.mode)
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
-                              prompt='310P YAML prompts[0]', omcs=len(schedule),
+                              prompt='310P YAML prompts[0]', no_patch=a.no_patch, omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
         return 0
     if a.action == 'source':
@@ -329,7 +352,7 @@ def main():
             ddk, config, diag = board_config(a.action)
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
-                         original_board_args=a.original_board_args):
+                         original_board_args=a.original_board_args, no_patch=a.no_patch):
                 return 1
         else:
             prepare_stage(a, site)
@@ -353,8 +376,8 @@ def main():
         if a.action in ('prepare', 'golden'):
             source_config('reference')
             if a.action == 'prepare':
-                source_config('air', a.gdn_conv)
-                if os.getenv(patch_variable):
+                source_config('air', a.gdn_conv, no_patch=a.no_patch)
+                if not a.no_patch and os.getenv(patch_variable):
                     prepared_source(None, a.gdn_conv)
             if root.exists():
                 shutil.rmtree(root)
@@ -369,7 +392,7 @@ def main():
             if a.action == 'prepare':
                 worker(a, 'air', root, remote)
         elif a.action == 'air':
-            source_config('air', a.gdn_conv)
+            source_config('air', a.gdn_conv, no_patch=a.no_patch)
             site = root/'export'
             reference = site/('reference/manifest.json' if native else 'fixture/reference.json')
             if not reference.is_file():

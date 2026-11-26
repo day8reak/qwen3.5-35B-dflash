@@ -37,17 +37,17 @@ def four_layer_entry(prepared, work):
     return overlay/EXPORTER
 
 
-def export(root, fixture, ref, source, config, prepared, *, gdn_conv):
+def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=False):
     dest = root/case_name(ref['layers'])
     if dest.is_dir():
         saved = json.loads((dest/'case.json').read_bytes())
-        if saved.get('air_directory') != EXPORT_DIR:
-            raise ValueError(f'{dest}: expected the native four-layer export')
+        if saved.get('air_directory') != EXPORT_DIR or saved.get('no_patch', False) != no_patch:
+            raise ValueError(f'{dest}: existing four-layer export uses a different source mode')
         for row in saved['files']:
             sized_file(dest, row)
         return
     cfg = yaml.safe_load(config.read_text())
-    cfg.update({k: str(v) for k, v in checkpoint_paths(source, config, ref).items()})
+    cfg.update({k: str(v) for k, v in checkpoint_paths(source, config, ref, 4).items()})
     for key in ('embedding_weight_path', 'embedding_scale_path'):
         cfg[key] = str((source/cfg[key]).resolve(strict=True))
     with tempfile.TemporaryDirectory(dir=root.parent, prefix='native-four-') as tmp:
@@ -58,20 +58,31 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv):
         depth = select_native_depth(cfg, work, 4) if not physical_history else None
         export_config = work/'export.yaml'
         export_config.write_text(yaml.safe_dump(cfg))
-        argv = native_export_argv(four_layer_entry(prepared, work), 4, export_config)
+        entry = (source/EXPORTER).resolve(strict=True) if no_patch else four_layer_entry(prepared, work)
+        argv = native_export_argv(entry, 4, export_config)
+        env = os.environ.copy()
         trace = work/'activations.txt'
-        package = str(Path(__file__).resolve().parents[3]/'model')
-        env = dict(os.environ, QWEN35_SILU_SHAPES=str(trace),
-                   PYTHONPATH=os.pathsep.join(filter(None, (package, os.getenv('PYTHONPATH')))))
+        if no_patch:
+            print(f'[L00-L03] --no-patch 原样使用 CPRO_SOURCE: {source}', flush=True)
+        else:
+            package = str(Path(__file__).resolve().parents[3]/'model')
+            env.update(QWEN35_SILU_SHAPES=str(trace),
+                       PYTHONPATH=os.pathsep.join(filter(None, (package, env.get('PYTHONPATH')))))
         print(f'[L00-L03] 使用原 CPro wrapper 导出四层 T64 AIR\n(cd {work} && {shlex.join(argv)})', flush=True)
         subprocess.run(argv, cwd=work, env=env, check=True)
         (work/EXPORT_DIR).rename(case/EXPORT_DIR)
         air = case/EXPORT_DIR/'export.air'
         boundary = inspect_air(air, layers=4, physical_history=physical_history, require_control=not physical_history)
-        activation = inspect_activation_air(air, trace, layers=4, softplus=True, check_convs=physical_history, gdn_conv=gdn_conv)
-        precision = four_precision(air)
-        if precision['mismatches']:
-            raise ValueError('\n'.join(precision['mismatches']))
+        if no_patch:
+            observations = dict(no_patch=True, operator_counts=boundary['operator_counts'])
+            print(f'[L00-L03] 原样导出 AIR 实测节点数: {boundary["operator_counts"]}', flush=True)
+        else:
+            observations = inspect_activation_air(air, trace, layers=4, softplus=True,
+                                                  check_convs=physical_history, gdn_conv=gdn_conv)
+            precision = four_precision(air)
+            if precision['mismatches']:
+                raise ValueError('\n'.join(precision['mismatches']))
+            observations['precision'] = precision
         control = None if physical_history else os.getenv('DECODER_CONV_CONTROL')
         measured = prefill_inputs(case/'inputs', fixture, cfg, control, physical_history=physical_history,
                                   decoder_fixture=True)
@@ -92,6 +103,6 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv):
         save_json(case/'case.json', dict(air_directory=EXPORT_DIR, layers=ref['layers'], argv=argv,
                   gdn_conv=gdn_conv, **({'export_configuration': depth} if depth else {}),
                   inputs=names, input_files=feeds, outputs=outputs, files=files, fixture=measured,
-                  precision=precision, **activation))
+                  **observations))
         case.rename(dest)
     print(f'{dest.name} 原生 AIR 已导出，{len(names)} 个输入，输出 {[r["name"] for r in outputs]}', flush=True)

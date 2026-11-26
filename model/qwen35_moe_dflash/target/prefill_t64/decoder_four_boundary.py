@@ -1,5 +1,6 @@
 """Inspect the native CPro AIR boundary, including reordered state outputs."""
 import json
+from collections import Counter
 
 from .decode_cache_control import graph_message
 from .segment_export import OUTPUTS
@@ -154,7 +155,9 @@ def inspect_air(path, *, layers=4, physical_history=None, require_control=False)
     for r in records:
         if r['shape'] and view(r['shape']) != view(output_shape(r['role'])):
             raise ValueError(f'{path}: unexpected shape for {r}')
-    return dict(inputs=inputs, outputs=records)
+    counts = Counter(n.type for n in graph.op)
+    return dict(inputs=inputs, outputs=records,
+                operator_counts={kind: counts[kind] for kind in ('SiluPatch', 'SoftplusPatch', 'QuantBatchMatmulV4444')})
 
 
 def same_boundary(original, modified):

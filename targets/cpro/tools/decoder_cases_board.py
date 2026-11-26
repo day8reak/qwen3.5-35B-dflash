@@ -189,7 +189,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board',
-          replace_inputs=False, replace_weights=False, original_board_args=False):
+          replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False):
     bundle = run/'package'
     if step == 'execute' and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -206,6 +206,8 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         raise ValueError(f'{bundle}: mode/phase mismatch')
     if manifest.get('gdn_conv', 'conv2d') != gdn_conv:
         raise ValueError(f'{bundle}: expected GDN {gdn_conv}. Select the same --gdn-conv as the AIR export.')
+    if manifest.get('no_patch', False) != no_patch:
+        raise ValueError(f'{bundle}: --no-patch selection differs from the AIR export')
     from decoder_handoff import runtime_file
     for row in manifest['files']:
         if step != 'execute' or runtime_file(row['path']):

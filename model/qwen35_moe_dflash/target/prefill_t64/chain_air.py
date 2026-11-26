@@ -170,7 +170,7 @@ def stage_cpro_source(source, stage, adapt_wrapper):
         (stage / name).write_text(transform((source / name).read_text()))
 
 
-def checkpoint_paths(source, config, ref):
+def checkpoint_paths(source, config, ref, layers=LAYERS):
     cfg = yaml.safe_load(config.read_text())
     if sha(config) == ref['config_sha256']:
         # The two private source trees can have different roots. The reference recorded
@@ -180,17 +180,16 @@ def checkpoint_paths(source, config, ref):
         paths = {key: (source / cfg[key]).resolve(strict=True) for key in ('model_file', 'quanted_pth')}
     if any(path != Path(ref[key]) for key, path in paths.items()):
         raise ValueError('310P and CPro must use the same W4 model and checkpoint')
-    # The private loader logs and skips absent expert keys. Check shard headers before
-    # allowing a partially populated W4 pack to produce a 40-layer numerical report.
+    # The private loader logs and skips absent expert keys. Check the requested layers' shard headers.
     from safetensors import safe_open
     keys = set()
     for shard in paths['quanted_pth'].glob('data*.safetensors'):
         with safe_open(str(shard), framework='pt', device='cpu') as f:
             keys.update(f.keys())
     required = {f'model.layers.{i}.mlp.experts.{proj}_quant_{part}'
-                for i in range(LAYERS) for proj in ('gate_up_proj', 'down_proj') for part in ('weight', 'scale')}
+                for i in range(layers) for proj in ('gate_up_proj', 'down_proj') for part in ('weight', 'scale')}
     if required - keys:
-        raise ValueError(f'40-layer W4 pack is incomplete; first missing keys: {sorted(required - keys)[:4]}')
+        raise ValueError(f'{layers}-layer W4 pack is incomplete; first missing keys: {sorted(required - keys)[:4]}')
     return paths
 
 

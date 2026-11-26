@@ -80,6 +80,8 @@ def publish(root, role, args):
         header['generation'] = uuid.uuid4().hex
     else:
         header['gdn_conv'] = args.gdn_conv
+        if getattr(args, 'no_patch', False):
+            header['no_patch'] = True
     dest = receipt(root, role)
     with tempfile.TemporaryDirectory(prefix='.publish-', dir=root) as staging:
         tmp = Path(staging)/dest.name
@@ -210,6 +212,8 @@ def receive(root, remote, role, args):
         data = json.loads(manifest)
         if (data['stage'], data['case']) != (role, root.name) or data.get('gdn_conv', args.gdn_conv) != args.gdn_conv:
             raise ValueError(f'{index}: stage, case or GDN convolution mismatch')
+        if role != 'golden' and data.get('no_patch', False) != getattr(args, 'no_patch', False):
+            raise ValueError(f'{index}: --no-patch selection differs from the upstream {role} export')
         staged = temp/'incoming' if local else resume_directory(root, role, temp/'manifest')
         staged.mkdir(exist_ok=True)
         roles = {'golden': 'air', 'air': 'omc', 'omc': 'board'}

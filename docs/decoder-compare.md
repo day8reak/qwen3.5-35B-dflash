@@ -45,6 +45,24 @@ bash targets/cpro/scripts/decoder_run.sh
 
 ## 对照 GDN 卷积和自定义源码
 
+### 用原始源码跑四层 T64 prefill
+
+将 AIR 环境的 `CPRO_SOURCE` 指向要测试的原 CPro 工程。已有四层 golden 时，两台服务器各运行一条命令。
+
+在 CPro AIR 生成服务器运行
+
+```bash
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --no-patch
+```
+
+在 CPro OMC 生成和板端执行共用的服务器运行
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --no-patch
+```
+
+`--no-patch` 直接执行 `$CPRO_SOURCE/export_glm_model_qwen3_5_moe.py`。导出日志打印实际入口以及 AIR 中 `SiluPatch`、`SoftplusPatch` 和 `QuantBatchMatmulV4444` 的数量。使用未改动的原始模型时，前两项应为零。脚本创建四层 HF 配置副本，继续传入 `quant_mode=enable quant_bits=4 seq_len=64`。这次实验沿用 `--gdn-conv original` 的输入、静态 T64 OMG 参数和 V2 上板参数。同名 `4-prefill-t64` 目录保存本次产物，成功执行后在 `board/matrices.csv` 查看三端精度。首次生成四层 golden 时，第一条命令使用 `decoder_prepare.sh`。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。
