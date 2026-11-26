@@ -1,5 +1,6 @@
 """Compile, execute, resume and compare whole-decoder OMCs on the OMG host."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import shutil
@@ -9,7 +10,7 @@ import numpy as np
 from decoder4_original import EXPORT_DIR, compile_log_text, compile_omg
 from decoder4_prefill import pull_air, ssh_file
 from l0_silu_omcs import write_matrices
-from parse_model_json import GE_PROTO, inspect, read_omc
+from parse_model_json import GE_PROTO, inspect, named_shapes, read_omc
 from qwen35_moe_dflash.execution.serial_transport import _environment
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, metrics, read_tensor, save_json, sha, sized_file
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
@@ -70,7 +71,7 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
             raise RuntimeError(compile_log_text(work/'compile.log'))
         model, = (work/'model').rglob('*.omc')
         io = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)
-        data = dict(stamp=stamp, argv=argv, model=identity(model, work),
+        data = dict(stamp=stamp, argv=argv, model=identity(model, work), output_shape=io['output_shape'],
                     weights=[identity(p, work) for p in sorted(model.parent.rglob('*.weight'))])
         for direction in ('inputs', 'outputs'):
             data[direction] = []
@@ -85,7 +86,18 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
     build = read(dest/'build.json')
     if any(build['stamp'].get(k) != v for k, v in stamp.items()):
         raise ValueError(f'{dest}: bundle or OMG changed. Run board again without --recovery.')
-    return build, sized_file(dest, build['model']), [sized_file(dest, r) for r in build['weights']]
+    model = sized_file(dest, build['model'])
+    if 'output_shape' not in build:
+        # Older build.json kept NetOutput edges but omitted the tool's output names.
+        local_ddk = ddk or os.getenv('CPRO_DDK_ROOT') or os.getenv('DDK_PATH')
+        if local_ddk and (Path(local_ddk)/'tools/tools_omg/master/omg').is_file():
+            print(f'{case.name}: 从已有 OMC 补读输出名称和 shape', flush=True)
+            try:
+                io = inspect(read_omc(model, ddk_root=local_ddk)[0], enum=GE_PROTO)
+                build['output_shape'] = io['output_shape']
+            except (OSError, ValueError) as exc:
+                print(f'{case.name}: OMG 无法补读端口，将从板端 OMC 读取：{exc}', flush=True)
+    return build, model, [sized_file(dest, r) for r in build['weights']]
 
 
 def output_order(descriptors, source, golden):
@@ -112,7 +124,7 @@ def output_order(descriptors, source, golden):
 
 
 def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, recovery, board_case=None,
-           replace_inputs=False, replace_weights=False):
+           replace_inputs=False, replace_weights=False, shape_config=None):
     meta = read(case/'case.json')
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
         raise ValueError(f'{case}: compiled input names differ from AIR')
@@ -150,6 +162,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
         folder.mkdir()
         try:
             result = run_v2(folder, case.name, model, operands, paths, build['outputs'], runtime,
+                            decoder_shapes=(named_shapes(operands), build.get('output_shape')), shape_config=shape_config,
                             fixture_sha256=stamp, external_weights=weights, build_records=(build['model'], build['weights']),
                             board_case=board_case, hdc_timeout=7200, replace_inputs=replace_inputs, replace_weights=replace_weights)
         except RuntimeError:
@@ -220,7 +233,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
             if mode == 'layerwise':
                 board_case += '-' + case.name
             values = replay(base, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, recovery,
-                            board_case, replace_inputs, replace_weights)
+                            board_case, replace_inputs, replace_weights, shape_config=config)
         except Exception as exc:
             save_json(run/'comparison.json', dict(status='INTERRUPTED', message=str(exc), **progress))
             raise

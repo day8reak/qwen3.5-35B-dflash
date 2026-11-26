@@ -96,9 +96,33 @@ def runtime_slots(native, direction, specs, *, equivalent_inputs=False):
     return slots
 
 
+def observed_named_shape(native, direction, specs):
+    """Build this tool's name:dims list from the restored OMC, in runtime slot order."""
+    rows = native[direction]
+    if len(rows) != len(specs):
+        raise ValueError(f'HIAI {direction} slot count differs from the compiled OMC')
+    fields = []
+    seen = set()
+    compiled_names = {s['name']: i for i, s in enumerate(specs)}
+    for i, (row, spec) in enumerate(zip(rows, specs, strict=True)):
+        dims = _shape(row)
+        expected_type = native['dtype_enum_values'][spec['dtype'].upper()]
+        if (row['index'] != i or row['raw_format'] != native['format_enum_values']['ND']
+                or _nd_view_key((row['raw_dtype'], dims)) != _nd_view_key((expected_type, _shape(spec)))):
+            raise ValueError(f'HIAI {direction}[{i}] differs from the compiled slot: {row} vs {spec}')
+        label = row.get('tensor_name') if row.get('tensor_name_status') == 'OBSERVED' else None
+        if not label or not re.fullmatch(r'[A-Za-z0-9_./-]+', label) or label in seen:
+            raise ValueError(f'HIAI {direction}[{i}] has no unique name usable in a shape argument: {label!r}')
+        if compiled_names.get(label, i) != i:
+            raise ValueError(f'HIAI {direction}[{i}] {label!r} belongs to a different compiled slot')
+        seen.add(label)
+        fields.append(label + ':' + ','.join(map(str, dims)))
+    return ';'.join(fields)
+
+
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
            external_weights=(), build_records=None, release_after_pull=True, hdc_timeout=660, board_case=None,
-           replace_inputs=False, replace_weights=False):
+           replace_inputs=False, replace_weights=False, decoder_shapes=None, shape_config=None):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -159,8 +183,19 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
             for row, path in zip(slots['inputs'], files, strict=True):
                 if path.stat().st_size != row['bytes']:
                     raise ValueError(f"{name}: {path} differs from the {row['bytes']}-byte {row['name']} input")
+        shape_flags = []
+        if decoder_shapes is not None:
+            input_shape, output_shape = decoder_shapes
+            if not input_shape or not output_shape:
+                print(f'[{name}] 编译记录缺少命名 shape，读取当前板端 OMC 的 I/O 描述', flush=True)
+                if slot_config is None:
+                    native = observe_model_io(hdc, shape_config, runtime, remote, out, remote/'model.omc',
+                                              model_sha, tool.parent)
+                input_shape = input_shape or observed_named_shape(native, 'inputs', operands)
+                output_shape = output_shape or observed_named_shape(native, 'outputs', outputs)
+            shape_flags = [f'--input_shape={input_shape}', f'--output_shape={output_shape}']
         argv = [str(tool), f'--model={remote}/model.omc', *([f'--weight_dir={remote}'] if sidecars else []),
-                '--input=' + ','.join(str(remote/n) for n in input_names),
+                '--input=' + ','.join(str(remote/n) for n in input_names), *shape_flags,
                 '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in operands),
                 '--output_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in outputs), '--times=1', '--modelmanager_itf=V2',
                 '--direct_from_file=true', '--enable_item=1', f'--output_dir={remote}/outputs']

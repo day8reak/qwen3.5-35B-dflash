@@ -619,6 +619,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
     print(f'{kind} board attempt: {out}', flush=True)
     try:
         run_v2(out, 'original L0-L3' if kind == KIND else kind, model, inputs, paths, outputs, runtime,
+               decoder_shapes=(abi.get('input_shape'), abi.get('output_shape')), shape_config=config,
                external_weights=weights, build_records=(compiled['primary'], compiled['weights']),
                replace_inputs=replace_inputs, replace_weights=replace_weights,
                board_case='40-prefill-t64' if kind in FULL_KINDS else '4-prefill-t64',
