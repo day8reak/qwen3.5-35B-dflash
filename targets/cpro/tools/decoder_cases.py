@@ -304,6 +304,8 @@ def main():
                                  help='use SiluPatch only in GDN, stock SiLU in MoE, and keep GDN SoftplusPatch')
     activation_mode.add_argument('--gdn-silu-site', choices=('conv', 'gate'), default=False,
                                  help='enable SiluPatch only after the GDN convolution or only at its RMS gate; keep SoftplusPatch')
+    activation_mode.add_argument('--all-silu-no-gate-cast', action='store_true',
+                                 help='use all GDN and MoE SiluPatch calls and omit the explicit FP32 cast after the GDN gate')
     parser.add_argument('--physical-convstate', action='store_true',
                         help='replace the four-layer T64 ConvState update with concatenation and physical-tail slices')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
@@ -350,7 +352,7 @@ def main():
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
                               prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations,
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
-                              gdn_silu_site=a.gdn_silu_site,
+                              gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
                               physical_convstate=a.physical_convstate,
                               omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
@@ -394,7 +396,8 @@ def main():
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
                          original_board_args=a.original_board_args, no_patch=a.no_patch,
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
-                         gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site, physical_convstate=a.physical_convstate):
+                         gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site,
+                         all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate):
                 return 1
         else:
             prepare_stage(a, site)

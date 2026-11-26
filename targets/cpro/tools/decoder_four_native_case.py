@@ -21,13 +21,14 @@ from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import (
-    MODELING, inline_old_silu, inspect_activation_air, restore_native_activations, select_gdn_silu,
+    MODELING, inline_old_silu, inspect_activation_air, omit_gate_output_cast, restore_native_activations, select_gdn_silu,
 )
 from qwen35_moe_dflash.target.prefill_t64.source_model import adapt_four_layer_convolution
 
 
 def four_layer_entry(prepared, work, *, native_activations=False, silu_only=False, softplus_only=False,
-                     gdn_silu_only=False, gdn_silu_site=False, explicit_conv2d=False, physical_convstate=False):
+                     gdn_silu_only=False, gdn_silu_site=False, all_silu_no_gate_cast=False,
+                     explicit_conv2d=False, physical_convstate=False):
     entry = prepared/EXPORTER
     text = entry.read_text()
     # Editable sources generated before multi-depth export counted 30 GDR calls even at L=4.
@@ -36,6 +37,8 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
     model = inline_old_silu(base_model)
     if gdn_silu_only or gdn_silu_site:
         model = select_gdn_silu(model, gdn_silu_site)
+    if all_silu_no_gate_cast:
+        model = omit_gate_output_cast(model)
     restore_activations = native_activations or silu_only or softplus_only
     edit_model = restore_activations or explicit_conv2d or physical_convstate or model != base_model
     if old not in text and not edit_model:
@@ -62,7 +65,8 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
 
 
 def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=False, native_activations=False,
-           silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False, physical_convstate=False):
+           silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
+           all_silu_no_gate_cast=False, physical_convstate=False):
     dest = root/case_name(ref['layers'])
     if dest.is_dir():
         saved = json.loads((dest/'case.json').read_bytes())
@@ -72,6 +76,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                 or saved.get('silu_only', False) != silu_only or saved.get('softplus_only', False) != softplus_only
                 or saved.get('gdn_silu_only', False) != gdn_silu_only
                 or saved.get('gdn_silu_site', False) != gdn_silu_site
+                or saved.get('all_silu_no_gate_cast', False) != all_silu_no_gate_cast
                 or saved.get('physical_convstate', False) != physical_convstate):
             raise ValueError(f'{dest}: existing four-layer export uses a different source mode')
         for row in saved['files']:
@@ -86,7 +91,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         case = work/'case'
         case.mkdir()
         restrict_silu_to_gdn = gdn_silu_only or bool(gdn_silu_site)
-        activation_control = native_activations or silu_only or softplus_only or restrict_silu_to_gdn
+        activation_control = native_activations or silu_only or softplus_only or restrict_silu_to_gdn or all_silu_no_gate_cast
         use_native_tools = gdn_conv == 'original' or activation_control or physical_convstate
         explicit_conv2d = (activation_control or physical_convstate) and gdn_conv == 'conv2d'
         physical_history = physical_convstate or not use_native_tools
@@ -96,7 +101,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         entry = ((source/EXPORTER).resolve(strict=True) if no_patch else
                  four_layer_entry(prepared, work, native_activations=native_activations, silu_only=silu_only,
                                   softplus_only=softplus_only, gdn_silu_only=gdn_silu_only, gdn_silu_site=gdn_silu_site,
-                                  explicit_conv2d=explicit_conv2d, physical_convstate=physical_convstate))
+                                  all_silu_no_gate_cast=all_silu_no_gate_cast, explicit_conv2d=explicit_conv2d,
+                                  physical_convstate=physical_convstate))
         argv = native_export_argv(entry, 4, export_config)
         env = os.environ.copy()
         trace = work/'activations.txt'
@@ -110,7 +116,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                       '  默认对齐源码补丁：L3 RoPE 按 position_ids 取表，FP32 旋转 Q/K 后转回 hidden dtype；'
                       'W4 matmul 使用 FP16 权重 scale 和逐 token scale；GDR 使用 FP16 算子端口；'
                       'MoE 使用量化后的 INT8 激活并对齐门控 dtype。', flush=True)
-            if physical_convstate or silu_only or restrict_silu_to_gdn:
+            if physical_convstate or silu_only or restrict_silu_to_gdn or all_silu_no_gate_cast:
                 with (case/'source.diff').open('w', encoding='utf-8') as changes:
                     for name in (EXPORTER, MODELING, WRAPPER, 'utils.py'):
                         base = source/name
@@ -124,6 +130,9 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                 env['QWEN35_SILU_SHAPES'] = str(trace)
                 if silu_only:
                     print(f'[L00-L03] {prepared}：直接调用 torch.ops.npu.silu_patch，FP16 输入和输出；使用原生 Softplus', flush=True)
+                elif all_silu_no_gate_cast:
+                    print('[L00-L03] GDN 和 MoE 全部使用 SiluPatch；GDN 门控的 FP16 输出直接参与 RMSNorm 乘法。'
+                          '衰减分支使用 SoftplusPatch。', flush=True)
                 elif softplus_only:
                     print(f'[L00-L03] {prepared}：使用原生 SiLU 和 FP16 SoftplusPatch', flush=True)
                 elif restrict_silu_to_gdn:
@@ -153,13 +162,16 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         else:
             observations = inspect_activation_air(air, trace, layers=4, silu=not softplus_only, softplus=not silu_only,
                                                   check_convs=not use_native_tools, gdn_conv=gdn_conv,
-                                                  moe_silu=not restrict_silu_to_gdn, gdn_silu_site=gdn_silu_site)
-            if silu_only or softplus_only or restrict_silu_to_gdn or physical_convstate:
+                                                  moe_silu=not restrict_silu_to_gdn, gdn_silu_site=gdn_silu_site,
+                                                  all_silu_no_gate_cast=all_silu_no_gate_cast)
+            if activation_control or physical_convstate:
                 counts = boundary['operator_counts']
                 if gdn_silu_only:
                     observations['gdn_silu_only'] = True
                 if gdn_silu_site:
                     observations['gdn_silu_site'] = gdn_silu_site
+                if all_silu_no_gate_cast:
+                    observations['all_silu_no_gate_cast'] = True
                 if silu_only or softplus_only:
                     observations['softplus_only' if softplus_only else 'silu_only'] = True
                 observations['operator_counts'] = counts

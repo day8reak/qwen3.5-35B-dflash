@@ -179,6 +179,10 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 两个选项均保留 3 个 `SoftplusPatch` 和 MoE 的原生 SiLU。上板日志打印本次编译的 `conv` 或 `gate` 选择，AIR 导出时按形状核对调用位置。若只有一组加载失败，该位置及其相邻图值得优先排查。若两组分别能加载，同时启用两处才失败，则需要对照组合图的编译任务。
 
+### 四层启用全部 SiluPatch，去掉 GDN 门控输出的显式 FP32 转换
+
+在上面两条命令中都把 `--gdn-silu-only` 换成 `--all-silu-no-gate-cast`。导出器核对 14 个 FP16 `SiluPatch`，其中 GDN 卷积后和 RMS 门控各 3 个，MoE 共享专家和路由专家各 4 个，同时核对 3 个 FP16 `SoftplusPatch`。GDN 门控调用变为 `torch.ops.npu.silu_patch(gate.to(torch.float16).contiguous())`。RMSNorm 的另一侧仍按原精度计算，乘法的类型提升仍可能生成 Cast。导出日志的三行 `[GDN 门控 AIR]` 显示每个门控输出在 AIR 中的直接下游节点，`export/package/L00-L03/case.json` 的 `silu_patch.nodes[].consumers` 也记录该信息。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

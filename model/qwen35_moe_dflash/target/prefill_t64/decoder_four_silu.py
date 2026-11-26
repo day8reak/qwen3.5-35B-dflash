@@ -51,8 +51,8 @@ def silu_same_dtype(x):
 
 
 _CONV_SILU = 'torch.ops.npu.silu_patch(conv_out.to(torch.float16).contiguous())'
-_GATE = ('F.silu(gate.to(torch.float32))',
-         'torch.ops.npu.silu_patch(gate.to(torch.float16).contiguous()).to(torch.float32)')
+_GATE_SILU = 'torch.ops.npu.silu_patch(gate.to(torch.float16).contiguous())'
+_GATE = ('F.silu(gate.to(torch.float32))', _GATE_SILU + '.to(torch.float32)')
 _CONV = ('F.silu(conv_out)', _CONV_SILU + '.to(conv_out.dtype)')
 _SHARED_ACT = ('self.act_fn = ACT2FN[config.hidden_act]',
                "self.act_fn = None if config.hidden_act in ('silu', 'swish') else ACT2FN[config.hidden_act]")
@@ -112,6 +112,12 @@ def select_gdn_silu(model, site):
     if site == 'gate':
         return native_conv_silu(model)
     return model
+
+
+def omit_gate_output_cast(model):
+    if model.count(_GATE_SILU) != 1:
+        raise ValueError('Expected one FP16 SiluPatch call on the GDN RMS gate in the CPro model source')
+    return model.replace(_GATE[1], _GATE_SILU).replace(_GATE_SILU + '.float()', _GATE_SILU)
 
 
 def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplus=False):
@@ -299,7 +305,8 @@ def inspect_gdn_convs(graph, count, rows):
 
 
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
-                           check_convs=False, gdn_conv="conv2d", moe_silu=True, gdn_silu_site=None):
+                           check_convs=False, gdn_conv="conv2d", moe_silu=True, gdn_silu_site=None,
+                           all_silu_no_gate_cast=False):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -364,7 +371,13 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
                 raise ValueError(f'{name}: expected a FP32 to FP16 cast of biased_a')
             gate_product(graph, name + ':0')
         elif shape == (rows * 32, 128):
-            gate_product(graph, name + ':0')
+            if all_silu_no_gate_cast:
+                # Type promotion at the unchanged multiplication can still generate a Cast.
+                targets = ', '.join(f"{r['name']} ({r['op']}, {r['input_dtype']} → {', '.join(r['output_dtypes'])})"
+                                    for r in consumers)
+                print(f'[GDN 门控 AIR] {name} (FP16) → {targets}', flush=True)
+            else:
+                gate_product(graph, name + ':0')
         for row in consumers:
             if row['op'] == 'Cast':
                 cast = by_name[row['name']]
