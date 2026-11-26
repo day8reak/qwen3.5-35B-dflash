@@ -31,7 +31,6 @@ L0_KIND = 'original-cpro-l0-prefill64-aligned-silu-patch-split-v3-fp16'
 SPLIT_KIND = 'original-cpro-decoder-prefill64-aligned-silu-patch-split-v3-fp16'
 L0_DIR = 'glm_export_air_cpro_1block_64_quant'
 FULL_KIND = 'original-cpro-40-layer-prefill64-aligned-silu-softplus-fp16-conv2d'
-FULL_GRAPH_RUN = 'conv2d'
 FULL_DIR = 'glm_export_air_cpro_40block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
@@ -49,34 +48,39 @@ def four_precision(air, layers=4):
     return result
 
 
-def valid19_inputs(folder, reference, cfg, conv_control, *, physical_history=False):
+def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=False):
     import numpy as np
     from qwen35_moe_dflash.target.layer_probe.common import read_array
-    from qwen35_moe_dflash.target.prefill_t64.chain_reference import BASIS, VALID19_IDS_SHA256
+    from qwen35_moe_dflash.target.prefill_t64.chain_reference import BASIS, VALID19_IDS_SHA256, YAML_BASIS
 
     meta = json.loads((reference / 'manifest.json').read_bytes())
-    if (meta.get('reference'), meta.get('status'), meta.get('physical_rows'), meta.get('valid_rows'),
-            meta.get('output_pos')) != (BASIS, 'CAPTURED', 64, 19, 18):
-        raise ValueError(f'Expected a measured T64/valid19 reference: {reference}')
+    valid = meta['valid_rows']
+    basis = YAML_BASIS if physical_history else BASIS
+    if ((meta.get('reference'), meta.get('status'), meta.get('physical_rows'), meta.get('output_pos'))
+            != (basis, 'CAPTURED', 64, valid-1) or not 1 <= valid <= 64 or (not physical_history and valid != 19)):
+        raise ValueError(f'Unexpected measured T64 reference: {reference}')
     def tensor(name):
         return read_array(reference, meta['inputs'][name])
 
     ids = tensor('input_ids').astype('<i4')
-    if ids.shape != (1, 64) or hashlib.sha256(ids.tobytes()).hexdigest() != VALID19_IDS_SHA256:
-        raise ValueError('Prompt differs from the valid19 comparison')
+    digest = hashlib.sha256(ids.tobytes()).hexdigest()
+    if ids.shape != (1, 64) or (not physical_history and digest != VALID19_IDS_SHA256):
+        raise ValueError('Unexpected prompt token IDs')
     vocab = int(cfg.get('vocab_size', 248320))
+    if np.any(ids < 0) or np.any(ids >= vocab):
+        raise ValueError('Captured token ID outside the embedding vocabulary')
     emb = np.memmap(cfg['embedding_weight_path'], mode='r', dtype='i1').reshape(vocab, 2048)
     scales = np.memmap(cfg['embedding_scale_path'], mode='r', dtype='<f4').reshape(vocab, 1)
     quant_embed, embed_scale = emb[ids], scales[ids]
     positions = np.arange(64, dtype='<i4')
     if (not np.array_equal(tensor('position_ids').reshape(-1), positions) or
             not np.array_equal(tensor('new_kv_cache_pos').reshape(-1), positions) or
-            tensor('effective_length').tolist() != [19]):
+            tensor('effective_length').tolist() != [valid]):
         raise ValueError('Reference positions or effective length differ from fresh prefill')
     mask = tensor('attention_mask').astype('<f4')
-    allowed = (positions[:, None] < 19) & (np.arange(2048)[None] <= positions[:, None])
+    allowed = (positions[:, None] < valid) & (np.arange(2048)[None] <= positions[:, None])
     if mask.shape != (1, 1, 64, 2048) or not np.array_equal(mask[0, 0] == 0, allowed):
-        raise ValueError('Expected the retained valid19 causal mask')
+        raise ValueError(f'Expected the measured valid{valid} causal mask')
     if conv_control:
         ctrl = np.fromfile(conv_control, dtype='<i4')
         if ctrl.shape != (128,) or conv_control.stat().st_size != 512:
@@ -84,12 +88,12 @@ def valid19_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
         policy = f'provided {conv_control}'
     else:
         ctrl = np.zeros(128, dtype='<i4')
-        ctrl[0] = 19
+        ctrl[0] = valid
         policy = 'trial [19, 0 x 127] derived from observed valid64 [64, 0 x 127]; valid19 semantics unverified'
     arrays = dict(inputs_embeds=quant_embed, embed_scale=embed_scale, attention_mask=mask,
                   position_ids=positions[None], new_kv_cache_pos=positions,
-                  output_pos=np.array([18], dtype='<i4'), allQLen=np.array([19], dtype='<i8'),
-                  effective_length=np.array([19], dtype='<i2'), conv_state_pos=ctrl,
+                  output_pos=np.array([valid-1], dtype='<i4'), allQLen=np.array([valid], dtype='<i8'),
+                  effective_length=np.array([valid], dtype='<i2'), conv_state_pos=ctrl,
                   past_conv_state=np.zeros((1, 8192, 4), dtype='<f2'),
                   past_recurrent_state=np.zeros((1, 32, 128, 128), dtype='<f2'),
                   past_kv_zero=np.zeros((64, 32, 32, 16), dtype='<f2'))
@@ -99,20 +103,27 @@ def valid19_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     folder.mkdir()
     for name, array in arrays.items():
         array.tofile(folder / (name + '.bin'))
-    print(f'Original runtime input fixture: valid19, output_pos=18, ConvState: {policy}', flush=True)
+    print(f'Original runtime input fixture: valid{valid}, output_pos={valid-1}, ConvState: {policy}', flush=True)
     measured = tensor('embedding')
     if measured.shape != (1, 64, 2048) or measured.dtype != np.float16:
         raise ValueError('Expected the measured FP16 decoder entry [1,64,2048]')
     # Compare at the diagnostic graph's FP16 boundary. The original graph still receives both raw files.
     entry = (quant_embed.astype(np.float32) * embed_scale).astype(np.float16)
-    changes = int(np.count_nonzero(entry[:, :19].view(np.uint16) != measured[:, :19].view(np.uint16)))
-    print(f'Original embedding * scale, rounded to FP16 vs 310P layer entry: {changes}/{19*2048} changed (valid19)')
-    return dict(reference_sha256=sha(reference / 'manifest.json'), token_sha256=VALID19_IDS_SHA256,
+    changes = int(np.count_nonzero(entry[:, :valid].view(np.uint16) != measured[:, :valid].view(np.uint16)))
+    print(f'Original embedding * scale, rounded to FP16 vs 310P layer entry: {changes}/{valid*2048} changed')
+    return dict(reference_sha256=sha(reference / 'manifest.json'), token_sha256=digest,
                 reference_inputs={k: meta['inputs'][k]['sha256'] for k in REFERENCE_INPUT_NAMES},
-                valid19_embedding_changed_fp16_elements=changes, conv_state_control=policy)
+                valid_rows=valid, conv_state_control=policy,
+                **({'prompt': meta['prompt'], 'embedding_changed_fp16_elements': changes} if physical_history
+                   else {'valid19_embedding_changed_fp16_elements': changes}))
 
 
-def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None, l0_capture=None, cpu_run=None,
+def full_source_hashes(source):
+    from qwen35_moe_dflash.target.original_target_source import cpro_python_files
+    return {str(path.relative_to(source)): sha(path) for path in cpro_python_files(source)}
+
+
+def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None, l0_capture=None, prepared=None,
            layer=None, head=True, standalone=True):
     import yaml
     split = kind in (L0_KIND, SPLIT_KIND)
@@ -140,7 +151,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     configured = yaml.safe_load(config.read_text())
     cfg = dict(configured)
     entry = source / EXPORTER
-    sources = {n: sha(source / n) for n in (EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py',
+    sources = {n: sha((prepared or source) / n) for n in (EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py',
                'models/modeling_qwen3_5_moe_hiai_nz.py',
                'models/export_model_wrapper_qwen3_5_moe.py', 'utils.py')}
     run.mkdir(parents=True, exist_ok=True)
@@ -151,8 +162,10 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if (saved['kind'] == kind and saved['sources'] == sources and saved['config_sha256'] == sha(config)
                 and saved['fixture']['reference_sha256'] == sha(reference/'manifest.json')):
             with tempfile.TemporaryDirectory(dir=run, prefix='check-source-') as tmp:
-                stage(source, Path(tmp), aligned=True, layers=layers)
-                if all(sha(Path(tmp)/n) == digest for n, digest in saved['silu_patch']['source_sha256'].items()):
+                if prepared is None:
+                    stage(source, Path(tmp), aligned=True, layers=layers)
+                tree = prepared or Path(tmp)
+                if full_source_hashes(tree) == saved['silu_patch']['source_sha256']:
                     for row in saved['files']:
                         checked(dest, row)
                     print(f'Reusing verified 40-layer AIR: {dest}', flush=True)
@@ -168,8 +181,9 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if uses_baseline and not split:
             original = checked(base_manifest.parent, next(row for row in base['files'] if row['path'] == graph_path))
             base_boundary = inspect_air(original)
-        staged = Path(tempfile.mkdtemp(dir=run, prefix='silu-source-'))
-        entry = stage(source, staged, aligned=aligned, l0=split, layer=layer, head=head, layers=layers)
+        staged = prepared or Path(tempfile.mkdtemp(dir=run, prefix='silu-source-'))
+        entry = (staged / EXPORTER if prepared else
+                 stage(source, staged, aligned=aligned, l0=split, layer=layer, head=head, layers=layers))
         print(f'SiluPatch model and exporter for review: {staged}', flush=True)
     # The owner's exporter deletes its relative export directory on startup.
     with tempfile.TemporaryDirectory(dir=run, prefix='export-') as temp:
@@ -191,7 +205,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         argv = [sys.executable, '-u', str(entry), 'mode=export', 'quant_mode=enable',
                 f'num_hidden_layers={layers}', 'seq_len=64', 'topK=16', f'config={export_config}', 'quant_bits=4']
         if not uses_baseline:
-            fixture = valid19_inputs(work / 'inputs', reference, cfg, conv_control, physical_history=full)
+            fixture = prefill_inputs(work / 'inputs', reference, cfg, conv_control, physical_history=full)
         else:
             inputs = work / 'inputs'
             inputs.mkdir()
@@ -253,7 +267,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 staged_files.append('utils.py')
             if split:
                 staged_files.append('models/export_model_wrapper_qwen3_5_moe.py')
-            variant['silu_patch']['source_sha256'] = {n: sha(staged / n) for n in staged_files}
+            variant['silu_patch']['source_sha256'] = (full_source_hashes(staged) if full else
+                                                     {n: sha(staged / n) for n in staged_files})
         abi = inspect_input_shape(air)
         files = [identity(p, work) for p in sorted(air.parent.rglob('*')) if p.is_file()]
         files.extend(identity(p, work) for p in sorted((work / 'inputs').glob('*.bin')))
@@ -264,7 +279,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 raise ValueError('The generated input files differ from the original four-layer fixture')
         if full:
             from qwen35_moe_dflash.target.prefill_t64.native_40 import pack_goldens
-            variant['goldens'], variant['tokens'] = pack_goldens(reference, cpu_run or run, work)
+            variant['goldens'], variant['tokens'] = pack_goldens(reference, run, work)
             files.extend(r for backend in variant['goldens'].values() for r in backend.values())
             files.append(variant['tokens'])
         if split:
@@ -371,7 +386,7 @@ def compile_omg(out, air_path, ddk, diagnosis, platform, *, use_origin_format=Tr
     cmd = [*launcher, *argv]
     command = f'(cd {shlex.quote(str(out))} && {shlex.join(cmd)})'
     invocation = f'{command}\nOMG SOC_VERSION={env.get("SOC_VERSION", "<unset>")}'
-    print(f'{invocation}\nOMG log: {log_path}', flush=True)
+    print(f'[编译 OMC] {out / air_path}\n{invocation}\nOMG log: {log_path}', flush=True)
     with _omg_ipc_environment(out, env) as (child, _), log_path.open('x') as log:
         print(invocation, file=log, flush=True)
         result = subprocess.run(cmd, cwd=out, env=child, stdout=log, stderr=subprocess.STDOUT)
@@ -407,7 +422,11 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
     dest = run / 'omc'
     if kind == FULL_KIND:
         report_full_disk(meta, run, incoming=False)
-    out = Path(tempfile.mkdtemp(dir=run, prefix='omg-'))
+    if kind == FULL_KIND:
+        out = run/'compile'
+        out.mkdir()
+    else:
+        out = Path(tempfile.mkdtemp(dir=run, prefix='omg-'))
     # Keep the directory component in the original FileConstant paths.
     directory = FULL_DIR if kind == FULL_KIND else EXPORT_DIR
     (out / directory).symlink_to(bundle / directory, target_is_directory=True)
@@ -559,7 +578,11 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
                                   previous_board_attempt=previous_receipt['remote'],
                                   previous_exitcode=previous_receipt['exitcode'])
     runtime = read_json(config.parent / read_json(config)['assets'])['environment']
-    out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
+    if kind == FULL_KIND:
+        out = run/'replay'
+        out.mkdir()
+    else:
+        out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
     save_json(out / 'io.json', io)
     print(f'{kind} board attempt: {out}', flush=True)
     try:
@@ -592,6 +615,7 @@ def main():
     parser.add_argument('action', choices=('air', 'compile', 'board', 'log', 'audit', 'reference'))
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--source', type=Path)
+    parser.add_argument('--prepared-source', type=Path, help='run the edited aligned40 exporter and model directly')
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--conv-control', type=Path)
     parser.add_argument('--config', type=Path)
@@ -626,7 +650,7 @@ def main():
         capture_and_cpu(base, (args.reference or base/'reference').resolve(), args.source.resolve(), args.config)
         return
     if args.aligned40 and (args.inputs or args.input_map or args.conv_control):
-        parser.error('the 40-layer comparison uses the inputs from its own valid19 capture')
+        parser.error('the 40-layer comparison uses inputs from its own 310P capture')
     if args.aligned40 and (args.baseline or args.baseline_if_available or args.action == 'audit'):
         parser.error('select the measured 40-layer capture with --reference for --aligned40')
     if args.action == 'audit':
@@ -644,12 +668,9 @@ def main():
         four_precision(checked(bundle, record))
         return
     run = output_path(base / 'no-platform') if args.aligned and args.action != 'air' else base
-    if args.aligned40:
-        run = output_path(base / FULL_GRAPH_RUN)
-        bundle = run / 'air'
     if args.action == 'log':
         for folder in (run, base):
-            logs = [p for p in (*folder.glob('omg-*/compile.log'), folder / 'omc/compile.log') if p.is_file()]
+            logs = [p for p in (*folder.glob('omg-*/compile.log'), folder / 'omc/compile.log', folder / 'compile/compile.log') if p.is_file()]
             if logs:
                 newest = max(logs, key=lambda p: (p.stat().st_mtime_ns, p))
                 print(compile_log_text(newest))
@@ -664,7 +685,7 @@ def main():
         if kind in (KIND, FULL_KIND) and (not args.source or not args.reference):
             parser.error('native export requires --source and --reference')
         export(run, args.source, args.config, args.reference, args.conv_control, kind=kind, baseline=args.baseline,
-               cpu_run=base if args.aligned40 else None)
+               prepared=args.prepared_source.resolve(strict=True) if args.prepared_source else None)
         return
     if not args.ddk:
         parser.error('compile and board require --ddk')

@@ -10,7 +10,7 @@ import torch
 from .. import prefill_fixture as pf
 from ..layer_probe.capture import bound, cpu
 from ..layer_probe.common import read_array, save_json, sha
-from .chain_reference import VALID19_IDS_SHA256, run_segment_prefill
+from .chain_reference import driver_prompt, run_segment_prefill
 from .cpu_reference import CpuPrefill, verify_floating_weights
 from .decoder_cases import groups, output_names, state_roles
 from .decoder_four_boundary import output_shape
@@ -21,7 +21,7 @@ from .split_cpu_reference import decoder
 def capture(root, mode, phase, source, config):
     schedule = groups(mode)
     layers = [i for group in schedule for i in group]
-    rows, valid = (64, 19) if phase == 'prefill' else (1, 1)
+    rows = 64 if phase == 'prefill' else 1
     wanted = {k for group in schedule for k in output_names(group, group[-1] == layers[-1])}
     report = dict(mode=mode, phase=phase, layers=layers, inputs={}, outputs={},
                   config_sha256=sha(config), source_sha256=sha(source/'inference_segment.py'))
@@ -55,6 +55,11 @@ def capture(root, mode, phase, source, config):
             if driver is None:
                 raise ValueError('Missing segmented inference driver')
             ctx = driver.f_locals
+            prompt, prompt_ids = driver_prompt(ctx, frame)
+            length = prompt_ids.shape[1]
+            valid = length if rows == 64 else 1
+            report.update(prompt=prompt, prompt_length=length, valid_rows=valid, physical_rows=rows,
+                          logits_position=length-1 if rows == 64 else length)
             if ctx['args'].pseudo_quant or ctx['args'].quant_bits != 4:
                 raise ValueError('Expected original W4 inference')
             for key in ('model_file', 'quanted_pth'):
@@ -69,17 +74,17 @@ def capture(root, mode, phase, source, config):
                 v = bound(mod, args, kwargs)
                 ids = cpu(v['input_ids'])
                 if tuple(ids.shape) == (1, 64):
-                    if hashlib.sha256(ids.numpy().astype('<i4').tobytes()).hexdigest() != VALID19_IDS_SHA256:
-                        raise ValueError('Prompt differs from the T64 valid19 fixture')
+                    if not torch.equal(ids[:, :length], prompt_ids):
+                        raise ValueError('Padded wrapper input disagrees with the YAML prompt tokens')
                 elif tuple(ids.shape) != (1, 1) or int(ids.item()) != prefill_token:
                     raise ValueError('Decode input differs from the observed prefill prediction')
                 active = ids.shape[1] == rows
                 if not active:
                     return
-                if (list(v['allQLen']) != [19 if rows == 64 else 20]
+                if (list(v['allQLen']) != [length if rows == 64 else length+1]
                         or cpu(v['effective_length']).reshape(-1).tolist() != [valid]):
                     raise ValueError('Unexpected query or effective length')
-                positions = list(range(64)) if rows == 64 else [19]
+                positions = list(range(64)) if rows == 64 else [length]
                 for key in ('position_ids', 'new_kv_cache_pos'):
                     if cpu(v[key]).flatten().tolist() != positions:
                         raise ValueError(f'Unexpected {phase} {key}')
@@ -177,8 +182,9 @@ def cpu_reference(root, ref, source):
         return torch.from_numpy(read_array(root, ref['inputs'][key]))
     controls = {k: tensor(k) for k in ('attention_mask', 'new_kv_cache_pos', 'position_ids')}
     controls['new_kv_cache_pos'] = controls['new_kv_cache_pos'].flatten()
+    controls['valid_rows'] = ref['valid_rows']
     if ref['phase'] == 'decode':
-        controls['kv_length'] = 20
+        controls['kv_length'] = ref['prompt_length'] + 1
     hidden = tensor('hidden')
     owner = pf.import_source(source)
     loader = sys.modules[owner.Qwen3_5MoeForCausalLMWrapper.__module__].load_npu_model
@@ -195,7 +201,7 @@ def cpu_reference(root, ref, source):
         cpu_model = CpuPrefill(SimpleNamespace(model=model), ref['quanted_pth'])
         for i, block in zip(group, model.model.layers, strict=True):
             if i == ref['split_layer'] and ref['phase'] == 'prefill':
-                hidden[:, 19:] = 0
+                hidden[:, ref['valid_rows']:] = 0
             values = decoder(cpu_model, block, i, hidden, controls, i == layers[-1],
                              before=[tensor(name) for name in state_roles(i)])
             hidden = values.pop('decoder_hidden')

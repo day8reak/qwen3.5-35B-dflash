@@ -4,6 +4,14 @@ set -euo pipefail
 export REPO_DIR="$(cd -- "$(dirname -- "$0")/../../.." && pwd)"
 export QWEN35_TRACE_COMMANDS=1
 cd "$REPO_DIR"
+case "${1:-}" in
+    aligned40-air|aligned40-board)
+        action=prepare
+        [[ $1 != aligned40-board ]] || action=board
+        shift
+        exec bash targets/cpro/scripts/decoder_compare.sh "$action" --mode 40 --phase prefill "$@"
+        ;;
+esac
 tests="${AI_RUN_DIR:?}/target/tests"
 run="${DECODER4_RUN:-$tests/decoder4-single-t64-valid19-01}"
 tool=targets/cpro/tools/decoder4_prefill.py
@@ -92,21 +100,6 @@ case "${1:-}" in
             args+=(--diagnostic-dir "$SILU_DIAGNOSIS")
         fi
         in_env custom_pypto python -u "$diagnostic_tool" "${args[@]}"
-        ;;
-    aligned40-air|aligned40-board)
-        run="${ALIGNED40_RUN:-$tests/prefill40-original-aligned-silu-softplus-t64-valid19-01}"
-        tool=targets/cpro/tools/decoder4_original.py
-        if [[ $1 == aligned40-air ]]; then
-            ref="${ALIGNED40_CAPTURE:-$run/reference}"
-            in_env qwen3_5_w4 python -u "$tool" reference --aligned40 --run "$run" --reference "$ref" \
-                --source "${TARGET_SOURCE:?}" --config "${NZ_CONFIG:-config/qwen3_5_moe.yaml}"
-            in_env qwen3_5_cpro python -u "$tool" air --aligned40 --run "$run" --reference "$ref" \
-                --source "${CPRO_SOURCE:?}" --config "${TARGET_CONFIG:-config/qwen3_5_moe.yaml}"
-        else
-            in_env custom_pypto python -u "$tool" board --aligned40 --run "$run" --ddk "${CPRO_DDK_ROOT:?}" \
-                --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}" \
-                --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
-        fi
         ;;
     original-golden) golden_78 ;;
     aligned-air|aligned-compile|aligned-board|aligned-compare|aligned-log|original-air|original-compile|original-board|original-compare|original-log)

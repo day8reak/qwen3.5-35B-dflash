@@ -4,6 +4,7 @@ import math
 import os
 import re
 import shlex
+import subprocess
 import tempfile
 import uuid
 
@@ -95,7 +96,7 @@ def runtime_slots(native, direction, specs, *, equivalent_inputs=False):
 
 
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
-           external_weights=(), release_after_pull=False, hdc_timeout=660):
+           external_weights=(), release_after_pull=True, hdc_timeout=660):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -118,6 +119,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
     hdc = Hdc(*env, out, hdc_timeout)
     held = uncertain = False
     try:
+        print(f'[{name}] 检查板卡、固件版本和板端剩余空间', flush=True)
         _acquire_global(hdc, GLOBAL_LOCK, token, 0)
         held = True
         _, fw = hdc.shell('param get const.ohos.fullname', 'firmware')
@@ -132,14 +134,11 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         if release_after_pull:
             create += f' && echo {token} > {remote}/.qwen35-hdc-owner'
         hdc.shell(create, 'create-board-dir')
-        if sidecars:
-            dirs = sorted({str(_board_path(str(remote / rel.parent))) for _, rel, _ in sidecars})
-            hdc.shell('mkdir -p ' + shlex.join(dirs), 'weight-directories')
-        hdc.send(model, remote/'model.omc')
+        model_files = [(model, 'model.omc'), *((path, rel) for path, rel, _ in sidecars)]
         if slot_config is not None:
-            # Restore-only also needs external model weights. Upload them once, before querying the slots.
-            for file, rel, _ in sidecars:
-                hdc.send(file, remote/rel)
+            # The descriptor probe must restore the model before runtime slots can order the inputs.
+            print(f'[{name}] 向板端传输 OMC 和 {len(sidecars)} 个外置权重文件，准备读取模型 I/O 槽位', flush=True)
+            hdc.send_tree(model_files, remote)
             native = observe_model_io(hdc, slot_config, runtime, remote, out, remote/'model.omc', model_sha, tool.parent)
             slots = {k: runtime_slots(native, k, v) for k, v in [('inputs', operands), ('outputs', outputs)]}
             save_json(out/'slots.json', slots)
@@ -173,13 +172,16 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         receipt.update(argv=argv, input_hashes=[s['sha256'] for s in operands])
         uploads = [*zip(files, input_names), (script, 'run.sh'), (hashes, 'files.sha256')]
         if slot_config is None:
-            uploads.extend((path, rel) for path, rel, _ in sidecars)
-        for source, dest in uploads:
-            hdc.send(source, remote/dest)
+            uploads.extend(model_files)
+        content = f'OMC、{len(sidecars)} 个外置权重文件、' if slot_config is None else ''
+        print(f'[{name}] 向板端传输{content}{len(files)} 个输入和执行脚本 → {remote}', flush=True)
+        hdc.send_tree(uploads, remote)
+        print(f'[{name}] 在板端核对模型、权重和输入文件的 SHA-256', flush=True)
         hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
         receipt['status'] = 'RUN_REQUESTED'
         save_json(out/'result.json', receipt)
         uncertain = True
+        print(f'[{name}] 在板端执行 HIAI V2 推理 → {remote}/run.sh', flush=True)
         _, log = hdc.shell(f'cd {remote} && {{ sh run.sh; test -s tool.exitcode; }}', 'v2-execute')
         _, code = hdc.shell(f'cat {remote}/tool.exitcode', 'v2-exitcode')
         receipt['exitcode'] = int(code)
@@ -187,19 +189,18 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         if receipt['exitcode']:
             raise RuntimeError(f'{name}: HIAI V2 exited {code} in {remote}. Receipt: {out}/result.json\n{log}')
         receipt['model_execution'] = 'EXECUTED'
-        size_filter = f" -size {outputs[0]['bytes']}c" if len(outputs) == 1 else ''
-        _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f{size_filter} -exec sha256sum {{}} \\;', 'output-hash')
+        print(f'[{name}] 将整个输出目录拉回服务器并校验 {len(outputs)} 个输出槽 → {out}/outputs', flush=True)
+        _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f -exec sha256sum {{}} \\;', 'output-hash')
         hash_by_file = {name[2:]: digest for digest, name in
                         re.findall(r'^([0-9a-f]{64})\s+(\./[^\r\n]+)$', listing, re.M)}
-        if len(outputs) == 1 and len(hash_by_file) == 1:
-            names = list(hash_by_file)
+        received = out/'outputs'
+        hdc.receive_tree(remote/'outputs', received, hash_by_file)
+        inventory = [dict(path='outputs/' + n, bytes=(received/n).stat().st_size) for n in hash_by_file]
+        candidates = [row['path'] for row in inventory if row['bytes'] == outputs[0]['bytes']]
+        if len(outputs) == 1 and len(candidates) == 1:
+            names = [candidates[0].removeprefix('outputs/')]
         else:
-            # The two SiLU wires can have the same byte size. Use the board tool's
-            # explicit output[index] mapping, even when filenames happen to be numbered.
             _, logs = hdc.shell(f'cat {remote}/tool.stdout', 'output-slots')
-            _, sizes = hdc.shell(f'cd {remote}/outputs && find . -type f -exec wc -c {{}} \\;', 'output-sizes')
-            inventory = [dict(path='outputs/' + n, bytes=int(sz)) for sz, n in
-                         re.findall(r'^\s*(\d+)\s+\./([^\r\n]+)$', sizes, re.M) if n in hash_by_file]
             mapping = _logged_slots(logs.encode(), dict(board_attempt=str(remote)), outputs, inventory)
             if mapping['status'] != 'BOUND_TO_COMPLETE_EXPLICIT_TOOL_LOG':
                 raise ValueError(f"{name}: {mapping['reason']}; device logs at {remote}/tool.stdout")
@@ -208,19 +209,21 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         for i, (filename, spec) in enumerate(zip(names, outputs, strict=True)):
             compiled = output_order[i]
             path = 'output.bin' if len(outputs) == 1 else f'output_{compiled}.bin'
-            hdc.receive(_board_path(str(remote/'outputs'/filename)), out/path)
-            row = dict(path=path, bytes=spec['bytes'], sha256=hash_by_file[filename])
-            checked(out, row)
-            retrieved[compiled] = row
+            if (received/filename).stat().st_size != spec['bytes']:
+                raise ValueError(f'{name}: {filename} differs from the expected output byte count')
+            os.link(received/filename, out/path)
+            retrieved[compiled] = dict(path=path, bytes=spec['bytes'], sha256=hash_by_file[filename])
         receipt.update(status='EXECUTED', outputs=retrieved)
         if len(outputs) == 1:
             receipt['output'] = retrieved[0]
         if release_after_pull:
             save_json(out/'result.json', receipt)
             try:
+                print(f'[{name}] 输出已回收并核对，清理本次板端执行目录 {remote}', flush=True)
                 _cleanup_remote(hdc, remote, token)
                 receipt['board_cleanup'] = 'REMOVED'
-            except (RuntimeError, OSError) as exc:
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                receipt['board_cleanup'] = 'UNCONFIRMED'
                 receipt['board_cleanup_error'] = str(exc)
                 print(f'{name}: outputs verified; board cleanup failed at {remote}: {exc}', flush=True)
     except BaseException as exc:

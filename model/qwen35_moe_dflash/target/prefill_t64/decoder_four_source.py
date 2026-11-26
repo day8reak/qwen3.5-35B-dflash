@@ -3,10 +3,6 @@ import ast
 from difflib import SequenceMatcher
 from textwrap import indent
 
-from .chain_air import stage_cpro_source
-from .prepare import EXPORTER, MODELING, WRAPPER
-from .source_wrapper import four_decoder_hidden_wrapper
-
 
 def preserve_source(original, adapted):
     """Apply changed statements to the original text, retaining comments in unchanged code."""
@@ -48,6 +44,10 @@ def preserve_source(original, adapted):
 
 
 def stage(source, dest):
+    from .chain_air import stage_cpro_source
+    from .prepare import EXPORTER, MODELING, WRAPPER
+    from .source_wrapper import four_decoder_hidden_wrapper
+
     stage_cpro_source(source, dest, four_decoder_hidden_wrapper)
     for name in (MODELING, WRAPPER, EXPORTER, 'utils.py'):
         path = dest / name

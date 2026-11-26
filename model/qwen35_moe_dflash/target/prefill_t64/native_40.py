@@ -1,4 +1,4 @@
-"""T64 valid19 references and public outputs for one original CPro L0–L39 prefill."""
+"""T64 YAML-prompt references and public outputs for one original CPro L0–L39 prefill."""
 import json
 from pathlib import Path
 import shutil
@@ -7,9 +7,9 @@ import tempfile
 import numpy as np
 
 from ..layer_probe.common import checked, identity, read_array, save_json, sha
-from .chain_reference import BASIS, LAYERS
+from .chain_reference import YAML_BASIS, LAYERS
 from .decoder_four_boundary import output_roles, output_shape, state_roles
-from .l0_split import CPU_BASIS, score
+from .l0_split import YAML_CPU_BASIS, score
 
 
 def read(path):
@@ -23,12 +23,13 @@ def capture_and_cpu(run, reference, source, config):
     if reference == run / 'reference' and not reference.exists():
         with tempfile.TemporaryDirectory(dir=run, prefix='capture-') as tmp:
             staged = Path(tmp) / '310p'
-            capture(source, config, None, staged, states=True)
+            capture(source, config, None, staged, states=True, yaml_prompt=True)
             staged.rename(reference)
     ref = read(reference / 'manifest.json')
     states = {role for i in range(LAYERS) for role in state_roles(i)}
-    if ((ref['reference'], ref['status'], ref['physical_rows'], ref['valid_rows'], ref['output_pos'])
-            != (BASIS, 'CAPTURED', 64, 19, 18)
+    valid = ref['valid_rows']
+    if ((ref['reference'], ref['status'], ref['physical_rows'], ref['output_pos'])
+            != (YAML_BASIS, 'CAPTURED', 64, valid-1) or not 1 <= valid <= 64
             or [b['layer'] for b in ref['blocks']] != list(range(LAYERS))
             or not states.issubset(ref['outputs'])
             or ref['source_sha256'] != sha(source / 'inference_segment.py')
@@ -46,7 +47,7 @@ def pack_goldens(reference, run, work):
     for i in range(LAYERS):
         cpu = run / f'L{i:02d}/cpu'
         meta = read(cpu / 'manifest.json')
-        if (meta['basis'], meta['mode'], meta['layer'], meta['capture_sha256']) != (CPU_BASIS, '40', i, capture_sha):
+        if (meta['basis'], meta['mode'], meta['layer'], meta['capture_sha256']) != (YAML_CPU_BASIS, '40', i, capture_sha):
             raise ValueError(f'{cpu}: reference belongs to another layer or capture')
         roles = state_roles(i) + (('logits',) if i == LAYERS - 1 else ())
         for name in roles:
@@ -75,6 +76,7 @@ def compare(bundle, replay, write_matrices):
     roles = output_roles(io['outputs'], meta['boundary']['outputs'])
     pairs = {b: {r: {} for r in ('cpu', '310p', 'cpro')} for b in ('cpu', '310p', 'cpro')}
     predictions = {}
+    valid = meta['fixture']['valid_rows']
     pieces = read(checked(bundle, meta['tokens']))['pieces']
     if len(pieces) != output_shape('logits')[-1]:
         raise ValueError('Vocabulary and single-token decode table sizes differ')
@@ -90,14 +92,15 @@ def compare(bundle, replay, write_matrices):
         for b, x in values.items():
             for r, y in values.items():
                 pairs[b][r].update(score({name: x}, {name: y}, {name: (list(shape), spec['dtype'])},
-                                         reference_is_310p=r == '310p'))
-    matrices = replay / 'matrices.csv'
+                                         reference_is_310p=r == '310p', valid_rows=valid))
+    matrices = replay.parent / 'matrices.csv'
+    print(f'[40/prefill] 汇总 logits 与各层状态的三端精度矩阵 → {matrices}', flush=True)
     write_matrices(matrices, pairs)
     scores = pairs['cpro']['310p']
     failed = [name for name, scopes in scores.items() if any(not m['passed'] for m in scopes.values())]
-    report = dict(status='FAILED_ACCURACY' if failed else 'PASSED', physical_rows=64, valid_rows=19,
-                  output_pos=18, predictions=predictions, failed=failed, cpro_vs_310p=scores,
-                  matrices=identity(matrices, replay), conv_state_control=meta['fixture']['conv_state_control'])
-    save_json(replay / 'comparison.json', report)
-    print(f'First token: {predictions}\n{report["status"]} {replay / "comparison.json"}', flush=True)
+    report = dict(status='FAILED_ACCURACY' if failed else 'PASSED', physical_rows=64, valid_rows=valid,
+                  prompt=meta['fixture']['prompt'], output_pos=valid-1, predictions=predictions, failed=failed, cpro_vs_310p=scores,
+                  matrices=identity(matrices, replay.parent), conv_state_control=meta['fixture']['conv_state_control'])
+    save_json(replay.parent / 'comparison.json', report)
+    print(f'First token: {predictions}\n{report["status"]} {replay.parent / "comparison.json"}', flush=True)
     return not failed

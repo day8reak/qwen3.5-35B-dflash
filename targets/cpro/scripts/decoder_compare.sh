@@ -3,8 +3,9 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-decoder_compare.sh {prepare|board|plan} --mode {linear|full|4|40|layerwise} --phase {prefill|decode}
-                   [--run DIR] [--remote-run DIR] [--recovery]
+decoder_compare.sh {source|prepare|board|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
+                   [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery]
+source      Generate or select the editable CPro source directory.
 prepare     On the 310P/export host: capture reference, compute CPU golden, export static AIR.
 board       On the DDK host: fetch, compile, run on device and compare CPU / 310P / CPro.
 plan        Print the layers, sequence length and number of OMCs without running the model.
@@ -15,7 +16,7 @@ HELP
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
-    prepare|board|plan) action=$1; shift ;;
+    source|prepare|board|plan) action=$1; shift ;;
     *) usage >&2; exit 2 ;;
 esac
 
@@ -29,22 +30,9 @@ if [[ -f $env_file || -n ${DECODER_ENV:-} ]]; then
 fi
 export REPO_DIR="$repo"
 export PYTHONDONTWRITEBYTECODE=1
+if [[ $action == prepare || $action == board ]]; then
+    export QWEN35_TRACE_COMMANDS=${QWEN35_TRACE_COMMANDS:-1}
+fi
 tool="$repo/targets/cpro/tools/decoder_cases.py"
 
-in_env() {
-    local name=$1
-    shift
-    if [[ $name == current || ${CONDA_DEFAULT_ENV:-} == "$name" ]]; then
-        python -u "$tool" "$@"
-    else
-        conda run --no-capture-output -n "$name" python -u "$tool" "$@"
-    fi
-}
-case "$action" in
-    plan) python3 "$tool" plan "$@" ;;
-    prepare)
-        in_env "${DECODER_NZ_ENV:-qwen3_5_w4}" reference "$@"
-        in_env "${DECODER_EXPORT_ENV:-qwen3_5_cpro}" air "$@"
-        ;;
-    board) in_env "${DECODER_BOARD_ENV:-custom_pypto}" board "$@" ;;
-esac
+exec python3 "$tool" "$action" "$@"

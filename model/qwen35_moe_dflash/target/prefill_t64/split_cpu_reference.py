@@ -13,9 +13,9 @@ import torch
 from ...common.artifacts import output_path, share_for_transfer
 from .. import prefill_fixture as pf
 from ..layer_probe.common import checked, read_array, save_json, sha
-from .chain_reference import VALID19_IDS_SHA256
+from .chain_reference import VALID19_IDS_SHA256, YAML_BASIS
 from .cpu_reference import CpuPrefill, norm, verify_floating_weights
-from .l0_split import CPU_BASIS, contracts
+from .l0_split import CPU_BASIS, YAML_CPU_BASIS, contracts
 from . import last4
 from .segment_prefix import tensor_record
 
@@ -23,8 +23,9 @@ from .segment_prefix import tensor_record
 def decoder(cpu, block, i, hidden, controls, with_head, *, before=None):
     names = (('key_cache', 'value_cache') if i % 4 == 3 else ('conv_state', 'recurrent_state'))
     roles = [f'{name}_{i}' for name in names]
-    valid = 1 if hidden.shape[1] == 1 else 19
-    if before is None and valid == 1:
+    decode = hidden.shape[1] == 1
+    valid = controls.get('valid_rows', 1 if decode else 19)
+    if before is None and decode:
         raise ValueError("Decode requires the observed prefill caches")
     if before is None:
         before = [torch.zeros(contracts(i, False)[role][0], dtype=torch.float16) for role in roles]
@@ -35,7 +36,7 @@ def decoder(cpu, block, i, hidden, controls, with_head, *, before=None):
         if not torch.equal(attn.block_table, torch.arange(64).reshape(1, 64)):
             raise ValueError(f'L{i}: expected the sequential cache page table')
         mix, states = cpu.attention(x, attn, prefix + 'self_attn', before, controls,
-                                    valid_length=None if valid == 1 else valid)
+                                    valid_length=None if decode else valid)
     else:
         # The QKV projection sees the physical input. Only valid rows advance GDR.
         mix, states = cpu.gdn(x, block.linear_attn, prefix + 'linear_attn', before, valid_length=valid)
@@ -53,17 +54,21 @@ def decoder(cpu, block, i, hidden, controls, with_head, *, before=None):
 @torch.inference_mode()
 def prepare(run, mode, capture, source, *, per_layer_air=True):
     m = json.loads((capture/'manifest.json').read_bytes())
-    if (m['status'], m['physical_rows'], m['valid_rows'], m['output_pos']) != ('CAPTURED', 64, 19, 18):
-        raise ValueError('Expected a complete T64/valid19 310P reference')
+    valid = m['valid_rows']
+    yaml_prompt = m.get('reference') == YAML_BASIS and not per_layer_air
+    if ((m['status'], m['physical_rows'], m['output_pos']) != ('CAPTURED', 64, valid-1)
+            or not 1 <= valid <= 64 or (not yaml_prompt and valid != 19)):
+        raise ValueError('Unexpected 310P prefill reference length or readout position')
     cfg = m.get('resources', m)
     checkpoint = Path(cfg['model_file'])
     inputs = m['inputs']
     ids = read_array(capture, inputs['input_ids'])
-    if hashlib.sha256(ids.astype('<i4').tobytes()).hexdigest() != VALID19_IDS_SHA256:
+    if not yaml_prompt and hashlib.sha256(ids.astype('<i4').tobytes()).hexdigest() != VALID19_IDS_SHA256:
         raise ValueError('Unexpected valid19 prompt')
     def tensor(row):
         return torch.from_numpy(read_array(capture, row))
     controls = {key: tensor(inputs[key]) for key in ('position_ids', 'new_kv_cache_pos', 'attention_mask')}
+    controls['valid_rows'] = valid
     layers = [0] if mode == 'linear' else ([3] if mode == 'full' else list(range(40)))
     entry = m['boundaries']['2'] if mode == 'full' else inputs['embedding']
     hidden = tensor(entry)
@@ -100,7 +105,7 @@ def prepare(run, mode, capture, source, *, per_layer_air=True):
         cpu = None
         for local, i in enumerate(group):
             if mode == '40' and i == m['split_layer']:
-                hidden[:, 19:] = 0
+                hidden[:, valid:] = 0
             case = run if mode == 'linear' else run/f'L{i:02d}'
             head = i == layers[-1]
             prefix_only = tail and i < 36
@@ -112,7 +117,7 @@ def prepare(run, mode, capture, source, *, per_layer_air=True):
                         capture_hash, i, head, mode != '40'):
                     raise ValueError(f'L{i}: AIR and CPU input boundaries differ')
             dest = case/'cpu'
-            stamp = dict(basis=CPU_BASIS, capture_sha256=capture_hash, mode=mode, layer=i,
+            stamp = dict(basis=YAML_CPU_BASIS if yaml_prompt else CPU_BASIS, capture_sha256=capture_hash, mode=mode, layer=i,
                          layer_entry_sha256=hashlib.sha256(hidden.contiguous().numpy().tobytes()).hexdigest())
             if dest.is_dir() and not prefix_only:
                 old = json.loads((dest/'manifest.json').read_bytes())
@@ -162,7 +167,7 @@ def prepare(run, mode, capture, source, *, per_layer_air=True):
                         raise ValueError(f'L{i}: invalid CPU {role}')
                     records[role] = tensor_record(staged, role, value)
                 save_json(staged/'manifest.json', dict(**stamp, outputs=records,
-                          padding='zero attention contribution outside valid19; physical residual and MoE propagated'))
+                          padding=f'zero attention contribution outside valid{valid}; physical residual and MoE propagated'))
                 share_for_transfer(staged)
                 staged.rename(dest)
             hidden = outputs['decoder_hidden']

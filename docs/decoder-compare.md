@@ -1,51 +1,83 @@
 # 完整 decoder 的三端精度对比
 
-在同一版本的仓库根目录运行。每台机器只执行与自己角色对应的一条命令。以 40 层逐层比较、S=64 为例。
+78 采集 YAML 输入对应的 310P 参考、计算 CPU golden 并导出 CPro AIR。35 编译 OMC、在板上运行，把 CPU、310P、CPro 的结果写成 3×3 矩阵。两机使用相同版本的仓库。
 
-**310P / 导出机（78）**
+## 一次配置
 
-```bash
-bash targets/cpro/scripts/decoder_compare.sh prepare --mode layerwise --phase prefill
-```
-
-**DDK / 上板机（35）**
+在每台主机的仓库根目录执行一次，然后编辑该机的 `decoder.env`。已有配置时直接编辑已有文件。
 
 ```bash
-bash targets/cpro/scripts/decoder_compare.sh board --mode layerwise --phase prefill --recovery
+mkdir -p ~/.config/qwen35-cpro
+cp -n targets/cpro/scripts/decoder.env.example ~/.config/qwen35-cpro/decoder.env
 ```
 
-| `--mode` | CPro 计算范围 | 每个 phase 的 OMC 数 |
-|---|---|---:|
-| `linear` | L0 完整 decoder，包括线性 attention、MoE、残差，接原模型最终 norm/head | 1 |
-| `full` | 用实测 L3 入口运行 L3 完整 decoder，接最终 norm/head | 1 |
-| `4` | L0–L3 连续运行，接最终 norm/head | 1 |
-| `40` | L0–L39 连续运行，接最终 norm/head | 1 |
-| `layerwise` | 按全局层号加载权重，每个完整 decoder 一个 OMC；L39 内含最终 norm/head | 40 |
+| 位置 | 配置 |
+|---|---|
+| 两机 | `AI_RUN_DIR` 是该机可写的运行根目录。设置相同的 `DECODER_MODE`、`DECODER_PHASE`。命令行的 `--mode`、`--phase` 可覆盖本次选择。 |
+| 78 | `TARGET_SOURCE` 是含 `inference_segment.py` 的 310P 工程，`CPRO_SOURCE` 是原始 CPro 工程。两份配置 `NZ_CONFIG`、`TARGET_CONFIG` 默认各自指向对应工程的 `config/qwen3_5_moe.yaml`。使用同一份 YAML 时可将两项设为同一绝对路径。 |
+| 35 | 加载 DDK 环境，设置 `CPRO_DDK_ROOT`、HDC 服务地址 `BIP` 和设备序列号 `SN`。DDK 需要原模型算子及 FP16 输入输出的 SiluPatch、SoftplusPatch。运行配置默认是 `$AI_RUN_DIR/runtime/runtime.json`。 |
+| 35 获取 AIR | 配置 SSH 的 `air` 端点，首次可执行 `python targets/cpro/scripts/pull_artifacts.py --init AIR主机名 OMC主机名`。如果两机目录不同，设置 `DECODER_REMOTE_RUN_ROOT` 指向 **78 的 case 父目录**。共享同一绝对路径时直接读取本地导出。 |
 
-`--phase prefill` 使用原 19-token 提示词、物理长度 64、logits 读出位置 18。`--phase decode` 让原 310P 驱动先跑这个 prefill，再捕获第一个生成 token、位置 19、有效长度 1、累计长度 20，以及该次调用每层实际收到的历史状态。两种形状各自导出静态 AIR。小范围的 logits 是在所选范围的末层接最终 head 得到的诊断读数。
+入口也会读取已导出的环境变量。可用 `DECODER_ENV=/绝对路径/decoder.env` 指定配置文件。示例文件列出了三个 conda 环境的默认名以及可覆盖的工具路径；环境名设为 `current` 会用当前 Python。[详细环境配置](environment-setup.md)
 
-只看将要导出的层和图数时，执行 `bash targets/cpro/scripts/decoder_compare.sh plan --mode 4 --phase decode`，普通 Python 3 即可。
+### 输入 prompt
 
-## 配置一次
+编辑 78 上 `NZ_CONFIG` 的 `prompts`。每次对比取第一条，例如
 
-脚本读取已导出的环境变量。也可以在每台主机的 `~/.config/qwen35-cpro/decoder.env` 保存该机的 Bash 变量；如已设置 `XDG_CONFIG_HOME`，配置文件位于其下的 `qwen35-cpro/decoder.env`。可用 `DECODER_ENV` 指定其它文件。权重、DDK 和设备信息由各自的环境提供。
+```yaml
+prompts:
+  - 世界上最高的山是哪座山？
+```
 
-| 主机 | 必需配置 | 可按环境调整 |
-|---|---|---|
-| 两机 | `AI_RUN_DIR`，本机可写的绝对路径 | `--run DIR` 或 `DECODER_RUN` 选择该根下的批次 |
-| 78 | `TARGET_SOURCE` 指向含 `inference_segment.py`、`inference.py` 的原 310P 工程；`CPRO_SOURCE` 指向原 CPro 工程。两个 YAML 指向同一模型及 W4 权重 | `NZ_CONFIG`、`TARGET_CONFIG` 默认分别为源码下的 `config/qwen3_5_moe.yaml`。两个 Python 环境默认是 `qwen3_5_w4`、`qwen3_5_cpro`，可用 `DECODER_NZ_ENV`、`DECODER_EXPORT_ENV` 改名 |
-| 35 | 加载目标 DDK 环境，设置 `CPRO_DDK_ROOT`、`BIP`（HDC 服务端 host:port）、`SN`。DDK 中已安装 FP16 → FP16 的 SiluPatch、SoftplusPatch 及原模型算子 | `HDC`、`CPRO_BOARD_TOOL`、`DECODER_BOARD_ENV`（默认 `custom_pypto`）、`RUNTIME_CONFIG`（默认 `$AI_RUN_DIR/runtime/runtime.json`）、`TBE_DIAGNOSIS`（默认 `$AI_RUN_DIR/common/tbe-diagnosis`） |
+原 310P 驱动用自己的 chat template 和 tokenizer 生成输入。令实际 token 数为 N，本流程支持一次 T64 prefill，即格式化后 1–64 个 token。Prefill 比较前 N 行，logits 取位置 N−1。Decode 从这次 prefill 的实际预测 token 和层状态开始，比较位置 N 的一步输出。更换 prompt 后重新运行 78 和 35 的命令即可。
 
-已激活合适的 Python 环境时，其环境名也可设为 `current`。35 默认用设备上的 `/data/local/tmp/tools_sysdbg/model_run_tool_internal` 的 HIAI V2 接口。使用不同路径时把 `CPRO_BOARD_TOOL` 设为设备上工具的绝对路径，其所需库应能从工具目录或系统库目录加载。
+### 自己维护 CPro 源码
 
-35 从已配置的 SSH `air` 端点读取 78 的产物。首次可在 35 用 `python targets/cpro/scripts/pull_artifacts.py --init AIR主机名 OMC主机名` 建立私有连接配置。如果两台机器的批次路径不同，在 35 的命令末加 `--remote-run /78上的批次绝对路径`。共享文件系统可直接使用同一批次目录。DDK 和 HDC 的初始化见[环境配置](environment-setup.md)。
+在 78 的配置中设置 `CPRO_PATCHED_SOURCE=/绝对路径/cpro-edit`，选择运行结果目录外的位置。第一次执行 `prepare` 时会从 `CPRO_SOURCE` 生成补丁后的 Python 源码、模型文件和 `source.diff`。如果想先 review 或修改，可以单独执行
 
-## 输入、输出和续跑
+```bash
+bash targets/cpro/scripts/decoder_compare.sh source
+```
 
-- `40 + prefill` 复用原 CPro wrapper 和已有 `aligned40` 入口。CPro 接收原 INT8 embedding 和 FP32 scale。报告记录反量化到 FP16 后与 310P 层入口的差异。默认沿用 `ALIGNED40_RUN` 或原批次目录。参考数据保存在批次根目录，新导出的整图、OMC 及 `replay-*/matrices.csv` 和 `comparison.json` 存在其 `conv2d/` 子目录。[整网图说明](target-prefill40-single.md)
-- 其它组合从同一个实测 310P decoder 入口 hidden 和每层实测输入状态起步。CPU 和 CPro 各自连续计算。逐层模式直接将上一张 OMC 的板端 hidden 文件作为下一张 OMC 的输入。Prefill 在原 310P 两段衔接处对齐其 padding 处理。Decode 的 `package/fixture/reference.json` 记录实际输入 token 和每份输入 cache 是否与前一次 prefill 的返回值逐字节一致。
-- 每个完整 decoder 都保留原 attention、MoE 及残差。CPro 在原源码临时副本中应用已核对的 W4 scale、RoPE、专家量化和卷积历史更新修复，使用 FP16 的两种自定义激活，在 GDN 需要 FP32 的乘法前升精度。导出时检查 W4/GDR 端口、GDR 的 chunk size 及激活的实际图节点和原生形状。
-- 除原 `aligned40` 目录外，默认批次为 `$AI_RUN_DIR/target/tests/decoder-<mode>-<phase>`。35 的 `board/matrices.csv` 给出 CPU、310P、CPro 三端的 3×3 指标矩阵，行是 actual，列是 reference。`board/comparison.json` 给出 top1 token ID、文本及未达精度阈值的张量。逐层矩阵也保存在 `board/Lxx/matrices.csv`。
-- `hidden_i` 是第 i 层最终残差；单层图还返回 `out_proj_i`，即进入第一次残差相加的 attention 输出。Prefill 比较前 19 行，decode 比较当前行。线性层比较整份 `conv_state_i`、`recurrent_state_i`。Full 层比较 K/V 的有效写入位置，并检查物理写入范围外的槽位是否逐字节保持。静态 T64 可写前两页；S1 本次只写第 0 页的 offset 19。
-- 逐层执行中断可在 35 原样重跑上面的 `--recovery` 命令。脚本核对编译产物、板卡、输入及已回收输出的哈希，复用已经完成的层。78 重新执行相同的 `prepare` 会复用完整参考和已导出的层。变更权重、DDK、自定义算子或模型代码后，为新实验指定新的 `--run`。
-- 35 下载前显示实际 AIR 包大小和所在文件系统的可用空间。OMG 还需要写 OMC、编译后权重和临时文件。仅凭 69 GiB 可用容量无法确定编译峰值；整网 prefill 入口会打印按当前包估算的剩余空间。
+之后可直接编辑该目录里的 `models/modeling_qwen3_5_moe_hiai_cpro.py`、wrapper、`utils.py` 或 `export_glm_model_qwen3_5_moe.py`。当 `CPRO_PATCHED_SOURCE` 已包含导出器和模型源码时，所有模式都从那里加载代码，重跑会保留手改内容。也可以直接指向自己维护好的兼容源码目录；其导出接口、自定义算子注册、输出形状和 dtype 需与该模式一致。权重仍从配置所指的位置加载。若只提供现成的源码目录，可省略 `CPRO_SOURCE`，在 `TARGET_CONFIG` 指定配置文件，并将相对资源路径按该目录设置或改为绝对路径。
+
+希望采用更新版的自动补丁时，给 `CPRO_PATCHED_SOURCE` 选一个新目录并执行 `source`，再对比合并自己的修改。未设置该变量时，每次 `prepare` 都从原 CPro 生成本次的 `export/source/`。
+
+## 每次运行
+
+78
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh prepare
+```
+
+35
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh board
+```
+
+| `DECODER_MODE` | 静态 OMC 数 | 范围 | Prefill 目录名 |
+|---|---:|---|---|
+| `linear` | 1 | L0 完整 linear decoder 和最终 norm/head | `1-linear-prefill-t64` |
+| `full` | 1 | 从实测 L3 入口运行完整 full decoder 和最终 norm/head | `1-full-prefill-t64` |
+| `4` | 1 | L0–L3 连续执行，再接最终 norm/head | `4-prefill-t64` |
+| `40` | 1 | L0–L39 连续执行，再接最终 norm/head | `40-prefill-t64` |
+| `layerwise` | 40 | 每层一个完整 decoder OMC，层间传递板端 hidden，L39 接最终 norm/head | `40x1-prefill-t64` |
+
+Decode 将表中目录名的 `prefill-t64` 换成 `decode-t1`。默认父目录是 `$AI_RUN_DIR/target/tests`，可用 `DECODER_RUN_ROOT` 指定 `AI_RUN_DIR` 下的其它父目录。可先用 `bash targets/cpro/scripts/decoder_compare.sh plan` 查看当前配置对应的目录和 OMC 数。
+
+## 覆盖和结果
+
+78 的普通 `prepare` 清空同一 case，重新写入 `export/`。35 的普通 `board` 清空该 case 的 `board/`，使用最新的导出做完整对比。共享目录时，78 重跑会同时清掉此 case 旧的板端结果。并行启动同一 case 的本地命令会排队。若选中的目录已经有其它用途的文件，脚本会提示选择其它父目录。
+
+- `board/matrices.csv` 给出三端的 3×3 矩阵，行是 actual，列是 reference。`board/comparison.json` 包含 prompt、logits 位置、各端预测 token 和未达阈值的张量。逐层模式还写 `board/Lxx/matrices.csv`。
+- 线性层比较完整 conv/recurrent 状态，full 层比较本次有效的 K/V，并检查物理写入区以外的缓存。小范围的 logits 是在所选层的末端接原模型 head 得到的诊断值。
+- `40 + prefill` 沿用原 CPro wrapper 和量化 embedding 入口。其它组合从实测 310P 入口 hidden 和各层状态出发，三端各自向后计算。默认补丁包括 W4 scale、RoPE、MoE、GDN 四维卷积、FP16 SiluPatch 和 SoftplusPatch。[整网 prefill 说明](target-prefill40-single.md)
+- 只有逐层上板中断需要续跑时，在同一份导出上执行 `bash targets/cpro/scripts/decoder_compare.sh board --mode layerwise --recovery`。它核对模型、设备、输入和已保存的输出，接着执行缺失层。
+
+### 板端传输和空间回收
+
+上板日志会在命令前标明当前层和操作，包括 OMG 编译、发送 OMC 和外置权重、发送输入、HIAI V2 执行、回收输出和清理。统一入口每张 OMC 用一次 `hdc file send` 发送整包，一次 `hdc file recv` 回收整个输出目录。需另行读取运行时槽序的分段诊断会先部署模型，再按探测到的槽序一次发送输入。收到的原始文件保存在本次服务器 replay 下的 `outputs/`。
+
+运行成功且输出文件清单、SHA-256、槽位、字节数全部核对后，脚本先保存 `result.json`，再删除本次 `/data/local/tmp/qwen35_step_*` 目录。回执中的 `board_cleanup=REMOVED` 表示已确认清除。如果执行或回收失败，从回执的 `remote` 字段找到保留的板端现场。

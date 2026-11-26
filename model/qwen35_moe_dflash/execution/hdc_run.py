@@ -9,16 +9,19 @@ import argparse
 from collections import deque
 from contextlib import nullcontext
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
+import shutil
 import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -491,6 +494,51 @@ class Hdc:
 
     def send(self, local, remote, label="send"):
         return self.call(["file", "send", str(local), str(remote)], label)
+
+    def send_tree(self, entries, remote):
+        """Upload one directory and install its contents in the existing run directory."""
+        with tempfile.TemporaryDirectory(dir=self.output, prefix=".send-") as tmp:
+            tree = Path(tmp) / "transfer"
+            tree.mkdir()
+            for source, relative in entries:
+                path = tree / _relative(str(relative))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(Path(source).resolve(strict=True), path)
+                except OSError as exc:
+                    if exc.errno not in (errno.EXDEV, errno.EPERM, errno.EACCES, errno.EOPNOTSUPP, errno.EMLINK):
+                        raise
+                    shutil.copyfile(source, path)
+            self.send(tree, remote, "send-directory")
+        # When the target exists HDC can preserve the source directory's basename.
+        self.shell(f"cd {shlex.quote(str(remote))} && if test -d transfer; then "
+                   "find transfer -mindepth 1 -maxdepth 1 -exec mv {} . \\; && rmdir transfer; fi",
+                   "install-directory")
+
+    def receive_tree(self, remote, local, hashes):
+        """Publish one directory only after all regular files match the device inventory."""
+        if not hashes:
+            raise ValueError("Cannot verify an empty output inventory")
+        expected = {str(_relative(name)) for name in hashes}
+        if local.exists() or local.is_symlink():
+            raise FileExistsError(local)
+        with tempfile.TemporaryDirectory(dir=local.parent, prefix=".recv-") as tmp:
+            incoming = Path(tmp) / "incoming"
+            incoming.mkdir()
+            self.call(["file", "recv", str(remote), str(incoming)], "receive-directory")
+            # Accept both HDC layouts, including outputs nested below the output root.
+            for root in (incoming, incoming / remote.name):
+                entries = list(root.rglob("*"))
+                if any(p.is_symlink() or not (p.is_dir() or p.is_file()) for p in entries):
+                    raise ValueError(f"Unexpected nonregular entry in HDC output tree for {remote}")
+                if {str(p.relative_to(root)) for p in entries if p.is_file()} == expected:
+                    break
+            else:
+                raise ValueError(f"HDC returned a different output file inventory for {remote}")
+            for name, digest in hashes.items():
+                if sha256_file(root/name) != digest:
+                    raise ValueError(f"HDC output checksum mismatch: {remote/name}")
+            root.rename(local)
 
     def receive(self, remote, local, *, timeout=None):
         """Retrieve one new file; a zero client exit alone proves no transfer.

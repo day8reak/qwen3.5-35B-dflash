@@ -50,7 +50,10 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
         graph_size = sum(r['bytes'] for r in read(case/'case.json')['files'] if r['path'].startswith('weight/'))
         print(f'{case.name}: AIR with weights {graph_size / 2**30:.2f} GiB, '
               f'available before OMG {shutil.disk_usage(base).free / 2**30:.2f} GiB', flush=True)
-        work = Path(tempfile.mkdtemp(dir=base, prefix='omg-'))
+        work = base/'compile'
+        if work.exists():
+            shutil.rmtree(work)
+        work.mkdir()
         (work/'weight').symlink_to(case/'weight', target_is_directory=True)
         code, argv, _ = compile_omg(work, 'weight/export.air', ddk, diagnosis, None)
         if code:
@@ -71,7 +74,7 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
         work.rename(dest)
     build = read(dest/'build.json')
     if build['stamp'] != stamp:
-        raise ValueError(f'{dest}: bundle or OMG changed. Select a new run directory.')
+        raise ValueError(f'{dest}: bundle or OMG changed. Run board again without --recovery.')
     return build, checked(dest, build['model']), [checked(dest, r) for r in build['weights']]
 
 
@@ -129,7 +132,10 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
             raise ValueError(f'{folder}: incomplete replay')
         print(f'{case.name}: resumed verified board outputs', flush=True)
     else:
-        folder = Path(tempfile.mkdtemp(dir=base, prefix='replay-'))
+        folder = base/'replay'
+        if folder.exists():
+            shutil.rmtree(folder)
+        folder.mkdir()
         result = run_v2(folder, case.name, model, operands, paths, build['outputs'], runtime,
                         fixture_sha256=stamp, external_weights=weights, release_after_pull=True, hdc_timeout=7200)
         save_json(saved, dict(binding=key, replay=folder.name, receipt=identity(folder/'result.json', folder)))
@@ -142,6 +148,12 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery):
     bundle = run/'package'
+    if recovery and bundle.is_dir() and not bundle.is_symlink():
+        with tempfile.TemporaryDirectory(dir=run) as tmp:
+            pull_air(Path(tmp), remote/'package/manifest.json', destination_name='manifest.json',
+                     ssh_download=ssh_file)
+            if sha(Path(tmp)/'manifest.json') != sha(bundle/'manifest.json'):
+                raise ValueError('78 has a new export. Run board without --recovery to use its inputs and model.')
     if not bundle.exists():
         pull_air(run, remote/'package', destination_name='package', ssh_download=transfer, before_download=transfer_size)
     manifest = read(bundle/'manifest.json')
@@ -151,6 +163,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery):
         checked(bundle, row)
     fixture = bundle/'fixture'
     ref = read(fixture/'reference.json')
+    length = ref['prompt_length']
     stamp = sha(bundle/'manifest.json')
     runtime = read(config.parent/read(config)['assets'])['environment']
     pieces = read(fixture/'tokens.json')
@@ -160,15 +173,15 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery):
     for group in groups(mode):
         name = case_name(group)
         case = bundle/name
-        base = run/'board'/name
+        base = run/name
         base.mkdir(parents=True, exist_ok=True)
         progress = dict(mode=mode, phase=phase, bundle_sha256=stamp, layer=group[0], case=name)
-        save_json(run/'board/comparison.json', dict(status='RUNNING', **progress))
+        save_json(run/'comparison.json', dict(status='RUNNING', **progress))
         try:
             build, model, weights = compiled(case, base, ddk, diagnosis, stamp)
             values = replay(base, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, recovery)
         except Exception as exc:
-            save_json(run/'board/comparison.json', dict(status='INTERRUPTED', message=str(exc), **progress))
+            save_json(run/'comparison.json', dict(status='INTERRUPTED', message=str(exc), **progress))
             raise
         feeds['hidden'] = values[f'hidden_{group[-1]}']
         for role, (folder, row) in values.items():
@@ -176,7 +189,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery):
                       'cpro': read_array(folder, row)}
             if role.startswith(('key_cache_', 'value_cache_')):
                 before = read_array(fixture, ref['inputs'][role])
-                unchanged[role] = {b: preserved_cache(x, before, phase) for b, x in arrays.items()}
+                unchanged[role] = {b: preserved_cache(x, before, phase, length) for b, x in arrays.items()}
                 if not all(unchanged[role].values()):
                     failures.append(role + '/unwritten_slots')
             if role == 'logits':
@@ -184,16 +197,19 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery):
                     token = int(logits.argmax())
                     predictions[backend] = dict(id=token, text=pieces[token]) if np.isfinite(logits).all() else None
             for b, x in arrays.items():
-                scope, actual = comparison_view(role, x, phase)
+                scope, actual = comparison_view(role, x, phase, length)
                 for r, y in arrays.items():
-                    scores[b][r][role] = {scope: metrics(actual, comparison_view(role, y, phase)[1])}
+                    scores[b][r][role] = {scope: metrics(actual, comparison_view(role, y, phase, length)[1])}
             if not scores['cpro']['310p'][role][scope]['passed']:
                 failures.append(role)
         # A later failed layer still leaves the completed layer comparisons accessible.
         write_matrices(base/'matrices.csv', {b: {r: {k: v for k, v in s.items() if k in values}
                                                 for r, s in row.items()} for b, row in scores.items()}, display=False)
-    write_matrices(run/'board/matrices.csv', scores)
-    save_json(run/'board/comparison.json', dict(mode=mode, phase=phase, bundle_sha256=stamp, failed=failures, unchanged_kv=unchanged,
-                                               top1=predictions, status='FAILED_ACCURACY' if failures else 'PASSED'))
-    print(f'Top1 {predictions}; matrices and comparison: {run / "board"}', flush=True)
+    print(f'[{mode}/{phase}] 汇总 CPU、310P、CPro 的 3×3 精度矩阵 → {run}', flush=True)
+    write_matrices(run/'matrices.csv', scores)
+    save_json(run/'comparison.json', dict(mode=mode, phase=phase, prompt=ref['prompt'], prompt_length=length,
+                                          logits_position=ref['logits_position'], bundle_sha256=stamp, failed=failures,
+                                          unchanged_kv=unchanged, top1=predictions,
+                                          status='FAILED_ACCURACY' if failures else 'PASSED'))
+    print(f'Top1 {predictions}; matrices and comparison: {run}', flush=True)
     return not failures

@@ -11,6 +11,7 @@ import numpy as np
 from ..layer_probe.common import identity, new_output, read_array, save_json, sha
 
 BASIS = 'MEASURED_310P_40_DECODER_BLOCKS_T64_VALID19'
+YAML_BASIS = 'MEASURED_310P_40_DECODER_BLOCKS_T64_YAML'
 TAIL_BASIS = 'MEASURED_310P_DECODER_POST_ATTENTION_RESIDUAL_T64_VALID19'
 HIDDEN = (1, 64, 2048)
 LAYERS = 40
@@ -41,7 +42,20 @@ def run_segment_prefill(entry, config, arm, *, decode=False):
             runpy.run_path(str(entry), run_name='__main__')
 
 
-def capture(source, config, baseline, output, *, decoder_tails=False, states=False):
+def driver_prompt(ctx, frame):
+    """Use the live driver's chat-formatted tokens before physical T64 padding."""
+    from ..layer_probe.capture import cpu
+    prompts = ctx['cfg'].get('prompts')
+    if (not isinstance(prompts, list) or not prompts or not isinstance(prompts[0], str)
+            or not prompts[0].strip() or ctx['prompt'] != prompts[0]):
+        raise ValueError('Set prompts in the 310P YAML to a list of prompts. The run uses its first entry.')
+    ids = cpu(frame.f_locals['input_ids'])
+    if ids.ndim != 2 or ids.shape[0] != 1 or not 1 <= ids.shape[1] <= 64:
+        raise ValueError(f'One T64 prefill requires 1–64 tokens after chat formatting; got {tuple(ids.shape)}')
+    return prompts[0], ids
+
+
+def capture(source, config, baseline, output, *, decoder_tails=False, states=False, yaml_prompt=False):
     import torch
     from ..layer_probe.capture import bound, cpu
     from .segment_prefix import tensor_record
@@ -80,6 +94,12 @@ def capture(source, config, baseline, output, *, decoder_tails=False, states=Fal
             if driver is None:
                 raise ValueError('original 310P segmented driver not found')
             ctx = driver.f_locals
+            valid = 19
+            prompt_ids = None
+            if yaml_prompt:
+                prompt, prompt_ids = driver_prompt(ctx, frame)
+                valid = prompt_ids.shape[1]
+                report.update(reference=YAML_BASIS, prompt=prompt, valid_rows=valid, output_pos=valid-1)
             tokenizer = ctx['tokenizer']
             wrappers = (frame.f_locals['model_wrapper'], ctx['model2'])
             sizes = [len(w.model.model.layers) for w in wrappers]
@@ -94,8 +114,8 @@ def capture(source, config, baseline, output, *, decoder_tails=False, states=Fal
                     raise ValueError('incorrect 310P global weight offset')
                 def controls(mod, args, kwargs, start=start):
                     v = bound(mod, args, kwargs)
-                    if (list(v['allQLen']) != [19] or cpu(v['effective_length']).tolist() != [19]
-                            or v['output_pos'] != (None if start == 0 else 18)):
+                    if (list(v['allQLen']) != [valid] or cpu(v['effective_length']).tolist() != [valid]
+                            or v['output_pos'] != (None if start == 0 else valid-1)):
                         raise ValueError(f'wrong prefill length or readout at segment {start}')
                     for name in ('position_ids', 'new_kv_cache_pos', 'attention_mask', 'effective_length'):
                         value = cpu(v[name])
@@ -109,7 +129,10 @@ def capture(source, config, baseline, output, *, decoder_tails=False, states=Fal
                         value = cpu(v['input_ids'])
                         if ids is not None and not np.array_equal(value.numpy(), ids):
                             raise ValueError('prompt differs from retained valid19 token IDs')
-                        if ids is None and (tuple(value.shape) != (1, 64) or hashlib.sha256(
+                        if yaml_prompt:
+                            if tuple(value.shape) != (1, 64) or not torch.equal(value[:, :valid], prompt_ids):
+                                raise ValueError('Padded wrapper input disagrees with the YAML prompt tokens')
+                        elif ids is None and (tuple(value.shape) != (1, 64) or hashlib.sha256(
                                 value.numpy().astype('<i4').tobytes()).hexdigest() != VALID19_IDS_SHA256):
                             raise ValueError('original driver prompt differs from the measured T64/valid19 case')
                         report['inputs']['input_ids'] = tensor_record(root, 'input_ids', value)
@@ -136,7 +159,7 @@ def capture(source, config, baseline, output, *, decoder_tails=False, states=Fal
                         else:
                             expected = previous.clone()
                             if i == split:
-                                expected[:, 19:] = 0
+                                expected[:, valid:] = 0
                             if not torch.equal(x.view(torch.int16), expected.view(torch.int16)):
                                 raise ValueError(f'unaccounted transformation before L{i}')
                         if decoder_tails and i == 3:
@@ -212,7 +235,7 @@ def capture(source, config, baseline, output, *, decoder_tails=False, states=Fal
         ids = read_array(root, report['inputs']['input_ids'])
         token_map = root / 'token-text.json'
         save_json(token_map, dict(pieces=mapping, special_ids=tokenizer.all_special_ids,
-                                  prompt=tokenizer.decode(ids[0, :19].tolist(), skip_special_tokens=False)))
+                                  prompt=tokenizer.decode(ids[0, :report['valid_rows']].tolist(), skip_special_tokens=False)))
         report['token_text_map'] = identity(token_map, root)
         save_json(root / 'manifest.json', report)
         print(f"310P 40 layers, first token {report['top1']} {report['token_text']!r}", flush=True)

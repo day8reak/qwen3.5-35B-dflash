@@ -4,27 +4,11 @@
 
 ## 原 CPro 的 40 层整图，使用 SiluPatch 和 SoftplusPatch
 
-78 上沿用 `TARGET_SOURCE`、`CPRO_SOURCE` 和 `AI_RUN_DIR`。在仓库根目录执行：
+两机配置 `DECODER_MODE=40`、`DECODER_PHASE=prefill` 后，在 78 执行 `bash targets/cpro/scripts/decoder_compare.sh prepare`，在 35 执行 `bash targets/cpro/scripts/decoder_compare.sh board`。输入是 310P YAML 的第一条 prompt，物理长度为 64。CPU 和 310P 参考、CPro AIR 均在本次生成。
 
-```bash
-git pull --ff-only origin main && bash targets/cpro/scripts/decoder4_t64.sh aligned40-air
-```
+运行目录为 `$AI_RUN_DIR/target/tests/40-prefill-t64`。78 写入 `export/reference/`、各层 CPU 参考和 `export/air/`，35 获取 AIR 并写入 `board/omc/`。上板结束后查看 `board/comparison.json` 和 `board/matrices.csv`。矩阵包含最后一个有效 token 的 logits、30 个线性层的完整 conv/recurrent 状态和 10 个 full 层的有效 K/V。失败的编译日志在 `board/compile/compile.log`，上板记录在 `board/replay/result.json`。
 
-脚本采集 310P 参考，逐层计算同一提示词的 CPU W4 参考，在私有副本上补丁原 CPro 导出器。原 wrapper 静态导出 L0–L39、最终 norm 和词表 head，S=64，有效长度 19，读出位置 18。导出检查 351 个 W4 matmul、30 个 GDR、140 个 SiluPatch 和 30 个 SoftplusPatch。两种激活都用 FP16 输入输出，在 GDN 门控和衰减乘法前按需恢复 FP32。沿用 W4 scale、RoPE 和 MoE 修复。卷积窗口取拼接历史的末 67 行，下一步卷积状态取末 4 行。改动可在运行目录的 `silu-source-*/source.diff` 查看。
-
-35 上沿用已装两种 FP16 算子的 DDK、SSH 和板端配置，在仓库根目录执行：
-
-```bash
-git pull --ff-only origin main && bash targets/cpro/scripts/decoder4_t64.sh aligned40-board
-```
-
-默认目录为 `$AI_RUN_DIR/target/tests/prefill40-original-aligned-silu-softplus-t64-valid19-01`。两机可设置同一绝对路径 `ALIGNED40_RUN`。有完整 310P 参考时，78 可将 `ALIGNED40_CAPTURE` 指向含 40 层状态和最终 logits 的采集目录。
-
-如果旧版 OMG 在首个 `Conv2D` 的 `RunVerify` 报两个输入维数不同，可在原批次依次重跑上面两条命令。78 核对并复用原 `reference/` 和各层 `Lxx/cpu/`，重新导出到 `conv2d/air/`。每个 GDN 显式用四维窗口 `[1,8192,1,67]` 和卷积核 `[8192,1,1,4]` 做深度卷积，去掉高度维后将 `[1,8192,64]` 送入 SiluPatch。导出时会打印 30 个 Conv2D 中 AIR 有维度记录的操作数数量，并校验已记录的形状。
-
-35 拉取新清单后，按文件大小及 SHA-256 核对本机原批次 `air/` 里的同名文件。可复用的文件通过硬链接进入新目录，其余文件重新下载。脚本显示需下载的字节数和目标文件系统可用空间，然后使用外置权重编译一个 `conv2d/omc/`。空间估算按输出权重与输入权重同量级计算，编译临时文件的峰值需在 35 实测。板端单独检查 OMC、权重、输入和输出所需空间。
-
-上板成功后，`conv2d/replay-*/comparison.json` 包含三端的首 token ID、文本及 CPro 对 310P 的判定。`conv2d/replay-*/matrices.csv` 是 81 个输出的三端矩阵，包含 token18 的 logits、30 层的完整 conv/recurrent 状态，以及 10 层的 K/V cache。K/V 比较有效 19 行并检查物理写入页之外的缓存。加载或运行失败时，查看同次 replay 下的 `result.json`。
+默认补丁检查 351 个 W4 matmul、30 个 GDR、140 个 FP16 SiluPatch 和 30 个 FP16 SoftplusPatch。GDN 的四维窗口 `[1,8192,1,67]` 和卷积核 `[8192,1,1,4]` 送入 Conv2D，去掉高度维后将 `[1,8192,64]` 送入 SiluPatch。可通过 `CPRO_PATCHED_SOURCE` 指定持久化的可编辑源码目录。
 
 ## 既有的单 logits 导出流程
 

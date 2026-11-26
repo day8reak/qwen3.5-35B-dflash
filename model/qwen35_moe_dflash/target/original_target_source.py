@@ -24,6 +24,13 @@ SOURCE_FILES = (EXPORTER, "utils.py", WRAPPER,
 POLICY = "original-cpro-post-decoder-features-v1"
 
 
+def cpro_python_files(source):
+    yield from source.glob('*.py')
+    for package in source.iterdir():
+        if package.is_dir() and (package.name == 'models' or (package/'__init__.py').is_file()):
+            yield from package.rglob('*.py')
+
+
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 

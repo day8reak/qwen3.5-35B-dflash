@@ -16,6 +16,7 @@ from .segment_export import compare_segment_output
 
 
 CPU_BASIS = 'CPU_W4_SPLIT_PREFILL_T64_VALID19_V1'
+YAML_CPU_BASIS = 'CPU_W4_PREFILL_T64_YAML_V1'
 OUTPUTS = {
     'logits': ([1, 1, 248320], 'float32'),
     'conv_state_0': ([1, 8192, 4], 'float16'),
@@ -148,7 +149,7 @@ def pack_reference(root, work, fixture, *, layer=0, head=True, standalone=True):
     return packed
 
 
-def score(actual, golden, contracts=OUTPUTS, *, reference_is_310p=True):
+def score(actual, golden, contracts=OUTPUTS, *, reference_is_310p=True, valid_rows=19):
     if set(actual) != set(contracts) or set(golden) != set(contracts):
         raise ValueError('Missing complete L0 readout or cache')
     report = {}
@@ -157,12 +158,13 @@ def score(actual, golden, contracts=OUTPUTS, *, reference_is_310p=True):
         if list(a.shape) != shape or list(g.shape) != shape:
             raise ValueError(f'{role}: expected {shape}, got {a.shape} and {g.shape}')
         if role in ('decoder_hidden', 'out_proj'):
-            report[role] = dict(valid19=metrics(a[0, :19], g[0, :19]))
+            report[role] = {f'valid{valid_rows}': metrics(a[0, :valid_rows], g[0, :valid_rows])}
         else:
             if role.startswith(('key_cache_', 'value_cache_')):
-                report[role] = dict(valid19=compare_segment_output(role, a, g, None, reference_is_310p=reference_is_310p))
+                report[role] = {f'valid{valid_rows}': compare_segment_output(role, a, g, None,
+                                    reference_is_310p=reference_is_310p, valid_rows=valid_rows)}
             else:
-                report[role] = {('token18' if role == 'logits' else 'full_state'): compare_segment_output(role, a, g, None)}
+                report[role] = {(f'token{valid_rows-1}' if role == 'logits' else 'full_state'): compare_segment_output(role, a, g, None)}
     return report
 
 

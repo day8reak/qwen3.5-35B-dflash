@@ -1,4 +1,5 @@
 """Export complete private CPro decoder blocks with named cache and hidden boundaries."""
+from contextlib import nullcontext
 from pathlib import Path
 import json
 import os
@@ -15,26 +16,29 @@ from ..layer_probe.replay import export_input_identity
 from .chain_air import Head, checkpoint_paths
 from .decoder_cases import case_name, groups, output_names, state_roles
 from .decoder_four_boundary import data_edges
-from .decoder_four_silu import inspect_activation_air, stage
+from .decoder_four_silu import inspect_activation_air
 from .decode_cache_control import graph_message
-from .l0_split import expose_projection, prefill_precision
-from .prepare import MODELING
+from .l0_split import prefill_precision
 
 
 class DecoderGraph(torch.nn.Module):
-    def __init__(self, blocks, head, group, phase, split):
+    def __init__(self, blocks, head, group, phase, split, valid_rows):
         super().__init__()
         self.blocks = torch.nn.ModuleList(blocks)
         self.head = head
         self.group = group
         self.prefill = phase == 'prefill'
+        self.valid_rows = valid_rows
         self.split = split
+
+    def observe_projection(self, module, args, result):
+        self.projection = result[0]
 
     def forward(self, hidden, **feeds):
         outputs = {}
         for i, block in zip(self.group, self.blocks):
             if self.prefill and i == self.split:
-                hidden = torch.cat((hidden[:, :19], torch.zeros_like(hidden[:, 19:])), dim=1)
+                hidden = torch.cat((hidden[:, :self.valid_rows], torch.zeros_like(hidden[:, self.valid_rows:])), dim=1)
             roles = state_roles(i)
             cache = tuple(feeds[key].clone() for key in roles)
             if i % 4 == 3:
@@ -43,13 +47,13 @@ class DecoderGraph(torch.nn.Module):
                             allQLen=feeds['all_length'])
             else:
                 args = dict(effective_length=feeds['effective_length'].short())
-            hidden, pair, mixer = block(hidden, past_key_values=cache, use_cache=True, export_flag=True, **args)
+            hidden, pair = block(hidden, past_key_values=cache, use_cache=True, export_flag=True, **args)
             if len(self.group) == 1:
-                outputs[f'out_proj_{i}'] = mixer
+                outputs[f'out_proj_{i}'] = self.projection
             outputs.update(zip(roles, pair))
         outputs[f'hidden_{self.group[-1]}'] = hidden
         if self.head is not None:
-            outputs['logits'] = self.head(hidden[:, 18 if self.prefill else 0, :])
+            outputs['logits'] = self.head(hidden[:, self.valid_rows-1, :])
         return tuple(torch.ops.decoder_compare.readout(outputs[name], name)
                      for name in output_names(self.group, self.head is not None))
 
@@ -77,7 +81,7 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     name = case_name(group)
     linear = sum(i % 4 != 3 for i in group)
     print(f'Export {name}, S={rows}', flush=True)
-    module = DecoderGraph(blocks, head, group, ref['phase'], ref['split_layer'])
+    module = DecoderGraph(blocks, head, group, ref['phase'], ref['split_layer'], ref['valid_rows'])
     names = ['hidden']
     if linear:
         names.append('effective_length')
@@ -90,7 +94,11 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     edges.clear()
     trace = dest/'activations.txt'
     torch._dynamo.reset()
-    with (working_directory(dest), patch.dict(os.environ, QWEN35_SILU_SHAPES=str(trace)),
+    tap = nullcontext()
+    if len(group) == 1:
+        mixer = blocks[0].linear_attn if linear else blocks[0].self_attn
+        tap = mixer.register_forward_hook(module.observe_projection)
+    with (tap, working_directory(dest), patch.dict(os.environ, QWEN35_SILU_SHAPES=str(trace)),
           external_weight_export(), export_input_identity(list(args.values())) as evidence):
         with exporter.cpro_export_contracts(True, chunk_size=rows, gdn_layers=linear, sequence_rows=rows):
             exporter.torchair.dynamo_export(model=module.eval(), export_path='weight', dynamic=False, **args)
@@ -112,58 +120,54 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
 
 
 @torch.no_grad()
-def export(root, fixtures, ref, source, config):
+def export(root, fixtures, ref, source, config, prepared):
     plan = groups(ref['mode'])
     paths = checkpoint_paths(source, config, ref)
-    with tempfile.TemporaryDirectory(dir=root.parent, prefix='cpro-source-') as tmp:
-        owner = Path(tmp)
-        stage(source, owner, aligned=True, layers=40)
-        expose_projection(owner/MODELING)
-        sys.path.insert(0, tmp)
-        try:
-            import export_glm_model_qwen3_5_moe as exporter
-            from models.export_model_wrapper_qwen3_5_moe import load_npu_model
+    sys.path.insert(0, str(prepared))
+    try:
+        import export_glm_model_qwen3_5_moe as exporter
+        from models.export_model_wrapper_qwen3_5_moe import load_npu_model
 
-            lib = torch.library.Library('decoder_compare', 'DEF')
-            lib.define('readout(Tensor x, str role) -> Tensor')
-            lib.impl('readout', lambda x, role: torch.empty_like(x), 'Meta')
-            edges = {}
+        lib = torch.library.Library('decoder_compare', 'DEF')
+        lib.define('readout(Tensor x, str role) -> Tensor')
+        lib.impl('readout', lambda x, role: torch.empty_like(x), 'Meta')
+        edges = {}
 
-            @exporter.torchair.register_fx_node_ge_converter(torch.ops.decoder_compare.readout.default)
-            def record_edge(x, role):
-                edges[role] = x.tensor
-                return x
+        @exporter.torchair.register_fx_node_ge_converter(torch.ops.decoder_compare.readout.default)
+        def record_edge(x, role):
+            edges[role] = x.tensor
+            return x
 
-            for start in range(0, len(plan), 4):
-                batch = plan[start:start+4]
-                pending = []
-                for group in batch:
-                    case = root/case_name(group)
-                    if case.exists():
-                        for row in json.loads((case/'case.json').read_bytes())['files']:
-                            checked(case, row)
-                    else:
-                        pending.append(group)
-                if not pending:
-                    continue
-                first, last = pending[0][0], pending[-1][-1]
-                model = load_npu_model(str(paths['model_file']), 'cpu', torch.float16, variant='cpro',
-                                       layer_num=last-first+1, start_layer_idx=first, quant_enable=True)
-                exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.config.num_experts,
-                    start_layer_idx=first, device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
-                model.eval().to(dtype=torch.float16)
-                types = ['full_attention' if i % 4 == 3 else 'linear_attention' for i in range(first, last+1)]
-                if model.model.start_layer_idx != first or [m.block_type for m in model.model.layers] != types:
-                    raise ValueError(f'Incorrect CPro checkpoint slice L{first}–L{last}')
-                for group in pending:
-                    final = group == plan[-1]
-                    blocks = model.model.layers[group[0]-first:group[-1]-first+1]
-                    with tempfile.TemporaryDirectory(dir=root.parent, prefix='decoder-air-') as tmp_case:
-                        dest = Path(tmp_case)/'case'
-                        dest.mkdir()
-                        export_case(dest, fixtures, ref, group, final, blocks, Head(model) if final else None,
-                                    exporter, edges)
-                        dest.rename(root/case_name(group))
-                del blocks, model
-        finally:
-            sys.path.remove(tmp)
+        for start in range(0, len(plan), 4):
+            batch = plan[start:start+4]
+            pending = []
+            for group in batch:
+                case = root/case_name(group)
+                if case.exists():
+                    for row in json.loads((case/'case.json').read_bytes())['files']:
+                        checked(case, row)
+                else:
+                    pending.append(group)
+            if not pending:
+                continue
+            first, last = pending[0][0], pending[-1][-1]
+            model = load_npu_model(str(paths['model_file']), 'cpu', torch.float16, variant='cpro',
+                                   layer_num=last-first+1, start_layer_idx=first, quant_enable=True)
+            exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.config.num_experts,
+                start_layer_idx=first, device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
+            model.eval().to(dtype=torch.float16)
+            types = ['full_attention' if i % 4 == 3 else 'linear_attention' for i in range(first, last+1)]
+            if model.model.start_layer_idx != first or [m.block_type for m in model.model.layers] != types:
+                raise ValueError(f'Incorrect CPro checkpoint slice L{first}–L{last}')
+            for group in pending:
+                final = group == plan[-1]
+                blocks = model.model.layers[group[0]-first:group[-1]-first+1]
+                with tempfile.TemporaryDirectory(dir=root.parent, prefix='decoder-air-') as tmp_case:
+                    dest = Path(tmp_case)/'case'
+                    dest.mkdir()
+                    export_case(dest, fixtures, ref, group, final, blocks, Head(model) if final else None,
+                                exporter, edges)
+                    dest.rename(root/case_name(group))
+            del blocks, model
+    finally:
+        sys.path.remove(str(prepared))
