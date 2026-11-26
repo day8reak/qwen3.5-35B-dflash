@@ -302,7 +302,7 @@ def diagnose_four_accuracy(board, comparison, receipt):
         from struct import unpack
         values = unpack('<128i', (case/control['path']).read_bytes())
         print(f'conv_state_pos.bin 前 8 项 {list(values[:8])}，其余 120 项中有 {sum(v != 0 for v in values[8:])} 项非零')
-    if meta.get('gdn_conv') == 'original':
+    if meta.get('native_convstate', meta.get('gdn_conv') == 'original'):
         air = case/meta['air_directory']/'export.air'
         if air.is_file():
             inspect_native_qkv(air)

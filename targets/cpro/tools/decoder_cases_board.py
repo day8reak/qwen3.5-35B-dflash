@@ -66,7 +66,7 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
             shutil.rmtree(work)
         work.mkdir()
         (work/folder).symlink_to(case/folder, target_is_directory=True)
-        if meta.get('gdn_conv') == 'original':
+        if meta.get('native_convstate', meta.get('gdn_conv') == 'original'):
             code, argv, _ = compile_native_prefill(work, f'{folder}/export.air', ddk)
         else:
             code, argv, _ = compile_omg(work, f'{folder}/export.air', ddk, diagnosis, None)
@@ -129,6 +129,11 @@ def output_order(descriptors, source, golden):
 def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, recovery, board_case=None,
            replace_inputs=False, replace_weights=False, shape_config=None, original_board_args=False):
     meta = read(case/'case.json')
+    original_board_args = original_board_args or meta.get('native_convstate', meta.get('gdn_conv') == 'original')
+    if 'operator_counts' in meta:
+        counts = meta['operator_counts']
+        print(f'[{case.name}] 本次 AIR 配置：GDN 卷积={meta["gdn_conv"]}，SiluPatch={counts["SiluPatch"]}，'
+              f'SoftplusPatch={counts["SoftplusPatch"]}', flush=True)
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
         raise ValueError(f'{case}: compiled input names differ from AIR')
     feeds = {**feeds, **{role: (case, row) for role, row in meta.get('input_files', {}).items()}}
@@ -143,7 +148,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     if meta.get('native_activations') or meta.get('silu_only'):
         from decoder_four_inputs import compare_original_inputs
         compare_original_inputs(base.parent.parent, operands, meta['inputs'], [s['sha256'] for s in operands],
-                                baseline='native_activations' if meta.get('silu_only') else 'no_patch')
+                                baseline='native_activations' if meta.get('silu_only') else 'no_patch',
+                                gdn_conv=meta['gdn_conv'])
     names = output_order(build['outputs'], meta['outputs'], golden)
     for role, spec in zip(names, build['outputs'], strict=True):
         ref = golden[role]

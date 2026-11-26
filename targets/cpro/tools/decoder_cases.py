@@ -27,6 +27,13 @@ def patched_source_variable(gdn_conv):
     return 'CPRO_ORIGINAL_PATCHED_SOURCE' if gdn_conv == 'original' else 'CPRO_PATCHED_SOURCE'
 
 
+def source_convolution(args):
+    # Both activation controls start from the editable model with native ConvState.
+    if getattr(args, 'native_activations', False) or getattr(args, 'silu_only', False):
+        return 'original'
+    return args.gdn_conv
+
+
 def source_config(action, gdn_conv='conv2d', *, no_patch=False):
     nz = action == 'reference'
     if nz:
@@ -122,7 +129,8 @@ def native40(args, run, remote):
 def prepare_stage(args, run):
     from qwen35_moe_dflash.common.artifacts import files_under, share_for_transfer
     from qwen35_moe_dflash.target.layer_probe.common import checked, save_json, sha
-    src, cfg = source_config(args.action, args.gdn_conv, no_patch=args.no_patch)
+    source_conv = source_convolution(args)
+    src, cfg = source_config(args.action, source_conv, no_patch=args.no_patch)
     fixture = run/'fixture'
     package = run/'package'
     stamp = dict(mode=args.mode, phase=args.phase)
@@ -150,7 +158,7 @@ def prepare_stage(args, run):
             working.rename(fixture)
         return
     from qwen35_moe_dflash.target.original_target_source import cpro_python_files
-    prepared = src if args.no_patch else prepared_source(run, args.gdn_conv)
+    prepared = src if args.no_patch else prepared_source(run, source_conv)
     ref = json.loads((fixture/'reference.json').read_bytes())
     if (ref['mode'], ref['phase']) != (args.mode, args.phase):
         raise ValueError('Reference differs from selected case')
@@ -158,9 +166,9 @@ def prepare_stage(args, run):
         from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
         if args.mode != 'full':
             prepared = taps_source(prepared, run/'source-taps')
-    if args.gdn_conv != 'conv2d':
+    if args.gdn_conv != 'conv2d' or source_conv == 'original':
         stamp['gdn_conv'] = args.gdn_conv
-    if args.gdn_conv == 'original' and os.getenv('DECODER_CONV_CONTROL'):
+    if source_conv == 'original' and os.getenv('DECODER_CONV_CONTROL'):
         stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
     controls = {name: True for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)}
     stamp.update(controls)
@@ -252,7 +260,7 @@ def worker(args, action, root, remote):
         cmd.insert(cmd.index('_transfer')+1, args.artifact)
         if args.local_source:
             cmd.extend(['--local-source', str(args.local_source)])
-    if getattr(args, 'gdn_conv', 'conv2d') != 'conv2d':
+    if getattr(args, 'gdn_conv', 'conv2d') != 'conv2d' or any(getattr(args, k, False) for k in FOUR_LAYER_CONTROLS):
         cmd.extend(['--gdn-conv', args.gdn_conv])
     for control in FOUR_LAYER_CONTROLS:
         if getattr(args, control, False):
@@ -302,14 +310,19 @@ def main():
             parser.error('use --mode 4 --phase prefill for this four-layer control')
         if a.no_patch and a.patched_source:
             parser.error('--no-patch uses CPRO_SOURCE directly with the original GDN convolution')
-        if a.action == 'source' or a.gdn_conv not in (None, 'original'):
-            parser.error('this four-layer export control uses the original GDN convolution')
-        a.gdn_conv = 'original'
+        if a.action == 'source':
+            parser.error('prepare the editable base with source --gdn-conv original')
+        a.gdn_conv = a.gdn_conv or 'original'
+        if a.no_patch and a.gdn_conv != 'original':
+            parser.error('--no-patch runs the original GDN convolution from CPRO_SOURCE')
+        if a.gdn_conv == 'taps':
+            parser.error('four-layer activation controls support --gdn-conv original or conv2d')
     else:
         a.gdn_conv = a.gdn_conv or os.getenv('DECODER_GDN_CONV', 'conv2d')
     if (a.action in ('transfer', '_transfer')) != bool(a.artifact) or (a.local_source and not a.artifact):
         parser.error('transfer requires one of golden, air or omc; --local-source applies to transfer only')
-    patch_variable = patched_source_variable(a.gdn_conv)
+    source_conv = source_convolution(a)
+    patch_variable = patched_source_variable(source_conv)
     if a.patched_source:
         os.environ[patch_variable] = str(a.patched_source.expanduser().resolve())
     if a.mode not in MODES or a.phase not in PHASES:
@@ -391,9 +404,9 @@ def main():
         if a.action in ('prepare', 'golden'):
             source_config('reference')
             if a.action == 'prepare':
-                source_config('air', a.gdn_conv, no_patch=a.no_patch)
+                source_config('air', source_conv, no_patch=a.no_patch)
                 if not a.no_patch and os.getenv(patch_variable):
-                    prepared_source(None, a.gdn_conv)
+                    prepared_source(None, source_conv)
             if root.exists():
                 shutil.rmtree(root)
         root.mkdir(exist_ok=True)
@@ -407,7 +420,7 @@ def main():
             if a.action == 'prepare':
                 worker(a, 'air', root, remote)
         elif a.action == 'air':
-            source_config('air', a.gdn_conv, no_patch=a.no_patch)
+            source_config('air', source_conv, no_patch=a.no_patch)
             site = root/'export'
             reference = site/('reference/manifest.json' if native else 'fixture/reference.json')
             if not reference.is_file():

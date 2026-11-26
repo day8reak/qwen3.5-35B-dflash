@@ -32,7 +32,7 @@ def data_edges(op):
     return [edge for edge in op.input if edge and not edge.endswith(':-1')]
 
 
-def inspect_air(path, *, layers=4, physical_history=None, require_control=False):
+def inspect_air(path, *, layers=4, physical_history=None, require_control=False, conv2d_rows=None):
     _, graph = graph_message(path.read_bytes(), 'NetOutput')
     nodes = {n.name: n for n in graph.op}
     net, = [n for n in graph.op if n.type == 'NetOutput']
@@ -156,8 +156,12 @@ def inspect_air(path, *, layers=4, physical_history=None, require_control=False)
         if r['shape'] and view(r['shape']) != view(output_shape(r['role'])):
             raise ValueError(f'{path}: unexpected shape for {r}')
     counts = Counter(n.type for n in graph.op)
-    return dict(inputs=inputs, outputs=records,
-                operator_counts={kind: counts[kind] for kind in ('SiluPatch', 'SoftplusPatch', 'QuantBatchMatmulV4444')})
+    boundary = dict(inputs=inputs, outputs=records,
+                    operator_counts={kind: counts[kind] for kind in ('SiluPatch', 'SoftplusPatch', 'QuantBatchMatmulV4444')})
+    if conv2d_rows is not None:
+        from .decoder_four_silu import inspect_gdn_convs
+        boundary['gdn_convs'] = inspect_gdn_convs(graph, len(linear_layers), conv2d_rows)
+    return boundary
 
 
 def same_boundary(original, modified):

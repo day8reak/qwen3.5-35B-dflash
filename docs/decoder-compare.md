@@ -68,31 +68,33 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --no-patch
 已有四层 prefill golden 时，在 AIR 生成服务器执行
 
 ```bash
-bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --native-activations
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --native-activations
 ```
 
 在 OMC 生成和板端执行服务器执行
 
 ```bash
-bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --native-activations
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --native-activations
 ```
 
 此选项以对齐后的 CPro 源码为基础，在本次导出的副本上恢复原生 SiLU 和 Softplus。W4 scale、RoPE、GDR、MoE 等修复继续生效。导出时打印并检查 `SiluPatch=0` 和 `SoftplusPatch=0`，同时检查 W4 和 GDR 端口。两种四层原生卷积对照都从相同的 golden、embedding 权重和 YAML 配置生成输入。原 CPro wrapper 接收 INT8 embedding 及逐 token FP32 scale。普通分层诊断图和 T1 decoder 图接收 FP16 hidden。原生卷积还接收 128 个 INT32 的 `conv_state_pos`，默认首项为有效长度、其余项为零。可用 `DECODER_CONV_CONTROL` 指定原板端 bin。
 
 同一运行目录中保留了成功的 `--no-patch` 记录时，板端执行服务器会先保存其输入槽位，再逐项对照本次的角色、shape、dtype 和已有 bin 内容标识。该对照使用服务器上的清单与执行记录。
 
+上面两条命令在原 ConvState 更新之后显式调用分组 `F.conv2d`。L0、L1、L2 各导出一个 Conv2D，卷积窗口为 `[1,8192,1,67]`，卷积核为 `[8192,1,1,4]`。两种激活对照都从 `CPRO_ORIGINAL_PATCHED_SOURCE`（或自动生成的原 ConvState 源码）导出，使用相同的四层配置、OMG 参数和 V2 输入接口。在这两种激活对照中，省略 `--gdn-conv` 会沿用此前的 `original` 卷积配置。
+
 ### 四层只启用 SiluPatch
 
-以 `--native-activations` 的四层 T64 结果为基线。复用同一份 golden、CPro 源码、权重和 ConvState 控制设置。在 AIR 生成服务器执行
+以同样指定 `--gdn-conv conv2d` 的 `--native-activations` 四层 T64 结果为基线。复用同一份 golden、CPro 源码、权重和 ConvState 控制设置。在 AIR 生成服务器执行
 
 ```bash
-bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --silu-only
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --silu-only
 ```
 
 在 OMC 生成和板端执行服务器执行
 
 ```bash
-bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --silu-only
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --silu-only
 ```
 
 模型使用 FP16 `SiluPatch` 和原生 `F.softplus`。导出检查 14 个 `SiluPatch` 和 0 个 `SoftplusPatch`，包括 L0–L2 的 6 个卷积与门控激活，以及四层 MoE 的 8 个激活。在同一用例目录保留了基线的成功执行记录时，运行器还会对照两次运行的输入槽位。

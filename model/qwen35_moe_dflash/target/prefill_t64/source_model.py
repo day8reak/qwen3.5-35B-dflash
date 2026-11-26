@@ -118,7 +118,21 @@ def explicit_gdn_conv2d(forward, *, original=True):
         call.args[1] = _convert(call.args[1], 'unsqueeze', [ast.Constant(2)])
         conv.value = _convert(call, 'squeeze', [ast.Constant(2)])
     reshape = _call(conv, 'F.conv2d').args[0]
-    reshape.func.value = _convert(reshape.func.value, 'to', [_expr('self.conv1d.weight.dtype')])
+    x = reshape.func.value
+    if not ast.unparse(x).endswith('.to(self.conv1d.weight.dtype)'):
+        reshape.func.value = _convert(x, 'to', [_expr('self.conv1d.weight.dtype')])
+
+
+def native_gdn_with_conv2d(source):
+    """Change only the GDN convolution in the selected native ConvState source."""
+    from .decoder_four_source import preserve_source
+    tree = ast.parse(source)
+    forward = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
+    conv = _assignment(forward, 'conv_out')
+    if any(isinstance(n, ast.Call) and ast.unparse(n.func) == 'F.conv2d' for n in ast.walk(conv)):
+        return source
+    explicit_gdn_conv2d(forward)
+    return preserve_source(source, ast.unparse(ast.fix_missing_locations(tree)))
 
 
 def _adapt_gdn(tree, original, single_token):

@@ -22,6 +22,7 @@ plan        Print the layers, sequence length and number of OMCs without running
 --no-patch  Export four-layer T64 prefill directly from CPRO_SOURCE with the native OMG and V2 settings.
 --native-activations  Use stock SiLU and Softplus with the aligned four-layer T64 native GDN export.
 --silu-only  Use FP16 SiluPatch and stock Softplus with the same four-layer T64 export.
+             Both activation controls accept --gdn-conv conv2d for explicit NCHW Conv2D with native ConvState inputs.
 --recovery  Reuse verified completed OMC outputs in layerwise mode when resuming on the same board.
 DECODER_ENV may point to a host-local shell configuration file.
 HELP

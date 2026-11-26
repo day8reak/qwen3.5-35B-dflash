@@ -19,9 +19,10 @@ from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import MODELING, inspect_activation_air, restore_native_activations
+from qwen35_moe_dflash.target.prefill_t64.source_model import native_gdn_with_conv2d
 
 
-def four_layer_entry(prepared, work, *, native_activations=False, silu_only=False):
+def four_layer_entry(prepared, work, *, native_activations=False, silu_only=False, explicit_conv2d=False):
     entry = prepared/EXPORTER
     text = entry.read_text()
     # Editable sources generated before multi-depth export counted 30 GDR calls even at L=4.
@@ -39,6 +40,8 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
                 if module.name not in (Path(MODELING).name, '__pycache__'):
                     (models/module.name).symlink_to(module.resolve(), target_is_directory=module.is_dir())
             text, model = restore_native_activations(text, (prepared/MODELING).read_text(), keep_silu=silu_only)
+            if explicit_conv2d:
+                model = native_gdn_with_conv2d(model)
             (overlay/MODELING).write_text(model)
         elif path.name not in (EXPORTER, '__pycache__'):
             (overlay/path.name).symlink_to(path.resolve(), target_is_directory=path.is_dir())
@@ -51,7 +54,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
     dest = root/case_name(ref['layers'])
     if dest.is_dir():
         saved = json.loads((dest/'case.json').read_bytes())
-        if (saved.get('air_directory') != EXPORT_DIR or saved.get('no_patch', False) != no_patch
+        if (saved.get('air_directory') != EXPORT_DIR or saved.get('gdn_conv', 'conv2d') != gdn_conv
+                or saved.get('no_patch', False) != no_patch
                 or saved.get('native_activations', False) != native_activations
                 or saved.get('silu_only', False) != silu_only):
             raise ValueError(f'{dest}: existing four-layer export uses a different source mode')
@@ -66,12 +70,15 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         work = Path(tmp)
         case = work/'case'
         case.mkdir()
-        physical_history = gdn_conv != 'original'
+        activation_control = native_activations or silu_only
+        explicit_conv2d = activation_control and gdn_conv == 'conv2d'
+        physical_history = gdn_conv != 'original' and not activation_control
         depth = select_native_depth(cfg, work, 4) if not physical_history else None
         export_config = work/'export.yaml'
         export_config.write_text(yaml.safe_dump(cfg))
         entry = ((source/EXPORTER).resolve(strict=True) if no_patch else
-                 four_layer_entry(prepared, work, native_activations=native_activations, silu_only=silu_only))
+                 four_layer_entry(prepared, work, native_activations=native_activations, silu_only=silu_only,
+                                  explicit_conv2d=explicit_conv2d))
         argv = native_export_argv(entry, 4, export_config)
         env = os.environ.copy()
         trace = work/'activations.txt'
@@ -90,7 +97,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         subprocess.run(argv, cwd=work, env=env, check=True)
         (work/EXPORT_DIR).rename(case/EXPORT_DIR)
         air = case/EXPORT_DIR/'export.air'
-        boundary = inspect_air(air, layers=4, physical_history=physical_history, require_control=not physical_history)
+        boundary = inspect_air(air, layers=4, physical_history=physical_history, require_control=not physical_history,
+                               conv2d_rows=64 if explicit_conv2d else None)
         if no_patch:
             observations = dict(no_patch=True, operator_counts=boundary['operator_counts'])
             print(f'[L00-L03] 原样导出 AIR 实测节点数: {boundary["operator_counts"]}', flush=True)
@@ -109,6 +117,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                 print(f'[L00-L03] AIR 实测 SiluPatch={counts["SiluPatch"]}, SoftplusPatch={counts["SoftplusPatch"]}',
                       flush=True)
         if not no_patch:
+            if explicit_conv2d:
+                observations['gdn_convs'] = boundary['gdn_convs']
             precision = four_precision(air)
             if precision['mismatches']:
                 raise ValueError('\n'.join(precision['mismatches']))
@@ -131,7 +141,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
             names[port['name']] = role
         outputs = [dict(name=row['role'], edge=row['edge']) for row in boundary['outputs']]
         save_json(case/'case.json', dict(air_directory=EXPORT_DIR, layers=ref['layers'], argv=argv,
-                  gdn_conv=gdn_conv, **({'export_configuration': depth} if depth else {}),
+                  gdn_conv=gdn_conv, native_convstate=not physical_history, **({'export_configuration': depth} if depth else {}),
                   inputs=names, input_files=feeds, outputs=outputs, files=files, fixture=measured,
                   **observations))
         case.rename(dest)

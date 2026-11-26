@@ -31,17 +31,21 @@ def remember_original_inputs(root, *, baseline='no_patch'):
         return
     saved = root/INPUT_SNAPSHOTS[baseline]
     tmp = saved.with_suffix('.tmp')
-    tmp.write_text(json.dumps(dict(attempt=receipt.get('attempt'), inputs=rows), indent=2) + '\n')
+    tmp.write_text(json.dumps(dict(attempt=receipt.get('attempt'), inputs=rows, gdn_conv=case.get('gdn_conv', 'original')),
+                              indent=2) + '\n')
     tmp.replace(saved)
 
 
-def compare_original_inputs(root, ports, roles, identities, *, baseline='no_patch'):
+def compare_original_inputs(root, ports, roles, identities, *, baseline='no_patch', gdn_conv='original'):
     saved = root/INPUT_SNAPSHOTS[baseline]
     option = '--' + baseline.replace('_', '-')
     if not saved.is_file():
         print(f'[四层输入] 本机没有保留 {option} 成功运行的输入记录，跳过跨运行对照。', flush=True)
         return
     previous = json.loads(saved.read_bytes())
+    previous_conv = previous.get('gdn_conv', 'original')  # Earlier activation controls used the native convolution.
+    if previous_conv != gdn_conv:
+        print(f'[四层输入] 基线卷积={previous_conv}，本次卷积={gdn_conv}。隔离激活影响时请使用相同卷积。', flush=True)
     rows = slot_rows(ports, roles, identities)
 
     def slots(records):
