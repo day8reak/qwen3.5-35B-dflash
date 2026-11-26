@@ -115,6 +115,28 @@ def select_gdn_silu(model, site):
     return model
 
 
+def token_view_rms_gate(model):
+    """Present each T64 token's 32 contiguous 128-wide heads to the FP16 kernel together."""
+    import ast
+    from .decoder_four_source import preserve_source
+    from .source_model import _call, _definition
+
+    tree = ast.parse(model)
+    forward = _definition(_definition(tree, 'Qwen3_5MoeRMSNormGated'), 'forward')
+    kernel = _call(forward, 'torch.ops.npu.silu_patch')
+    value, = kernel.args
+
+    class TokenView(ast.NodeTransformer):
+        def visit_Call(self, node):
+            if node is kernel:
+                expr = f'torch.ops.npu.silu_patch(({ast.unparse(value)}).reshape(-1, 4096)).reshape(-1, 128)'
+                return ast.parse(expr, mode='eval').body
+            return self.generic_visit(node)
+
+    TokenView().visit(forward)
+    return preserve_source(model, ast.unparse(tree))
+
+
 def omit_gate_output_cast(model, *, select_layers=False):
     import ast
     from .decoder_four_source import preserve_source
@@ -331,6 +353,29 @@ def gate_product(graph, gate):
     return mul, norm
 
 
+def rms_gate_path(graph, edge):
+    """Follow the custom gate's data output across its views and FP32 cast to the RMS product."""
+    chain = []
+    widened = False
+    while True:
+        uses = [op for op in graph.op if (op.type == 'Mul' and edge in op.input)
+                or (op.type in ('Reshape', 'View', 'Identity', 'TensorMove', 'Cast') and op.input and op.input[0] == edge)]
+        if len(uses) != 1 or uses[0] in chain:
+            raise ValueError(f'{edge}: expected one data path to the RMS gate product, found {[op.name for op in uses]}')
+        op = uses[0]
+        chain.append(op)
+        if op.type == 'Mul':
+            if not widened or [d.dtype for d in op.input_desc] != [1, 1] or [d.dtype for d in op.output_desc] != [1]:
+                raise ValueError(f'{op.name}: expected FP32 multiplication after the FP16 gate')
+            peer, = [e for e in op.input if e and e != edge and not e.endswith(':-1')]
+            return chain, peer
+        if op.type == 'Cast':
+            if widened or (op.input_desc[0].dtype, op.output_desc[0].dtype) != (2, 1):
+                raise ValueError(f'{op.name}: expected one FP16 to FP32 gate cast')
+            widened = True
+        edge = op.name + ':0'
+
+
 def inspect_gdn_convs(graph, count, rows):
     nodes = {op.name: op for op in graph.op}
     convs = [op for op in graph.op if op.type == 'Conv2D']
@@ -374,7 +419,7 @@ def activation_port_shape(desc):
 
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
                            check_convs=False, gdn_conv="conv2d", moe_silu=True, gdn_silu_site=None,
-                           all_silu_no_gate_cast=False, rms_gate_count=None):
+                           all_silu_no_gate_cast=False, rms_gate_count=None, rms_silu_token_view=False):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -391,8 +436,9 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
     gate_count = 0 if gdn_silu_site == 'conv' else linear
     if rms_gate_count is not None:
         gate_count = rms_gate_count
+    gate_shape = (rows, 4096) if rms_silu_token_view else (rows * 32, 128)
     expected = {GE_TYPE: Counter({(1, 8192, rows): 0 if gdn_silu_site == 'gate' else linear,
-                                  (rows * 32, 128): gate_count,
+                                  gate_shape: gate_count,
                                   (rows, 512): expert_layers, (rows * 8, 512): expert_layers}),
                 "SoftplusPatch": Counter({(1, rows, 32): linear if softplus else 0})}
     if not silu:
@@ -441,8 +487,11 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
                     or [d.dtype for d in cast_in.output_desc] != [2]):
                 raise ValueError(f'{name}: expected a FP32 to FP16 cast of biased_a')
             gate_product(graph, name + ':0')
-        elif shape == (rows * 32, 128):
-            if all_silu_no_gate_cast:
+        elif shape == gate_shape:
+            if rms_silu_token_view:
+                chain, _ = rms_gate_path(graph, name + ':0')
+                print(f'[GDN 门控 AIR] {name} {list(shape)} → ' + ' → '.join(n.name for n in chain), flush=True)
+            elif all_silu_no_gate_cast:
                 # Type promotion at the unchanged multiplication can still generate a Cast.
                 targets = ', '.join(f"{r['name']} ({r['op']}, {r['input_dtype']} → {', '.join(r['output_dtypes'])})"
                                     for r in consumers)

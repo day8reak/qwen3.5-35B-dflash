@@ -318,6 +318,8 @@ def main():
                                  help='enable SiluPatch only after the GDN convolution or only at its RMS gate; keep SoftplusPatch')
     activation_mode.add_argument('--all-silu-no-gate-cast', action='store_true',
                                  help='use all GDN and MoE SiluPatch calls and omit the explicit FP32 cast after the GDN gate')
+    activation_mode.add_argument('--rms-silu-token-view', action='store_true',
+                                 help='use the custom FP16 SiLU with a [64,4096] view on all four-layer RMS gates')
     activation_mode.add_argument('--rms-silu-layers', default=False,
                                  choices=('none', '0', '1', '2', '0,1', '0,2', '1,2', '0,1,2'),
                                  help='use FP16 SiluPatch on the selected RMS gates and FP16 F.silu on the other gates')
@@ -373,7 +375,7 @@ def main():
                               prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations,
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
                               gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
-                              rms_silu_layers=a.rms_silu_layers,
+                              rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view,
                               physical_convstate=a.physical_convstate,
                               omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
@@ -428,7 +430,7 @@ def main():
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
                          gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site,
                          all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate,
-                         rms_silu_layers=a.rms_silu_layers):
+                         rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view):
                 return 1
         else:
             prepare_stage(a, site)

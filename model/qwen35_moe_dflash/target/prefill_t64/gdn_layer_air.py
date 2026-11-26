@@ -244,8 +244,9 @@ def gdn_load_sections(raw, meta):
     if gate.type == 'SiluPatch':
         before, = operands(gate)
         after = gate.name + ':0'
-        add_wire(before, 'gate_input', gate.input_desc[0], [[2048, 128]], 'float16')
-        add_wire(after, 'gate_silu', gate.output_desc[0], [[2048, 128]], 'float16')
+        kernel_shape = [64, 4096] if meta.get('rms_silu_token_view') else [2048, 128]
+        add_wire(before, 'gate_input', gate.input_desc[0], [kernel_shape], 'float16')
+        add_wire(after, 'gate_silu', gate.output_desc[0], [kernel_shape], 'float16')
         cases.extend([
             ('z-project', [hidden], [before], 1, False),
             ('gate-activation', [before], [gate_operand], 0, False),

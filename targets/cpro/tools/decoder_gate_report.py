@@ -7,12 +7,12 @@ from qwen35_moe_dflash.target.layer_probe.common import sized_file
 from qwen35_moe_dflash.target.prefill_t64.attention_slice import descriptor, port_info
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import data_edges
-from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import activation_port_shape, gate_product
+from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import activation_port_shape, rms_gate_path
 from qwen35_moe_dflash.target.prefill_t64.whole_run import hiai_failure_stage
 
 
-GATE_SHAPE = re.compile(r"'(?:ori_)?shape'\s*:\s*\(2048,\s*128\)")
-CONV_SHAPE = re.compile(r"'(?:ori_)?shape'\s*:\s*\(1,\s*(?:8192,\s*64|64,\s*8192)\)")
+GATE_SHAPE = re.compile(r"\(2048,\s*128\)")
+CONV_SHAPE = re.compile(r"\(1,\s*(?:8192,\s*64|64,\s*8192)\)")
 PORT_FIELDS = re.compile(
     r"'(shape|ori_shape|dtype|format|ori_format|addr_type)'\s*:\s*(\([^)]*\)|'[^']*'|-?\d+)"
 )
@@ -58,11 +58,12 @@ def show_graph(air, names, trace_shapes):
             seen.add(edge)
             path.append(describe(edge))
         gate_edge = name + ':0'
-        mul, rms = gate_product(graph, gate_edge)
-        cast, = [e for e in data_edges(mul) if e != rms]
-        print('  门控分支', ' → '.join([*reversed(path), describe(gate_edge), describe(cast), mul.name]))
+        chain, rms = rms_gate_path(graph, gate_edge)
+        mul = chain[-1]
+        print('  门控分支', ' → '.join([*reversed(path), describe(gate_edge),
+                                    *(describe(op.name + ':0') for op in chain[:-1]), mul.name]))
         print('  乘法另一侧', describe(rms), '→', mul.name)
-        chains[name] = (cast.rsplit(':', 1)[0], mul.name)
+        chains[name] = [op.name for op in chain]
     return chains
 
 
@@ -70,7 +71,7 @@ def show_omc_edges(model, chains):
     """Read explicit references in each serialized graph's own namespace."""
     document, _ = read_omc(model)
     targets = set(chains)
-    expected_names = targets | {name for pair in chains.values() for name in pair}
+    expected_names = targets | {name for chain in chains.values() for name in chain}
     seen = set()
     graph_count = 0
     print(f'  OMC 连线 {model}')
@@ -126,8 +127,43 @@ def show_omc_edges(model, chains):
         print(f'    在 {graph_count} 个可见图中未找到同名门控节点：{", ".join(missing)}')
 
 
-def show_compile(folder, names):
+def silu_build_ports(line):
+    if 'BuildSingleOp(' not in line or 'te_silupatch_' not in line:
+        return None
+    kernel = re.search(r'kernelName\[([^\]]+)\]', line)
+    _, sep, ports = line.partition('op inputs:')
+    if not kernel or not sep:
+        return None
+    tensors = ports.split('outputs:', 1)
+    fields = [dict(PORT_FIELDS.findall(t.partition('}')[0])) for t in tensors]
+    return kernel[1], fields
+
+
+def token_gate_build_shapes(log):
+    """Collect physical kernel shapes printed by OMG. Interleaved logs can omit a port."""
+    observed = {}
+    with log.open(errors='replace') as lines:
+        for line in lines:
+            built = silu_build_ports(line)
+            if not built:
+                continue
+            kernel, fields = built
+            shape = fields[0].get('shape', '').replace(' ', '')
+            if shape in ('(64,4096)', '(2048,128)'):
+                ports = observed.setdefault(kernel, {})
+                for label, port in zip(('x', 'z'), fields):
+                    ports.setdefault(label, {}).update(port)
+    for kernel, ports in observed.items():
+        print(f'[GDN 门控 OMG] {kernel}：x={ports["x"].get("shape", "未记录")}，'
+              f'z={ports.get("z", {}).get("shape", "未记录")}', flush=True)
+    if not observed:
+        print('[GDN 门控 OMG] 编译日志没有可辨认的门控 kernel 形状，实际编译形状待确认', flush=True)
+    return observed
+
+
+def show_compile(folder, names, *, token_view=False):
     log = folder/'compile.log'
+    gate_shape = re.compile(r"\(64,\s*4096\)") if token_view else GATE_SHAPE
     by_name = {name: set() for name in names}
     kernels = set()
     conv_kernels = set()
@@ -142,30 +178,27 @@ def show_compile(folder, names):
                 node = re.search(r'OP\[([^,\]]+),\s*SiluPatch\]', line, re.I)
                 if node and node[1] in by_name:
                     by_name[node[1]].add(line.split('::')[-1].strip().strip('"'))
-            if 'BuildSingleOp(' not in line or 'te_silupatch_' not in line:
+            built = silu_build_ports(line)
+            if not built:
                 continue
-            kernel = re.search(r'kernelName\[([^\]]+)\]', line)
-            _, sep, ports = line.partition('op inputs:')
-            if not kernel or not sep:
+            kernel, ports = built
+            inputs = ' '.join(ports[0].get(field, '') for field in ('shape', 'ori_shape'))
+            if CONV_SHAPE.search(inputs) and kernel not in conv_kernels:
+                conv_kernels.add(kernel)
+                print(f'  L{number} 卷积 SiLU 形状对应的 kernel {kernel}')
+                for label, tensor in zip(('输入', '输出'), ports):
+                    print(f'    {label}', tensor)
+            if not gate_shape.search(inputs):
                 continue
-            inputs = ports.partition('outputs:')[0]
-            if CONV_SHAPE.search(inputs) and kernel[1] not in conv_kernels:
-                conv_kernels.add(kernel[1])
-                print(f'  L{number} 卷积 SiLU 形状对应的 kernel {kernel[1]}')
-                for label, tensor in zip(('输入', '输出'), ports.split('outputs:', 1)):
-                    print(f'    {label}', dict(PORT_FIELDS.findall(tensor.partition('}')[0])))
-            if not GATE_SHAPE.search(inputs):
-                continue
-            first = kernel[1] not in kernels
+            first = kernel not in kernels
             if first:
-                kernels.add(kernel[1])
-                print(f'  L{number} 门控形状对应的 kernel {kernel[1]}')
-            for label, tensor in zip(('输入', '输出'), ports.split('outputs:', 1)):
-                fields = PORT_FIELDS.findall(tensor.partition('}')[0])
-                for key, value in fields:
+                kernels.add(kernel)
+                print(f'  L{number} 门控形状对应的 kernel {kernel}')
+            for label, tensor in zip(('输入', '输出'), ports):
+                for key, value in tensor.items():
                     observed.setdefault(f'{label}.{key}', set()).add(value.replace(' ', ''))
                 if first:
-                    print(f'    {label}', dict(fields))
+                    print(f'    {label}', tensor)
     if not kernels:
         print('  编译日志未记录可按门控形状识别的 BuildSingleOp 行')
     for name, lines in by_name.items():
@@ -195,11 +228,14 @@ def report(root):
             raise ValueError('当前导出目录与本次 gate-probe 的来源记录不一致')
     control = probes/'silu-cast-mul'
     row = index['cases'][control.name]
-    gate = row['nodes'][0]
-    gates = [n['name'] for n in meta['silu_patch']['nodes'] if n['shape'] == [2048, 128]]
-    shapes = {n['name']: n['shape'] for n in meta['silu_patch']['nodes'] if n['shape'] in ([1, 8192, 64], [2048, 128])}
-    if gate not in gates:
-        raise ValueError(f'四层 AIR 门控记录里没有 {gate}')
+    token_view = meta.get('rms_silu_token_view', False)
+    gate_shape = [64, 4096] if token_view else [2048, 128]
+    gates = [n['name'] for n in meta['silu_patch']['nodes'] if n['shape'] == gate_shape]
+    shapes = {n['name']: n['shape'] for n in meta['silu_patch']['nodes'] if n['shape'] in ([1, 8192, 64], gate_shape)}
+    matches = [name for name in row['nodes'] if name in gates]
+    if len(matches) != 1:
+        raise ValueError(f'门控小图应包含一个四层 AIR 的 RMS SiluPatch，实际匹配 {matches}')
+    gate, = matches
     port_reports = []
     for base, air, names in ((layer, sized_file(case, record), gates), (control, control/'weight/export.air', [gate])):
         build = read(base/'omc/build.json')
@@ -217,7 +253,7 @@ def report(root):
             show_omc_edges(sized_file(base/'omc', build['model']), chains)
         except (OSError, ValueError) as error:
             print(f'  {base.name} 的 OMC 连线未能读取：{error}')
-        port_reports.append(show_compile(base/'omc', names))
+        port_reports.append(show_compile(base/'omc', names, token_view=token_view))
     full, single = port_reports
     common = sorted(full.keys() & single.keys())
     differences = [k for k in common if full[k] != single[k]]

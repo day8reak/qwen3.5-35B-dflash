@@ -13,7 +13,7 @@ from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
 from qwen35_moe_dflash.target.prefill_t64.attention_steps import AttentionSteps, MATMUL, NORMS
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import data_edges
-from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import activation_port_shape, gate_product
+from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import activation_port_shape, rms_gate_path
 from qwen35_moe_dflash.target.prefill_t64.l0_split import slice_air, slice_dependencies, wire
 from qwen35_moe_dflash.target.prefill_t64.whole_run import hiai_failure_stage
 
@@ -45,28 +45,23 @@ def probe_cases(raw, meta, mode):
         yield 'linear-attention', step, step['wires']
         return
     _, graph = graph_message(raw, 'SiluPatch')
-    gates = {row['name'] for row in meta.get('silu_patch', {}).get('nodes', []) if row.get('shape') == list(SHAPE)}
+    kernel_shape = (64, 4096) if meta.get('rms_silu_token_view') else SHAPE
+    gates = {row['name'] for row in meta.get('silu_patch', {}).get('nodes', []) if row.get('shape') == list(kernel_shape)}
     gate = next((op for op in graph.op if op.name in gates and op.type == 'SiluPatch'), None)
     if gate is None:
-        raise ValueError('The selected four-layer AIR has no [2048,128] RMS gate SiluPatch')
+        raise ValueError(f'The selected four-layer AIR has no {kernel_shape} RMS gate SiluPatch')
     if ([d.dtype for d in gate.input_desc], [d.dtype for d in gate.output_desc]) != ([2], [2]):
         raise ValueError(f'{gate.name}: expected FP16 SiluPatch ports')
     gate_input, = data_edges(gate)
     gate_out = gate.name + ':0'
-    mul, peer = gate_product(graph, gate_out)
-    cast_out, = [edge for edge in data_edges(mul) if edge != peer]
-    cast = cast_out.rsplit(':', 1)[0]
+    chain, peer = rms_gate_path(graph, gate_out)
+    mul = chain[-1]
+    gate_operand, = [edge for edge in data_edges(mul) if edge != peer]
     mul_out = mul.name + ':0'
-    wires = {edge: wire(edge, SHAPE, dtype) for edge, dtype in (
-        (gate_input, 'float16'), (gate_out, 'float16'), (cast_out, 'float32'),
-        (peer, 'float32'), (mul_out, 'float32'))}
-    cases = [
-        ('cast-mul', [gate_out, peer], [cast, mul.name], mul_out),
-        ('silu', [gate_input], [gate.name], gate_out),
-        ('silu-cast', [gate_input], [gate.name, cast], cast_out),
-        ('silu-cast-mul', [gate_input, peer], [gate.name, cast, mul.name], mul_out),
-    ]
+    wires = {edge: wire(edge, kernel_shape, 'float16') for edge in (gate_input, gate_out)}
+    wires.update({e: wire(e, SHAPE, 'float32') for e in (peer, gate_operand, mul_out)})
     by_name = {op.name: op for op in graph.op}
+    cases = []
     if mode == 'upstream':
         walk = AttentionSteps(graph, by_name, [])
         z = walk.expect(walk.strip(gate_input), {MATMUL})
@@ -75,7 +70,6 @@ def probe_cases(raw, meta, mode):
         hidden, core = quant.input[0], rms.input[0]
         wires[hidden] = input_wire(quant, (64, 2048))
         wires[core] = input_wire(rms, SHAPE)
-        cases = []
         for label, inputs, producers in (
                 ('z-branch', [hidden, peer], {z.name, quant.name}),
                 ('rms-branch', [gate_input, core], {rms.name}),
@@ -84,6 +78,12 @@ def probe_cases(raw, meta, mode):
             if used != set(inputs) or (kept & {z.name, quant.name, rms.name}) != producers:
                 raise ValueError(f'{label}: slice crosses unexpected projection or RMSNorm boundaries')
             cases.append((label, inputs, [name for name in by_name if name in kept], mul_out))
+    else:
+        for label, inputs, output in (
+                ('cast-mul', [gate_out, peer], mul_out), ('silu', [gate_input], gate_out),
+                ('silu-cast', [gate_input], gate_operand), ('silu-cast-mul', [gate_input, peer], mul_out)):
+            kept, _ = slice_dependencies(by_name, [output], set(inputs), label)
+            cases.append((label, inputs, [name for name in by_name if name in kept], output))
     for label, inputs, nodes, output in cases:
         step = dict(inputs=inputs, nodes=nodes, outputs=[output])
         yield label, step, wires
@@ -142,8 +142,11 @@ def compile_cases(folder, case, meta, record, ddk, mode):
             files.append(item)
         feeds = {f'l0_feed_{i}': wires[e] for i, e in enumerate(step['inputs'])}
         outputs = [wires[e] for e in step['outputs']]
-        save_json(base/'case.json', dict(native_tool_args=True, files=files, air_directory=directory,
-                                         inputs=feeds, outputs=outputs, source_air=record))
+        case_info = dict(native_tool_args=True, files=files, air_directory=directory, inputs=feeds,
+                         outputs=outputs, source_air=record)
+        if meta.get('rms_silu_token_view'):
+            case_info['rms_silu_token_view'] = True
+        save_json(base/'case.json', case_info)
         print(f'[{label}] 已导出 AIR：{air}（{len(nodes)} 个节点）', flush=True)
         row = dict(nodes=nodes, source=source['sha256'], feeds=feeds, outputs=outputs)
         if mode == 'gdn-bisect':

@@ -231,6 +231,24 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 如果 `none` 能执行，在两条命令中都改用 `0`，仅将 L0 的 RMS 门控换回 `SiluPatch`。也可选 `1`、`2` 或升序逗号列表来定位单层或组合触发条件。导出时逐层打印门控选择，并核对 AIR 中 RMS 门控形状的自定义节点数。出现精度矩阵或 `FAILED_ACCURACY` 表示模型已执行。复现原加载问题需在该次运行看到 `load_model` 和 `OpUpdateKernelArgs failed`。
 
+### 四层 T64 保留全部自定义 SiLU，按 token 做 RMS 门控激活
+
+`--rms-silu-token-view` 在 L0、L1、L2 的 RMS 门控上都调用 `torch.ops.npu.silu_patch`。每层将同一批连续 FP16 元素从 `[2048,128]` 排成 `[64,4096]`，逐元素激活，再恢复为 `[2048,128]`，转 FP32 与逐 head 的 RMSNorm 结果相乘。四层共导出 14 个 `SiluPatch` 和 3 个 `SoftplusPatch`，共用一个 OMC。
+
+CPro AIR 生成服务器复用当前四层 golden：
+
+```bash
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate --rms-silu-token-view
+```
+
+CPro OMC 生成和板端执行共用的服务器：
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate --rms-silu-token-view
+```
+
+导出日志的三行 `[GDN 门控 AIR]` 显示转换器看到的形状和通向 FP32 乘法的数据边。`[GDN 门控 OMG]` 显示编译日志可读到的 kernel 输入和输出形状。若 OMG 仍打印 `(2048,128)` 或端口缺失，仅凭 AIR 无法确认编译后的形状变化。板端实际执行后，在 `4-prefill-t64/board/comparison.json` 查看三端精度。重跑会覆盖当前四层结果。
+
 ### 导出完整 L0 linear attention
 
 在保留当前四层 T64 编译输入包的 CPro OMC 生成服务器执行以下命令，即可从这份 AIR 直接切出 `layers[0].linear_attn`。
