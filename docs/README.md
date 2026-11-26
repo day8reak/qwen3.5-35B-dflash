@@ -6,4 +6,5 @@
 - [端到端流程](end-to-end-flow.md)
 - [当前结果](results.md)
 - [环境配置](environment-setup.md)
+- [Decoder 四环境分步运行与两机组合命令](decoder-compare.md)
 - [完整模型执行](run-end-to-end.md)

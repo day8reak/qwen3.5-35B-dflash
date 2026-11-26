@@ -1,10 +1,12 @@
 # 310P 与 CPro 的 GDR、RMSNorm 和门控乘法逐张量对比
 
+本节的诊断脚本按两两共用主机编排：golden 与 AIR 在同一台服务器，OMC 编译与板端执行在另一台。四个环境独立部署时，完整 decoder 使用[分步入口](decoder-compare.md)。
+
 <a id="gdn-tail"></a>
 
 ## 用已有 GDR 输出定位 L0 从 core 到 out_proj 的误差
 
-在 78 的 310P 环境准备数据。三个 bin 均按 FP16 的 token、head、channel 顺序读取，每个 token 有 32 个 head，每个 head 有 128 个通道。可提供 19 或 64 行；只有 19 行时补齐物理 T64，比较 token 0–18。两端共用同一份门控投影输出 `z`。若手上有 310P 实测的 GDR core，可用它替换 `--gold-core` 的 CPU golden。两组参考的后处理均由 310P 原生 L0 模块执行。
+在 CPU、310P golden 生成服务器的 310P 环境准备数据。三个 bin 均按 FP16 的 token、head、channel 顺序读取，每个 token 有 32 个 head，每个 head 有 128 个通道。可提供 19 或 64 行；只有 19 行时补齐物理 T64，比较 token 0–18。两端共用同一份门控投影输出 `z`。若手上有 310P 实测的 GDR core，可用它替换 `--gold-core` 的 CPU golden。两组参考的后处理均由 310P 原生 L0 模块执行。
 
 ```bash
 conda activate qwen3_5_w4
@@ -31,9 +33,9 @@ python "$REPO_DIR/targets/cpro/tools/gdn_tail_accuracy.py" prepare \
   --z "${GDN_Z:-$D/inputs/z.bin}"
 ```
 
-78 会核对原 310P L0 投影输出的 19 行与源 AIR 的 golden 逐位一致，再用指定的 core、z 重放原生 norm 和 W4 投影。CPro 端从源 AIR 保留各输出所依赖的算子、类型转换、gamma、epsilon 和投影权重。输入文件的哈希和真实 310P 模块信息在 `air/manifest.json`，各截取点的源边和外部权重记录在对应的 `export.json`。
+CPU、310P golden 生成服务器会核对原 310P L0 投影输出的 19 行与源 AIR 的 golden 逐位一致，再用指定的 core、z 重放原生 norm 和 W4 投影。CPro 端从源 AIR 保留各输出所依赖的算子、类型转换、gamma、epsilon 和投影权重。输入文件的哈希和真实 310P 模块信息在 `air/manifest.json`，各截取点的源边和外部权重记录在对应的 `export.json`。
 
-在 35 的 DDK 环境执行。同一运行目录在两台服务器上的路径不同时，给 `board` 增加 `--remote-air /78上的运行目录/air`。
+在 CPro OMC 生成服务器的 DDK 环境执行。同一运行目录在两台服务器上的路径不同时，给 `board` 增加 `--remote-air /上游运行目录/air`。
 
 ```bash
 conda activate custom_pypto
@@ -45,7 +47,7 @@ python "$REPO_DIR/targets/cpro/tools/gdn_tail_accuracy.py" board \
   --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}"
 ```
 
-六张 OMC 各只返回一个结果。沿 core 分支依次读 `rms_output`（含 gamma）、`mul_output`（与 SiLU 门值相乘）、`gated_return`（门控值转回投影输入 dtype）、`out_proj`（含 DynamicQuant 和 W4 矩阵乘）。另两张分别读 `silu_output`（只依赖 z）和 `out_proj_only`（固定投影输入）。每张图预热三次，再回读十次。板端结果保存在 35 的 `$R/recovery`。重算指标可执行 `python "$REPO_DIR/targets/cpro/tools/gdn_tail_accuracy.py" report --run "$R"`。
+六张 OMC 各只返回一个结果。沿 core 分支依次读 `rms_output`（含 gamma）、`mul_output`（与 SiLU 门值相乘）、`gated_return`（门控值转回投影输入 dtype）、`out_proj`（含 DynamicQuant 和 W4 矩阵乘）。另两张分别读 `silu_output`（只依赖 z）和 `out_proj_only`（固定投影输入）。每张图预热三次，再回读十次。板端结果保存在 CPro 板端执行服务器的 `$R/recovery`。重算指标可执行 `python "$REPO_DIR/targets/cpro/tools/gdn_tail_accuracy.py" report --run "$R"`。
 
 | accuracy.csv 的 comparison | 对比 | 回答的问题 |
 | --- | --- | --- |
@@ -415,7 +417,7 @@ python "$TOOLS/gdr_prefill_stages.py" audit-product --dump "$T/dump" --layer 0
 
 ## L0 三个单算子的 CPU、310P、CPro 对比矩阵
 
-下面的 `review` 只读已有的三张 AIR，在 78 或拥有上一轮 tail AIR 的主机均可运行。它打印原图的输入边、输出边、形状、引用权重及截取后每个 GE 节点的名称、类型和输入。OMG 编译可能融合节点。
+下面的 `review` 只读已有的三张 AIR，在 CPro AIR 生成服务器或拥有上一轮 tail AIR 的主机均可运行。它打印原图的输入边、输出边、形状、引用权重及截取后每个 GE 节点的名称、类型和输入。OMG 编译可能融合节点。
 
 ```bash
 conda activate qwen3_5_w4
@@ -432,7 +434,7 @@ python "$P" review --air "$A"
 | SiLU | 原层门控投影的 z | SiLU(z)，在门控乘法之前 |
 | out_proj | 310P 原层门控乘法、回转 FP16、reshape 后的投影输入 | DynamicQuant、QuantBatchMatmulV4444 及原图输出视图后的 attention 投影，止于残差相加之前 |
 
-在 78 运行 `prepare` 后，三个 `air/models/*/export.air` 均可单独编译。复用六图批次会保留这三张原 AIR 的字节，也可把 `--source-air` 指向包含 `l00_c00_gdn_layer_hidden_o0` 的四层 attention AIR 批次重新截取。每张图使用原生 T64 输入，指标统计第 0–18 行。CPU 投影使用原 checkpoint 的 group-256 W4 权重和 scale，逐 token 动态量化，int32 点积、FP32 分组累加、FP16 输出。
+在 CPro AIR 生成服务器运行 `prepare` 后，三个 `air/models/*/export.air` 均可单独编译。复用六图批次会保留这三张原 AIR 的字节，也可把 `--source-air` 指向包含 `l00_c00_gdn_layer_hidden_o0` 的四层 attention AIR 批次重新截取。每张图使用原生 T64 输入，指标统计第 0–18 行。CPU 投影使用原 checkpoint 的 group-256 W4 权重和 scale，逐 token 动态量化，int32 点积、FP32 分组累加、FP16 输出。
 
 ```bash
 R="$T/gdn-op-matrix-l0-valid19-01"
@@ -441,7 +443,7 @@ python "$P" prepare --run "$R" --source-air "$A" \
 cat "$R/air/boundaries.json"
 ```
 
-在 35 执行板端测试，`--remote-air` 可指定 78 的新批次路径。每张 OMC 预热三次，回读十次。复用已有结果时执行 `report --run "$R"`。
+在 CPro 板端执行服务器执行板端测试，`--remote-air` 可指定 CPro AIR 生成服务器的新批次路径。每张 OMC 预热三次，回读十次。复用已有结果时执行 `report --run "$R"`。
 
 ```bash
 conda activate custom_pypto
@@ -457,7 +459,7 @@ python "$REPO_DIR/targets/cpro/tools/gdn_op_matrix.py" board \
 
 ### 核对本次 310P 输出投影的量化路径
 
-78 的采集器调用原 `inference_segment.py` 时显式传入 `--quant_mode=enable --quant_bits=4`。三端的投影输入都是 310P 捕获的同一份门控输出。在 78 用已有矩阵运行目录复核实际量化操作数，只执行 L0 的 310P 采集和 CPU 对照。
+CPU、310P golden 生成服务器的采集器调用原 `inference_segment.py` 时显式传入 `--quant_mode=enable --quant_bits=4`。三端的投影输入都是 310P 捕获的同一份门控输出。在 CPU、310P golden 生成服务器用已有矩阵运行目录复核实际量化操作数，只执行 L0 的 310P 采集和 CPU 对照。
 
 ```bash
 R="${AI_RUN_DIR:?}/target/tests/gdn-op-matrix-l0-valid19-01"
@@ -469,11 +471,11 @@ python "${REPO_DIR:?}/targets/cpro/tools/gdn_op_matrix.py" audit-proj \
 
 ## L0 卷积后的 SiLU 和 L0/L3 attention 的通用截取
 
-在 78 准备卷积后的 SiLU，在 35 用同一份输入独立上板。两条命令见 [单测 L0 的 F.silu(conv_out)](guides/attention-step-example.md)。原生输入形状是 `[1,8192,64]`，沿最后一维统计 valid19 和 token18。
+在 CPro AIR 生成服务器准备卷积后的 SiLU，在 CPro 板端执行服务器用同一份输入独立上板。两条命令见 [单测 L0 的 F.silu(conv_out)](guides/attention-step-example.md)。原生输入形状是 `[1,8192,64]`，沿最后一维统计 valid19 和 token18。
 
 ### 按 GE 端口截取其他步骤
 
-在 78 用 `list` 枚举实际端口。每行列出一个节点、它的输入边、各个输出的 `edge`、dtype 和 shape。层号支持 `0`（linear attention）和 `3`（full attention）。`--match` 可省略。
+在 CPro AIR 生成服务器用 `list` 枚举实际端口。每行列出一个节点、它的输入边、各个输出的 `edge`、dtype 和 shape。层号支持 `0`（linear attention）和 `3`（full attention）。`--match` 可省略。
 
 ```bash
 P="${REPO_DIR:?}/targets/cpro/tools/attention_step.py"
@@ -494,7 +496,7 @@ cat "$S/slice/slice.json"
 
 每个 `--input EDGE DTYPE DIMS` 是一个新的运行时输入，多个输入重复给出。保留从输出回溯到这些输入之间的原节点和常量，相关 FileConstant 随 AIR 一起导出。当前接口支持一个输出端口、静态逻辑形状、无嵌套子图的片段。参数控制具体的图边界，所选节点上游的常量参数可以留在模型中。
 
-在 35 用相同的 `S` 相对目录执行，工具会拉取 78 的 `slice/`，编译并打印生成的 OMC 路径。可用 `--remote-slice` 指定 78 上的绝对路径。
+在 CPro OMC 生成服务器用相同的 `S` 相对目录执行，工具会拉取 CPro AIR 生成服务器的 `slice/`，编译并打印生成的 OMC 路径。可用 `--remote-slice` 指定 CPro AIR 生成服务器上的绝对路径。
 
 ```bash
 S="${AI_RUN_DIR:?}/target/tests/l3-selected-step-01"
@@ -504,7 +506,7 @@ python "$P" compile --run "$S" --ddk-root "${CPRO_DDK_ROOT:?}" \
 
 通用入口生成所选步骤的 AIR、边界清单和 OMC。L0 的 `qkv_conv_silu`、`gate_silu`、`gated_rmsnorm` 和 `out_proj` 支持按步骤采集 310P 输入并生成三端矩阵。两台机器的命令见[单步骤执行示例](guides/attention-step-example.md)。
 
-可直接传给 `--step` 的命名步骤见[步骤说明表](../specs/attention-step-presets.csv)。在 78 执行以下命令可导出本次真实 AIR 的完整步骤表，包含两个层的命名片段和按节点输出端口选取的步骤。
+可直接传给 `--step` 的命名步骤见[步骤说明表](../specs/attention-step-presets.csv)。在 CPro AIR 生成服务器执行以下命令可导出本次真实 AIR 的完整步骤表，包含两个层的命名片段和按节点输出端口选取的步骤。
 
 ```bash
 python "$P" catalog --source-air "$A" --output "$T/attention-l0-l3-steps.csv"
@@ -512,7 +514,7 @@ python "$P" catalog --source-air "$A" --output "$T/attention-l0-l3-steps.csv"
 
 表中的 `runtime_inputs` 给出各输入的边名、dtype、shape，`constant_inputs` 列出保留在图内的常量边，`output` 给出输出规格。每行都有源 AIR 哈希。`ready` 表示截取参数齐全，具体编译结果以 OMG 为准。`supply_input_abi` 表示需要用 `--input EDGE DTYPE DIMS` 补足表中列出的输入规格。`manual_edges` 表示涉及控制依赖，需要审核输入切点。`unresolved_preset` 表示这张 AIR 的结构未匹配到对应预设。
 
-例如在 78 选择 L3 的完整输出投影，或者把 `--step` 换成同层 CSV 的某个 `节点名:输出端口`。若表中提示输入规格缺失，在命令后追加该输入的 `--input` 参数。之后在 35 运行上面的 `compile`。
+例如在 CPro AIR 生成服务器选择 L3 的完整输出投影，或者把 `--step` 换成同层 CSV 的某个 `节点名:输出端口`。若表中提示输入规格缺失，在命令后追加该输入的 `--input` 参数。之后在 CPro OMC 生成服务器运行上面的 `compile`。
 
 ```bash
 S="${AI_RUN_DIR:?}/target/tests/l3-out-proj-only-01"
@@ -523,7 +525,7 @@ python "$P" extract --source-air "$A" --layer 3 --step out_proj --run "$S"
 
 静态步骤表按层排列。L0 覆盖四个输入投影、卷积窗口、depthwise conv、卷积 SiLU、Q/K/V 拆分与 head 整理、beta、衰减 g、GDR 的 core 和 final state、门控归一化、门控乘法及输出投影。L3 覆盖 Q/gate 拆分、Q/K norm、cos/sin 查表、partial RoPE、Q 与 KV 布局、缓存索引与写入、融合 attention、解包、sigmoid 门控及输出投影。每个投影都可通过 `_a8`、`_token_scale`、`_matmul` 选择量化激活、逐 token 尺度、矩阵乘三个边界。矩阵乘接收整数激活和动态尺度，使用 AIR 中的原权重。
 
-在 78 导出便于 review 的源码步骤表。去掉 `--presets-only` 可同时查看这份图的 GE 节点端口。以区分 out_proj 量化误差和矩阵乘误差为例，每个输出使用独立目录。
+在 CPro AIR 生成服务器导出便于 review 的源码步骤表。去掉 `--presets-only` 可同时查看这份图的 GE 节点端口。以区分 out_proj 量化误差和矩阵乘误差为例，每个输出使用独立目录。
 
 ```bash
 python "$P" catalog --source-air "$A" --presets-only --output "$T/attention-forward-steps.csv"

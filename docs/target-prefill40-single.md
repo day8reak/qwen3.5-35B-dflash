@@ -4,11 +4,11 @@
 
 ## 原 CPro 的 40 层整图，使用 SiluPatch 和 SoftplusPatch
 
-两机配置 `DECODER_MODE=40`、`DECODER_PHASE=prefill` 后，在 78 执行 `bash targets/cpro/scripts/decoder_compare.sh prepare`，在 35 执行 `bash targets/cpro/scripts/decoder_compare.sh board`。输入是 310P YAML 的第一条 prompt，物理长度为 64。CPU 和 310P 参考、CPro AIR 均在本次生成。
+配置 `DECODER_MODE=40`、`DECODER_PHASE=prefill`，输入取 310P YAML 的第一条 prompt，物理长度为 64。四个角色的入口和两机组合命令见[运行说明](decoder-compare.md)。
 
-运行目录为 `$AI_RUN_DIR/target/tests/40-prefill-t64`。78 写入 `export/reference/`、各层 CPU 参考和 `export/air/`，35 获取 AIR 并写入 `board/omc/`。上板结束后查看 `board/comparison.json` 和 `board/matrices.csv`。矩阵包含最后一个有效 token 的 logits、30 个线性层的完整 conv/recurrent 状态和 10 个 full 层的有效 K/V。失败的编译日志在 `board/compile/compile.log`，上板记录在 `board/replay/result.json`。
+运行目录为 `$AI_RUN_DIR/target/tests/40-prefill-t64`。golden 端生成 `export/reference/` 和各层 CPU 参考，AIR 端写入 `export/air/`，OMC 端编译到 `board/omc/`。上板后查看 `board/comparison.json` 和 `board/matrices.csv`。矩阵覆盖最后有效 token 的 logits、30 个线性层的完整 conv/recurrent 状态和 10 个 full 层的有效 K/V。失败的编译日志在 `board/compile/compile.log`，上板记录在 `board/replay/result.json`。
 
-默认补丁检查 351 个 W4 matmul、30 个 GDR、140 个 FP16 SiluPatch 和 30 个 FP16 SoftplusPatch。GDN 的四维窗口 `[1,8192,1,67]` 和卷积核 `[8192,1,1,4]` 送入 Conv2D，去掉高度维后将 `[1,8192,64]` 送入 SiluPatch。可通过 `CPRO_PATCHED_SOURCE` 指定持久化的可编辑源码目录。
+默认补丁检查 351 个 W4 matmul、30 个 GDR、140 个 FP16 SiluPatch 和 30 个 FP16 SoftplusPatch。默认 Conv2D 使用窗口 `[1,8192,1,67]` 与卷积核 `[8192,1,1,4]`。可选 `--gdn-conv taps` 从相同窗口取四项逐通道乘加，两种实现均把 `[1,8192,64]` 送入 SiluPatch。可用 `CPRO_PATCHED_SOURCE` 指定个人源码目录。
 
 ## 既有的单 logits 导出流程
 

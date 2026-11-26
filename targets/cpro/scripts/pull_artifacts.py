@@ -23,7 +23,8 @@ def initialize(config, hosts):
     if config.exists():
         raise FileExistsError(f'Edit the existing settings in {config}')
     endpoints = {}
-    for role, host in zip(('air', 'omc'), hosts):
+    roles = ('air', 'omc') if len(hosts) == 2 else ('golden', 'air', 'omc')
+    for role, host in zip(roles, hosts, strict=True):
         user = input(f'{role} ({host}) SSH user [{getpass.getuser()}]: ').strip() or getpass.getuser()
         password = getpass.getpass(f'{role} ({host}) SSH password (Enter for key or local login): ')
         endpoints[role] = dict(host=host, port=22, user=user, password=password)
@@ -123,8 +124,8 @@ def main():
     parser.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--prepare', action='store_true', help='on the producer, grant mode 0777 to the selected run artifacts')
-    mode.add_argument('--init', nargs=2, metavar=('AIR_HOST', 'OMC_HOST'),
-                        help='create private SSH settings on the receiving machine')
+    mode.add_argument('--init', nargs='+', metavar='HOST',
+                        help='create private SSH settings: [GOLDEN_HOST] AIR_HOST OMC_HOST')
     parser.add_argument('--from', dest='source', choices=('air', 'omc'), default='air')
     parser.add_argument('--to', type=Path, help='local destination for a single remote artifact')
     parser.add_argument('paths', nargs='*', help='absolute artifact paths or paths relative to AI_RUN_DIR')
@@ -135,6 +136,8 @@ def main():
     if args.init:
         if args.paths:
             parser.error('--init takes two hostnames and no artifact paths')
+        if len(args.init) not in (2, 3):
+            parser.error('--init expects [GOLDEN_HOST] AIR_HOST OMC_HOST')
         initialize(config, args.init)
         return
     if not args.paths:

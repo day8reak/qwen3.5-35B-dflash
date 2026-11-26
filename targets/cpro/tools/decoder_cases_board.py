@@ -45,8 +45,12 @@ def transfer(client, remote, dest):
 
 def compiled(case, base, ddk, diagnosis, bundle_stamp):
     dest = base/'omc'
-    stamp = dict(bundle=bundle_stamp, omg=sha(ddk/'tools/tools_omg/master/omg'))
+    stamp = dict(bundle=bundle_stamp)
+    if ddk is not None:
+        stamp['omg'] = sha(ddk/'tools/tools_omg/master/omg')
     if not dest.exists():
+        if ddk is None:
+            raise FileNotFoundError(f'Run compile and provide its output to execute: {dest}')
         graph_size = sum(r['bytes'] for r in read(case/'case.json')['files'] if r['path'].startswith('weight/'))
         print(f'{case.name}: AIR with weights {graph_size / 2**30:.2f} GiB, '
               f'available before OMG {shutil.disk_usage(base).free / 2**30:.2f} GiB', flush=True)
@@ -73,7 +77,7 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
         save_json(work/'build.json', data)
         work.rename(dest)
     build = read(dest/'build.json')
-    if build['stamp'] != stamp:
+    if any(build['stamp'].get(k) != v for k, v in stamp.items()):
         raise ValueError(f'{dest}: bundle or OMG changed. Run board again without --recovery.')
     return build, checked(dest, build['model']), [checked(dest, r) for r in build['weights']]
 
@@ -146,25 +150,38 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     return values
 
 
-def board(run, mode, phase, remote, ddk, config, diagnosis, recovery):
+def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board'):
     bundle = run/'package'
-    if recovery and bundle.is_dir() and not bundle.is_symlink():
+    if step == 'execute' and not bundle.is_dir():
+        raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
+    if step != 'execute' and recovery and bundle.is_dir() and not bundle.is_symlink():
         with tempfile.TemporaryDirectory(dir=run) as tmp:
             pull_air(Path(tmp), remote/'package/manifest.json', destination_name='manifest.json',
                      ssh_download=ssh_file)
             if sha(Path(tmp)/'manifest.json') != sha(bundle/'manifest.json'):
-                raise ValueError('78 has a new export. Run board without --recovery to use its inputs and model.')
+                raise ValueError('The AIR server has a new export. Run board without --recovery to use its inputs and model.')
     if not bundle.exists():
         pull_air(run, remote/'package', destination_name='package', ssh_download=transfer, before_download=transfer_size)
     manifest = read(bundle/'manifest.json')
     if (manifest['mode'], manifest['phase']) != (mode, phase):
         raise ValueError(f'{bundle}: mode/phase mismatch')
+    if manifest.get('gdn_conv', 'conv2d') != gdn_conv:
+        raise ValueError(f'{bundle}: expected GDN {gdn_conv}. Select the same --gdn-conv as the AIR export.')
+    from decoder_handoff import runtime_file
     for row in manifest['files']:
-        checked(bundle, row)
+        if step != 'execute' or runtime_file(row['path']):
+            checked(bundle, row)
     fixture = bundle/'fixture'
     ref = read(fixture/'reference.json')
     length = ref['prompt_length']
     stamp = sha(bundle/'manifest.json')
+    if step == 'compile':
+        for group in groups(mode):
+            case = bundle/case_name(group)
+            base = run/case.name
+            base.mkdir(exist_ok=True)
+            compiled(case, base, ddk, diagnosis, stamp)
+        return True
     runtime = read(config.parent/read(config)['assets'])['environment']
     pieces = read(fixture/'tokens.json')
     feeds = {k: (fixture, v) for k, v in ref['inputs'].items()}

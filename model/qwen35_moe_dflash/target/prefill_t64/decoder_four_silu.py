@@ -223,7 +223,7 @@ def inspect_gdn_convs(graph, count, rows):
 
 
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, softplus=False, rows=64,
-                           check_convs=False):
+                           check_convs=False, gdn_conv="conv2d"):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -296,7 +296,14 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, soft
                     raise ValueError(f'{name}: AIR port {dims} differs from traced shape {shape}')
         records[op.type].append(dict(name=name, shape=list(shape), numel=prod(shape), consumers=consumers))
         print(f'{name}: FP16{shape} -> FP16{shape}; consumers={consumers}', flush=True)
-    result = {'gdn_convs': inspect_gdn_convs(graph, linear, rows)} if check_convs else {}
+    result = {}
+    if check_convs:
+        if gdn_conv == 'taps':
+            from .gdn_taps import inspect_taps
+            conv_silus = [op.name for op in ops.values() if op.type == GE_TYPE and traced[op.name] == (1, 8192, rows)]
+            result['gdn_convs'] = inspect_taps(graph, conv_silus, linear)
+        else:
+            result['gdn_convs'] = inspect_gdn_convs(graph, linear, rows)
     for name, op_type in (("silu_patch", GE_TYPE), ("softplus_patch", "SoftplusPatch")):
         if name == "softplus_patch" and not softplus:
             continue

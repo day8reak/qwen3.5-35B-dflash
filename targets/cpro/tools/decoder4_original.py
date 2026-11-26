@@ -31,6 +31,8 @@ L0_KIND = 'original-cpro-l0-prefill64-aligned-silu-patch-split-v3-fp16'
 SPLIT_KIND = 'original-cpro-decoder-prefill64-aligned-silu-patch-split-v3-fp16'
 L0_DIR = 'glm_export_air_cpro_1block_64_quant'
 FULL_KIND = 'original-cpro-40-layer-prefill64-aligned-silu-softplus-fp16-conv2d'
+TAPS_FULL_KIND = FULL_KIND.removesuffix('conv2d') + 'taps'
+FULL_KINDS = (FULL_KIND, TAPS_FULL_KIND)
 FULL_DIR = 'glm_export_air_cpro_40block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
@@ -127,9 +129,9 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
            layer=None, head=True, standalone=True):
     import yaml
     split = kind in (L0_KIND, SPLIT_KIND)
-    full = kind == FULL_KIND
-    uses_baseline = kind not in (KIND, FULL_KIND)
-    aligned = split or kind in (ALIGNED_KIND, FULL_KIND)
+    full = kind in FULL_KINDS
+    uses_baseline = kind not in (KIND, *FULL_KINDS)
+    aligned = split or kind in (ALIGNED_KIND, *FULL_KINDS)
     layers = 40 if full else (1 if split else 4)
     export_dir = f'glm_export_air_cpro_{layers}block_64_quant'
     default_config = Path('config/qwen3_5_moe.yaml')
@@ -163,8 +165,11 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 and saved['fixture']['reference_sha256'] == sha(reference/'manifest.json')):
             with tempfile.TemporaryDirectory(dir=run, prefix='check-source-') as tmp:
                 if prepared is None:
-                    stage(source, Path(tmp), aligned=True, layers=layers)
-                tree = prepared or Path(tmp)
+                    stage(source, Path(tmp)/'base', aligned=True, layers=layers)
+                tree = prepared or Path(tmp)/'base'
+                if kind == TAPS_FULL_KIND:
+                    from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
+                    tree = taps_source(tree, Path(tmp)/'variant')
                 if full_source_hashes(tree) == saved['silu_patch']['source_sha256']:
                     for row in saved['files']:
                         checked(dest, row)
@@ -184,6 +189,10 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         staged = prepared or Path(tempfile.mkdtemp(dir=run, prefix='silu-source-'))
         entry = (staged / EXPORTER if prepared else
                  stage(source, staged, aligned=aligned, l0=split, layer=layer, head=head, layers=layers))
+        if kind == TAPS_FULL_KIND:
+            from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
+            staged = taps_source(staged, run/'source-taps')
+            entry = staged / EXPORTER
         print(f'SiluPatch model and exporter for review: {staged}', flush=True)
     # The owner's exporter deletes its relative export directory on startup.
     with tempfile.TemporaryDirectory(dir=run, prefix='export-') as temp:
@@ -237,7 +246,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if kind != KIND:
             variant.update(inspect_activation_air(
                 air, shape_trace, layers=layers, full_only=layer is not None and layer % 4 == 3,
-                softplus=aligned, check_convs=full))
+                softplus=aligned, check_convs=full, gdn_conv='taps' if kind == TAPS_FULL_KIND else 'conv2d'))
             if uses_baseline:
                 variant['original_manifest_sha256'] = sha(base_manifest)
             if split:
@@ -296,19 +305,19 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             (work / name).rename(bundle / name)
         bundle.rename(dest)
     if full:
-        print(f'40-layer AIR bundle for 35: {sum(row["bytes"] for row in files) / 2**30:.2f} GiB', flush=True)
+        print(f'40-layer AIR bundle for OMC compilation: {sum(row["bytes"] for row in files) / 2**30:.2f} GiB', flush=True)
     share_for_transfer(dest)
     print(f'{kind} AIR: {dest / export_dir / "export.air"}')
 
 
 def report_full_disk(meta, path, *, incoming=True, linked=0):
-    if meta['kind'] != FULL_KIND:
-        raise ValueError(f'Expected {FULL_KIND}, got {meta["kind"]}')
+    if meta['kind'] not in FULL_KINDS:
+        raise ValueError(f'Expected a native 40-layer prefill AIR, got {meta["kind"]}')
     bundle_size = sum(r['bytes'] for r in meta['files'])
     graph_size = sum(r['bytes'] for r in meta['files'] if Path(r['path']).parts[0] == FULL_DIR)
     free = shutil.disk_usage(path).free
     transfer = bundle_size - linked if incoming else 0
-    print(f'35 filesystem {path}: {free / 2**30:.2f} GiB free, '
+    print(f'OMC compilation filesystem {path}: {free / 2**30:.2f} GiB free, '
           f'AIR bundle {bundle_size / 2**30:.2f} GiB ({transfer / 2**30:.2f} GiB to download). '
           f'If OMG outputs match the {graph_size / 2**30:.2f} GiB graph and weights, '
           f'{(free - transfer - graph_size) / 2**30:.2f} GiB would remain for scratch and other usage. '
@@ -328,7 +337,7 @@ def ssh_bundle(client, remote, staged, *, kind=KIND, previous=None, fetch=None):
     if meta['kind'] != kind:
         raise ValueError(f'Expected {kind} AIR at {remote}, got {meta["kind"]}')
     roots = (L0_DIR, 'inputs', 'golden') if kind in (L0_KIND, SPLIT_KIND) else (EXPORT_DIR, 'inputs')
-    if kind == FULL_KIND:
+    if kind in FULL_KINDS:
         roots = (FULL_DIR, 'inputs', 'golden')
     missing = []
     linked = 0
@@ -348,7 +357,7 @@ def ssh_bundle(client, remote, staged, *, kind=KIND, previous=None, fetch=None):
                 linked += row['bytes']
                 continue
         missing.append((rel, target, row))
-    if kind == FULL_KIND:
+    if kind in FULL_KINDS:
         print(f'Reused {linked / 2**30:.2f} GiB of verified local AIR files', flush=True)
         report_full_disk(meta, staged, linked=linked)
     for rel, target, row in missing:
@@ -399,10 +408,10 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
     run.mkdir(parents=True, exist_ok=True)
     if not bundle.exists():
         with tempfile.TemporaryDirectory(dir=bundle.parent, prefix='.fetch-') as tmp:
-            previous = run.parent/'air' if kind == FULL_KIND else None
+            previous = run.parent/'air' if kind in FULL_KINDS else None
             download = partial(ssh_bundle, kind=kind, previous=previous if previous and previous.is_dir() else None)
             pull_air(Path(tmp), remote, ssh_download=download,
-                     sftp_download=partial(download, fetch=sftp_file) if kind == FULL_KIND else None)
+                     sftp_download=partial(download, fetch=sftp_file) if kind in FULL_KINDS else None)
             incoming = Path(tmp) / 'air'
             if json.loads((incoming / 'manifest.json').read_bytes())['kind'] != kind:
                 raise ValueError(f'Expected {kind} AIR at {remote}')
@@ -420,15 +429,15 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
             if not local_air.samefile(bundle):
                 raise ValueError(f'{local_air} must refer to the selected AIR bundle {bundle}')
     dest = run / 'omc'
-    if kind == FULL_KIND:
+    if kind in FULL_KINDS:
         report_full_disk(meta, run, incoming=False)
-    if kind == FULL_KIND:
+    if kind in FULL_KINDS:
         out = run/'compile'
         out.mkdir()
     else:
         out = Path(tempfile.mkdtemp(dir=run, prefix='omg-'))
     # Keep the directory component in the original FileConstant paths.
-    directory = FULL_DIR if kind == FULL_KIND else EXPORT_DIR
+    directory = FULL_DIR if kind in FULL_KINDS else EXPORT_DIR
     (out / directory).symlink_to(bundle / directory, target_is_directory=True)
     code, argv, soc = compile_omg(out, directory + '/export.air', ddk, diagnosis, platform,
                                   external_weights=external_weights)
@@ -438,7 +447,11 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
     weights = [identity(p, out) for p in sorted(model.parent.rglob('*.weight'))]
     if bool(weights) != external_weights:
         raise ValueError(f'Unexpected OMG weight files for external_weights={external_weights}: {out}')
-    save_json(out / 'manifest.json', dict(air_manifest_sha256=sha(bundle / 'manifest.json'), argv=argv,
+    descriptors = {}
+    if kind in FULL_KINDS:
+        from parse_model_json import GE_PROTO, inspect, read_omc
+        descriptors['abi'] = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)
+    save_json(out / 'manifest.json', dict(**descriptors, air_manifest_sha256=sha(bundle / 'manifest.json'), argv=argv,
               soc_version=soc,
               primary=identity(model, out), weights=weights))
     out.rename(dest)
@@ -467,7 +480,7 @@ def original_filename(name, src, dtype, *, fresh_zero_states):
     raise ValueError(f'Cannot identify {name} {dtype}{dims}. Supply {name}.bin or an input-map JSON.')
 
 
-def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, load_control=None):
+def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, load_control=None, replace_replay=False):
     import numpy as np
     from parse_model_json import GE_PROTO, dtype as ge_dtype, inspect, read_omc
     from qwen35_moe_dflash.target.prefill_smoke_plan import _nd_view_key
@@ -484,7 +497,11 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
         raise ValueError('The compiled model belongs to a different original AIR bundle')
     model = checked(run / 'omc', compiled['primary'])
     weights = [checked(run / 'omc', row) for row in compiled['weights']]
-    abi = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)
+    abi = compiled.get('abi')
+    if abi is None:
+        if ddk is None:
+            raise ValueError('This OMC predates saved I/O descriptors. Run the compile stage for this export.')
+        abi = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)
     source = {s['name']: s for s in meta['inputs']}
     def specs(direction):
         rows = []
@@ -578,8 +595,10 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
                                   previous_board_attempt=previous_receipt['remote'],
                                   previous_exitcode=previous_receipt['exitcode'])
     runtime = read_json(config.parent / read_json(config)['assets'])['environment']
-    if kind == FULL_KIND:
+    if kind in FULL_KINDS:
         out = run/'replay'
+        if replace_replay and out.is_dir():
+            shutil.rmtree(out)
         out.mkdir()
     else:
         out = Path(tempfile.mkdtemp(prefix='replay-', dir=run))
@@ -587,7 +606,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
     print(f'{kind} board attempt: {out}', flush=True)
     try:
         run_v2(out, 'original L0-L3' if kind == KIND else kind, model, inputs, paths, outputs, runtime,
-               external_weights=weights, hdc_timeout=7200 if kind == FULL_KIND else 660)
+               external_weights=weights, hdc_timeout=7200 if kind in FULL_KINDS else 660)
     except RuntimeError:
         if not (out / 'result.json').is_file():
             raise
@@ -612,7 +631,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('air', 'compile', 'board', 'log', 'audit', 'reference'))
+    parser.add_argument('action', choices=('air', 'compile', 'execute', 'board', 'log', 'audit', 'reference'))
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--source', type=Path)
     parser.add_argument('--prepared-source', type=Path, help='run the edited aligned40 exporter and model directly')
@@ -635,7 +654,10 @@ def main():
     parser.add_argument('--retry-load', type=Path, metavar='FAILED_REPLAY',
                         help='rebuild aligned AIR with embedded weights and replay the same inputs')
     parser.add_argument('--replay', type=Path, help='include a retained four-layer load failure in the offline audit')
+    parser.add_argument('--gdn-conv', choices=('conv2d', 'taps'), default='conv2d')
     args = parser.parse_args()
+    if args.gdn_conv == 'taps' and not args.aligned40:
+        parser.error('For this native exporter --gdn-conv taps requires --aligned40')
     if args.retry_load and (args.action != 'board' or not args.aligned):
         parser.error('--retry-load requires board --aligned')
     if args.replay and args.action != 'audit':
@@ -676,18 +698,21 @@ def main():
                 print(compile_log_text(newest))
                 return
         parser.error(f'No OMG compile.log under {base}')
-    kind = FULL_KIND if args.aligned40 else (ALIGNED_KIND if args.aligned else PATCH_KIND if args.silu_patch else KIND)
-    if kind not in (KIND, FULL_KIND) and args.action == 'air' and args.baseline is None:
+    full_kind = TAPS_FULL_KIND if args.gdn_conv == 'taps' else FULL_KIND
+    kind = full_kind if args.aligned40 else (ALIGNED_KIND if args.aligned else PATCH_KIND if args.silu_patch else KIND)
+    if kind not in (KIND, *FULL_KINDS) and args.action == 'air' and args.baseline is None:
         parser.error(f'variant {args.action} requires --baseline')
     if args.action == 'air':
         if args.aligned40:
             args.reference = (args.reference or base/'reference').resolve(strict=True)
-        if kind in (KIND, FULL_KIND) and (not args.source or not args.reference):
+        if kind in (KIND, *FULL_KINDS) and (not args.source or not args.reference):
             parser.error('native export requires --source and --reference')
         export(run, args.source, args.config, args.reference, args.conv_control, kind=kind, baseline=args.baseline,
                prepared=args.prepared_source.resolve(strict=True) if args.prepared_source else None)
         return
-    if not args.ddk:
+    if args.action == 'execute' and not args.aligned40:
+        parser.error('execute requires --aligned40')
+    if not args.ddk and args.action != 'execute':
         parser.error('compile and board require --ddk')
     control = None
     if args.retry_load:
@@ -706,6 +731,8 @@ def main():
         run = run/'embedded'
     compiled = run / 'omc/manifest.json'
     if not compiled.exists():
+        if args.action == 'execute':
+            raise FileNotFoundError(f'Run compile and make its outputs available here: {compiled}')
         build(run, args.ddk.resolve(), args.tbe_diagnosis, args.remote_air or bundle, kind=kind,
               bundle=bundle, platform=None if args.aligned or args.aligned40 else 'kirinx90', external_weights=not args.retry_load)
     else:
@@ -729,7 +756,7 @@ def main():
                 or trial['air_manifest_sha256'] != reference['air_manifest_sha256']):
             raise ValueError('Embedded control differs in compiler command, SOC_VERSION, AIR bundle or weight mode')
         print(f'Embedded-weight comparison with {args.retry_load}: same AIR and compiler options except weight storage.')
-    if args.action == 'board':
+    if args.action in ('execute', 'board'):
         if not args.runtime_config:
             parser.error('board requires --runtime-config')
         if args.baseline_if_available:
@@ -738,8 +765,8 @@ def main():
         if kind != KIND and args.baseline is None:
             print('Binding board inputs using compiled slots and the exported AIR fixture.', flush=True)
         directory = args.inputs or run / 'air/inputs'
-        replay = board(run, args.ddk.resolve(), args.runtime_config.resolve(), directory.resolve(), args.input_map, kind=kind,
-              baseline=args.baseline, load_control=control)
+        replay = board(run, args.ddk.resolve() if args.ddk else None, args.runtime_config.resolve(), directory.resolve(), args.input_map, kind=kind,
+              baseline=args.baseline, load_control=control, replace_replay=args.action == 'execute')
         if args.aligned40:
             from qwen35_moe_dflash.target.prefill_t64.native_40 import compare
             from l0_silu_omcs import write_matrices

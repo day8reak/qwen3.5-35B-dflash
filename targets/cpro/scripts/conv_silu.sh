@@ -10,8 +10,8 @@ Usage: conv_silu.sh prepare|board|extract|compile [--step NAME] [--layer 0|3] [r
 board uses the device model_run_tool_internal (V2) by default; use --runner probe for repeated calls.
 For an FP32 CPUCL SiLU control, add --cpu-silu to board.
 Default: L0 qkv_conv_silu. "list" shows which steps have automatic three-backend fixtures.
-78: prepare data for a matrix, or extract just the selected AIR.
-35: board runs the matrix, or compile builds just the selected OMC.
+Reference/export: prepare data for a matrix, or extract just the selected AIR.
+Compile/board: board runs the matrix, or compile builds just the selected OMC.
 For incomplete input shapes, append --input EDGE DTYPE DIMS to extract.
 EOF
 }
@@ -100,7 +100,7 @@ fixture="$tests/$tag-t64-valid19-01"
 mode="$(awk -F, -v layer="$layer" -v name="$step" '$1==layer && $2==name { print ($0 ~ /,prepare \/ board,/ ? "matrix" : "slice") }' "$table")"
 if [[ -z "$mode" ]]; then echo "Unknown L$layer step '$step'. See: $0 list --layer $layer" >&2; exit 2; fi
 if [[ "$mode" != matrix && ( "$action" == prepare || "$action" == board ) ]]; then
-    echo "L$layer $step has no automatic three-backend fixture. Use $0 extract --layer $layer --step $step on 78 and compile on 35." >&2
+    echo "L$layer $step has no automatic three-backend fixture. Use $0 extract --layer $layer --step $step on the AIR host and compile on the OMC host." >&2
     exit 2
 fi
 if [[ "$action" == prepare || "$action" == extract ]]; then
@@ -134,11 +134,13 @@ else
     common=(--step "$step" --run "$run" --ddk-root "$ddk" --tbe-diagnosis "${TBE_DIAGNOSIS:-$AI_RUN_DIR/common/tbe-diagnosis}")
     if [[ "$action" == board ]]; then
         source_args=()
-        if [[ -n "${AIR_ON_35:-}" ]]; then source_args+=(--local-air "$AIR_ON_35"); fi
-        if [[ -n "${AIR_ON_78:-}" ]]; then source_args+=(--remote-air "$AIR_ON_78"); fi
+        local_air=${LOCAL_AIR:-${AIR_ON_35:-}}
+        remote_air=${REMOTE_AIR:-${AIR_ON_78:-}}
+        if [[ -n "$local_air" ]]; then source_args+=(--local-air "$local_air"); fi
+        if [[ -n "$remote_air" ]]; then source_args+=(--remote-air "$remote_air"); fi
         in_env custom_pypto python "$tool" board "${common[@]}" "${cpu_silu[@]}" "${runner[@]}" "${source_args[@]}" \
             --runtime-config "${RUNTIME_CONFIG:-$AI_RUN_DIR/runtime/runtime.json}"
     else
-        in_env custom_pypto python "$tool" compile "${common[@]}" --layer "$layer" --remote-slice "${SLICE_ON_78:-$fixture/slice}"
+        in_env custom_pypto python "$tool" compile "${common[@]}" --layer "$layer" --remote-slice "${REMOTE_SLICE:-${SLICE_ON_78:-$fixture/slice}}"
     fi
 fi

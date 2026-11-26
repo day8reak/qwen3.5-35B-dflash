@@ -4,7 +4,7 @@
 
 沿用已安装的模型环境和工具链，只配置本次所需阶段；无需替换已有 PyTorch 或共享 DDK。
 
-做 decoder 三端对比时，78 和 35 各配置一次，每次分别运行 `decoder_compare.sh prepare` 和 `decoder_compare.sh board`。共享工具链、个人目录和配置示例见[两机配置](../environment-setup.md)。
+Decoder 三端对比按 CPU、310P golden 生成、CPro AIR 生成、CPro OMC 生成、CPro 板端执行四个环境配置。每个角色的入口与组合运行方式见[环境配置](../environment-setup.md)。
 
 ## Docker 重进后的配置恢复
 

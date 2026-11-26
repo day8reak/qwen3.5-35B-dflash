@@ -133,11 +133,13 @@ python "$REPO_DIR/targets/cpro/tools/parse_model_json.py" "$OMC_JSON" \
 
 ## 原 CPro 四层 S=64 对照
 
-`original-air` 在 78 直接运行 `CPRO_SOURCE` 下的 `export_glm_model_qwen3_5_moe.py`。原量化 wrapper 在图内把 INT8 embedding 乘以 FP32 scale，执行 L0–L3，按 `output_pos` 选行，再过 final norm 和 LM head，返回 logits 和各层 cache。另一个入口 `air` 接收 310P 的 FP16 embedding，只导出 L3 的全部 64 行 hidden。
+本节的诊断脚本按两两共用主机编排：golden 与 AIR 在同一台服务器，OMC 编译与板端执行在另一台。四个环境独立部署时，完整 decoder 使用[分步入口](decoder-compare.md)。
+
+`original-air` 在 CPro AIR 生成服务器直接运行 `CPRO_SOURCE` 下的 `export_glm_model_qwen3_5_moe.py`。原量化 wrapper 在图内把 INT8 embedding 乘以 FP32 scale，执行 L0–L3，按 `output_pos` 选行，再过 final norm 和 LM head，返回 logits 和各层 cache。另一个入口 `air` 接收 310P 的 FP16 embedding，只导出 L3 的全部 64 行 hidden。
 
 脚本在 `config=...` 后显式传入 `quant_bits=4` 选择 A8W4。支持位宽选择的原导出器默认用 8 位权重。对 L0 的 `in_proj_qkv`，W4 加载器将权重打包为 INT32 `[2048,1024]`，将分组权重 scale 整理为 FP32 `[8,8192]`。激活的逐 token scale 仍为 FP32 `[64,1]`。
 
-如需单独核对 78 的 `torch_npu` 是否接受这组 shape 和 dtype，可在读取模型权重前运行下面的 meta 检查。通过时会打印 `torch.Size([64, 8192]) torch.float16`。若报 `scale's type should be torch.int64 in A8W4`，需核对当前 CPro 导出环境对分组权重 scale 的 dtype 要求。
+如需单独核对 CPro AIR 生成服务器的 `torch_npu` 是否接受这组 shape 和 dtype，可在读取模型权重前运行下面的 meta 检查。通过时会打印 `torch.Size([64, 8192]) torch.float16`。若报 `scale's type should be torch.int64 in A8W4`，需核对当前 CPro 导出环境对分组权重 scale 的 dtype 要求。
 
 ```bash
 conda run --no-capture-output -n qwen3_5_cpro python -c '
@@ -150,14 +152,14 @@ y = torch_npu.npu_quant_matmul(meta((64,2048), torch.int8), meta((2048,1024), to
 print(y.shape, y.dtype)'
 ```
 
-78 导出，用现有 valid19 采集准备输入。可用 `ORIGINAL4_REFERENCE` 指定含 `manifest.json` 的采集目录。脚本打印图内乘法在主机重算后舍入到 FP16 与 310P 层入口的逐位差异数。运行时选择 `output_pos=[18]`，初始 cache 为零。`conv_state_pos` 默认按已记录的 valid64 格式推定为 `[19, 0 × 127]`，可用 `ORIGINAL4_CONV_CONTROL` 指向实测的 128 元素 INT32 文件。
+CPro AIR 生成服务器导出，用现有 valid19 采集准备输入。可用 `ORIGINAL4_REFERENCE` 指定含 `manifest.json` 的采集目录。脚本打印图内乘法在主机重算后舍入到 FP16 与 310P 层入口的逐位差异数。运行时选择 `output_pos=[18]`，初始 cache 为零。`conv_state_pos` 默认按已记录的 valid64 格式推定为 `[19, 0 × 127]`，可用 `ORIGINAL4_CONV_CONTROL` 指向实测的 128 元素 INT32 文件。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh original-air
 ```
 
-53 使用现有 DDK、HDC、板上工具和运行配置。脚本拉取 AIR，编译一份带外置权重的 OMC，按编译图的输入顺序运行 HIAI V2，并取回各输出。控制量和 embedding 的数据类型按原版接口生成。默认目录是 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01`，本次运行的 `replay-*/io.json` 和 `result.json` 记录槽位与结果文件。两台机器可分别设置 `ORIGINAL4_RUN`，目录不同时在 53 设置 `ORIGINAL4_REMOTE_AIR` 为 78 的 AIR 目录。
+CPro OMC 生成服务器使用现有 DDK、HDC、板上工具和运行配置。脚本拉取 AIR，编译一份带外置权重的 OMC，按编译图的输入顺序运行 HIAI V2，并取回各输出。控制量和 embedding 的数据类型按原版接口生成。默认目录是 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01`，本次运行的 `replay-*/io.json` 和 `result.json` 记录槽位与结果文件。两台机器可分别设置 `ORIGINAL4_RUN`，目录不同时在 CPro OMC 生成服务器设置 `ORIGINAL4_REMOTE_AIR` 为 CPro AIR 生成服务器的 AIR 目录。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
@@ -177,31 +179,31 @@ bash targets/cpro/scripts/decoder4_t64.sh original-board
 | L3 RoPE 与 MoE | 原实现 | FP32 RoPE、位置 gather、专家量化 reshape 及门控 dtype 适配 | 沿用这些内部改动。L3 attention 的 sigmoid 保留原实现，共享专家和 W4 路由专家的 SiLU 使用 `SiluPatch` |
 | L3 K/V 回写 | 更新传入的 K/V，再返回两个 cache | 在副本上更新 K/V，作为计算 hidden 的中间值 | 沿用原版两路 K/V 回写与返回顺序 |
 
-**78 导出改版并准备四层 310P 参考。** 脚本从原版 AIR 清单恢复导出器和 YAML 路径，逐文件校验并复用既有输入，包括 ConvState 控制量。私有源码或 YAML 移动后可分别指定 `CPRO_SOURCE`、`TARGET_CONFIG`。命令会打印 `silu-source-*` 路径，该目录的 `source.diff` 可直接 review。导出时核对原版和改版 AIR 的输入、输出顺序、状态来源和可见的 shape/dtype。可用 `ORIGINAL4_CAPTURE` 指向已有的四层 310P 采集目录，内含 `manifest.json`。默认先查找已有采集，缺少时才运行 310P 首次 prefill。给 53 传输的参考包只含本次需要的张量和清单。
+**CPro AIR 生成服务器导出改版并准备四层 310P 参考。** 脚本从原版 AIR 清单恢复导出器和 YAML 路径，逐文件校验并复用既有输入，包括 ConvState 控制量。私有源码或 YAML 移动后可分别指定 `CPRO_SOURCE`、`TARGET_CONFIG`。命令会打印 `silu-source-*` 路径，该目录的 `source.diff` 可直接 review。导出时核对原版和改版 AIR 的输入、输出顺序、状态来源和可见的 shape/dtype。可用 `ORIGINAL4_CAPTURE` 指向已有的四层 310P 采集目录，内含 `manifest.json`。默认先查找已有采集，缺少时才运行 310P 首次 prefill。给 CPro OMC 生成服务器传输的参考包只含本次需要的张量和清单。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh aligned-air
 ```
 
-**53 编译一份四层 OMC，上板一次并比较。** 使用已注册 FP16 输入和 FP16 输出版本 `SiluPatch` 的 X90 DDK。如果 53 保留了成功的原版 replay，脚本还会核对两份 OMC 的端口和输入文件哈希。缺少原版 replay 时，脚本按改版 OMC 的编译槽位读取导出包中的输入。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-softplus-patch-fp16`。如两台机器的目录不同，53 可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 78 的改版 AIR 和四层参考包路径。
+**CPro OMC 生成服务器编译一份四层 OMC，上板一次并比较。** 使用已注册 FP16 输入和 FP16 输出版本 `SiluPatch` 的 X90 DDK。如果 CPro OMC 生成服务器保留了成功的原版 replay，脚本还会核对两份 OMC 的端口和输入文件哈希。缺少原版 replay 时，脚本按改版 OMC 的编译槽位读取导出包中的输入。默认目录为 `$AI_RUN_DIR/target/tests/decoder4-original-t64-01-aligned-silu-softplus-patch-fp16`。如两台机器的目录不同，CPro OMC 生成服务器可用 `ALIGNED4_REMOTE_AIR` 和 `ORIGINAL4_REMOTE_GOLDEN` 指定 CPro AIR 生成服务器的改版 AIR 和四层参考包路径。
 
 ```bash
 cd "${REPO_DIR:?}" && git pull --ff-only origin main
 bash targets/cpro/scripts/decoder4_t64.sh aligned-board
 ```
 
-53 已有改版 AIR 时，直接执行 `aligned-board` 即可。此入口让 OMG 省略 `--platform`，保留 `--target=omc`，并从当前 DDK 环境继承 `SOC_VERSION`。控制台和 `compile.log` 记录实际命令以及该变量的值。编译复用上一步的 AIR 和权重，本次 OMC、板端结果分别写入改版目录的 `no-platform/omc/` 和 `no-platform/replay-*/`。若只编译，使用 `aligned-compile`。
+CPro OMC 生成服务器已有改版 AIR 时，直接执行 `aligned-board` 即可。此入口让 OMG 省略 `--platform`，保留 `--target=omc`，并从当前 DDK 环境继承 `SOC_VERSION`。控制台和 `compile.log` 记录实际命令以及该变量的值。编译复用上一步的 AIR 和权重，本次 OMC、板端结果分别写入改版目录的 `no-platform/omc/` 和 `no-platform/replay-*/`。若只编译，使用 `aligned-compile`。
 
-如内嵌和外置权重的四层模型都在 `OpUpdateKernelArgs` 加载失败，可在 53 用保留的 AIR 核对单层已经验证的端口。将 `ALIGNED4_RUN` 设为原四层运行目录，执行以下命令。
+如内嵌和外置权重的四层模型都在 `OpUpdateKernelArgs` 加载失败，可在 CPro OMC 生成服务器用保留的 AIR 核对单层已经验证的端口。将 `ALIGNED4_RUN` 设为原四层运行目录，执行以下命令。
 
 ```bash
 bash targets/cpro/scripts/decoder4_t64.sh aligned-audit
 ```
 
-`MISMATCH` 会列出具体 W4 或 GDR 节点和端口。先在 78 为 `ALIGNED4_RUN` 选择新目录，再执行 `aligned-air`。新导出核对 36 个普通 W4 投影、3 个 GDR、原版输入输出边界和 14 处 FP16 SiluPatch。在 53 选择同一新目录执行 `aligned-board`。已有 AIR 报 `MATCH` 时，保留原产物，结合失败 replay 的服务线程日志进一步定位。
+`MISMATCH` 会列出具体 W4 或 GDR 节点和端口。先在 CPro AIR 生成服务器为 `ALIGNED4_RUN` 选择新目录，再执行 `aligned-air`。新导出核对 36 个普通 W4 投影、3 个 GDR、原版输入输出边界和 14 处 FP16 SiluPatch。在 CPro OMC 生成服务器选择同一新目录执行 `aligned-board`。已有 AIR 报 `MATCH` 时，保留原产物，结合失败 replay 的服务线程日志进一步定位。
 
-若 V2 在加载四层模型时打印 `Initialize model manager client failed`，先在 53 上读取那次 replay 的 `window.log` 和上传清单。`FAILED_REPLAY` 取报错中的 `result.json` 所在目录。以下命令需在 `custom_pypto` 环境执行。
+若 V2 在加载四层模型时打印 `Initialize model manager client failed`，先在 CPro 板端执行服务器上读取那次 replay 的 `window.log` 和上传清单。`FAILED_REPLAY` 取报错中的 `result.json` 所在目录。以下命令需在 `custom_pypto` 环境执行。
 
 ```bash
 python targets/cpro/tools/split_stage_log.py --four-layer-replay "$FAILED_REPLAY"
@@ -213,11 +215,11 @@ python targets/cpro/tools/split_stage_log.py --four-layer-replay "$FAILED_REPLAY
 bash targets/cpro/scripts/decoder4_t64.sh aligned-board --retry-load "$FAILED_REPLAY"
 ```
 
-53 的 OMG 编译失败时，在同一环境执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-log` 即可读取最近一次编译的错误摘录和完整日志路径。对仅替换 SiLU 的实验使用 `original-log --silu-patch`，对原版使用 `original-log`。这些命令直接读取已保存的日志。
+CPro OMC 生成服务器的 OMG 编译失败时，在同一环境执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-log` 即可读取最近一次编译的错误摘录和完整日志路径。对仅替换 SiLU 的实验使用 `original-log --silu-patch`，对原版使用 `original-log`。这些命令直接读取已保存的日志。
 
-若错误为 `SiluPatch getformatconfigs failed` 且子图出口报告 `outputTensorFormats ... is 0`，在 53 执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose`。它直接读取四层 AIR 中每个 SiLU 的 x/z 形状、类型和布局，打印失败节点的上下游、OMG 的实现选择日志，以及当前 DDK 注册文件中的端口。随后用四层编译入口在相同固定长度下编译 v3 单算子与复制了失败节点属性和端口描述的单算子；两者相同就只编一次。小图也报 `EMPTY_OUTPUT_FORMAT` 可把问题缩小到该编译环境下的单算子；小图 `COMPILED` 而四层失败，应进一步查整图分区的出口和跨分区消费者。完整记录在 `no-platform/silu-diagnosis-*/`。
+若错误为 `SiluPatch getformatconfigs failed` 且子图出口报告 `outputTensorFormats ... is 0`，在 CPro OMC 生成服务器执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose`。它直接读取四层 AIR 中每个 SiLU 的 x/z 形状、类型和布局，打印失败节点的上下游、OMG 的实现选择日志，以及当前 DDK 注册文件中的端口。随后用四层编译入口在相同固定长度下编译 v3 单算子与复制了失败节点属性和端口描述的单算子；两者相同就只编一次。小图也报 `EMPTY_OUTPUT_FORMAT` 可把问题缩小到该编译环境下的单算子；小图 `COMPILED` 而四层失败，应进一步查整图分区的出口和跨分区消费者。完整记录在 `no-platform/silu-diagnosis-*/`。
 
-**53 一次编译多个小图探针。** `ALIGNED4_RUN` 指向本次四层运行目录。以下命令读取已有 AIR 和 OMG 日志，首次运行时自动生成单算子对照。使用同一套 DDK 时，再次执行可复用本次诊断中小图字节相同、已确认的结果。
+**CPro OMC 生成服务器一次编译多个小图探针。** `ALIGNED4_RUN` 指向本次四层运行目录。以下命令读取已有 AIR 和 OMG 日志，首次运行时自动生成单算子对照。使用同一套 DDK 时，再次执行可复用本次诊断中小图字节相同、已确认的结果。
 
 ```bash
 export ALIGNED4_RUN="${AI_RUN_DIR:?}/target/tests/decoder4-original-t64-01-aligned-silu-patch-native-shape-fp16"
@@ -235,17 +237,17 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-diagnose-next
 
 汇总文件是命令打印的 `silu-diagnosis-*/probes.json`。`COMPILED` 表示 OMG 成功并生成 OMC。`EMPTY_OUTPUT_FORMAT` 表示该小图复现了 SiluPatch 的同一条格式错误。`OTHER_FAILURE` 需读对应的 `compile.log`。`SKIPPED` 记录未能从源图确定的连线。`format_failure_contrasts` 列出一边编译成功、另一边复现错误的成对结果。若所有小图均成功，定位范围仍包括整图分区及未保留的上游上下文。历史一维用例继续使用其下游 Reshape 对照。`SILU_DIAGNOSIS` 可指定已有诊断目录，`aligned-diagnose-report` 可只读历史结果。
 
-**检查两个已复现的子图出口。** 在 53 使用相同的 `ALIGNED4_RUN` 执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-check`。`gate-mul` 和 `output-cast-reshape` 已在子图出口复现空格式列表，对应的两个 FP32 Data 对照均编译成功。该命令读取最近的 `probes.json`，列出当前 DDK 的算子注册、所选配置目录中出现两个算子名字的文件，以及 DDK 内能找到的 `FindOpFormatConfig` 源码位置。磁盘上出现名字仅说明文件包含该项；查询是否使用它仍需结合实现判断。
+**检查两个已复现的子图出口。** 在 CPro OMC 生成服务器使用相同的 `ALIGNED4_RUN` 执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-check`。`gate-mul` 和 `output-cast-reshape` 已在子图出口复现空格式列表，对应的两个 FP32 Data 对照均编译成功。该命令读取最近的 `probes.json`，列出当前 DDK 的算子注册、所选配置目录中出现两个算子名字的文件，以及 DDK 内能找到的 `FindOpFormatConfig` 源码位置。磁盘上出现名字仅说明文件包含该项；查询是否使用它仍需结合实现判断。
 
 脚本先在当前 DDK 重编这两个保留的小 AIR。若仍复现同一错误，分别在 `SiluPatch.z`、其直接消费者的输入、或两端同时补上静态 shape 和 ND 描述，保留原连线及 dtype；字节等价的变体只编一次。结果写在 `format-lookup-*/result.json`。两个原小图均成功时可以重试原四层编译；两处均有成功的端口变体时，把对应的描述带入四层候选再验证。若某个小图在所有变体下都报相同错误，将该小图的 `export.air` 和 `compile.log` 交给 DDK 的 NPUCL 格式转换维护者。
 
-在 53 上执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-trace`，可以复用同一目录的小 AIR，在相同 DDK 下分别显式设置 `--use_origin_format=true` 和 `false`。第四个探针沿用门控 Mul，只把 SiluPatch 节点替换为单算子生成器的静态定义，可检验四层导出的自定义节点是否为复现所必需。结果保存在 `format-trace-*/result.json`。若环境支持 strace，命令还会独立记录成功和失败门控用例中 OMG 及其子进程实际打开的配置和 DDK 库。打开某个文件只能证明编译期间访问过它。小图通过编译后，还需验证四层 OMC 的实际 I/O 布局和板端精度。
+在 CPro OMC 生成服务器上执行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-trace`，可以复用同一目录的小 AIR，在相同 DDK 下分别显式设置 `--use_origin_format=true` 和 `false`。第四个探针沿用门控 Mul，只把 SiluPatch 节点替换为单算子生成器的静态定义，可检验四层导出的自定义节点是否为复现所必需。结果保存在 `format-trace-*/result.json`。若环境支持 strace，命令还会独立记录成功和失败门控用例中 OMG 及其子进程实际打开的配置和 DDK 库。打开某个文件只能证明编译期间访问过它。小图通过编译后，还需验证四层 OMC 的实际 I/O 布局和板端精度。
 
-修改或重装 SiluPatch host 后，在 53 上运行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-host`。选择带有原 `probes.json` 的 `ALIGNED4_RUN`。命令比较两份已安装的算子注册表，列出其他声明 FP32 输出的算子，再从新编的小图 OMC 读取实际输出端口。两表和保留 AIR 的输出 dtype 一致时复查门控 Mul，发现 INT32 项时另编端口声明一致的 INT32 单算子。可选的 `SILU_HOST_SO` 指向新构建的 host 库，用于和编译进程树中观测到的库比对 SHA256。结果写入 `host-check-*/result.json`。库的内容匹配只能确认该版本被加载，具体调用了哪个回调还需要回调日志。
+修改或重装 SiluPatch host 后，在 CPro OMC 生成服务器上运行 `bash targets/cpro/scripts/decoder4_t64.sh aligned-format-host`。选择带有原 `probes.json` 的 `ALIGNED4_RUN`。命令比较两份已安装的算子注册表，列出其他声明 FP32 输出的算子，再从新编的小图 OMC 读取实际输出端口。两表和保留 AIR 的输出 dtype 一致时复查门控 Mul，发现 INT32 项时另编端口声明一致的 INT32 单算子。可选的 `SILU_HOST_SO` 指向新构建的 host 库，用于和编译进程树中观测到的库比对 SHA256。结果写入 `host-check-*/result.json`。库的内容匹配只能确认该版本被加载，具体调用了哪个回调还需要回调日志。
 
-旧版 FP32 输出算子在 53 的实测结果中，两份注册表均声明 `SiluPatch.z` 为 ND FP32，单算子 OMC 的输出为 `FP32[2048,128]`，同一个算子连接原门控 Mul 时在格式转换阶段失败。执行 `python targets/cpro/tools/silu_format_source.py "$H/result.json"`，其中 `H` 为该次 `host-check-*` 目录。命令只读已有记录，核对 AIR 哈希，打印成功和失败小图的日志、两表中的 AddCustom 端口，以及加载记录中包含对应报错文本的 ELF 和哈希。有同版本 DDK 源码时，可追加 `--source` 和源码目录或 `format_converter_pass.cc` 路径，打印查表和取输出格式的代码。
+旧版 FP32 输出算子在 CPro OMC 生成服务器的实测结果中，两份注册表均声明 `SiluPatch.z` 为 ND FP32，单算子 OMC 的输出为 `FP32[2048,128]`，同一个算子连接原门控 Mul 时在格式转换阶段失败。执行 `python targets/cpro/tools/silu_format_source.py "$H/result.json"`，其中 `H` 为该次 `host-check-*` 目录。命令只读已有记录，核对 AIR 哈希，打印成功和失败小图的日志、两表中的 AddCustom 端口，以及加载记录中包含对应报错文本的 ELF 和哈希。有同版本 DDK 源码时，可追加 `--source` 和源码目录或 `format_converter_pass.cc` 路径，打印查表和取输出格式的代码。
 
-**单独比较已有结果。** 若只想先看成功原版的精度，在 78 执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 53 执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
+**单独比较已有结果。** 若只想先看成功原版的精度，在 CPU、310P golden 生成服务器执行 `bash targets/cpro/scripts/decoder4_t64.sh original-golden` 准备参考，然后在 CPro 板端执行服务器执行下方第一条。改版也已上板时执行第二条。两条命令都只读已保存的板端输出。可用 `ORIGINAL4_REPLAY` 和 `MODIFIED4_REPLAY` 选择指定的成功记录。
 
 ```bash
 bash targets/cpro/scripts/decoder4_t64.sh original-compare
@@ -254,7 +256,7 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-compare
 
 终端和脚本打印的 `comparison-*/comparison.json` 给出原版对 310P、改版对 310P、改版对原版的分项结果。logits 使用 310P 在 **L3 token18 hidden 上运行 final norm 和 LM head** 的实测值并比较 top1。每层 ConvState 和 recurrent state 比较完整返回张量。L3 K/V 比较第 0 页的有效位置 0–18，另外检查未写入的后续页。相对 L2 和逐元素超差比例在终端按百分数显示，JSON 保存原始比值。
 
-如需量出 **仅替换 SiLU** 的影响，78 和 53 分别运行 `original-air --silu-patch` 和 `original-board --silu-patch`，均通过同一个 `decoder4_t64.sh`。该组合使用独立目录，复用同一原版结果和参考。默认 `aligned` 组同时包含表中 L3 RoPE 和 MoE 的内部改动。
+如需量出 **仅替换 SiLU** 的影响，CPro AIR 生成服务器和 CPro OMC 生成服务器分别运行 `original-air --silu-patch` 和 `original-board --silu-patch`，均通过同一个 `decoder4_t64.sh`。该组合使用独立目录，复用同一原版结果和参考。默认 `aligned` 组同时包含表中 L3 RoPE 和 MoE 的内部改动。
 
 ### SoftplusPatch 与 GDN 衰减
 
@@ -264,7 +266,7 @@ bash targets/cpro/scripts/decoder4_t64.sh aligned-compare
 
 导出脚本把 `silu_patch` 的注册放在 `npu_chunk_gated_delta_rule` 旁边，两者共用 `Library("npu", "IMPL", "Meta")`。若当前 PyTorch 缺少 `npu::silu_patch` 的 schema，就用已有的 `m_fragment` 定义它。`@torch.library.impl(m, "silu_patch")` 返回与输入同形状的 FP16 Meta 张量。每次调用将激活转为连续 FP16，直接传入 `torch.ops.npu.silu_patch`，TorchAir 导出为 `SiluPatch(x) → z`。GDN 门控在乘法前将 FP16 的 z 显式转为 FP32，与 RMSNorm 的 FP32 输出相乘。卷积与两处专家按原激活 dtype 继续运算。四层实验复用原版的 valid19 输入和参考，默认写入新的 native-shape 目录。
 
-在 78 的导出日志和 `air/manifest.json` 的 `silu_patch.nodes` 中可以查看 14 个节点的输入形状、每个直接消费者的输入槽与读入和输出 dtype。若下一步是 Cast，`after_cast` 记录接收转型结果的下游节点和 dtype。形状来自静态 TorchAir 转换时的输入，AIR 显式记录的维度同时参与核对。`unrecorded` 表示该消费者的 AIR 描述未记录 dtype。
+在 CPro AIR 生成服务器的导出日志和 `air/manifest.json` 的 `silu_patch.nodes` 中可以查看 14 个节点的输入形状、每个直接消费者的输入槽与读入和输出 dtype。若下一步是 Cast，`after_cast` 记录接收转型结果的下游节点和 dtype。形状来自静态 TorchAir 转换时的输入，AIR 显式记录的维度同时参与核对。`unrecorded` 表示该消费者的 AIR 描述未记录 dtype。
 
 | S=64 的调用位置 | SiluPatch 的 x/z 形状 | z 如何进入后续运算 | 次数 |
 |---|---|---|---:|

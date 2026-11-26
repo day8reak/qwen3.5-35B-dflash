@@ -76,7 +76,7 @@ def bind_outputs(graph, converter_edges):
     return result
 
 
-def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges):
+def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges, gdn_conv):
     rows = 64 if ref['phase'] == 'prefill' else 1
     name = case_name(group)
     linear = sum(i % 4 != 3 for i in group)
@@ -107,20 +107,20 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     audit = prefill_precision(graph, group, final, rows=rows)
     if audit['mismatches']:
         raise ValueError('\n'.join(audit['mismatches']))
-    inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,
-                           check_convs=True)
+    operators = inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,
+                                       check_convs=True, gdn_conv=gdn_conv)
     bindings = {node: list(args)[index] for node, index in evidence['nodes'].items()}
     if (set(bindings.values()) != set(args) or set(bindings) !=
             {n.name for n in graph.op if n.type in ('Data', 'RefData')}):
         raise ValueError(f'{name}: export inputs differ from the actual decoder inputs')
     if set(edges) != set(output_names(group, final)):
         raise ValueError(f'{name}: missing converter output identities')
-    save_json(dest/'case.json', dict(layers=group, inputs=bindings, outputs=bind_outputs(graph, edges),
+    save_json(dest/'case.json', dict(layers=group, gdn_convs=operators['gdn_convs'], inputs=bindings, outputs=bind_outputs(graph, edges),
                                      files=files_under(dest, dest)))
 
 
 @torch.no_grad()
-def export(root, fixtures, ref, source, config, prepared):
+def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d'):
     plan = groups(ref['mode'])
     paths = checkpoint_paths(source, config, ref)
     sys.path.insert(0, str(prepared))
@@ -166,7 +166,7 @@ def export(root, fixtures, ref, source, config, prepared):
                     dest = Path(tmp_case)/'case'
                     dest.mkdir()
                     export_case(dest, fixtures, ref, group, final, blocks, Head(model) if final else None,
-                                exporter, edges)
+                                exporter, edges, gdn_conv)
                     dest.rename(root/case_name(group))
             del blocks, model
     finally:

@@ -9,6 +9,8 @@
 
 ## 独立 SiluPatch 的分段 prefill
 
+本节的诊断脚本按两两共用主机编排：golden 与 AIR 在同一台服务器，OMC 编译与板端执行在另一台。四个环境独立部署时，完整 decoder 使用[分步入口](../decoder-compare.md)。
+
 用 `targets/cpro/scripts/split_prefill_t64.sh` 运行 W4、S=64、有效 token 为 19 的同一条输入。每个模式都执行完整 decoder，包含 attention、MoE 和最终残差。每处 SiLU 使用 FP16 输入、FP16 输出的独立 NPU OMC。
 
 | `--mode` | 层输入与读出 | 对比的状态 |
@@ -18,27 +20,27 @@
 | `40` | 从 embedding 跑 L0 至 L39，逐层传 CPro 的实际 hidden，在 L39 后接 norm/head | 全部 30 个 linear 层的两种状态和 10 个 full 层的 K、V |
 | `last4` | 分别取 CPU 和 310P 的 L35 输出，两路独立在 CPro 连跑 L36–L39 和 norm/head | 两路各自比较 L36–L38 的 conv/recurrent state 和 L39 的 K、V |
 
-78 的 `air` 命令采集或复用 310P 参考、导出 AIR，并用原 W4 权重计算单独的 CPU 参考。53 负责编译、上板和对比。两台主机拉取同一版代码，以下示例的 `MODE` 在两端取相同值。
+CPro AIR 生成服务器的 `air` 命令采集或复用 310P 参考、导出 AIR，并用原 W4 权重计算单独的 CPU 参考。CPro OMC 生成服务器负责编译、上板和对比。两台主机拉取同一版代码，以下示例的 `MODE` 在两端取相同值。
 
 ```bash
-# 78
+# CPro AIR 生成服务器
 MODE=full
 bash targets/cpro/scripts/split_prefill_t64.sh air --mode "$MODE"
 
-# 53
+# CPro OMC 生成服务器
 MODE=full
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode "$MODE"
 ```
 
 `--run DIR` 指定该模式的运行目录。当前默认目录分别是 `$AI_RUN_DIR/target/tests` 下的 `l0-split-silupatch-t64-valid19-03`、`prefill-split-full-t64-valid19-03` 和 `prefill-split-40-t64-valid19-03`。各模式均使用 CPro W4 投影，导出时检查每个量化 matmul 的 weight scale 和 per-token scale 都是 FP16，并将端口记录在各层的 `air/manifest.json` 的 `precision` 字段里。linear 层返回物理序列末四行的卷积状态，按有效长度更新 GDR 状态。full 层在 FP32 计算 RoPE，再将 Q/K 转回 attention 的输入类型。各层在 FP16 计算残差，在分段接口以 FP32 传递 decoder hidden。
 
-**用两个前缀测后四层。** `last4` 默认复用同一个 `40` 运行目录。在 78 执行 `air --mode last4` 会复用或导出 L36–L39 的 AIR，并准备两个入口。若已有同次 40 层参考，脚本读 `L35/cpu` 和 310P capture 中的 L35 输出。缺少 CPU 边界时，从同一 prompt 计算 CPU 前缀。53 上的 `board --mode last4` 分别执行两路，把各自位置 18 logits 的 top1 ID 与原 tokenizer 解出的文本写入 `replay-*/prefill.json` 的 `predictions.cpu` 和 `predictions.310p`。两路的实际 CPro 输出和精度矩阵分别放在 `cpu/Lxx/`、`310p/Lxx/`。这两个目录名表示前 36 层的来源。运行中断后使用 `board --mode last4 --recovery`。
+**用两个前缀测后四层。** `last4` 默认复用同一个 `40` 运行目录。在 CPro AIR 生成服务器执行 `air --mode last4` 会复用或导出 L36–L39 的 AIR，并准备两个入口。若已有同次 40 层参考，脚本读 `L35/cpu` 和 310P capture 中的 L35 输出。缺少 CPU 边界时，从同一 prompt 计算 CPU 前缀。CPro 板端执行服务器上的 `board --mode last4` 分别执行两路，把各自位置 18 logits 的 top1 ID 与原 tokenizer 解出的文本写入 `replay-*/prefill.json` 的 `predictions.cpu` 和 `predictions.310p`。两路的实际 CPro 输出和精度矩阵分别放在 `cpu/Lxx/`、`310p/Lxx/`。这两个目录名表示前 36 层的来源。运行中断后使用 `board --mode last4 --recovery`。
 
-**跨层复用。** `40` 和 `last4` 默认按 `templates/linear`、`templates/full` 缓存各段 OMC。每次调用从本层 AIR 绑定权重和量化 scale，通过具名 Data 端口与本层状态一起送入。模板匹配会核对运算、常量、端口类型和形状。embedding、独立 SiLU、最终 norm/head 各自执行。78 仍按层导出原始 AIR 以取得本层权重及参考。53 可以用 `board --mode last4 --per-layer-omc` 跑同一对输入，复用已有的逐层 OMC 编译方式。恢复时沿用已有回放记录的模板选择。
+**跨层复用。** `40` 和 `last4` 默认按 `templates/linear`、`templates/full` 缓存各段 OMC。每次调用从本层 AIR 绑定权重和量化 scale，通过具名 Data 端口与本层状态一起送入。模板匹配会核对运算、常量、端口类型和形状。embedding、独立 SiLU、最终 norm/head 各自执行。CPro AIR 生成服务器仍按层导出原始 AIR 以取得本层权重及参考。CPro OMC 生成服务器可以用 `board --mode last4 --per-layer-omc` 跑同一对输入，复用已有的逐层 OMC 编译方式。恢复时沿用已有回放记录的模板选择。
 
-如果 `last4` 在 `L36/conv_input` 加载失败，在 53 用 `diagnose "$R/$REPLAY/cpu/L36/conv_input"` 核对失败回执对应的编译清单并收集板端 HiLog。若显示 `Matched template OMC`，用 `board --mode last4 --run "$R" --recovery "$REPLAY" --from-stage L36/conv_input --conv-input-weights external` 继续。这个选项把 L36–L38 的 `conv_input` 按各层原始 AIR 编译，由 OMG 保存外置权重。两路共用同一组逐层产物。如果失败回执已匹配 `external`，可把参数换成 `embedded`，用同一份切片将权重编入 OMC。
+如果 `last4` 在 `L36/conv_input` 加载失败，在 CPro 板端执行服务器用 `diagnose "$R/$REPLAY/cpu/L36/conv_input"` 核对失败回执对应的编译清单并收集板端 HiLog。若显示 `Matched template OMC`，用 `board --mode last4 --run "$R" --recovery "$REPLAY" --from-stage L36/conv_input --conv-input-weights external` 继续。这个选项把 L36–L38 的 `conv_input` 按各层原始 AIR 编译，由 OMG 保存外置权重。两路共用同一组逐层产物。如果失败回执已匹配 `external`，可把参数换成 `embedded`，用同一份切片将权重编入 OMC。
 
-如果共享模板 `experts_input` 在 OMG 编译时报告 `GroupedMatmulV555` 的 `outputTensorFormats size ... is 0`，可在 53 加 `--per-layer-experts`。脚本按原 AIR 的算子类型查找包含该分组矩阵乘的段，并用本层权重编译这些段。CPU 和 310P 前缀复用同一层的 OMC。下例从已有的 CPU 分支检查点恢复，并沿用该 replay 的卷积权重设置。
+如果共享模板 `experts_input` 在 OMG 编译时报告 `GroupedMatmulV555` 的 `outputTensorFormats size ... is 0`，可在 CPro OMC 生成服务器加 `--per-layer-experts`。脚本按原 AIR 的算子类型查找包含该分组矩阵乘的段，并用本层权重编译这些段。CPU 和 310P 前缀复用同一层的 OMC。下例从已有的 CPU 分支检查点恢复，并沿用该 replay 的卷积权重设置。
 
 ```bash
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode last4 --run "$R" \
@@ -47,7 +49,7 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode last4 --run "$R" \
 
 首次导出使用 `ORIGINAL4_RUN` 的成功原版基线，默认 `decoder4-original-t64-01`。可以用 `air --capture DIR` 复用旧实验同一份 310P 参考。切换到修正版时先导出，再从第一段上板。后续在同版模型内使用恢复参数。40 层模式在 310P 捕获记录的两个模型段交界处保留上段 CPro 的前 19 行并将剩余 45 行清零。
 
-**恢复上板。** 在 53 用 `--recovery` 接着最近一次运行，或显式指定旧 replay。脚本将已完成段的 OMC、输入和输出与回执核对，在新 replay 中使用校验通过的输出，每段成功后写入 `chain.json`。有意重跑某段时加 `--from-stage`，其前面的输入必须能从已完成的前缀恢复。
+**恢复上板。** 在 CPro 板端执行服务器用 `--recovery` 接着最近一次运行，或显式指定旧 replay。脚本将已完成段的 OMC、输入和输出与回执核对，在新 replay 中使用校验通过的输出，每段成功后写入 `chain.json`。有意重跑某段时加 `--from-stage`，其前面的输入必须能从已完成的前缀恢复。
 
 ```bash
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
@@ -57,7 +59,7 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode 40 --recovery
 
 **复现 L0 分段。** 各模式的 `board` 默认使用 L0 跑通的切法。MoE 尾部的三条 W4 投影独立执行，attention 后的残差独立读回，接着计算其余 MoE 和最终残差。linear 层有四个独立 SiluPatch。full 层的两个 SiluPatch 分别用于共享专家和路由专家。每次执行会打印当前 AIR 的 OMC 段数。独立 L0 包含最后的 norm/head，40 层连续执行时只在 L39 接 norm/head。
 
-在 53 用已有 AIR 和编译缓存从第一段重新上板，例如：
+在 CPro 板端执行服务器用已有 AIR 和编译缓存从第一段重新上板，例如：
 
 ```bash
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear --run "$R"
@@ -83,21 +85,21 @@ bash targets/cpro/scripts/split_prefill_t64.sh board --mode linear \
 
 CPU 在 40 层模式逐层传自己的 hidden，在 310P 的分段边界同步清零 padding。对 19 个位置之外的 CPU 行，attention 分支输出按零处理，残差和 MoE 仍传播。这一约定影响后续层的物理卷积历史。单测 full 模式的 CPU 和 CPro 都以同一份 L2 实测输出为入口。
 
-已有修正版板端输出时，在 53 运行 `bash targets/cpro/scripts/split_prefill_t64.sh compare --mode "$MODE"`，可加 `--replay DIR`。显式指定失败的 replay 时，只对已返回的输出生成矩阵，并标记未完成。
+已有修正版板端输出时，在 CPro 板端执行服务器运行 `bash targets/cpro/scripts/split_prefill_t64.sh compare --mode "$MODE"`，可加 `--replay DIR`。显式指定失败的 replay 时，只对已返回的输出生成矩阵，并标记未完成。
 
-如果 53 拉取 `cpu/` 时收到 `ENOENT`，可在 78 单独补 CPU 参考。脚本按 AIR 中记录的 SHA-256 从本次及同级实验目录查找原始 310P capture。如果 capture 在其他位置，加 `--capture /实际路径/310p`。以下示例在 53 复用最近一次执行完成的 L0 replay。
+如果 CPro 板端执行服务器拉取 `cpu/` 时收到 `ENOENT`，可在 CPU、310P golden 生成服务器单独补 CPU 参考。脚本按 AIR 中记录的 SHA-256 从本次及同级实验目录查找原始 310P capture。如果 capture 在其他位置，加 `--capture /实际路径/310p`。以下示例在 CPro 板端执行服务器复用最近一次执行完成的 L0 replay。
 
 ```bash
-# 78
+# CPU、310P golden 生成服务器
 R="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-03"
 bash targets/cpro/scripts/split_prefill_t64.sh cpu --mode linear --run "$R"
 
-# 53
+# CPro 板端执行服务器
 R="${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-03"
 bash targets/cpro/scripts/split_prefill_t64.sh compare --mode linear --run "$R"
 ```
 
-若 V2 在同一段反复加载失败，在 53 读取已有尝试的设备日志。以下示例读取一次失败的 `decoder_hidden`，在命令末尾追加其他失败段的目录即可对比。脚本核对 OMC、外置权重和有序输入的哈希，使用每次调用的设备时间和 client_tid 从同一份 HiLog 中提取记录。命令只读取板端文件，诊断结果写到第一段回执旁的 `load-diagnostics-*`。
+若 V2 在同一段反复加载失败，在 CPro 板端执行服务器读取已有尝试的设备日志。以下示例读取一次失败的 `decoder_hidden`，在命令末尾追加其他失败段的目录即可对比。脚本核对 OMC、外置权重和有序输入的哈希，使用每次调用的设备时间和 client_tid 从同一份 HiLog 中提取记录。命令只读取板端文件，诊断结果写到第一段回执旁的 `load-diagnostics-*`。
 
 ```bash
 R="${L0_SPLIT_RUN:-${AI_RUN_DIR:?}/target/tests/l0-split-silupatch-t64-valid19-01}"

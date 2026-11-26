@@ -1,50 +1,52 @@
 # Target Prefill：分别验证 Linear Attention 与 Full Attention
 
+本节的诊断脚本按两两共用主机编排：golden 与 AIR 在同一台服务器，OMC 编译与板端执行在另一台。四个环境独立部署时，完整 decoder 使用[分步入口](decoder-compare.md)。
+
 ## L0 完整 Linear Attention 的 CPU SiLU 对照
 
-78 上运行以下脚本。它从原始四个 attention 的 AIR 批次提取完整 L0、权重、实测输入和 310P 的 `golden_hidden`。可用 `ATTENTION_AIR` 指定已有批次的 `air` 目录。默认批次已清理时，脚本沿用 `TARGET_SOURCE`、`CPRO_SOURCE` 及原有 conda 环境重新采集和导出。
+CPro AIR 生成服务器上运行以下脚本。它从原始四个 attention 的 AIR 批次提取完整 L0、权重、实测输入和 310P 的 `golden_hidden`。可用 `ATTENTION_AIR` 指定已有批次的 `air` 目录。默认批次已清理时，脚本沿用 `TARGET_SOURCE`、`CPRO_SOURCE` 及原有 conda 环境重新采集和导出。
 
 ```bash
 cd "${REPO_DIR:?}"
 git pull --ff-only origin main
-bash targets/cpro/scripts/l0_attention_cpu_silu_78.sh
+bash targets/cpro/scripts/l0_attention_cpu_silu_export.sh
 ```
 
 两台主机都会打印 `L0 AIR constants`。其中 `inline tensors` 统计 AIR 内含张量数据的常量，`external files` 统计图引用的外置文件。权重全部内嵌时，外置文件数为 0。两端打印的 AIR SHA-256 应相同。
 
-53 上用已有 DDK、GDR 和 HDC 环境运行以下脚本。脚本从 78 拉取该批次，编译原版和 CPU SiLU 版各一张完整的 L0 OMC，调用板上的 `model_run_tool_internal` 各执行一次。实验版替换卷积后的 SiLU 和门控 SiLU。候选 AIR 仅对两处 SiLU 的四个 FP32 Sigmoid/Mul 节点设置实现属性，OMG 对其余节点沿用原版编译选项。上板前读取 OMC，核对 CPUCL 只执行两处 FP32 `sigmoid(x) * x`，列出两端的类型转换，检查其余计算归属 NPUCL。
+CPro OMC 生成服务器上用已有 DDK、GDR 和 HDC 环境运行以下脚本。脚本从 CPro AIR 生成服务器拉取该批次，编译原版和 CPU SiLU 版各一张完整的 L0 OMC，调用板上的 `model_run_tool_internal` 各执行一次。实验版替换卷积后的 SiLU 和门控 SiLU。候选 AIR 仅对两处 SiLU 的四个 FP32 Sigmoid/Mul 节点设置实现属性，OMG 对其余节点沿用原版编译选项。上板前读取 OMC，核对 CPUCL 只执行两处 FP32 `sigmoid(x) * x`，列出两端的类型转换，检查其余计算归属 NPUCL。
 
 ```bash
 cd "${REPO_DIR:?}"
 git pull --ff-only origin main
-bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh
+bash targets/cpro/scripts/l0_attention_cpu_silu_board.sh
 ```
 
-若原版已经执行、CPU 版编译失败，在 53 上将 `R` 设为那次的运行目录，再执行以下命令。它保留失败的编译日志，复用原版结果和已拉取的 AIR，只重试实验版。
+若原版已经执行、CPU 版编译失败，在 CPro OMC 生成服务器上将 `R` 设为那次的运行目录，再执行以下命令。它保留失败的编译日志，复用原版结果和已拉取的 AIR，只重试实验版。
 
 ```bash
 python targets/cpro/tools/l0_attention_cpu_silu.py audit "${R:?}"
-L0_SILU_RUN="$R" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --retry-failed-compile
+L0_SILU_RUN="$R" bash targets/cpro/scripts/l0_attention_cpu_silu_board.sh --retry-failed-compile
 ```
 
-其中 `audit` 在 53 本地读取带 SHA-256 的原始和候选 AIR，显示两处 SiLU 的输入与输出类型、GDR 输入和属性，逐节点比较其余原始节点（含内嵌常量）和整图输入输出边。
+其中 `audit` 在 CPro OMC 生成服务器本地读取带 SHA-256 的原始和候选 AIR，显示两处 SiLU 的输入与输出类型、GDR 输入和属性，逐节点比较其余原始节点（含内嵌常量）和整图输入输出边。
 
 运行目录在开头的 `L0 attention A/B` 一行。两组按相同输入和 310P golden 比较 `out_proj` 的前 19 行。终端显示 valid19 和 token18，`comparison.csv` 保存每个有效 token 的五项指标、MAE、最大绝对误差、超差元素数及比例。两个 `delta_*_pp` 列表示实验组减原版的百分点差。逐元素容差为 `rtol=1e-3, atol=1e-5`，允许超差比例为 0.1%。
 
 ### 在板上拆开执行两处 SiLU
 
-只测 CPU SiLU 时，在 53 上把 `R` 设为已有 L0 实验目录，执行：
+只测 CPU SiLU 时，在 CPro 板端执行服务器上把 `R` 设为已有 L0 实验目录，执行：
 
 ```bash
-L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --cpu-only
+L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_board.sh --cpu-only
 ```
 
 这条命令编译或复用 `prefix`、`cpu_silu`、`suffix` 三张 OMC。若同一板上已有匹配 OMC 和输入的完整前缀结果，会校验并复用两个输出。板端 CPUCL 接着计算卷积和门控两处 SiLU，NPU 后半图计算到 L0 的 `out_proj`。本次 `split-silu-*/comparison.csv` 中的 `split_cpu_vs_310p` 是与已有 310P golden 的比较，涵盖 valid19 和各个有效 token。
 
-在 53 的已有 L0 实验目录运行下面这条命令。脚本复用 78 的 AIR、输入和 310P golden，以及原始整张 L0 OMC 的板端结果。每次分段实验保存到单独的 `split-silu-*/` 目录。
+在 CPro 板端执行服务器的已有 L0 实验目录运行下面这条命令。脚本复用 CPro AIR 生成服务器的 AIR、输入和 310P golden，以及原始整张 L0 OMC 的板端结果。每次分段实验保存到单独的 `split-silu-*/` 目录。
 
 ```bash
-L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --split-silu
+L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_board.sh --split-silu
 ```
 
 | OMC | 板端计算和接线 |
@@ -58,20 +60,20 @@ L0_SILU_RUN="${R:?}" bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --spl
 
 ### 对比两处 SiLU 和 out_proj 前后的 CPU、310P、CPro 精度
 
-78 在已有 L0 AIR 对应的输入上准备参考数据。它优先读取能通过原始 L0 导出记录、驱动和配置哈希校验的 310P 单步 bin，缺数据时只执行一次到 L0 out_proj 的原始 W4 prefill。独立 CPU 参考从同一份 L0 hidden 和初始缓存开始，以原权重分别计算各级激活。参考数据首次生成后可复用。
+CPU、310P golden 生成服务器在已有 L0 AIR 对应的输入上准备参考数据。它优先读取能通过原始 L0 导出记录、驱动和配置哈希校验的 310P 单步 bin，缺数据时只执行一次到 L0 out_proj 的原始 W4 prefill。独立 CPU 参考从同一份 L0 hidden 和初始缓存开始，以原权重分别计算各级激活。参考数据首次生成后可复用。
 
 ```bash
 cd "${REPO_DIR:?}"
 git pull --ff-only origin main
-bash targets/cpro/scripts/l0_attention_cpu_silu_78.sh --stage-matrices
+bash targets/cpro/scripts/l0_attention_cpu_silu_export.sh --stage-matrices
 ```
 
-53 在同一块板、相同的模型和输入上复用已有分段执行。默认选最近完成的 L0 实验，也可以用 `L0_SILU_RUN` 指定实验目录。若 78 的参考包位置与默认不同，两端可设置 `L0_SILU_REFS` 为同一份参考包在 78 的绝对路径。
+CPro 板端执行服务器在同一块板、相同的模型和输入上复用已有分段执行。默认选最近完成的 L0 实验，也可以用 `L0_SILU_RUN` 指定实验目录。若 CPU、310P golden 生成服务器的参考包位置与默认不同，两端可设置 `L0_SILU_REFS` 为同一份参考包在 CPU、310P golden 生成服务器的绝对路径。
 
 ```bash
 cd "${REPO_DIR:?}"
 git pull --ff-only origin main
-bash targets/cpro/scripts/l0_attention_cpu_silu_53.sh --stage-matrices
+bash targets/cpro/scripts/l0_attention_cpu_silu_board.sh --stage-matrices
 ```
 
 | 矩阵名 | 张量边界 | 每个有效 token 的元素数 |
@@ -87,7 +89,7 @@ CPro 一列代表板端 CPUCL 执行两处 SiLU、NPU 执行其余计算的这�
 
 ### 导出自定义算子 `silu_patch` 的单算子 AIR
 
-在 78 的仓库根目录运行下面的脚本。它用仓库内的 GE protobuf 定义生成一张 `Data → SiluPatch → NetOutput` 单算子 AIR，节点名是 `silu_patch`，输出路径是 `$AI_RUN_DIR/target/tests/silu_patch_fp16_fp16/silu_patch.air`。
+在 CPro AIR 生成服务器的仓库根目录运行下面的脚本。它用仓库内的 GE protobuf 定义生成一张 `Data → SiluPatch → NetOutput` 单算子 AIR，节点名是 `silu_patch`，输出路径是 `$AI_RUN_DIR/target/tests/silu_patch_fp16_fp16/silu_patch.air`。
 
 ```bash
 python targets/cpro/tools/export_silu_patch_air.py

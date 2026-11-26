@@ -6,7 +6,7 @@
 
 ## 运行
 
-两台服务器沿用上次单层测试的环境和连接配置，项目代码同步到 `main`。在 78 的仓库根目录执行：
+此逐算子诊断入口将 golden 与 AIR 导出编排在同一台机器，OMC 编译与上板编排在另一台。使用相同版本的仓库。在 golden 和 AIR 共用的服务器执行
 
 ```bash
 bash targets/cpro/scripts/gdn_layer_t64.sh air
@@ -14,19 +14,19 @@ bash targets/cpro/scripts/gdn_layer_t64.sh air
 
 `air` 先调用现有的 linear 导出脚本，再执行 `prepare` 采集两端参考。`prepare` 使用 `TARGET_SOURCE` 下的原版 310P NZ 驱动，以及 `NZ_CONFIG`（默认 `config/qwen3_5_moe.yaml`）。读取新导出、含 FP16 SiluPatch 和 FP16 SoftplusPatch 的 `$L0_SPLIT_RUN/air/manifest.json`。它检查 W4 权重、逐 token scale 的 FP16 转换、物理卷积历史、chunk 长度和 GDR 状态接口，并绑定两个原生 shape 的 `SiluPatch` 和衰减分支的一个 `SoftplusPatch`。CPU 复用项目的 A8 ties-to-even / W4 group256 数学参考，组内整数点积、FP32 缩放和累加，最后转 FP16。五次投影各自核对原始 checkpoint 与本次 310P 调用实际读取的打包权重和组 scale。
 
-等 78 成功后，在装有 FP16 `SoftplusPatch` 和 `SiluPatch` 的 35 仓库根目录执行：
+导出成功后，在 OMC 生成与板端执行共用的服务器执行以下命令。该机 DDK 需要已注册的 FP16 `SoftplusPatch` 和 `SiluPatch`。
 
 ```bash
 bash targets/cpro/scripts/gdn_layer_t64.sh board
 ```
 
-跑完会在该次运行的 `board/` 下生成 `error_ratio.txt` 和 `cosine.txt`，按变量列出三端矩阵和说明。本地开发机无法连接 78、35 或板端。
+跑完会在该次运行的 `board/` 下生成 `error_ratio.txt` 和 `cosine.txt`，按变量列出三端矩阵和说明。
 
-`board` 使用编译机已配置的 DDK、HDC 与板端 V2 runner，按需拉取 78 的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-softpluspatch-t64-valid19-01`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
+`board` 使用编译机已配置的 DDK、HDC 与板端 V2 runner，按需拉取 CPro AIR 生成服务器的参考包。两台服务器默认使用同名的 `$AI_RUN_DIR/target/tests/l0-gdn-ops-softpluspatch-t64-valid19-01`，可以在两边设置 `GDN_LAYER_RUN` 改路径。再次运行 `board` 会复用输入、模型、设备和输出哈希均匹配的已完成阶段。中断后也可先运行 `compare` 查看已完成项。一个选定张量的 3×3 矩阵打印到终端，全部矩阵保存在 `board/matrices.csv`，原始指标和缺失阶段在 `board/comparison.json`。每个 `board/<阶段>/stage.json` 保存输入来源哈希和已取回的输出记录。
 
 本次逐段计划共 24 个 OMC、33 个观测张量。比较结束后，`board/comparison.json` 的 `cpro_softplus` 应为 `SoftplusPatch`，`missing` 应为空。重点看 `biased_a`、`softplus`、`g`、`out_scale`、`out` 以及 `recurrent_cache`。上一轮原生 Softplus 结果在 `l0-gdn-ops-t64-valid19-03/board/`。
 
-在 78 的 `$L0_SPLIT_RUN/silu-source-*/source.diff` 可以查看对 `CPRO_SOURCE` 私有源文件的改动。单独生成 GDN 形状的 FP16 算子 AIR 可执行 `python targets/cpro/tools/export_silu_patch_air.py --op softplus_patch --shape 1,64,32 --output "$GDN_LAYER_RUN/standalone"`，得到 `softplus_patch.air`。单算子输入为加偏置后的 `biased_a` 转 FP16，输出是 FP16 `z`；整段报告中 `softplus` 取其转回 FP32 后的值。
+在 CPro AIR 生成服务器的 `$L0_SPLIT_RUN/silu-source-*/source.diff` 可以查看对 `CPRO_SOURCE` 私有源文件的改动。单独生成 GDN 形状的 FP16 算子 AIR 可执行 `python targets/cpro/tools/export_silu_patch_air.py --op softplus_patch --shape 1,64,32 --output "$GDN_LAYER_RUN/standalone"`，得到 `softplus_patch.air`。单算子输入为加偏置后的 `biased_a` 转 FP16，输出是 FP16 `z`；整段报告中 `softplus` 取其转回 FP32 后的值。
 
 ## 投影计算前的操作数
 

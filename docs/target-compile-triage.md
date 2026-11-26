@@ -22,7 +22,7 @@ QLinear／CacheUpdate／Attention 是否同因尚未有对应日志；按用户�
 
 ## 当前执行：复用 AIR 全部重新编译
 
-在 35 服务器原 custom_pypto／DDK 终端执行。`TBE_DIAGNOSIS` 使用此前成功的完整诊断目录，整理后的默认位置为 `common/tbe-diagnosis`；若尚未搬迁，先设置为原真实目录。无需重采集、重导 AIR、重跑诊断矩阵或修改安装目录。直接遍历全部 158 项，不设置 cases 筛选。新全批写入固定的 `omc-rebuild`，原 `omc` 保留；后续上板使用新的 `OMC_BATCH`。输出目录须不存在，已有本轮重编结果时先读取其状态，避免覆盖运行中的任务。
+在 CPro OMC 生成服务器原 custom_pypto／DDK 终端执行。`TBE_DIAGNOSIS` 使用此前成功的完整诊断目录，整理后的默认位置为 `common/tbe-diagnosis`；若尚未搬迁，先设置为原真实目录。无需重采集、重导 AIR、重跑诊断矩阵或修改安装目录。直接遍历全部 158 项，不设置 cases 筛选。新全批写入固定的 `omc-rebuild`，原 `omc` 保留；后续上板使用新的 `OMC_BATCH`。输出目录须不存在，已有本轮重编结果时先读取其状态，避免覆盖运行中的任务。
 
 ```bash
 export REPO_DIR="/home/w00949577/qwen3.5-35B-dflash"
