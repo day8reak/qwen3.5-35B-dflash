@@ -231,6 +231,26 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 如果 `none` 能执行，在两条命令中都改用 `0`，仅将 L0 的 RMS 门控换回 `SiluPatch`。也可选 `1`、`2` 或升序逗号列表来定位单层或组合触发条件。导出时逐层打印门控选择，并核对 AIR 中 RMS 门控形状的自定义节点数。出现精度矩阵或 `FAILED_ACCURACY` 表示模型已执行。复现原加载问题需在该次运行看到 `load_model` 和 `OpUpdateKernelArgs failed`。
 
+### 导出完整 L0 linear attention
+
+在保留当前四层 T64 编译输入包的 CPro OMC 生成服务器执行以下命令，即可从这份 AIR 直接切出 `layers[0].linear_attn`。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh gdn-export
+```
+
+它沿用源图的 RMS 门控选择、Conv2D 和物理尾部 ConvState。入口为归一化后的 hidden、旧卷积历史、旧递推状态和有效长度。出口是第一条残差加法之前的 out_proj 输出、新卷积历史和新递推状态。切片检查 5 个 W4 投影、1 个 chunk GDR 和 1 个 SoftplusPatch。`--rms-silu-layers 0` 的源图应切出 2 个 SiluPatch，`none` 应为 1 个。
+
+终端打印单层 `export.air` 的完整路径。该文件和它引用的权重保存在 `4-prefill-t64/board/L00-L03/gdn/linear-attention/` 下，移动产物时保留该目录结构。`case.json` 记录实际的输入、输出、权重和源 AIR。本命令只导出，复用当前四层包，无需重新采集 golden。
+
+要在 OMC 和板端执行共用的服务器测试加载和执行，可直接运行：
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh gdn-whole
+```
+
+这一条命令包含切图、编译一个 OMC 和 V2 上板。使用固定合成 hidden、零初始缓存和当前四层 fixture 的有效长度。执行状态保存在 `board/L00-L03/gdn/result.json`，适合排查加载故障。早先基于三端真实输入的 GDN 精度对照另见 [GDN 层对比](guides/gdn-layer-t64.md)。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

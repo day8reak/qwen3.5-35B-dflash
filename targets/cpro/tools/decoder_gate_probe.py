@@ -1,6 +1,7 @@
-"""Replay an RMS gate from an existing four-layer AIR with selected original producers."""
+"""Export and replay L0 attention or a gate slice from an existing four-layer AIR."""
 from math import prod
 from pathlib import Path
+import errno
 import shutil
 import subprocess
 
@@ -33,7 +34,12 @@ def input_wire(node, fallback_shape):
     return wire(node.input[0], shape, dtype)
 
 
-def gate_cases(raw, meta, upstream):
+def probe_cases(raw, meta, mode):
+    if mode in ('gdn-export', 'gdn-whole'):
+        from qwen35_moe_dflash.target.prefill_t64.gdn_layer_air import four_layer_gdn
+        step = four_layer_gdn(raw, meta)
+        yield 'linear-attention', step, step['wires']
+        return
     _, graph = graph_message(raw, 'SiluPatch')
     gates = {row['name'] for row in meta.get('silu_patch', {}).get('nodes', []) if row.get('shape') == list(SHAPE)}
     gate = next((op for op in graph.op if op.name in gates and op.type == 'SiluPatch'), None)
@@ -57,7 +63,7 @@ def gate_cases(raw, meta, upstream):
         ('silu-cast-mul', [gate_input, peer], [gate.name, cast, mul.name], mul_out),
     ]
     by_name = {op.name: op for op in graph.op}
-    if upstream:
+    if mode == 'upstream':
         walk = AttentionSteps(graph, by_name, [])
         z = walk.expect(walk.strip(gate_input), {MATMUL})
         quant = walk.expect(walk.strip(z.input[0]), {'DynamicQuant'})
@@ -76,12 +82,10 @@ def gate_cases(raw, meta, upstream):
             cases.append((label, inputs, [name for name in by_name if name in kept], mul_out))
     for label, inputs, nodes, output in cases:
         step = dict(inputs=inputs, nodes=nodes, outputs=[output])
-        feeds = {f'l0_feed_{i}': wires[edge] for i, edge in enumerate(inputs)}
-        weights = {by_name[n].attr['file_path'].s.decode() for n in nodes if by_name[n].type == 'FileConstant'}
-        yield label, nodes, slice_air(raw, step, wires), feeds, weights
+        yield label, step, wires
 
 
-def compile_cases(folder, case, meta, record, ddk, upstream):
+def compile_cases(folder, case, meta, record, ddk, mode):
     raw = sized_file(case, record).read_bytes()
     index = folder/'compile.json'
     if folder.is_symlink():
@@ -94,14 +98,18 @@ def compile_cases(folder, case, meta, record, ddk, upstream):
     report = dict(kind=KIND, air=record, complete=False, cases={})
     save_json(index, report)
     inventory = {r['path']: r for r in meta['files']}
-    for label, nodes, graph, feeds, weights in gate_cases(raw, meta, upstream):
+    _, original = graph_message(raw, 'SiluPatch')
+    external = {op.name: op.attr['file_path'].s.decode() for op in original.op if op.type == 'FileConstant'}
+    for label, step, wires in probe_cases(raw, meta, mode):
         base = folder/label
-        directory = meta['air_directory'] if upstream else 'weight'
+        directory = 'weight' if mode == 'slices' else meta['air_directory']
         air = base/directory/'export.air'
         air.parent.mkdir(parents=True)
-        air.write_bytes(graph)
+        air.write_bytes(slice_air(raw, step, wires))
         source = identity(air, base)
         files = [source]
+        nodes = step['nodes']
+        weights = {external[n] for n in nodes if n in external}
         for filename in sorted(weights):
             rel = Path(filename)
             if rel.is_absolute() or '..' in rel.parts or not rel.parts:
@@ -111,11 +119,27 @@ def compile_cases(folder, case, meta, record, ddk, upstream):
             item = inventory[rel.as_posix()]
             target = base/rel
             target.parent.mkdir(exist_ok=True, parents=True)
-            target.symlink_to(sized_file(case, item))
+            weight = sized_file(case, item)
+            if mode in ('gdn-export', 'gdn-whole'):
+                try:
+                    target.hardlink_to(weight)
+                except OSError as exc:
+                    if exc.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP):
+                        raise
+                    shutil.copyfile(weight, target)
+            else:
+                target.symlink_to(weight)
             files.append(item)
-        save_json(base/'case.json', dict(native_tool_args=True, files=files, air_directory=directory))
-        print(f'[{label}] 编译 {nodes}', flush=True)
-        row = dict(nodes=nodes, source=source['sha256'], feeds=feeds)
+        feeds = {f'l0_feed_{i}': wires[e] for i, e in enumerate(step['inputs'])}
+        outputs = [wires[e] for e in step['outputs']]
+        save_json(base/'case.json', dict(native_tool_args=True, files=files, air_directory=directory,
+                                         inputs=feeds, outputs=outputs, source_air=record))
+        print(f'[{label}] 已导出 AIR：{air}（{len(nodes)} 个节点）', flush=True)
+        row = dict(nodes=nodes, source=source['sha256'], feeds=feeds, outputs=outputs)
+        if mode == 'gdn-export':
+            report['cases'][label] = dict(row, status='EXPORTED')
+            continue
+        print(f'[{label}] 编译 OMC', flush=True)
         try:
             compiled(base, base, ddk, None, row['source'])
             row['status'] = 'COMPILED'
@@ -128,7 +152,7 @@ def compile_cases(folder, case, meta, record, ddk, upstream):
     save_json(index, report)
 
 
-def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights):
+def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights, valid_rows=None):
     build, model, weights = compiled(base, base, None, None, row['source'])
     replay = base/'replay'
     if replay.exists():
@@ -146,9 +170,16 @@ def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights)
             dtype, shape = feeds[name]['dtype'], feeds[name]['shape']
         if spec['dtype'] != dtype or [d for d in spec['shape'] if d != 1] != [d for d in shape if d != 1]:
             raise ValueError(f'{base.name}: unexpected gate input {spec}')
-        low, high = (-2, 2) if name == 'l0_feed_0' else (0.5, 1.5)
         path = replay/(name + '.bin')
-        np.linspace(low, high, num=prod(shape), dtype=dtype).tofile(path)
+        role = feeds[name]['name'] if feeds else None
+        if role in ('history', 'state'):
+            data = np.zeros(shape, dtype=dtype)
+        elif role == 'length':
+            data = np.full(shape, valid_rows, dtype=dtype)
+        else:
+            low, high = (-2, 2) if name == 'l0_feed_0' else (0.5, 1.5)
+            data = np.linspace(low, high, num=prod(shape), dtype=dtype)
+        data.tofile(path)
         operands.append(dict(spec, sha256=sha(path)))
         paths.append(path)
     try:
@@ -181,31 +212,36 @@ def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights)
     return dict(status='EXECUTED', exitcode=0)
 
 
-def probe(root, action, ddk, config, *, upstream=False, replace_inputs=False, replace_weights=False):
+def probe(root, action, ddk, config, *, mode='slices', replace_inputs=False, replace_weights=False):
     case = root/'board/package/L00-L03'
     meta = read(case/'case.json')
     record, = [r for r in meta['files'] if r['path'] == meta['air_directory'] + '/export.air']
-    folder = root/'board/L00-L03'/('gate-upstream' if upstream else 'gate-probes')
+    whole = mode in ('gdn-export', 'gdn-whole')
+    directory = 'gdn' if whole else ('gate-upstream' if mode == 'upstream' else 'gate-probes')
+    folder = root/'board/L00-L03'/directory
     if action == 'compile':
         if not (case/record['path']).is_file():
             case = root/'export/package/L00-L03'
             if record not in read(case/'case.json')['files']:
                 raise ValueError('The local AIR export differs from the model on the board host')
-        compile_cases(folder, case, meta, record, ddk, upstream)
+        compile_cases(folder, case, meta, record, ddk, mode)
         return True
     report = read(folder/'compile.json')
     if report['kind'] != KIND or not report['complete'] or report['air'] != record:
         raise ValueError('Compile gate probes for the current four-layer AIR before executing')
     runtime = read(config.parent/read(config)['assets'])['environment']
+    valid_rows = read(case.parent/'fixture/reference.json')['valid_rows'] if whole else None
+    if whole and not 1 <= valid_rows <= 64:
+        raise ValueError(f'Unexpected T64 prefill length: {valid_rows}')
     summary = {}
     save_json(folder/'result.json', summary)
     for label, row in report['cases'].items():
         summary[label] = row
         if row['status'] == 'COMPILED':
             summary[label] = execute_case(folder/label, row, runtime, config, replace_inputs=replace_inputs,
-                                          replace_weights=replace_weights)
+                                          replace_weights=replace_weights, valid_rows=valid_rows)
         save_json(folder/'result.json', summary)
-    print(f'门控上板结果 {folder}/result.json', flush=True)
+    print(f'上板结果 {folder}/result.json', flush=True)
     for label, row in summary.items():
         matched = '  OpUpdateKernelArgs failed' if row.get('kernel_args_error') else ''
         print(f'{label:16} {row["status"]}{matched}', flush=True)

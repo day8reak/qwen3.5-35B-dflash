@@ -281,6 +281,9 @@ def worker(args, action, root, remote):
         label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
         if args.gate_probe == 'report':
             label = '对照四层和门控小图的已有 AIR、编译日志及上板记录'
+        elif args.gate_probe in ('gdn-export', 'gdn-whole'):
+            label = {'compile': '从当前四层 AIR 导出完整 L0 linear attention',
+                     'execute': '上板执行完整 L0 linear attention'}[action]
     print(f'[{directory_name(args.mode, args.phase)}] {label}', flush=True)
     if setup:
         print(f'  加载环境脚本 {script}（{name}）', flush=True)
@@ -326,7 +329,8 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
-    parser.add_argument('--gate-probe', nargs='?', const='slices', choices=('slices', 'upstream', 'report'), help=argparse.SUPPRESS)
+    parser.add_argument('--gate-probe', nargs='?', const='slices',
+                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole'), help=argparse.SUPPRESS)
     a = parser.parse_args()
     if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
                          a.action not in ('compile', 'execute', '_compile', '_execute')):
@@ -400,8 +404,8 @@ def main():
                 report(root)
                 return 0
             from decoder_gate_probe import probe
-            ddk, config, _ = board_config(a.action)
-            return 0 if probe(root, a.action, ddk, config, upstream=a.gate_probe == 'upstream',
+            ddk, config, _ = (None, None, None) if a.gate_probe == 'gdn-export' else board_config(a.action)
+            return 0 if probe(root, a.action, ddk, config, mode=a.gate_probe,
                               replace_inputs=a.replace_inputs, replace_weights=a.replace_weights) else 1
         site = root/('board' if a.action in ('compile', 'execute', 'board') else 'export')
         from decoder_handoff import publish, receive

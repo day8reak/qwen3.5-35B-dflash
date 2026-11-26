@@ -78,6 +78,89 @@ def whole_stage(graph, decoder, quant, conv_patch, gate_patch, gdr):
     return dict(name='whole_gdn', inputs=inputs, outputs=outputs, nodes=sorted(kept), wires=wires)
 
 
+def four_layer_gdn(raw, meta):
+    """Cut L0 linear_attn directly from the native T64 four-layer physical-history graph."""
+    from collections import Counter
+    from .attention_steps import NORMS, operands
+    from .decoder_four_silu import activation_port_shape
+
+    if list(meta['layers']) != [0, 1, 2, 3] or not meta.get('physical_convstate'):
+        raise ValueError('Select the four-layer T64 AIR with physical ConvState')
+    _, graph = graph_message(raw, 'ChunkGatedDeltaRule')
+    nodes = {op.name: op for op in graph.op}
+    walk = AttentionSteps(graph, nodes, [])
+    returned = {r['name']: r['edge'] for r in meta['outputs']}
+    history_out, state_out = (returned[k] for k in ('conv_state_0', 'recurrent_state_0'))
+
+    def value_edge(edge):
+        op = walk.node(edge)
+        return operands(op)[1] if op.type in ('Assign', 'AssignVariableOp') else edge
+
+    history_out, state_out = map(value_edge, (history_out, state_out))
+    gdr = walk.node(walk.nearest(state_out, {'ChunkGatedDeltaRule'}))
+    if not walk.depends(state_out, gdr.name + ':1'):
+        raise ValueError(f'{state_out} does not return the L0 recurrent state from {gdr.name}:1')
+    qkv = walk.node(walk.nearest(history_out, {MATMUL}))
+    quant = walk.expect(walk.strip(qkv.input[0]), {'DynamicQuant'})
+    hidden = quant.input[0]
+    while walk.node(hidden).type in ('Reshape', 'View', 'Identity', 'TensorMove'):
+        hidden = walk.node(hidden).input[0]
+    history = only((op.name + ':0' for op in graph.op if op.type in ('Data', 'RefData')
+                    and list(op.output_desc[0].shape.dim) == [1, 8192, 4]
+                    and walk.depends(history_out, op.name + ':0')), 'L0 history input')
+    ports = dict(zip((s.decode() for s in gdr.attr['_input_name_key'].list.s),
+                     gdr.attr['_input_name_value'].list.i, strict=True))
+    state, length = (gdr.input[ports[k]] for k in ('initial_state', 'effective_length'))
+
+    # Match the output projection by its activation path, including for native SiLU.
+    # Its DynamicQuant reads the gated product whose RMS operand comes from this GDR.
+    projections = []
+    for op in graph.op:
+        if op.type != MATMUL:
+            continue
+        dq = walk.node(walk.strip(op.input[0]))
+        if dq.type != 'DynamicQuant':
+            continue
+        product = walk.node(walk.strip(dq.input[0]))
+        if product.type == 'Mul':
+            branches = (walk.node(walk.strip(e)) for e in operands(product))
+            if any(n.type in NORMS and walk.strip(n.input[0]) == gdr.name + ':0' for n in branches):
+                projections.append(op.name + ':0')
+    projection = only(projections, 'L0 gated out_proj')
+    residual_inputs = (e for op in graph.op if op.type in ('Add', 'AddV2') for e in operands(op)
+                       if walk.strip(e) == projection)
+    out = only(residual_inputs, 'L0 out_proj output entering the residual')
+    inputs, outputs = [hidden, history, state, length], [out, history_out, state_out]
+    kept, used = slice_dependencies(nodes, outputs, set(inputs), 'L0 linear_attn')
+    counts = Counter(nodes[n].type for n in kept)
+    if used != set(inputs) or counts[MATMUL] != 5 or counts['ChunkGatedDeltaRule'] != 1 or counts['SoftplusPatch'] != 1:
+        raise ValueError(f'Unexpected L0 attention boundary: inputs={used}, operators={dict(counts)}')
+    selected = meta.get('rms_silu_layers')
+    if selected:
+        expected = 1 + int('0' in selected.split(','))
+        if counts['SiluPatch'] != expected:
+            raise ValueError(f'Expected {expected} L0 SiluPatch nodes for --rms-silu-layers {selected}, found {counts["SiluPatch"]}')
+
+    wires = {}
+    for role, edge in zip((*ENTRY, *WHOLE_OUTPUTS), inputs + outputs, strict=True):
+        desc = descriptor(nodes, edge)
+        shapes = activation_port_shape(desc)
+        fallback = (1, 64, 2048) if role == 'out' else SHAPES[role]
+        shape = next((v for v in (shapes['ge_dims'], shapes['fx_dims']) if v and min(v) > 0), fallback)
+        check_view(role, shape)
+        # GDR's typed ports can be more specific than an intermediate producer's FX descriptor.
+        gdr_name = {'length': 'effective_length', 'state': 'initial_state'}.get(role)
+        port = gdr.input_desc[ports[gdr_name]] if gdr_name else desc
+        dtype = {v: k for k, v in DTYPES.items()}.get(port_info(graph, port)['dtype'])
+        allowed = ('int16',) if role == 'length' else ('float16', 'float32')
+        if dtype not in allowed:
+            raise ValueError(f'{edge}: unexpected {role} descriptor {port.dtype}')
+        wires[edge] = wire(role, shape, dtype)
+    print(f'[L0 linear_attn] RMS SiluPatch 层选择={selected}，W4 投影=5，GDR=1，'
+          f'SiluPatch={counts["SiluPatch"]}，SoftplusPatch={counts["SoftplusPatch"]}', flush=True)
+    return dict(nodes=[op.name for op in graph.op if op.name in kept], inputs=inputs, outputs=outputs, wires=wires)
+
+
 def stages(raw, meta, *, whole=False):
     trace = meta['silu_patch']['nodes']
     decoder = plan(raw, trace, layer=0, head=True, verify_precision=True)
