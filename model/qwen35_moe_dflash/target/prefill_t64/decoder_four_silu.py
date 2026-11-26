@@ -97,22 +97,24 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
         if name == MODELING and aligned and not l0:
             import ast
             from .decoder_four_source import preserve_source
-            from .source_model import _adapt_experts, _register_fp16_scale, _rotate_fp32, use_position_gathers
+            from .source_model import (_adapt_experts, _definition, _register_fp16_scale, _rotate_fp32,
+                                       explicit_gdn_conv2d, physical_conv_history, use_position_gathers)
 
             # Keep the native wrapper and readout.
             # Feed GDR the FP16 activation that the custom SiLU already produced.
-            for old, new in (
-                ('F.conv1d(padded, self.conv1d.weight,',
-                 'F.conv1d(padded.to(self.conv1d.weight.dtype), self.conv1d.weight,'),
-                ('qkv_conv = silu_same_dtype(conv_out)', 'qkv_conv = silu_patch(conv_out)'),
-            ):
+            changes = [('qkv_conv = silu_same_dtype(conv_out)', 'qkv_conv = silu_patch(conv_out)')]
+            if layers != 40:
+                changes.append(('F.conv1d(padded, self.conv1d.weight,',
+                                'F.conv1d(padded.to(self.conv1d.weight.dtype), self.conv1d.weight,'))
+            for old, new in changes:
                 if text.count(old) != 1:
                     raise ValueError(f'Expected one {old!r} in native GDN')
                 text = text.replace(old, new)
             tree = ast.parse(text)
             if layers == 40:
-                from .source_model import _definition, physical_conv_history
-                physical_conv_history(_definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward'))
+                gdn = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
+                physical_conv_history(gdn)
+                explicit_gdn_conv2d(gdn)
             _register_fp16_scale(tree)
             _rotate_fp32(tree, original=True)
             use_position_gathers(tree, 'Qwen3_5MoeRotaryEmbedding',
@@ -188,7 +190,40 @@ def gate_product(graph, gate):
     return mul, norm
 
 
-def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, softplus=False, rows=64):
+def inspect_gdn_convs(graph, count, rows):
+    nodes = {op.name: op for op in graph.op}
+    convs = [op for op in graph.op if op.type == 'Conv2D']
+    if len(convs) != count:
+        raise ValueError(f'Expected {count} GDN Conv2D nodes, found {len(convs)}')
+    expected = ((1, 8192, 1, rows + 3), (8192, 1, 1, 4))
+    observed = 0
+    for conv in convs:
+        for i, dims in enumerate(expected):
+            name, slot = conv.input[i].rsplit(':', 1)
+            source = nodes[name]
+            ports = [source.output_desc[int(slot)]] if int(slot) < len(source.output_desc) else []
+            ports.extend(conv.input_desc[i:i+1])
+            shapes = [tuple(d.shape.dim) for d in ports if d.shape.dim and tuple(d.shape.dim) != (-2,)]
+            # A reshape target also records the rank when TorchAir omits the edge descriptor.
+            if source.type == 'Reshape' and len(source.input) >= 2:
+                target = nodes[source.input[1].rsplit(':', 1)[0]]
+                if target.type == 'Const' and 'value' in target.attr:
+                    t = target.attr['value'].t
+                    enums = t.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_number
+                    width = {'DT_INT32': 4, 'DT_INT64': 8}.get(enums[t.desc.dtype].name)
+                    if width and t.data:
+                        shapes.append(tuple(int.from_bytes(t.data[j:j+width], 'little', signed=True)
+                                            for j in range(0, len(t.data), width)))
+            for shape in shapes:
+                if len(shape) != 4 or any(x >= 0 and x != y for x, y in zip(shape, dims)):
+                    raise ValueError(f'{conv.name} input[{i}] from {name}: found {shape}, expected {dims}')
+            observed += bool(shapes)
+    print(f'GDN Conv2D: {count} nodes; AIR records dimensions for {observed}/{2*count} operands', flush=True)
+    return dict(nodes=count, operands_with_shapes=observed, expected_shapes=expected)
+
+
+def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, softplus=False, rows=64,
+                           check_convs=False):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -261,7 +296,7 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, soft
                     raise ValueError(f'{name}: AIR port {dims} differs from traced shape {shape}')
         records[op.type].append(dict(name=name, shape=list(shape), numel=prod(shape), consumers=consumers))
         print(f'{name}: FP16{shape} -> FP16{shape}; consumers={consumers}', flush=True)
-    result = {}
+    result = {'gdn_convs': inspect_gdn_convs(graph, linear, rows)} if check_convs else {}
     for name, op_type in (("silu_patch", GE_TYPE), ("softplus_patch", "SoftplusPatch")):
         if name == "softplus_patch" and not softplus:
             continue

@@ -30,7 +30,8 @@ ALIGNED_KIND = VECTOR_ALIGNED_KIND + '-native-shape-fp16'
 L0_KIND = 'original-cpro-l0-prefill64-aligned-silu-patch-split-v3-fp16'
 SPLIT_KIND = 'original-cpro-decoder-prefill64-aligned-silu-patch-split-v3-fp16'
 L0_DIR = 'glm_export_air_cpro_1block_64_quant'
-FULL_KIND = 'original-cpro-40-layer-prefill64-aligned-silu-softplus-fp16'
+FULL_KIND = 'original-cpro-40-layer-prefill64-aligned-silu-softplus-fp16-conv2d'
+FULL_GRAPH_RUN = 'conv2d'
 FULL_DIR = 'glm_export_air_cpro_40block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
@@ -111,7 +112,7 @@ def valid19_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
                 valid19_embedding_changed_fp16_elements=changes, conv_state_control=policy)
 
 
-def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None, l0_capture=None,
+def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None, l0_capture=None, cpu_run=None,
            layer=None, head=True, standalone=True):
     import yaml
     split = kind in (L0_KIND, SPLIT_KIND)
@@ -222,7 +223,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if kind != KIND:
             variant.update(inspect_activation_air(
                 air, shape_trace, layers=layers, full_only=layer is not None and layer % 4 == 3,
-                softplus=aligned))
+                softplus=aligned, check_convs=full))
             if uses_baseline:
                 variant['original_manifest_sha256'] = sha(base_manifest)
             if split:
@@ -263,7 +264,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 raise ValueError('The generated input files differ from the original four-layer fixture')
         if full:
             from qwen35_moe_dflash.target.prefill_t64.native_40 import pack_goldens
-            variant['goldens'], variant['tokens'] = pack_goldens(reference, run, work)
+            variant['goldens'], variant['tokens'] = pack_goldens(reference, cpu_run or run, work)
             files.extend(r for backend in variant['goldens'].values() for r in backend.values())
             files.append(variant['tokens'])
         if split:
@@ -285,42 +286,65 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     print(f'{kind} AIR: {dest / export_dir / "export.air"}')
 
 
-def report_full_disk(meta, path, *, incoming=True):
+def report_full_disk(meta, path, *, incoming=True, linked=0):
     if meta['kind'] != FULL_KIND:
         raise ValueError(f'Expected {FULL_KIND}, got {meta["kind"]}')
     bundle_size = sum(r['bytes'] for r in meta['files'])
     graph_size = sum(r['bytes'] for r in meta['files'] if Path(r['path']).parts[0] == FULL_DIR)
     free = shutil.disk_usage(path).free
-    transfer = bundle_size if incoming else 0
+    transfer = bundle_size - linked if incoming else 0
     print(f'35 filesystem {path}: {free / 2**30:.2f} GiB free, '
           f'AIR bundle {bundle_size / 2**30:.2f} GiB ({transfer / 2**30:.2f} GiB to download). '
           f'If OMG outputs match the {graph_size / 2**30:.2f} GiB graph and weights, '
           f'{(free - transfer - graph_size) / 2**30:.2f} GiB would remain for scratch and other usage. '
           'Actual compiler peak is unknown.', flush=True)
     if transfer > free:
-        raise OSError(f'Insufficient free space to download the {bundle_size:,}-byte AIR bundle')
+        raise OSError(f'Insufficient free space to download {transfer:,} bytes of the AIR bundle')
 
 
-def ssh_bundle(client, remote, staged, *, kind=KIND):
+def ssh_bundle(client, remote, staged, *, kind=KIND, previous=None, fetch=None):
     from decoder4_prefill import ssh_file
+    fetch = fetch or ssh_file
     remote = Path(remote)
     staged.mkdir()
     manifest = staged / 'manifest.json'
-    ssh_file(client, remote / manifest.name, manifest)
+    fetch(client, remote / manifest.name, manifest)
     meta = json.loads(manifest.read_bytes())
     if meta['kind'] != kind:
         raise ValueError(f'Expected {kind} AIR at {remote}, got {meta["kind"]}')
     roots = (L0_DIR, 'inputs', 'golden') if kind in (L0_KIND, SPLIT_KIND) else (EXPORT_DIR, 'inputs')
     if kind == FULL_KIND:
         roots = (FULL_DIR, 'inputs', 'golden')
-        report_full_disk(meta, staged)
+    missing = []
+    linked = 0
     for row in meta['files']:
         rel = Path(row['path'])
         if rel.is_absolute() or '..' in rel.parts or len(rel.parts) < 2 or rel.parts[0] not in roots:
             raise ValueError(f'Invalid original export path: {rel}')
         target = staged / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        ssh_file(client, remote / rel, target, row)
+        if previous is not None:
+            try:
+                prior = checked(previous, row)
+                os.link(prior, target)
+            except (OSError, ValueError):
+                pass  # Changed file, different filesystem or hard links unavailable.
+            else:
+                linked += row['bytes']
+                continue
+        missing.append((rel, target, row))
+    if kind == FULL_KIND:
+        print(f'Reused {linked / 2**30:.2f} GiB of verified local AIR files', flush=True)
+        report_full_disk(meta, staged, linked=linked)
+    for rel, target, row in missing:
+        fetch(client, remote / rel, target, row)
+
+
+def sftp_file(client, remote, local, record=None):
+    from pull_artifacts import download
+    download(client, str(remote), local)
+    if record is not None and (local.stat().st_size != record['bytes'] or sha(local) != record['sha256']):
+        raise ValueError(f'Size or SHA-256 differs from the AIR manifest: {remote}')
 
 
 def compile_log_text(path):
@@ -360,8 +384,10 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
     run.mkdir(parents=True, exist_ok=True)
     if not bundle.exists():
         with tempfile.TemporaryDirectory(dir=bundle.parent, prefix='.fetch-') as tmp:
-            pull_air(Path(tmp), remote, ssh_download=partial(ssh_bundle, kind=kind),
-                     before_download=report_full_disk if kind == FULL_KIND else None)
+            previous = run.parent/'air' if kind == FULL_KIND else None
+            download = partial(ssh_bundle, kind=kind, previous=previous if previous and previous.is_dir() else None)
+            pull_air(Path(tmp), remote, ssh_download=download,
+                     sftp_download=partial(download, fetch=sftp_file) if kind == FULL_KIND else None)
             incoming = Path(tmp) / 'air'
             if json.loads((incoming / 'manifest.json').read_bytes())['kind'] != kind:
                 raise ValueError(f'Expected {kind} AIR at {remote}')
@@ -618,6 +644,9 @@ def main():
         four_precision(checked(bundle, record))
         return
     run = output_path(base / 'no-platform') if args.aligned and args.action != 'air' else base
+    if args.aligned40:
+        run = output_path(base / FULL_GRAPH_RUN)
+        bundle = run / 'air'
     if args.action == 'log':
         for folder in (run, base):
             logs = [p for p in (*folder.glob('omg-*/compile.log'), folder / 'omc/compile.log') if p.is_file()]
@@ -634,7 +663,8 @@ def main():
             args.reference = (args.reference or base/'reference').resolve(strict=True)
         if kind in (KIND, FULL_KIND) and (not args.source or not args.reference):
             parser.error('native export requires --source and --reference')
-        export(run, args.source, args.config, args.reference, args.conv_control, kind=kind, baseline=args.baseline)
+        export(run, args.source, args.config, args.reference, args.conv_control, kind=kind, baseline=args.baseline,
+               cpu_run=base if args.aligned40 else None)
         return
     if not args.ddk:
         parser.error('compile and board require --ddk')

@@ -99,7 +99,8 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     audit = prefill_precision(graph, group, final, rows=rows)
     if audit['mismatches']:
         raise ValueError('\n'.join(audit['mismatches']))
-    inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows)
+    inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,
+                           check_convs=True)
     bindings = {node: list(args)[index] for node, index in evidence['nodes'].items()}
     if (set(bindings.values()) != set(args) or set(bindings) !=
             {n.name for n in graph.op if n.type in ('Data', 'RefData')}):

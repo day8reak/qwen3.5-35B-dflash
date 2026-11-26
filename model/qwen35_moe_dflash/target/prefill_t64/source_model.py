@@ -107,6 +107,20 @@ def physical_conv_history(forward):
         f'{window} = joined[:, :, -(seq_len + conv_width - 1):].contiguous()').body
 
 
+def explicit_gdn_conv2d(forward, *, original=True):
+    """Represent the depthwise time convolution as NCHW with singleton height."""
+    conv = _assignment(forward, 'conv_out')
+    if original:
+        call = _call(conv, 'F.conv1d')
+        call.func.attr = 'conv2d'
+        call.args[0] = _convert(call.args[0], 'reshape', [
+            _expr('batch_size'), _expr('self.conv_dim'), ast.Constant(1), _expr('-1')])
+        call.args[1] = _convert(call.args[1], 'unsqueeze', [ast.Constant(2)])
+        conv.value = _convert(call, 'squeeze', [ast.Constant(2)])
+    reshape = _call(conv, 'F.conv2d').args[0]
+    reshape.func.value = _convert(reshape.func.value, 'to', [_expr('self.conv1d.weight.dtype')])
+
+
 def _adapt_gdn(tree, original, single_token):
     cls = _definition(tree, 'Qwen3_5MoeGatedDeltaNet')
     if single_token:
@@ -118,17 +132,9 @@ def _adapt_gdn(tree, original, single_token):
         init.body[index:index] = ast.parse(
             "self.register_buffer('gdr_step_length', torch.tensor([1], dtype=torch.int16), persistent=False)").body
     forward = _definition(cls, 'forward')
-    conv = _assignment(forward, 'conv_out')
     if original:
         physical_conv_history(forward)
-        call = conv.value
-        call.func.attr = 'conv2d'
-        call.args[0] = _convert(call.args[0], 'reshape', [
-            _expr('batch_size'), _expr('self.conv_dim'), ast.Constant(1), _expr('-1')])
-        call.args[1] = _convert(call.args[1], 'unsqueeze', [ast.Constant(2)])
-        conv.value = _convert(call, 'squeeze', [ast.Constant(2)])
-    reshape = _call(conv, 'F.conv2d').args[0]
-    reshape.func.value = _convert(reshape.func.value, 'to', [_expr('self.conv1d.weight.dtype')])
+    explicit_gdn_conv2d(forward, original=original)
     silu = _assignment(forward, 'qkv_conv')
     silu.value = _convert(silu.value, 'to', [_expr('mixed_qkv.dtype')])
     gdr = _call(forward, 'torch_npu.npu_chunk_gated_delta_rule')

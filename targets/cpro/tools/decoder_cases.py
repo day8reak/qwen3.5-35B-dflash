@@ -40,8 +40,10 @@ def native40(args, run, remote):
     tool = Path(__file__).with_name('decoder4_original.py')
     argv = [sys.executable, '-u', str(tool), args.action, '--aligned40', '--run', str(run)]
     if args.action == 'board':
+        from decoder4_original import FULL_GRAPH_RUN
         ddk, config, diag = board_config()
-        argv.extend(['--ddk', ddk, '--runtime-config', config, '--tbe-diagnosis', diag, '--remote-air', remote/'air'])
+        argv.extend(['--ddk', ddk, '--runtime-config', config, '--tbe-diagnosis', diag, '--remote-air',
+                     remote/FULL_GRAPH_RUN/'air'])
     else:
         src, cfg = source_config(args.action)
         argv.extend(['--source', src, '--config', cfg, '--reference', os.getenv('ALIGNED40_CAPTURE', run/'reference')])

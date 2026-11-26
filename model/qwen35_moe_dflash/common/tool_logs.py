@@ -8,7 +8,8 @@ import re
 _MAX_SCAN_BYTES = 64 << 20
 _NAMED_NODE_REJECTION = re.compile(
     rb"(?:\bnode\s+[^\s\"']+\s+type\s+[^\s\"']+|\[(?:op|node):[^\]\r\n]+\btype:[^\]\r\n]+\])"
-    rb".*(?:don't support|does not support|not support|unsupported|Verify failed.*(?:DataType.*wrong|Input size.*wrong.*should be))", re.I)
+    rb".*(?:don't support|does not support|not support|unsupported|Verify failed.*(?:DataType.*wrong|Input size.*wrong.*should be"
+    rb"|Input\[\d+\] and input\[\d+\] must have the same dim num))", re.I)
 _MATRIX_SIZE_LIMIT = re.compile(
     rb"\bMatrix\s+[mnk]\s+(?:greater|less)\s+than\s+\d+\s+is\s+not\s+supported\b", re.I)
 _MISSING_IR_ATTRIBUTE = re.compile(

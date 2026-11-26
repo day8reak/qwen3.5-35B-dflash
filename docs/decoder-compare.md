@@ -42,7 +42,7 @@ bash targets/cpro/scripts/decoder_compare.sh board --mode layerwise --phase pref
 
 ## 输入、输出和续跑
 
-- `40 + prefill` 复用原 CPro wrapper 和已有 `aligned40` 入口。CPro 接收原 INT8 embedding 和 FP32 scale。报告记录反量化到 FP16 后与 310P 层入口的差异。默认沿用 `ALIGNED40_RUN` 或原批次目录。输出位于该目录的 `replay-*/matrices.csv` 和 `comparison.json`。[整网图说明](target-prefill40-single.md)
+- `40 + prefill` 复用原 CPro wrapper 和已有 `aligned40` 入口。CPro 接收原 INT8 embedding 和 FP32 scale。报告记录反量化到 FP16 后与 310P 层入口的差异。默认沿用 `ALIGNED40_RUN` 或原批次目录。参考数据保存在批次根目录，新导出的整图、OMC 及 `replay-*/matrices.csv` 和 `comparison.json` 存在其 `conv2d/` 子目录。[整网图说明](target-prefill40-single.md)
 - 其它组合从同一个实测 310P decoder 入口 hidden 和每层实测输入状态起步。CPU 和 CPro 各自连续计算。逐层模式直接将上一张 OMC 的板端 hidden 文件作为下一张 OMC 的输入。Prefill 在原 310P 两段衔接处对齐其 padding 处理。Decode 的 `package/fixture/reference.json` 记录实际输入 token 和每份输入 cache 是否与前一次 prefill 的返回值逐字节一致。
 - 每个完整 decoder 都保留原 attention、MoE 及残差。CPro 在原源码临时副本中应用已核对的 W4 scale、RoPE、专家量化和卷积历史更新修复，使用 FP16 的两种自定义激活，在 GDN 需要 FP32 的乘法前升精度。导出时检查 W4/GDR 端口、GDR 的 chunk size 及激活的实际图节点和原生形状。
 - 除原 `aligned40` 目录外，默认批次为 `$AI_RUN_DIR/target/tests/decoder-<mode>-<phase>`。35 的 `board/matrices.csv` 给出 CPU、310P、CPro 三端的 3×3 指标矩阵，行是 actual，列是 reference。`board/comparison.json` 给出 top1 token ID、文本及未达精度阈值的张量。逐层矩阵也保存在 `board/Lxx/matrices.csv`。

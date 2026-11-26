@@ -20,9 +20,11 @@ git pull --ff-only origin main && bash targets/cpro/scripts/decoder4_t64.sh alig
 
 默认目录为 `$AI_RUN_DIR/target/tests/prefill40-original-aligned-silu-softplus-t64-valid19-01`。两机可设置同一绝对路径 `ALIGNED40_RUN`。有完整 310P 参考时，78 可将 `ALIGNED40_CAPTURE` 指向含 40 层状态和最终 logits 的采集目录。
 
-35 只拉取 AIR 包，使用外置权重编译一个 OMC。下载前和编译前均显示 AIR 字节数和目标文件系统可用空间。OMG 直接引用拉到本机的 AIR 权重。空间估算按输出权重与输入权重同量级计算，编译临时文件的峰值需在 35 实测。板端单独检查 OMC、权重、输入和输出所需空间。
+如果旧版 OMG 在首个 `Conv2D` 的 `RunVerify` 报两个输入维数不同，可在原批次依次重跑上面两条命令。78 核对并复用原 `reference/` 和各层 `Lxx/cpu/`，重新导出到 `conv2d/air/`。每个 GDN 显式用四维窗口 `[1,8192,1,67]` 和卷积核 `[8192,1,1,4]` 做深度卷积，去掉高度维后将 `[1,8192,64]` 送入 SiluPatch。导出时会打印 30 个 Conv2D 中 AIR 有维度记录的操作数数量，并校验已记录的形状。
 
-上板成功后，`replay-*/comparison.json` 包含三端的首 token ID、文本及 CPro 对 310P 的判定。`replay-*/matrices.csv` 是 81 个输出的三端矩阵，包含 token18 的 logits、30 层的完整 conv/recurrent 状态，以及 10 层的 K/V cache。K/V 比较有效 19 行并检查物理写入页之外的缓存。加载或运行失败时，查看同次 replay 下的 `result.json`。
+35 拉取新清单后，按文件大小及 SHA-256 核对本机原批次 `air/` 里的同名文件。可复用的文件通过硬链接进入新目录，其余文件重新下载。脚本显示需下载的字节数和目标文件系统可用空间，然后使用外置权重编译一个 `conv2d/omc/`。空间估算按输出权重与输入权重同量级计算，编译临时文件的峰值需在 35 实测。板端单独检查 OMC、权重、输入和输出所需空间。
+
+上板成功后，`conv2d/replay-*/comparison.json` 包含三端的首 token ID、文本及 CPro 对 310P 的判定。`conv2d/replay-*/matrices.csv` 是 81 个输出的三端矩阵，包含 token18 的 logits、30 层的完整 conv/recurrent 状态，以及 10 层的 K/V cache。K/V 比较有效 19 行并检查物理写入页之外的缓存。加载或运行失败时，查看同次 replay 下的 `result.json`。
 
 ## 既有的单 logits 导出流程
 
