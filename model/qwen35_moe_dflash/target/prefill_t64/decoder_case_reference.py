@@ -23,9 +23,9 @@ def capture(root, mode, phase, source, config):
     layers = [i for group in schedule for i in group]
     rows = 64 if phase == 'prefill' else 1
     wanted = {k for group in schedule for k in output_names(group, group[-1] == layers[-1])}
-    report = dict(mode=mode, phase=phase, layers=layers, inputs={}, outputs={},
+    report = dict(mode=mode, phase=phase, layers=layers, inputs={}, cpro_inputs={}, outputs={},
                   config_sha256=sha(config), source_sha256=sha(source/'inference_segment.py'))
-    for name in ('inputs', '310p'):
+    for name in ('inputs', 'cpro_inputs', '310p'):
         (root/name).mkdir()
     active = False
     prefill_token = None
@@ -33,7 +33,7 @@ def capture(root, mode, phase, source, config):
     last_row = None
 
     def record(group, name, value):
-        folder = '310p' if group == 'outputs' else 'inputs'
+        folder = '310p' if group == 'outputs' else group
         if name in report[group]:
             raise ValueError(f'Repeated {group} {name}')
         row = tensor_record(root/folder, name, value)
@@ -109,11 +109,17 @@ def capture(root, mode, phase, source, config):
                         if i % 4 == 3 and not torch.equal(cpu(mod.self_attn.block_table), torch.arange(64)[None]):
                             raise ValueError(f'L{i} requires a measured sequential page table')
                         for name, state in zip(state_roles(i), v['past_key_values'], strict=True):
-                            if tuple(state.shape) != output_shape(name) or state.dtype != torch.float16:
+                            recurrent = name.startswith('recurrent_state_')
+                            dtypes = (torch.float16, torch.float32) if recurrent else (torch.float16,)
+                            if tuple(state.shape) != output_shape(name) or state.dtype not in dtypes:
                                 raise ValueError(f'{name}: unexpected cache descriptor {state.dtype} {list(state.shape)}')
-                            if rows == 64 and torch.count_nonzero(cpu(state)):
+                            state = cpu(state)
+                            if rows == 64 and torch.count_nonzero(state):
                                 raise ValueError(f'Unexpected nonzero prefill input {name}')
                             record('inputs', name, state)
+                            if state.dtype == torch.float32:
+                                # The CPro GDR takes FP16. Keep the observed 310P buffer for CPU and decode continuity.
+                                record('cpro_inputs', name, state.half())
                             if rows == 1:
                                 digest = report['inputs'][name]['sha256']
                                 report.setdefault('decode_cache_matches_prefill', {})[name] = digest == prefill_cache[name]

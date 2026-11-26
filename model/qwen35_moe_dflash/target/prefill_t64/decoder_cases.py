@@ -21,6 +21,10 @@ def state_roles(layer):
     return tuple(f'{name}_{layer}' for name in names)
 
 
+def cpro_input_records(reference):
+    return {**reference['inputs'], **reference.get('cpro_inputs', {})}
+
+
 def groups(mode):
     if mode not in MODES:
         raise ValueError(f'Unknown decoder mode {mode}')

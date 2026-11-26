@@ -13,7 +13,9 @@ from parse_model_json import GE_PROTO, inspect, read_omc
 from qwen35_moe_dflash.execution.serial_transport import _environment
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, metrics, read_tensor, save_json, sha, sized_file
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
-from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, comparison_view, directory_name, groups, preserved_cache
+from qwen35_moe_dflash.target.prefill_t64.decoder_cases import (
+    case_name, comparison_view, cpro_input_records, directory_name, groups, preserved_cache,
+)
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import view
 
 
@@ -187,7 +189,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         return True
     runtime = read(config.parent/read(config)['assets'])['environment']
     pieces = read(fixture/'tokens.json')
-    feeds = {k: (fixture, v) for k, v in ref['inputs'].items()}
+    feeds = {k: (fixture, v) for k, v in cpro_input_records(ref).items()}
     scores = {b: {r: {} for r in ('cpu', '310p', 'cpro')} for b in ('cpu', '310p', 'cpro')}
     failures, unchanged, predictions = [], {}, {}
     for group in groups(mode):

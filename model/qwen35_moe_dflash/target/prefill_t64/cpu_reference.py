@@ -109,7 +109,9 @@ class CpuPrefill:
                               final_state=torch.from_numpy(final), rms_input=core.float(), gamma=layer.norm.weight.detach().float(),
                               rms_output=rms, gate=z, silu_input=silu_input, silu_output=silu, mul_lhs=rms, mul_rhs=silu,
                               mul_output=product, gated_return=gated)
-        return y, (next_history, torch.from_numpy(final).to(state.dtype))
+        # The reference model rounds the GDR output to FP16 before copying it into its cache.
+        next_state = torch.from_numpy(final).half().to(state.dtype)
+        return y, (next_history, next_state)
 
     def attention(self, x, layer, prefix, pair, args, *, stages=None, valid_length=None):
         heads, kv, d = layer.num_heads, layer.num_key_value_heads, layer.head_dim

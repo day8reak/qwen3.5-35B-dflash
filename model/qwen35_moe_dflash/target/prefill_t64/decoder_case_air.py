@@ -14,7 +14,7 @@ from ...draft.incremental.torch_weight_export import external_weight_export
 from ..layer_probe.common import checked, read_array, save_json
 from ..layer_probe.replay import export_input_identity
 from .chain_air import Head, checkpoint_paths
-from .decoder_cases import case_name, groups, output_names, state_roles
+from .decoder_cases import case_name, cpro_input_records, groups, output_names, state_roles
 from .decoder_four_boundary import data_edges
 from .decoder_four_silu import inspect_activation_air
 from .decode_cache_control import graph_message
@@ -90,7 +90,8 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     for i in group:
         names.extend(state_roles(i))
     # Example tensors establish the static ABI. Board replay feeds the preceding CPro hidden.
-    args = {k: torch.from_numpy(read_array(fixtures, ref['inputs'][k])) for k in names}
+    inputs = cpro_input_records(ref)
+    args = {k: torch.from_numpy(read_array(fixtures, inputs[k])) for k in names}
     edges.clear()
     trace = dest/'activations.txt'
     torch._dynamo.reset()
