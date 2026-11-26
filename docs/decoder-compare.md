@@ -47,7 +47,7 @@ bash targets/cpro/scripts/decoder_run.sh
 
 ### 用原始源码跑四层 T64 prefill
 
-将 AIR 环境的 `CPRO_SOURCE` 指向要测试的原 CPro 工程。已有四层 golden 时，两台服务器各运行一条命令。
+在 AIR 生成服务器的个人配置（`air.env` 或共用的 `decoder.env`）中，将 `CPRO_SOURCE` 设为自己的完整 CPro 工程根目录，该目录下应能看到 `export_glm_model_qwen3_5_moe.py`。模型实现可直接改 `$CPRO_SOURCE/models/modeling_qwen3_5_moe_hiai_cpro.py`，修改算子注册或 GE 转换时再改根目录的导出脚本。目录放在会被重建的 case 之外。手改源码也可以使用 `--no-patch`，该参数会运行你指定的源码现状。已有四层 golden 时，两台服务器各运行一条命令。
 
 在 CPro AIR 生成服务器运行
 
@@ -62,6 +62,24 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --no-patch
 ```
 
 `--no-patch` 直接执行 `$CPRO_SOURCE/export_glm_model_qwen3_5_moe.py`。导出日志打印实际入口以及 AIR 中 `SiluPatch`、`SoftplusPatch` 和 `QuantBatchMatmulV4444` 的数量。使用未改动的原始模型时，前两项应为零。脚本创建四层 HF 配置副本，继续传入 `quant_mode=enable quant_bits=4 seq_len=64`。这次实验沿用 `--gdn-conv original` 的输入、静态 T64 OMG 参数和 V2 上板参数。同名 `4-prefill-t64` 目录保存本次产物，成功执行后在 `board/matrices.csv` 查看三端精度。首次生成四层 golden 时，第一条命令使用 `decoder_prepare.sh`。
+
+### 只撤销四层的自定义激活替换
+
+已有四层 prefill golden 时，在 AIR 生成服务器执行
+
+```bash
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --native-activations
+```
+
+在 OMC 生成和板端执行服务器执行
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --native-activations
+```
+
+此选项以对齐后的 CPro 源码为基础，在本次导出的副本上恢复原生 SiLU 和 Softplus。W4 scale、RoPE、GDR、MoE 等修复继续生效。导出时打印并检查 `SiluPatch=0` 和 `SoftplusPatch=0`，同时检查 W4 和 GDR 端口。两种四层原生卷积对照都从相同的 golden、embedding 权重和 YAML 配置生成输入。原 CPro wrapper 接收 INT8 embedding 及逐 token FP32 scale。普通分层诊断图和 T1 decoder 图接收 FP16 hidden。原生卷积还接收 128 个 INT32 的 `conv_state_pos`，默认首项为有效长度、其余项为零。可用 `DECODER_CONV_CONTROL` 指定原板端 bin。
+
+同一运行目录中保留了成功的 `--no-patch` 记录时，板端执行服务器会先保存其输入槽位，再逐项对照本次的角色、shape、dtype 和已有 bin 内容标识。该对照使用服务器上的清单与执行记录。
 
 ### 用原 CPro 的板端命令重跑已有 OMC
 
@@ -124,3 +142,5 @@ bash targets/cpro/scripts/decoder_compare.sh diagnose --mode 4 --phase prefill
 ```
 
 先取日志再重跑，同名板端工作目录会在下次运行时覆盖。诊断使用本次板端时间和工具线程号关联客户端 PID，再查找 hiaiserver 同一请求的加载错误。运行输出会打印报告、完整时间窗口和匹配的客户端日志路径。
+
+四层 V2 返回成功而精度失败时，同一条 `diagnose` 命令离线读取保留的运行包，输出有效行的 embedding 重建差异和卷积控制量。保留了原生卷积 AIR 时还会打印 L0 QKV matmul 的输入与 scale 端口。

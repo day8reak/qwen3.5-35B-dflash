@@ -249,6 +249,67 @@ def saved_report(path):
     return ok
 
 
+def inspect_native_qkv(air):
+    from qwen35_moe_dflash.target.prefill_t64.attention_slice import port_info
+    from qwen35_moe_dflash.target.prefill_t64.attention_steps import AttentionSteps, MATMUL, only
+    from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
+    from qwen35_moe_dflash.target.prefill_t64.l0_split import prefill_precision
+
+    _, graph = graph_message(air.read_bytes(), 'NetOutput')
+    nodes = {op.name: op for op in graph.op}
+    steps = AttentionSteps(graph, nodes, [])
+    updates = [op for op in graph.op if op.type.lower() == 'linearattentionconvstateupdate']
+    # Later layers' mixed_qkv depends on the padded convolution window from an earlier update.
+    first = only((op.name for op in updates if not any(
+        steps.depends(op.input[0], other.name + ':1') for other in updates if other.name != op.name)),
+        'L0 ConvState update with no upstream ConvState window')
+    mixed = nodes[first].input[0]
+    qkv = steps.expect(steps.strip(mixed), {MATMUL})
+    report = prefill_precision(graph, range(4), head=True)
+    print(f'L0 linear_attn.in_proj_qkv → {first} 输入 0 ({mixed})，源 AIR 节点 {qkv.name}')
+    for port, info in report['matmuls'][qkv.name].items():
+        edge = info['edge']
+        producer = steps.node(edge)
+        slot = int(edge.rsplit(":", 1)[1])
+        shape = list(producer.output_desc[slot].shape.dim) if 0 <= slot < len(producer.output_desc) else []
+        print(f'  {port}: {info["dtype"]}, producer={producer.type} {edge}, producer_shape={shape or "未记录"}')
+        if port == 'pertoken_scale' and producer.type == 'Cast' and producer.input_desc:
+            print(f'    Cast 输入类型 {port_info(graph, producer.input_desc[0])["dtype"]}')
+    issues = [issue for issue in report['mismatches'] if issue.startswith(qkv.name + '.')]
+    if issues:
+        print('与已验证单算子 AIR 端口的差异:', *issues, sep='\n  ')
+    else:
+        print('L0 QKV 的四个输入端口类型和逐 token Cast 与已验证单算子一致。')
+
+
+def diagnose_four_accuracy(board, comparison, receipt):
+    from qwen35_moe_dflash.target.layer_probe.common import sha
+
+    bundle = board/'package'
+    if not (comparison['bundle_sha256'] == receipt['fixture_sha256'] == sha(bundle/'manifest.json')):
+        raise ValueError('Four-layer comparison, replay and AIR package belong to different runs')
+    case = bundle/'L00-L03'
+    meta = load(case/'case.json')
+    print(f'板端 V2 已执行，exitcode={receipt["exitcode"]}。精度未通过项: {comparison["failed"]}')
+    if 'fixture' not in meta:
+        return
+    measured = meta['fixture']
+    print(f'入口 INT8 embedding × scale 转 FP16，与 310P 前 {measured["valid_rows"]} 行比较: '
+          f'{measured["embedding_changed_fp16_elements"]} / {measured["valid_rows"] * 2048} 个元素不同')
+    print(f'ConvState 控制: {measured["conv_state_control"]}')
+    control = meta['input_files'].get('conv_state_pos')
+    if control:
+        from struct import unpack
+        values = unpack('<128i', (case/control['path']).read_bytes())
+        print(f'conv_state_pos.bin 前 8 项 {list(values[:8])}，其余 120 项中有 {sum(v != 0 for v in values[8:])} 项非零')
+    if meta.get('gdn_conv') == 'original':
+        air = case/meta['air_directory']/'export.air'
+        if air.is_file():
+            inspect_native_qkv(air)
+        else:
+            print(f'当前运行包未包含源 AIR ({air})。请在保留 export/package 的编译环境查看 QKV 端口。')
+
+
 def diagnose_case(root, mode, phase):
     from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, groups
 
@@ -264,6 +325,12 @@ def diagnose_case(root, mode, phase):
             receipt = load(path)
             if receipt.get('status') == 'FAILED' and receipt.get('exitcode'):
                 stages.append(replay)
+            elif ((mode, phase) == ('4', 'prefill') and receipt.get('status') == 'EXECUTED'
+                  and receipt.get('exitcode') == 0 and (board/'comparison.json').is_file()):
+                comparison = load(board/'comparison.json')
+                if comparison.get('status') == 'FAILED_ACCURACY':
+                    diagnose_four_accuracy(board, comparison, receipt)
+                    return True
     if not stages:
         raise ValueError(f'{board}: no retained failed V2 execution receipt with a tool exit code')
     return diagnose(stages)

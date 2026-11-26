@@ -82,6 +82,8 @@ def publish(root, role, args):
         header['gdn_conv'] = args.gdn_conv
         if getattr(args, 'no_patch', False):
             header['no_patch'] = True
+        if getattr(args, 'native_activations', False):
+            header['native_activations'] = True
     dest = receipt(root, role)
     with tempfile.TemporaryDirectory(prefix='.publish-', dir=root) as staging:
         tmp = Path(staging)/dest.name
@@ -214,6 +216,8 @@ def receive(root, remote, role, args):
             raise ValueError(f'{index}: stage, case or GDN convolution mismatch')
         if role != 'golden' and data.get('no_patch', False) != getattr(args, 'no_patch', False):
             raise ValueError(f'{index}: --no-patch selection differs from the upstream {role} export')
+        if role != 'golden' and data.get('native_activations', False) != getattr(args, 'native_activations', False):
+            raise ValueError(f'{index}: --native-activations selection differs from the upstream {role} export')
         staged = temp/'incoming' if local else resume_directory(root, role, temp/'manifest')
         staged.mkdir(exist_ok=True)
         roles = {'golden': 'air', 'air': 'omc', 'omc': 'board'}

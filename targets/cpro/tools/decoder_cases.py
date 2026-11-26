@@ -164,6 +164,8 @@ def prepare_stage(args, run):
         stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
     if args.no_patch:
         stamp['no_patch'] = True
+    if getattr(args, 'native_activations', False):
+        stamp['native_activations'] = True
     stamp.update(reference_sha256=sha(fixture/'reference.json'), config=sha(cfg),
                  cpro_source=str(prepared),
                  cpro_sources={str(p.relative_to(prepared)): sha(p) for p in cpro_python_files(prepared)},
@@ -178,12 +180,16 @@ def prepare_stage(args, run):
         import decoder_four_native_case
         exporter = decoder_four_native_case.export
         options['no_patch'] = args.no_patch
+        if stamp.get('native_activations'):
+            options['native_activations'] = True
         stamp['adapters']['decoder_four_native_case'] = sha(decoder_four_native_case.__file__)
     else:
         exporter = decoder_case_air.export
     if package.exists():
         prior = json.loads((package/'manifest.json').read_bytes())
-        if prior.get('no_patch', False) != args.no_patch or any(prior.get(k) != v for k, v in stamp.items()):
+        if (prior.get('no_patch', False) != args.no_patch
+                or prior.get('native_activations', False) != stamp.get('native_activations', False)
+                or any(prior.get(k) != v for k, v in stamp.items())):
             raise ValueError('Existing export uses different sources or reference')
         for row in prior['files']:
             checked(package, row)
@@ -254,6 +260,8 @@ def worker(args, action, root, remote):
         cmd.extend(['--gdn-conv', args.gdn_conv])
     if getattr(args, 'no_patch', False):
         cmd.append('--no-patch')
+    if getattr(args, 'native_activations', False):
+        cmd.append('--native-activations')
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
     if args.recovery:
@@ -277,8 +285,11 @@ def main():
     parser.add_argument('--phase', choices=PHASES, default=os.getenv('DECODER_PHASE', 'prefill'))
     parser.add_argument('--gdn-conv', choices=('conv2d', 'taps', 'original'),
                         help='CPro implementation of the GDN depthwise convolution')
-    parser.add_argument('--no-patch', action='store_true',
-                        help='run the exporter directly from CPRO_SOURCE for four-layer T64 prefill')
+    activation_mode = parser.add_mutually_exclusive_group()
+    activation_mode.add_argument('--no-patch', action='store_true',
+                                 help='run the exporter directly from CPRO_SOURCE for four-layer T64 prefill')
+    activation_mode.add_argument('--native-activations', action='store_true',
+                                 help='keep the aligned four-layer native GDN graph and restore stock SiLU and Softplus')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
     parser.add_argument('--run', type=Path, help='explicit path ending in the canonical case name')
     parser.add_argument('--remote-run', type=Path, help='case directory on the export host')
@@ -289,11 +300,13 @@ def main():
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     a = parser.parse_args()
-    if a.no_patch:
+    if a.no_patch or a.native_activations:
         if (a.mode, a.phase) != ('4', 'prefill'):
-            parser.error('--no-patch selects the original four-layer model; use --mode 4 --phase prefill')
-        if a.action == 'source' or a.patched_source or a.gdn_conv not in (None, 'original'):
+            parser.error('use --mode 4 --phase prefill for this four-layer control')
+        if a.no_patch and a.patched_source:
             parser.error('--no-patch uses CPRO_SOURCE directly with the original GDN convolution')
+        if a.action == 'source' or a.gdn_conv not in (None, 'original'):
+            parser.error('this four-layer export control uses the original GDN convolution')
         a.gdn_conv = 'original'
     else:
         a.gdn_conv = a.gdn_conv or os.getenv('DECODER_GDN_CONV', 'conv2d')
@@ -312,7 +325,7 @@ def main():
     if a.action == 'plan':
         schedule = groups(a.mode)
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
-                              prompt='310P YAML prompts[0]', no_patch=a.no_patch, omcs=len(schedule),
+                              prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations, omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
         return 0
     if a.action == 'source':
@@ -352,7 +365,7 @@ def main():
             ddk, config, diag = board_config(a.action)
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
-                         original_board_args=a.original_board_args, no_patch=a.no_patch):
+                         original_board_args=a.original_board_args, no_patch=a.no_patch, native_activations=a.native_activations):
                 return 1
         else:
             prepare_stage(a, site)
@@ -373,6 +386,9 @@ def main():
         if a.action == 'diagnose':
             worker(a, 'diagnose', root, remote)
             return 0
+        if a.native_activations and a.action in ('board', 'compile', 'execute', 'transfer'):
+            from decoder_four_inputs import remember_original_inputs
+            remember_original_inputs(root)
         if a.action in ('prepare', 'golden'):
             source_config('reference')
             if a.action == 'prepare':

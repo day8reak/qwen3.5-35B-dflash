@@ -49,6 +49,33 @@ def silu_same_dtype(x):
 '''
 
 
+SILU_CALLS = (
+    ('F.silu(gate.to(torch.float32))', 'silu_patch(gate).to(torch.float32)'),
+    ('F.silu(conv_out)', 'silu_same_dtype(conv_out)'),
+    ('self.act_fn = ACT2FN[config.hidden_act]',
+     "self.act_fn = silu_same_dtype if config.hidden_act in ('silu', 'swish') else ACT2FN[config.hidden_act]"),
+    ("self.act_fn = ACT2FN['silu']", 'self.act_fn = silu_same_dtype'),
+)
+SOFTPLUS_CALL = ('F.softplus(a.float() + self.dt_bias)',
+                 'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).to(torch.float16).contiguous()).float()')
+CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])', 'silu_same_dtype(out[:, :, -seq_len:])')
+
+
+def restore_native_activations(exporter, model):
+    """Undo only this adapter's activation edits in a copy of the selected aligned sources."""
+    for name, kind in (('silu_patch', GE_TYPE), ('softplus_patch', 'SoftplusPatch')):
+        exporter = exporter.replace(activation_registration(name, kind), '')
+    model = model.replace(MODEL_HELPERS, '')
+    # The aligned GDR converter requires half Q/K/V even when conv_out is FP32.
+    model = model.replace('qkv_conv = silu_patch(conv_out)', 'qkv_conv = F.silu(conv_out).to(torch.float16)')
+    for original, patched in (*SILU_CALLS, SOFTPLUS_CALL, CONV_HELPER_CALL):
+        model = model.replace(patched, original)
+    for symbol in ('silu_patch', 'softplus_patch', 'silu_same_dtype', GE_TYPE, 'SoftplusPatch'):
+        if symbol in model or symbol in exporter:
+            raise ValueError(f'Unsupported activation edit in selected CPro source: {symbol} remains')
+    return exporter, model
+
+
 def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layers=4, native_convstate=False):
     (dest / 'models').mkdir(parents=True)
     for name in SOURCE_FILES:
@@ -72,18 +99,11 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
         EXPORTER: [(gdr_meta, registration + gdr_meta)],
         MODELING: [
             ('def rotate_half(', MODEL_HELPERS + 'def rotate_half('),
-            ('F.silu(gate.to(torch.float32))', 'silu_patch(gate).to(torch.float32)'),
-            ('F.silu(conv_out)', 'silu_same_dtype(conv_out)'),
-            ('self.act_fn = ACT2FN[config.hidden_act]',
-             "self.act_fn = silu_same_dtype if config.hidden_act in ('silu', 'swish') else ACT2FN[config.hidden_act]"),
-            ("self.act_fn = ACT2FN['silu']", 'self.act_fn = silu_same_dtype'),
+            *SILU_CALLS,
         ],
     }
     if aligned or l0:
-        edits[MODELING].append((
-            'F.softplus(a.float() + self.dt_bias)',
-            'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).to(torch.float16).contiguous()).float()',
-        ))
+        edits[MODELING].append(SOFTPLUS_CALL)
     for name, replacements in edits.items():
         path = dest / name
         text = path.read_text()
@@ -93,7 +113,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
             text = text.replace(old, new)
         if name == MODELING:
             # Some source revisions also include a standalone causal-convolution helper.
-            text = text.replace('F.silu(out[:, :, -seq_len:])', 'silu_same_dtype(out[:, :, -seq_len:])')
+            text = text.replace(*CONV_HELPER_CALL)
         if name == MODELING and aligned and not l0:
             import ast
             from .decoder_four_source import preserve_source
