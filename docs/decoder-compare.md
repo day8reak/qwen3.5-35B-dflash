@@ -150,6 +150,26 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 导出日志打印实际命令和源码对照目录。导出完成后可在 `export/package/L00-L03/source.diff` 查看导出器、模型、wrapper 和 `utils.py` 相对配置目录的逐行差异。若配置目录本身已手改，差异以该目录当前的源码为准。
 
+### 四层整图只在 GDN 使用 SiluPatch
+
+要定位四层整图的加载问题，可以给两端都传 `--gdn-silu-only`。L0–L2 的 GDN 在卷积后和 RMS 门控处各调用一次 `torch.ops.npu.silu_patch`。L0–L3 的 MoE 共享专家和路由专家都使用原 CPro 的 `self.act_fn`。这组命令沿用物理尾部 ConvState、Conv2D、GDN 衰减分支的 SoftplusPatch 和已有的四层 golden。
+
+在 AIR 生成服务器执行
+
+```bash
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate --gdn-silu-only
+```
+
+导出器按形状检查 6 个 `SiluPatch`（卷积后 `[1,8192,64]` 和 RMS 门控 `[2048,128]` 各 3 个）以及 3 个 `SoftplusPatch`（`[1,64,32]`）。两种自定义算子的输入输出都是 FP16。
+
+在 OMC 生成和板端执行服务器执行
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate --gdn-silu-only
+```
+
+生成三端矩阵说明这张 OMC 完成了加载和推理。若只有启用 MoE 自定义 SiLU 的整图加载失败，可进一步分别隔离共享专家和路由专家。若这张图仍在 `UpdateArgsForAicore` 失败，则保留 GDN 的调用就能复现该加载现象。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

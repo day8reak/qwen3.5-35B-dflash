@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'HELP'
 decoder_compare.sh {golden|air|compile|execute|diagnose|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
-                   [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
+                   [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data.
 air         Export CPro AIR from the golden case.
@@ -23,6 +23,7 @@ plan        Print the layers, sequence length and number of OMCs without running
 --native-activations  Use stock SiLU and Softplus with the aligned four-layer T64 native GDN export.
 --silu-only  Use FP16 SiluPatch and stock Softplus with the same four-layer T64 export.
 --softplus-only  Use stock SiLU and FP16 SoftplusPatch with the same four-layer T64 export.
+--gdn-silu-only  Use FP16 SiluPatch at both GDN sites, stock SiLU in every MoE, and FP16 SoftplusPatch in GDN.
              The activation controls accept --gdn-conv conv2d for explicit NCHW Conv2D with native ConvState inputs.
 --physical-convstate  Use the last four physical QKV rows for four-layer T64 ConvState and omit the position control.
                       Defaults to Conv2D and works with any patched activation selection.

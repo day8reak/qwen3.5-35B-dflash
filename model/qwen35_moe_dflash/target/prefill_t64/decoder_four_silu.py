@@ -65,7 +65,8 @@ _SHARED = ('return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(
         return self.down_proj(gate * self.up_proj(x))''')
 _ROUTED = ('self.act_fn(x1) * x2',
            'torch.ops.npu.silu_patch(x1.to(torch.float16).contiguous()).to(x1.dtype) * x2')
-SILU_CALLS = (_GATE, _CONV, _SHARED_ACT, _SHARED, _ROUTED)
+MOE_SILU_CALLS = (_SHARED_ACT, _SHARED, _ROUTED)
+SILU_CALLS = (_GATE, _CONV, *MOE_SILU_CALLS)
 SOFTPLUS_CALL = ('F.softplus(a.float() + self.dt_bias)',
                  'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).to(torch.float16).contiguous()).float()')
 CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])',
@@ -283,7 +284,7 @@ def inspect_gdn_convs(graph, count, rows):
 
 
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
-                           check_convs=False, gdn_conv="conv2d"):
+                           check_convs=False, gdn_conv="conv2d", moe_silu=True):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -296,8 +297,9 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
             raise ValueError(f'{name}: inconsistent traced shapes {traced[name]} and {shape}')
         traced[name] = shape
     linear = 0 if full_only else layers - layers // 4
+    expert_layers = layers if moe_silu else 0
     expected = {GE_TYPE: Counter({(1, 8192, rows): linear, (rows * 32, 128): linear,
-                                  (rows, 512): layers, (rows * 8, 512): layers}),
+                                  (rows, 512): expert_layers, (rows * 8, 512): expert_layers}),
                 "SoftplusPatch": Counter({(1, rows, 32): linear if softplus else 0})}
     if not silu:
         expected[GE_TYPE].clear()
