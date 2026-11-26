@@ -49,7 +49,7 @@ def silu_same_dtype(x):
 '''
 
 
-def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layers=4):
+def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layers=4, native_convstate=False):
     (dest / 'models').mkdir(parents=True)
     for name in SOURCE_FILES:
         copyfile(source / name, dest / name)
@@ -103,7 +103,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
             # Keep the native wrapper and readout.
             # Feed GDR the FP16 activation that the custom SiLU already produced.
             changes = [('qkv_conv = silu_same_dtype(conv_out)', 'qkv_conv = silu_patch(conv_out)')]
-            if layers != 40:
+            if native_convstate or layers != 40:
                 changes.append(('F.conv1d(padded, self.conv1d.weight,',
                                 'F.conv1d(padded.to(self.conv1d.weight.dtype), self.conv1d.weight,'))
             for old, new in changes:
@@ -111,7 +111,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
                     raise ValueError(f'Expected one {old!r} in native GDN')
                 text = text.replace(old, new)
             tree = ast.parse(text)
-            if layers == 40:
+            if layers == 40 and not native_convstate:
                 gdn = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
                 physical_conv_history(gdn)
                 explicit_gdn_conv2d(gdn)

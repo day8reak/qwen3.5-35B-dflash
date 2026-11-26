@@ -23,14 +23,18 @@ def required(name):
     return Path(value).expanduser().resolve()
 
 
-def source_config(action):
+def patched_source_variable(gdn_conv):
+    return 'CPRO_ORIGINAL_PATCHED_SOURCE' if gdn_conv == 'original' else 'CPRO_PATCHED_SOURCE'
+
+
+def source_config(action, gdn_conv='conv2d'):
     nz = action == 'reference'
     if nz:
         src = required('TARGET_SOURCE')
     elif os.getenv('CPRO_SOURCE'):
         src = required('CPRO_SOURCE')
     else:
-        src = required('CPRO_PATCHED_SOURCE')
+        src = required(patched_source_variable(gdn_conv))
     cfg = os.environ.get('NZ_CONFIG' if nz else 'TARGET_CONFIG', 'config/qwen3_5_moe.yaml')
     return src, (src/cfg).resolve(strict=True)
 
@@ -47,10 +51,11 @@ def board_config(step='board', *, before_setup=False):
             Path(os.getenv('TBE_DIAGNOSIS', root/'common/tbe-diagnosis')).resolve())
 
 
-def prepared_source(run):
+def prepared_source(run, gdn_conv='conv2d'):
     from qwen35_moe_dflash.target.original_target_source import SOURCE_FILES, cpro_python_files
     from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import stage
-    chosen = os.getenv('CPRO_PATCHED_SOURCE')
+    native = gdn_conv == 'original'
+    chosen = os.getenv(patched_source_variable(gdn_conv))
     dest = Path(chosen).expanduser().resolve() if chosen else run/'source'
     if not dest.is_dir() or not any(dest.iterdir()):
         original = required('CPRO_SOURCE')
@@ -60,7 +65,7 @@ def prepared_source(run):
         dest.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=dest.parent, prefix='.cpro-source-') as tmp:
             staged = Path(tmp)/'source'
-            stage(original, staged, aligned=True, layers=40)
+            stage(original, staged, aligned=True, layers=40, native_convstate=native)
             # Keep Python helpers imported by local model customizations beside the patched files.
             for src in helpers:
                 target = staged/src.relative_to(original)
@@ -85,6 +90,8 @@ def board_upload_flags(args):
         flags.append('--replace-inputs')
     if getattr(args, 'replace_weights', False):
         flags.append('--replace-weights')
+    if getattr(args, 'original_board_args', False):
+        flags.append('--original-board-args')
     return flags
 
 
@@ -100,17 +107,19 @@ def native40(args, run, remote):
         if config:
             argv.extend(['--runtime-config', config])
     else:
-        src, cfg = source_config(args.action)
+        src, cfg = source_config(args.action, args.gdn_conv)
         argv.extend(['--source', src, '--config', cfg, '--reference', run/'reference'])
     if args.action == 'air':
-        argv.extend(['--prepared-source', prepared_source(run)])
+        argv.extend(['--prepared-source', prepared_source(run, args.gdn_conv)])
+        if args.gdn_conv == 'original' and os.getenv('DECODER_CONV_CONTROL'):
+            argv.extend(['--conv-control', required('DECODER_CONV_CONTROL')])
     return subprocess.run(argv).returncode
 
 
 def prepare_stage(args, run):
     from qwen35_moe_dflash.common.artifacts import files_under, share_for_transfer
     from qwen35_moe_dflash.target.layer_probe.common import checked, save_json, sha
-    src, cfg = source_config(args.action)
+    src, cfg = source_config(args.action, args.gdn_conv)
     fixture = run/'fixture'
     package = run/'package'
     stamp = dict(mode=args.mode, phase=args.phase)
@@ -140,7 +149,7 @@ def prepare_stage(args, run):
     from qwen35_moe_dflash.target.prefill_t64 import decoder_case_air
     from qwen35_moe_dflash.target.original_target_source import cpro_python_files
     from qwen35_moe_dflash.target.prefill_t64 import source_model, source_exporter, decoder_four_silu
-    prepared = prepared_source(run)
+    prepared = prepared_source(run, args.gdn_conv)
     ref = json.loads((fixture/'reference.json').read_bytes())
     if (ref['mode'], ref['phase']) != (args.mode, args.phase):
         raise ValueError('Reference differs from selected case')
@@ -148,7 +157,10 @@ def prepare_stage(args, run):
         from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
         if args.mode != 'full':
             prepared = taps_source(prepared, run/'source-taps')
-        stamp['gdn_conv'] = 'taps'
+    if args.gdn_conv != 'conv2d':
+        stamp['gdn_conv'] = args.gdn_conv
+    if args.gdn_conv == 'original' and os.getenv('DECODER_CONV_CONTROL'):
+        stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
     stamp.update(reference_sha256=sha(fixture/'reference.json'), config=sha(cfg),
                  cpro_source=str(prepared),
                  cpro_sources={str(p.relative_to(prepared)): sha(p) for p in cpro_python_files(prepared)},
@@ -160,7 +172,7 @@ def prepare_stage(args, run):
         stamp['adapters']['decoder_four_native_case'] = sha(decoder_four_native_case.__file__)
     if package.exists():
         prior = json.loads((package/'manifest.json').read_bytes())
-        if any(prior[k] != v for k, v in stamp.items()):
+        if any(prior.get(k) != v for k, v in stamp.items()):
             raise ValueError('Existing export uses different sources or reference')
         for row in prior['files']:
             checked(package, row)
@@ -216,7 +228,8 @@ def worker(args, action, root, remote):
         # Activate the vendor toolchain inside this worker's conda environment.
         # Keep its changes local and pass argv as positional arguments, including paths with spaces.
         cmd.extend(['bash', '-c', 'decoder_setup_script=$1; shift; decoder_python=$(command -v "$1") || exit 1; shift; '
-                    'load_setup() { source "$decoder_setup_script"; }; load_setup || exit $?; exec "$decoder_python" "$@"',
+                    'load_setup() { source "$decoder_setup_script"; }; load_setup || exit $?; '
+                    'export QWEN35_DECODER_SETUP_LOADED="$decoder_setup_script"; exec "$decoder_python" "$@"',
                     'decoder-env', str(script), python])
     else:
         cmd.append(python)
@@ -226,8 +239,8 @@ def worker(args, action, root, remote):
         cmd.insert(cmd.index('_transfer')+1, args.artifact)
         if args.local_source:
             cmd.extend(['--local-source', str(args.local_source)])
-    if getattr(args, 'gdn_conv', 'conv2d') == 'taps':
-        cmd.extend(['--gdn-conv', 'taps'])
+    if getattr(args, 'gdn_conv', 'conv2d') != 'conv2d':
+        cmd.extend(['--gdn-conv', args.gdn_conv])
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
     if args.recovery:
@@ -249,7 +262,7 @@ def main():
     parser.add_argument('--local-source', type=Path, help='transfer from a mounted source case directory')
     parser.add_argument('--mode', choices=MODES, default=os.getenv('DECODER_MODE', '40'))
     parser.add_argument('--phase', choices=PHASES, default=os.getenv('DECODER_PHASE', 'prefill'))
-    parser.add_argument('--gdn-conv', choices=('conv2d', 'taps'), default=os.getenv('DECODER_GDN_CONV', 'conv2d'),
+    parser.add_argument('--gdn-conv', choices=('conv2d', 'taps', 'original'), default=os.getenv('DECODER_GDN_CONV', 'conv2d'),
                         help='CPro implementation of the GDN depthwise convolution')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
     parser.add_argument('--run', type=Path, help='explicit path ending in the canonical case name')
@@ -257,15 +270,20 @@ def main():
     parser.add_argument('--patched-source', type=Path, help='editable CPro source directory on the export host')
     parser.add_argument('--replace-inputs', action='store_true', help='upload every board input again')
     parser.add_argument('--replace-weights', action='store_true', help='upload every external board weight again')
+    parser.add_argument('--original-board-args', action='store_true',
+                        help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     a = parser.parse_args()
     if (a.action in ('transfer', '_transfer')) != bool(a.artifact) or (a.local_source and not a.artifact):
         parser.error('transfer requires one of golden, air or omc; --local-source applies to transfer only')
+    patch_variable = patched_source_variable(a.gdn_conv)
     if a.patched_source:
-        os.environ['CPRO_PATCHED_SOURCE'] = str(a.patched_source.expanduser().resolve())
+        os.environ[patch_variable] = str(a.patched_source.expanduser().resolve())
     if a.mode not in MODES or a.phase not in PHASES:
         parser.error('invalid DECODER_MODE or DECODER_PHASE')
-    if a.gdn_conv not in ('conv2d', 'taps'):
+    if a.gdn_conv == 'original' and (a.phase != 'prefill' or a.mode not in ('4', '40')):
+        parser.error('--gdn-conv original applies to 4 or 40 layers with --phase prefill')
+    if a.gdn_conv not in ('conv2d', 'taps', 'original'):
         parser.error('invalid DECODER_GDN_CONV')
     slug = directory_name(a.mode, a.phase)
     if a.action == 'plan':
@@ -275,9 +293,9 @@ def main():
                               graphs=[case_name(group) for group in schedule]), indent=2))
         return 0
     if a.action == 'source':
-        if not os.getenv('CPRO_PATCHED_SOURCE'):
-            parser.error('source needs --patched-source DIR or CPRO_PATCHED_SOURCE in decoder.env')
-        prepared_source(None)
+        if not os.getenv(patch_variable):
+            parser.error(f'source needs --patched-source DIR or {patch_variable} in decoder.env')
+        prepared_source(None, a.gdn_conv)
         return 0
     if a.recovery and (a.action not in ('board', '_board', 'execute', '_execute', 'compile', '_compile', 'transfer', '_transfer') or a.mode != 'layerwise'):
         parser.error('--recovery applies to board --mode layerwise')
@@ -310,7 +328,8 @@ def main():
             from decoder_cases_board import board
             ddk, config, diag = board_config(a.action)
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
-                         gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights):
+                         gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
+                         original_board_args=a.original_board_args):
                 return 1
         else:
             prepare_stage(a, site)
@@ -324,7 +343,7 @@ def main():
         marker = root/'.decoder-case'
         if root.exists() and any(root.iterdir()) and (marker.is_symlink() or not marker.is_file() or marker.read_text() != slug):
             raise ValueError(f'{root} contains files from an unknown run; choose another --run-root')
-        for key in ('CPRO_PATCHED_SOURCE', 'TARGET_SOURCE', 'CPRO_SOURCE', 'NZ_CONFIG', 'TARGET_CONFIG', 'DECODER_ENV',
+        for key in ('CPRO_PATCHED_SOURCE', 'CPRO_ORIGINAL_PATCHED_SOURCE', 'DECODER_CONV_CONTROL', 'TARGET_SOURCE', 'CPRO_SOURCE', 'NZ_CONFIG', 'TARGET_CONFIG', 'DECODER_ENV',
                     'CPRO_TRANSFER_CONFIG', 'RUNTIME_CONFIG', 'TBE_DIAGNOSIS'):
             if os.getenv(key) and Path(os.environ[key]).expanduser().resolve().is_relative_to(root):
                 raise ValueError(f'{key} must be outside the replaceable result directory {root}')
@@ -334,9 +353,9 @@ def main():
         if a.action in ('prepare', 'golden'):
             source_config('reference')
             if a.action == 'prepare':
-                source_config('air')
-                if os.getenv('CPRO_PATCHED_SOURCE'):
-                    prepared_source(None)
+                source_config('air', a.gdn_conv)
+                if os.getenv(patch_variable):
+                    prepared_source(None, a.gdn_conv)
             if root.exists():
                 shutil.rmtree(root)
         root.mkdir(exist_ok=True)
@@ -350,7 +369,7 @@ def main():
             if a.action == 'prepare':
                 worker(a, 'air', root, remote)
         elif a.action == 'air':
-            source_config('air')
+            source_config('air', a.gdn_conv)
             site = root/'export'
             reference = site/('reference/manifest.json' if native else 'fixture/reference.json')
             if not reference.is_file():

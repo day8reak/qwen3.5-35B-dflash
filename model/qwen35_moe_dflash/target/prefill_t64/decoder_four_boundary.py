@@ -31,7 +31,7 @@ def data_edges(op):
     return [edge for edge in op.input if edge and not edge.endswith(':-1')]
 
 
-def inspect_air(path, *, layers=4, physical_history=False):
+def inspect_air(path, *, layers=4, physical_history=None, require_control=False):
     _, graph = graph_message(path.read_bytes(), 'NetOutput')
     nodes = {n.name: n for n in graph.op}
     net, = [n for n in graph.op if n.type == 'NetOutput']
@@ -44,11 +44,11 @@ def inspect_air(path, *, layers=4, physical_history=False):
     full = [n for n in graph.op if n.type == 'AdnFusedInferAttention']
     linear_layers = [i for i in range(layers) if i % 4 != 3]
     full_layers = list(range(3, layers, 4))
-    # The aligned native wrapper saves the last four physical QKV rows.
-    # Bind each concat to its input cache and each returned slice to that concat.
+    # The physical-tail variant binds the returned history slice to its input cache.
     from .attention_steps import CONCATS, SPLITS
     history_inputs = {}
-    physical_history = physical_history or layers == 40
+    if physical_history is None:
+        physical_history = layers == 40
     if physical_history:
         for op in graph.op:
             if op.type in CONCATS:
@@ -79,6 +79,18 @@ def inspect_air(path, *, layers=4, physical_history=False):
                 edge = incoming[0]
             else:
                 break
+
+    if require_control:
+        int32 = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name['DT_INT32'].number
+        controls = [n.name + ':0' for n in nodes.values() if n.type in ('Data', 'RefData')
+                    and len(n.output_desc) == 1 and n.output_desc[0].dtype == int32
+                    and list(n.output_desc[0].shape.dim) == [128]]
+        if len(controls) != 1:
+            raise ValueError(f'{path}: expected one INT32[128] linear_update_tensor, found {controls}')
+        for op in conv:
+            inputs = data_edges(op)
+            if len(inputs) < 3 or controls[0] not in chain(inputs[2]):
+                raise ValueError(f'{path}: {op.name} must receive linear_update_tensor on its third port')
 
     aliases = {}
     def state_aliases(op, input_port, output_port, role):

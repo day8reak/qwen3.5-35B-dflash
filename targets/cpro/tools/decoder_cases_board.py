@@ -7,7 +7,7 @@ import shutil
 
 import numpy as np
 
-from decoder4_original import EXPORT_DIR, compile_log_text, compile_omg
+from decoder4_original import EXPORT_DIR, compile_log_text, compile_native_prefill, compile_omg
 from decoder4_prefill import pull_air, ssh_file
 from l0_silu_omcs import write_matrices
 from parse_model_json import GE_PROTO, inspect, named_shapes, read_omc
@@ -66,10 +66,13 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
             shutil.rmtree(work)
         work.mkdir()
         (work/folder).symlink_to(case/folder, target_is_directory=True)
-        code, argv, _ = compile_omg(work, f'{folder}/export.air', ddk, diagnosis, None)
+        if meta.get('gdn_conv') == 'original':
+            code, argv, _ = compile_native_prefill(work, f'{folder}/export.air', ddk)
+        else:
+            code, argv, _ = compile_omg(work, f'{folder}/export.air', ddk, diagnosis, None)
         if code:
             raise RuntimeError(compile_log_text(work/'compile.log'))
-        model, = (work/'model').rglob('*.omc')
+        model, = work.rglob('*.omc')
         io = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)
         data = dict(stamp=stamp, argv=argv, model=identity(model, work), output_shape=io['output_shape'],
                     weights=[identity(p, work) for p in sorted(model.parent.rglob('*.weight'))])
@@ -124,7 +127,7 @@ def output_order(descriptors, source, golden):
 
 
 def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, recovery, board_case=None,
-           replace_inputs=False, replace_weights=False, shape_config=None):
+           replace_inputs=False, replace_weights=False, shape_config=None, original_board_args=False):
     meta = read(case/'case.json')
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
         raise ValueError(f'{case}: compiled input names differ from AIR')
@@ -146,6 +149,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     key = dict(bundle=stamp, model=build['model']['sha256'], weights=[w['sha256'] for w in build['weights']],
                inputs=[r['sha256'] for r in operands], runtime=runtime, serial=serial, server=server)
     saved = base/'completed.json'
+    if original_board_args:
+        key['original_board_args'] = True
     if recovery and saved.exists() and not (replace_inputs or replace_weights):
         record = read(saved)
         if record['binding'] != key:
@@ -163,6 +168,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
         try:
             result = run_v2(folder, case.name, model, operands, paths, build['outputs'], runtime,
                             decoder_shapes=(named_shapes(operands), build.get('output_shape')), shape_config=shape_config,
+                            original_board_args=original_board_args,
                             fixture_sha256=stamp, external_weights=weights, build_records=(build['model'], build['weights']),
                             board_case=board_case, hdc_timeout=7200, replace_inputs=replace_inputs, replace_weights=replace_weights)
         except RuntimeError:
@@ -183,7 +189,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board',
-          replace_inputs=False, replace_weights=False):
+          replace_inputs=False, replace_weights=False, original_board_args=False):
     bundle = run/'package'
     if step == 'execute' and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -233,7 +239,8 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
             if mode == 'layerwise':
                 board_case += '-' + case.name
             values = replay(base, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, recovery,
-                            board_case, replace_inputs, replace_weights, shape_config=config)
+                            board_case, replace_inputs, replace_weights, shape_config=config,
+                            original_board_args=original_board_args or gdn_conv == 'original')
         except Exception as exc:
             save_json(run/'comparison.json', dict(status='INTERRUPTED', message=str(exc), **progress))
             raise

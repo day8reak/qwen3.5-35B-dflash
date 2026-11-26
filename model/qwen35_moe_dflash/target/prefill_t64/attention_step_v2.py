@@ -122,7 +122,7 @@ def observed_named_shape(native, direction, specs):
 
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
            external_weights=(), build_records=None, release_after_pull=True, hdc_timeout=660, board_case=None,
-           replace_inputs=False, replace_weights=False, decoder_shapes=None, shape_config=None):
+           replace_inputs=False, replace_weights=False, decoder_shapes=None, shape_config=None, original_board_args=False):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -194,11 +194,14 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
                 input_shape = input_shape or observed_named_shape(native, 'inputs', operands)
                 output_shape = output_shape or observed_named_shape(native, 'outputs', outputs)
             shape_flags = [f'--input_shape={input_shape}', f'--output_shape={output_shape}']
+        load_flags = ['--times=1', '--modelmanager_itf=V2']
+        if not original_board_args:
+            load_flags = ['--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in operands),
+                          '--output_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in outputs),
+                          *load_flags, '--direct_from_file=true']
         argv = [str(tool), f'--model={remote}/model.omc', *([f'--weight_dir={remote}'] if sidecars else []),
                 '--input=' + ','.join(str(remote/n) for n in input_names), *shape_flags,
-                '--input_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in operands),
-                '--output_type=' + ','.join(_TOOL_TYPES[s['dtype'].upper()] for s in outputs), '--times=1', '--modelmanager_itf=V2',
-                '--direct_from_file=true', '--enable_item=1', f'--output_dir={remote}/outputs']
+                *load_flags, '--enable_item=1', f'--output_dir={remote}/outputs']
         command = f'timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
         script = out/'run.sh'
         script.write_text(f'# attempt {token}\ncd {remote} || exit 1\ntouch tool.started || exit 1\n{command} >tool.stdout 2>tool.stderr\n'

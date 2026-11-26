@@ -10,7 +10,8 @@ import tempfile
 import numpy as np
 import yaml
 
-from decoder4_original import EXPORT_DIR, EXPORTER, four_precision, native_export_argv, original_filename, prefill_inputs
+from decoder4_original import (EXPORT_DIR, EXPORTER, four_precision, native_export_argv, original_filename,
+                               prefill_inputs, select_native_depth)
 from parse_model_json import GE_PROTO
 from qwen35_moe_dflash.common.artifacts import files_under
 from qwen35_moe_dflash.target.layer_probe.common import save_json, sized_file
@@ -53,6 +54,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv):
         work = Path(tmp)
         case = work/'case'
         case.mkdir()
+        physical_history = gdn_conv != 'original'
+        depth = select_native_depth(cfg, work, 4) if not physical_history else None
         export_config = work/'export.yaml'
         export_config.write_text(yaml.safe_dump(cfg))
         argv = native_export_argv(four_layer_entry(prepared, work), 4, export_config)
@@ -64,12 +67,14 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv):
         subprocess.run(argv, cwd=work, env=env, check=True)
         (work/EXPORT_DIR).rename(case/EXPORT_DIR)
         air = case/EXPORT_DIR/'export.air'
-        boundary = inspect_air(air, layers=4, physical_history=True)
-        activation = inspect_activation_air(air, trace, layers=4, softplus=True, check_convs=True, gdn_conv=gdn_conv)
+        boundary = inspect_air(air, layers=4, physical_history=physical_history, require_control=not physical_history)
+        activation = inspect_activation_air(air, trace, layers=4, softplus=True, check_convs=physical_history, gdn_conv=gdn_conv)
         precision = four_precision(air)
         if precision['mismatches']:
             raise ValueError('\n'.join(precision['mismatches']))
-        measured = prefill_inputs(case/'inputs', fixture, cfg, None, physical_history=True, decoder_fixture=True)
+        control = None if physical_history else os.getenv('DECODER_CONV_CONTROL')
+        measured = prefill_inputs(case/'inputs', fixture, cfg, control, physical_history=physical_history,
+                                  decoder_fixture=True)
         files = files_under(case, case)
         by_path = {r['path']: r for r in files}
         names, feeds = {}, {}
@@ -85,6 +90,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv):
             names[port['name']] = role
         outputs = [dict(name=row['role'], edge=row['edge']) for row in boundary['outputs']]
         save_json(case/'case.json', dict(air_directory=EXPORT_DIR, layers=ref['layers'], argv=argv,
+                  gdn_conv=gdn_conv, **({'export_configuration': depth} if depth else {}),
                   inputs=names, input_files=feeds, outputs=outputs, files=files, fixture=measured,
                   precision=precision, **activation))
         case.rename(dest)

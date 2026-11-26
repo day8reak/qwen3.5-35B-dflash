@@ -32,7 +32,8 @@ SPLIT_KIND = 'original-cpro-decoder-prefill64-aligned-silu-patch-split-v3-fp16'
 L0_DIR = 'glm_export_air_cpro_1block_64_quant'
 FULL_KIND = 'original-cpro-40-layer-prefill64-aligned-silu-softplus-fp16-conv2d'
 TAPS_FULL_KIND = FULL_KIND.removesuffix('conv2d') + 'taps'
-FULL_KINDS = (FULL_KIND, TAPS_FULL_KIND)
+NATIVE_CONV_FULL_KIND = FULL_KIND.removesuffix('conv2d') + 'original'
+FULL_KINDS = (FULL_KIND, TAPS_FULL_KIND, NATIVE_CONV_FULL_KIND)
 FULL_DIR = 'glm_export_air_cpro_40block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
@@ -50,7 +51,7 @@ def four_precision(air, layers=4):
     return result
 
 
-def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=False, decoder_fixture=False):
+def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=False, decoder_fixture=False, yaml_prompt=False):
     import numpy as np
     from qwen35_moe_dflash.target.layer_probe.common import read_array
     from qwen35_moe_dflash.target.prefill_t64.chain_reference import BASIS, VALID19_IDS_SHA256, YAML_BASIS
@@ -58,20 +59,21 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     index = reference / ('reference.json' if decoder_fixture else 'manifest.json')
     meta = json.loads(index.read_bytes())
     valid = meta['valid_rows']
-    basis = YAML_BASIS if physical_history else BASIS
+    yaml_prompt = yaml_prompt or physical_history or decoder_fixture
+    basis = YAML_BASIS if yaml_prompt else BASIS
     if decoder_fixture:
         matched = (meta['mode'], meta['phase'], meta['layers'], meta['logits_position'], meta['prompt_length']) == (
             '4', 'prefill', [0, 1, 2, 3], valid-1, valid)
     else:
         matched = (meta.get('reference'), meta.get('status'), meta.get('output_pos')) == (basis, 'CAPTURED', valid-1)
-    if not matched or meta['physical_rows'] != 64 or not 1 <= valid <= 64 or (not physical_history and valid != 19):
+    if not matched or meta['physical_rows'] != 64 or not 1 <= valid <= 64 or (not yaml_prompt and valid != 19):
         raise ValueError(f'Unexpected measured T64 reference: {reference}')
     def tensor(name):
         return read_array(reference, meta['inputs'][name])
 
     ids = tensor('input_ids').astype('<i4')
     digest = hashlib.sha256(ids.tobytes()).hexdigest()
-    if ids.shape != (1, 64) or (not physical_history and digest != VALID19_IDS_SHA256):
+    if ids.shape != (1, 64) or (not yaml_prompt and digest != VALID19_IDS_SHA256):
         raise ValueError('Unexpected prompt token IDs')
     vocab = int(cfg.get('vocab_size', 248320))
     if np.any(ids < 0) or np.any(ids >= vocab):
@@ -89,6 +91,7 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     if mask.shape != (1, 1, 64, 2048) or not np.array_equal(mask[0, 0] == 0, allowed):
         raise ValueError(f'Expected the measured valid{valid} causal mask')
     if conv_control:
+        conv_control = Path(conv_control)
         ctrl = np.fromfile(conv_control, dtype='<i4')
         if ctrl.shape != (128,) or conv_control.stat().st_size != 512:
             raise ValueError('Expected 128 INT32 values for the CPro ConvState control')
@@ -96,7 +99,7 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     else:
         ctrl = np.zeros(128, dtype='<i4')
         ctrl[0] = valid
-        policy = 'trial [19, 0 x 127] derived from observed valid64 [64, 0 x 127]; valid19 semantics unverified'
+        policy = f'trial [{valid}, 0 x 127] derived from observed valid64 control; partial-length semantics unverified'
     arrays = dict(inputs_embeds=quant_embed, embed_scale=embed_scale, attention_mask=mask,
                   position_ids=positions[None], new_kv_cache_pos=positions,
                   output_pos=np.array([valid-1], dtype='<i4'), allQLen=np.array([valid], dtype='<i8'),
@@ -122,13 +125,36 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     return dict(reference_sha256=sha(index), token_sha256=digest,
                 reference_inputs={k: meta['inputs'][entry_name if k == 'embedding' else k]['sha256'] for k in REFERENCE_INPUT_NAMES},
                 valid_rows=valid, conv_state_control=policy,
-                **({'prompt': meta['prompt'], 'embedding_changed_fp16_elements': changes} if physical_history
+                **({'prompt': meta['prompt'], 'embedding_changed_fp16_elements': changes} if yaml_prompt
                    else {'valid19_embedding_changed_fp16_elements': changes}))
 
 
 def native_export_argv(entry, layers, config):
     return [sys.executable, '-u', str(entry), 'mode=export', 'quant_mode=enable',
             f'num_hidden_layers={layers}', 'seq_len=64', 'topK=16', f'config={config}', 'quant_bits=4']
+
+
+def select_native_depth(cfg, work, layers):
+    # The owner constructs the module from HF config before setting the requested cache depth.
+    model = Path(cfg['model_file']).resolve(strict=True)
+    original = model/'config.json'
+    settings = json.loads(original.read_bytes())
+    text = settings.get('text_config', settings)
+    types = text['layer_types']
+    if len(types) < layers:
+        raise ValueError(f'{original}: requested {layers} layers, found {len(types)} layer_types')
+    text['num_hidden_layers'] = layers
+    text['layer_types'] = types[:layers]
+    view = work/'hf-model'
+    view.mkdir()
+    for path in model.iterdir():
+        if path.name != 'config.json':
+            (view/path.name).symlink_to(path, target_is_directory=path.is_dir())
+    save_json(view/'config.json', settings)
+    cfg.update(model_file=str(view), quant_bits=4)
+    print(f'[CPro AIR] HF config: {layers} layers, W4 checkpoint: {cfg["quanted_pth"]}', flush=True)
+    return dict(model_config=str(original), num_hidden_layers=layers, layer_types=text['layer_types'],
+                quant_mode='enable', quant_bits=4, quanted_pth=cfg['quanted_pth'])
 
 
 def full_source_hashes(source):
@@ -141,6 +167,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     import yaml
     split = kind in (L0_KIND, SPLIT_KIND)
     full = kind in FULL_KINDS
+    native_convstate = kind == NATIVE_CONV_FULL_KIND
     uses_baseline = kind not in (KIND, *FULL_KINDS)
     aligned = split or kind in (ALIGNED_KIND, *FULL_KINDS)
     layers = 40 if full else (1 if split else 4)
@@ -172,11 +199,17 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     if full and (dest/'manifest.json').is_file():
         from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import stage
         saved = json.loads((dest/'manifest.json').read_bytes())
-        if (saved['kind'] == kind and saved['sources'] == sources and saved['config_sha256'] == sha(config)
+        same_control = True
+        if native_convstate and saved['kind'] == kind:
+            if conv_control:
+                same_control = conv_control.read_bytes() == (dest/'inputs/conv_state_pos.bin').read_bytes()
+            else:
+                same_control = saved['fixture']['conv_state_control'].startswith('trial [')
+        if (same_control and saved['kind'] == kind and saved['sources'] == sources and saved['config_sha256'] == sha(config)
                 and saved['fixture']['reference_sha256'] == sha(reference/'manifest.json')):
             with tempfile.TemporaryDirectory(dir=run, prefix='check-source-') as tmp:
                 if prepared is None:
-                    stage(source, Path(tmp)/'base', aligned=True, layers=layers)
+                    stage(source, Path(tmp)/'base', aligned=True, layers=layers, native_convstate=native_convstate)
                 tree = prepared or Path(tmp)/'base'
                 if kind == TAPS_FULL_KIND:
                     from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
@@ -199,7 +232,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             base_boundary = inspect_air(original)
         staged = prepared or Path(tempfile.mkdtemp(dir=run, prefix='silu-source-'))
         entry = (staged / EXPORTER if prepared else
-                 stage(source, staged, aligned=aligned, l0=split, layer=layer, head=head, layers=layers))
+                 stage(source, staged, aligned=aligned, l0=split, layer=layer, head=head, layers=layers,
+                       native_convstate=native_convstate))
         if kind == TAPS_FULL_KIND:
             from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
             staged = taps_source(staged, run/'source-taps')
@@ -218,13 +252,15 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             real = (source / original).resolve(strict=True)
             if not original.is_absolute():
                 cfg[key] = str(real)
+        depth = select_native_depth(cfg, work, layers) if native_convstate else None
         export_config = config
         if cfg != configured:
             export_config = work / 'export-config.yaml'
             export_config.write_text(yaml.safe_dump(cfg))
         argv = native_export_argv(entry, layers, export_config)
         if not uses_baseline:
-            fixture = prefill_inputs(work / 'inputs', reference, cfg, conv_control, physical_history=full)
+            fixture = prefill_inputs(work / 'inputs', reference, cfg, conv_control,
+                                    physical_history=full and not native_convstate, yaml_prompt=full)
         else:
             inputs = work / 'inputs'
             inputs.mkdir()
@@ -252,11 +288,11 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             env['PYTHONPATH'] = os.pathsep.join(filter(None, (package, env.get('PYTHONPATH'))))
         subprocess.run(argv, cwd=work, env=env, check=True)
         air = work / export_dir / 'export.air'
-        variant = {}
+        variant = {'export_configuration': depth} if depth else {}
         if kind != KIND:
             variant.update(inspect_activation_air(
                 air, shape_trace, layers=layers, full_only=layer is not None and layer % 4 == 3,
-                softplus=aligned, check_convs=full, gdn_conv='taps' if kind == TAPS_FULL_KIND else 'conv2d'))
+                softplus=aligned, check_convs=full and not native_convstate, gdn_conv='taps' if kind == TAPS_FULL_KIND else 'conv2d'))
             if uses_baseline:
                 variant['original_manifest_sha256'] = sha(base_manifest)
             if split:
@@ -271,7 +307,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 variant['reference'] = pack_reference(l0_capture, work, fixture, layer=index, head=head,
                                                       standalone=standalone)
             else:
-                boundary = inspect_air(air, layers=layers)
+                boundary = inspect_air(air, layers=layers, physical_history=full and not native_convstate,
+                                       require_control=native_convstate)
                 if uses_baseline:
                     same_boundary(base_boundary, boundary)
                 variant['boundary'] = boundary
@@ -416,6 +453,28 @@ def compile_omg(out, air_path, ddk, diagnosis, platform, *, use_origin_format=Tr
     return result.returncode, argv, env.get('SOC_VERSION')
 
 
+def compile_native_prefill(out, air_path, ddk):
+    """Use the owner's Linux OMG entry with the fixed gear of this prefill export."""
+    shape = inspect_input_shape(out/air_path)['input_shape']
+    wrapper = ddk/'tools/tools_omg/omg'
+    argv = [str(wrapper), '--model', air_path, '--output', 'model', '--framework', '1',
+            '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shape]
+    setup = ddk/'tools/tools_ascendc/set_ascendc_env.sh'
+    # A configured compile worker has already sourced its own DDK setup.
+    if os.getenv('DECODER_DDK_SETUP') and os.getenv('QWEN35_DECODER_SETUP_LOADED') == str(setup.resolve()):
+        cmd = argv
+    else:
+        cmd = ['bash', '-c', 'setup=$1; shift; load_setup() { source "$setup"; }; '
+               'load_setup || exit $?; exec "$@"', 'native-omg', str(setup), *argv]
+    log = out/'compile.log'
+    command = f'(cd {shlex.quote(str(out))} && {shlex.join(cmd)})'
+    print(f'[编译原生 T64 OMC] {command}\nOMG log: {log}', flush=True)
+    with log.open('x') as stream:
+        print(command, file=stream, flush=True)
+        result = subprocess.run(cmd, cwd=out, stdout=stream, stderr=subprocess.STDOUT)
+    return result.returncode, argv, os.environ.get('SOC_VERSION')
+
+
 def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weights=True):
     from decoder4_prefill import pull_air
 
@@ -453,8 +512,11 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
     # Keep the directory component in the original FileConstant paths.
     directory = FULL_DIR if kind in FULL_KINDS else EXPORT_DIR
     (out / directory).symlink_to(bundle / directory, target_is_directory=True)
-    code, argv, soc = compile_omg(out, directory + '/export.air', ddk, diagnosis, platform,
-                                  external_weights=external_weights)
+    if kind == NATIVE_CONV_FULL_KIND:
+        code, argv, soc = compile_native_prefill(out, directory + '/export.air', ddk)
+    else:
+        code, argv, soc = compile_omg(out, directory + '/export.air', ddk, diagnosis, platform,
+                                      external_weights=external_weights)
     if code:
         raise RuntimeError(f'{kind}: OMG exited {code}\n{compile_log_text(out / "compile.log")}')
     model, = out.rglob('*.omc')
@@ -495,7 +557,7 @@ def original_filename(name, src, dtype, *, fresh_zero_states):
 
 
 def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, load_control=None, replace_replay=False,
-          replace_inputs=False, replace_weights=False):
+          replace_inputs=False, replace_weights=False, original_board_args=False):
     import numpy as np
     from parse_model_json import GE_PROTO, dtype as ge_dtype, inspect, read_omc
     from qwen35_moe_dflash.target.prefill_smoke_plan import _nd_view_key
@@ -620,6 +682,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
     try:
         run_v2(out, 'original L0-L3' if kind == KIND else kind, model, inputs, paths, outputs, runtime,
                decoder_shapes=(abi.get('input_shape'), abi.get('output_shape')), shape_config=config,
+               original_board_args=original_board_args or kind == NATIVE_CONV_FULL_KIND,
                external_weights=weights, build_records=(compiled['primary'], compiled['weights']),
                replace_inputs=replace_inputs, replace_weights=replace_weights,
                board_case='40-prefill-t64' if kind in FULL_KINDS else '4-prefill-t64',
@@ -654,6 +717,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--replace-inputs', action='store_true')
     parser.add_argument('--replace-weights', action='store_true')
+    parser.add_argument('--original-board-args', action='store_true')
     parser.add_argument('action', choices=('air', 'compile', 'execute', 'board', 'log', 'audit', 'reference'))
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--source', type=Path)
@@ -677,10 +741,10 @@ def main():
     parser.add_argument('--retry-load', type=Path, metavar='FAILED_REPLAY',
                         help='rebuild aligned AIR with embedded weights and replay the same inputs')
     parser.add_argument('--replay', type=Path, help='include a retained four-layer load failure in the offline audit')
-    parser.add_argument('--gdn-conv', choices=('conv2d', 'taps'), default='conv2d')
+    parser.add_argument('--gdn-conv', choices=('conv2d', 'taps', 'original'), default='conv2d')
     args = parser.parse_args()
-    if args.gdn_conv == 'taps' and not args.aligned40:
-        parser.error('For this native exporter --gdn-conv taps requires --aligned40')
+    if args.gdn_conv != 'conv2d' and not args.aligned40:
+        parser.error('For this native exporter selecting a GDN convolution requires --aligned40')
     if args.retry_load and (args.action != 'board' or not args.aligned):
         parser.error('--retry-load requires board --aligned')
     if args.replay and args.action != 'audit':
@@ -694,7 +758,7 @@ def main():
         base.mkdir(parents=True, exist_ok=True)
         capture_and_cpu(base, (args.reference or base/'reference').resolve(), args.source.resolve(), args.config)
         return
-    if args.aligned40 and (args.inputs or args.input_map or args.conv_control):
+    if args.aligned40 and (args.inputs or args.input_map or (args.conv_control and args.gdn_conv != 'original')):
         parser.error('the 40-layer comparison uses inputs from its own 310P capture')
     if args.aligned40 and (args.baseline or args.baseline_if_available or args.action == 'audit'):
         parser.error('select the measured 40-layer capture with --reference for --aligned40')
@@ -721,7 +785,7 @@ def main():
                 print(compile_log_text(newest))
                 return
         parser.error(f'No OMG compile.log under {base}')
-    full_kind = TAPS_FULL_KIND if args.gdn_conv == 'taps' else FULL_KIND
+    full_kind = {'conv2d': FULL_KIND, 'taps': TAPS_FULL_KIND, 'original': NATIVE_CONV_FULL_KIND}[args.gdn_conv]
     kind = full_kind if args.aligned40 else (ALIGNED_KIND if args.aligned else PATCH_KIND if args.silu_patch else KIND)
     if kind not in (KIND, *FULL_KINDS) and args.action == 'air' and args.baseline is None:
         parser.error(f'variant {args.action} requires --baseline')
@@ -790,7 +854,7 @@ def main():
         directory = args.inputs or run / 'air/inputs'
         replay = board(run, args.ddk.resolve() if args.ddk else None, args.runtime_config.resolve(), directory.resolve(), args.input_map, kind=kind,
               baseline=args.baseline, load_control=control, replace_replay=args.action == 'execute',
-              replace_inputs=args.replace_inputs, replace_weights=args.replace_weights)
+              replace_inputs=args.replace_inputs, replace_weights=args.replace_weights, original_board_args=args.original_board_args)
         if args.aligned40:
             from qwen35_moe_dflash.target.prefill_t64.native_40 import compare
             from l0_silu_omcs import write_matrices

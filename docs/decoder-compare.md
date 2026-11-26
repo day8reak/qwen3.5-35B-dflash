@@ -45,6 +45,37 @@ bash targets/cpro/scripts/decoder_run.sh
 
 ## 对照 GDN 卷积和自定义源码
 
+### 用原 CPro 的板端命令重跑已有 OMC
+
+在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。
+
+```bash
+bash targets/cpro/scripts/decoder_board.sh --mode 4 --phase prefill --gdn-conv taps --original-board-args
+```
+
+### 从原 CPro 源码生成四层或四十层 prefill
+
+`--gdn-conv original` 保留原 CPro wrapper、`LinearAttentionConvstateUpdate` 的 `linear_update_tensor` 输入和模型源码中的 `F.conv1d`。模型继续使用修正的 CPro QLinear 与 FP16 尺度、RoPE、MoE、GDR 接口以及 FP16 输入输出的 `SiluPatch` 和 `SoftplusPatch`。导出单张图，返回 logits 和每层两个状态。四层有 9 个输出，四十层有 81 个输出。板端使用上一节的 V2 参数。
+
+已有对应 CPU 和 310P golden 时，在 AIR 生成服务器运行第一条，在 OMC 生成和板端执行共用的服务器运行第二条。首次运行或更换输入 prompt 时，第一条改用 `decoder_prepare.sh`。两条命令均可将 `--mode 4` 改为 `--mode 40`。
+
+```bash
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv original
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv original
+```
+
+导出器调用原 `export_glm_model_qwen3_5_moe.py`，传入 `mode=export quant_mode=enable num_hidden_layers=4 seq_len=64 topK=16 config=… quant_bits=4`。构造模型之前，脚本在本次导出目录内复制 HF 配置并选取对应层数，权重链接到配置指定的 checkpoint。可在 AIR 环境设置 `CPRO_ORIGINAL_PATCHED_SOURCE` 生成并使用个人源码副本，或指定已修改的源码目录。生成的副本包含 `source.diff`。原生 ConvState 需要 `INT32[128]`，有对应 prompt 的实测文件时设置 `DECODER_CONV_CONTROL`。默认首元素为有效长度，其余为零；这个规则在 valid19 的语义仍待验证。
+
+需要用私有工程的 bash 入口时，可在 AIR 环境执行下面这条命令生成源码。在私有工程的干净副本中可以用 `git apply /实际路径/cpro-native-edit/source.diff` 应用同一组修改。手动运行原 exporter 需要将此仓库的 `model/` 绝对路径加入 `PYTHONPATH`，并使该次实验私有 HF 配置中的层数与 `num_hidden_layers` 一致。自动入口会处理这两步。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh source --mode 4 --phase prefill --gdn-conv original --patched-source /实际路径/cpro-native-edit
+```
+
+编译使用所选 DDK 的 `tools/tools_ascendc/set_ascendc_env.sh` 与 `tools/tools_omg/omg`，按新 AIR 的实际输入名生成静态 T64 shape，使用外置权重和 `--limit_partition_size=false`。历史四十层命令针对 `40block_55_quant` 使用 64/1 双档。之前的双档试验中，T1 分支的 Reshape 输入为 `[1,1,2048]`，目标为 `[64,2048]`。本次对照只检验 T64 prefill。
+
+### 其他卷积实现
+
 默认 `--gdn-conv conv2d`。要在整图绕开 Conv2D，两个组合脚本都加 `--mode 40 --phase prefill --gdn-conv taps`，或在各角色配置 `DECODER_GDN_CONV=taps`。CPro 用原权重顺序对四个窗口切片逐通道乘加，FP32 累加后转回卷积权重 dtype，再进入 FP16 SiluPatch。40 层 AIR 导出时检查 30 处卷积 SiLU 各自有四个乘积输入，并检查 AIR 中卷积节点数为零。源文件在 `export/source-taps/models/` 下可供 review。对照的目标是验证整图能否加载并比较输出。板端记录的 `OpUpdateKernelArgs failed` 发生在模型初始化，日志给出的名字是 `SubGraph_0`，具体算子仍待验证。
 
 `CPRO_PATCHED_SOURCE` 指向个人可编辑目录。首次可在 AIR 生成环境执行 `bash targets/cpro/scripts/decoder_compare.sh source --patched-source /实际路径/cpro-edit`。将同一路径写入 AIR 环境的配置，之后可以修改该目录的 Python 文件直接运行。目录应位于会被覆盖的 case 之外。使用原有兼容源码目录时配置相应的 `TARGET_CONFIG`；自动生成的补丁和 `source.diff` 可用于 review。自定义 taps 对照会匹配现有深度卷积表达式，手改过这段表达式时会提示对应文件和行号。
