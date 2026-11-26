@@ -1,4 +1,5 @@
 """Package the owner's quantized four-layer T64 export for the decoder comparison."""
+from difflib import unified_diff
 import json
 import math
 import os
@@ -15,34 +16,39 @@ from decoder4_original import (EXPORT_DIR, EXPORTER, four_precision, native_expo
 from parse_model_json import GE_PROTO
 from qwen35_moe_dflash.common.artifacts import files_under
 from qwen35_moe_dflash.target.layer_probe.common import save_json, sized_file
+from qwen35_moe_dflash.target.original_target_source import WRAPPER
 from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import MODELING, inspect_activation_air, restore_native_activations
-from qwen35_moe_dflash.target.prefill_t64.source_model import native_gdn_with_conv2d
+from qwen35_moe_dflash.target.prefill_t64.source_model import adapt_four_layer_convolution
 
 
-def four_layer_entry(prepared, work, *, native_activations=False, silu_only=False, softplus_only=False, explicit_conv2d=False):
+def four_layer_entry(prepared, work, *, native_activations=False, silu_only=False, softplus_only=False,
+                     explicit_conv2d=False, physical_convstate=False):
     entry = prepared/EXPORTER
     text = entry.read_text()
     # Editable sources generated before multi-depth export counted 30 GDR calls even at L=4.
     old = 'with cpro_export_contracts(True, chunk_size=64, gdn_layers=30):'
     restore_activations = native_activations or silu_only or softplus_only
-    if old not in text and not restore_activations:
+    edit_model = restore_activations or physical_convstate
+    if old not in text and not edit_model:
         return entry
     overlay = work/'source'
     overlay.mkdir()
     for path in prepared.iterdir():
-        if restore_activations and path.name == 'models':
+        if edit_model and path.name == 'models':
             models = overlay/'models'
             models.mkdir()
             for module in path.iterdir():
                 if module.name not in (Path(MODELING).name, '__pycache__'):
                     (models/module.name).symlink_to(module.resolve(), target_is_directory=module.is_dir())
-            text, model = restore_native_activations(text, (prepared/MODELING).read_text(),
-                                                     keep_silu=silu_only, keep_softplus=softplus_only)
-            if explicit_conv2d:
-                model = native_gdn_with_conv2d(model)
+            model = (prepared/MODELING).read_text()
+            if restore_activations:
+                text, model = restore_native_activations(text, model, keep_silu=silu_only, keep_softplus=softplus_only)
+            if explicit_conv2d or physical_convstate:
+                model = adapt_four_layer_convolution(model, explicit_conv2d=explicit_conv2d,
+                                                     physical_convstate=physical_convstate)
             (overlay/MODELING).write_text(model)
         elif path.name not in (EXPORTER, '__pycache__'):
             (overlay/path.name).symlink_to(path.resolve(), target_is_directory=path.is_dir())
@@ -51,14 +57,15 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
 
 
 def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=False, native_activations=False,
-           silu_only=False, softplus_only=False):
+           silu_only=False, softplus_only=False, physical_convstate=False):
     dest = root/case_name(ref['layers'])
     if dest.is_dir():
         saved = json.loads((dest/'case.json').read_bytes())
         if (saved.get('air_directory') != EXPORT_DIR or saved.get('gdn_conv', 'conv2d') != gdn_conv
                 or saved.get('no_patch', False) != no_patch
                 or saved.get('native_activations', False) != native_activations
-                or saved.get('silu_only', False) != silu_only or saved.get('softplus_only', False) != softplus_only):
+                or saved.get('silu_only', False) != silu_only or saved.get('softplus_only', False) != softplus_only
+                or saved.get('physical_convstate', False) != physical_convstate):
             raise ValueError(f'{dest}: existing four-layer export uses a different source mode')
         for row in saved['files']:
             sized_file(dest, row)
@@ -72,14 +79,16 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         case = work/'case'
         case.mkdir()
         activation_control = native_activations or silu_only or softplus_only
-        explicit_conv2d = activation_control and gdn_conv == 'conv2d'
-        physical_history = gdn_conv != 'original' and not activation_control
-        depth = select_native_depth(cfg, work, 4) if not physical_history else None
+        use_native_tools = gdn_conv == 'original' or activation_control or physical_convstate
+        explicit_conv2d = (activation_control or physical_convstate) and gdn_conv == 'conv2d'
+        physical_history = physical_convstate or not use_native_tools
+        depth = select_native_depth(cfg, work, 4) if use_native_tools else None
         export_config = work/'export.yaml'
         export_config.write_text(yaml.safe_dump(cfg))
         entry = ((source/EXPORTER).resolve(strict=True) if no_patch else
                  four_layer_entry(prepared, work, native_activations=native_activations, silu_only=silu_only,
-                                  softplus_only=softplus_only, explicit_conv2d=explicit_conv2d))
+                                  softplus_only=softplus_only, explicit_conv2d=explicit_conv2d,
+                                  physical_convstate=physical_convstate))
         argv = native_export_argv(entry, 4, export_config)
         env = os.environ.copy()
         trace = work/'activations.txt'
@@ -88,6 +97,18 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         else:
             package = str(Path(__file__).resolve().parents[3]/'model')
             env['PYTHONPATH'] = os.pathsep.join(filter(None, (package, env.get('PYTHONPATH'))))
+            if physical_convstate:
+                print('[L00-L03] ConvState：拼接旧状态与本次 QKV，末 4 行写回，末 67 行送卷积。\n'
+                      '  默认对齐源码补丁：L3 RoPE 按 position_ids 取表，FP32 旋转 Q/K 后转回 hidden dtype；'
+                      'W4 matmul 使用 FP16 权重 scale 和逐 token scale；GDR 使用 FP16 算子端口；'
+                      'MoE 使用量化后的 INT8 激活并对齐门控 dtype。', flush=True)
+                with (case/'source.diff').open('w', encoding='utf-8') as changes:
+                    for name in (EXPORTER, MODELING, WRAPPER, 'utils.py'):
+                        base = source/name
+                        before = base.read_text().splitlines(keepends=True) if base.is_file() else []
+                        after = (entry.parent/name).read_text().splitlines(keepends=True)
+                        changes.writelines(unified_diff(before, after, fromfile=f'base/{name}', tofile=f'export/{name}'))
+                print(f'[L00-L03] 与 {source} 的实际源码差异将保存在 export/package/{dest.name}/source.diff', flush=True)
             if native_activations:
                 print(f'[L00-L03] {prepared}：保留对齐修复，使用原生 SiLU 和 Softplus', flush=True)
             else:
@@ -102,6 +123,9 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         air = case/EXPORT_DIR/'export.air'
         boundary = inspect_air(air, layers=4, physical_history=physical_history, require_control=not physical_history,
                                conv2d_rows=64 if explicit_conv2d else None)
+        if physical_convstate:
+            print(f'[L00-L03] AIR 实测 ConvState：原更新算子 {boundary["convstate_update_nodes"]} 个，'
+                  f'显式拼接的缓存 {boundary["physical_conv_caches"]} 份', flush=True)
         if no_patch:
             observations = dict(no_patch=True, operator_counts=boundary['operator_counts'])
             print(f'[L00-L03] 原样导出 AIR 实测节点数: {boundary["operator_counts"]}', flush=True)
@@ -113,10 +137,11 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
             observations = dict(native_activations=True, operator_counts=counts)
         else:
             observations = inspect_activation_air(air, trace, layers=4, silu=not softplus_only, softplus=not silu_only,
-                                                  check_convs=physical_history, gdn_conv=gdn_conv)
-            if silu_only or softplus_only:
+                                                  check_convs=not use_native_tools, gdn_conv=gdn_conv)
+            if silu_only or softplus_only or physical_convstate:
                 counts = boundary['operator_counts']
-                observations['softplus_only' if softplus_only else 'silu_only'] = True
+                if silu_only or softplus_only:
+                    observations['softplus_only' if softplus_only else 'silu_only'] = True
                 observations['operator_counts'] = counts
                 print(f'[L00-L03] AIR 实测 SiluPatch={counts["SiluPatch"]}, SoftplusPatch={counts["SoftplusPatch"]}',
                       flush=True)
@@ -137,6 +162,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
             raw = GE_PROTO[port['dtype']]
             dtype = {'FP16': 'float16', 'FP32': 'float32'}.get(raw, raw.lower())
             filename = original_filename(port['name'], port, dtype, fresh_zero_states=True)
+            if physical_history and filename == 'conv_state_pos.bin':
+                raise ValueError(f'{air}: physical ConvState AIR still exposes {port["name"]} as INT32[128]')
             row = by_path['inputs/' + filename]
             if row['bytes'] != math.prod(port['shape']) * np.dtype(dtype).itemsize:
                 raise ValueError(f'{filename} does not match native AIR port {port}')
@@ -145,7 +172,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
             names[port['name']] = role
         outputs = [dict(name=row['role'], edge=row['edge']) for row in boundary['outputs']]
         save_json(case/'case.json', dict(air_directory=EXPORT_DIR, layers=ref['layers'], argv=argv,
-                  gdn_conv=gdn_conv, native_convstate=not physical_history, **({'export_configuration': depth} if depth else {}),
+                  gdn_conv=gdn_conv, native_convstate=not physical_history, native_tool_args=use_native_tools,
+                  physical_convstate=physical_convstate, **({'export_configuration': depth} if depth else {}),
                   inputs=names, input_files=feeds, outputs=outputs, files=files, fixture=measured,
                   **observations))
         case.rename(dest)

@@ -123,15 +123,19 @@ def explicit_gdn_conv2d(forward, *, original=True):
         reshape.func.value = _convert(x, 'to', [_expr('self.conv1d.weight.dtype')])
 
 
-def native_gdn_with_conv2d(source):
-    """Change only the GDN convolution in the selected native ConvState source."""
+def adapt_four_layer_convolution(source, *, explicit_conv2d, physical_convstate):
+    """Adapt the history and convolution independently in the selected CPro source."""
     from .decoder_four_source import preserve_source
     tree = ast.parse(source)
     forward = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
-    conv = _assignment(forward, 'conv_out')
-    if any(isinstance(n, ast.Call) and ast.unparse(n.func) == 'F.conv2d' for n in ast.walk(conv)):
-        return source
-    explicit_gdn_conv2d(forward)
+    if physical_convstate and any(isinstance(n, ast.Call) and
+                                  ast.unparse(n.func) == 'torch.ops.my_ops.linear_attention_convstate_update'
+                                  for n in ast.walk(forward)):
+        physical_conv_history(forward)
+    if explicit_conv2d:
+        conv = _assignment(forward, 'conv_out')
+        if not any(isinstance(n, ast.Call) and ast.unparse(n.func) == 'F.conv2d' for n in ast.walk(conv)):
+            explicit_gdn_conv2d(forward)
     return preserve_source(source, ast.unparse(ast.fix_missing_locations(tree)))
 
 

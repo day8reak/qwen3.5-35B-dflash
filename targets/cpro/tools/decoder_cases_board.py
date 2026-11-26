@@ -24,6 +24,11 @@ def read(path):
     return json.loads(path.read_bytes())
 
 
+def native_tool_args(case):
+    # Older four-layer bundles selected the owner's OMG/V2 flags through the ConvState profile.
+    return case.get('native_tool_args', case.get('native_convstate', case.get('gdn_conv') == 'original'))
+
+
 def transfer_size(meta, dest):
     total = sum(row['bytes'] for row in meta['files'])
     free = shutil.disk_usage(dest).free
@@ -66,7 +71,7 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
             shutil.rmtree(work)
         work.mkdir()
         (work/folder).symlink_to(case/folder, target_is_directory=True)
-        if meta.get('native_convstate', meta.get('gdn_conv') == 'original'):
+        if native_tool_args(meta):
             code, argv, _ = compile_native_prefill(work, f'{folder}/export.air', ddk)
         else:
             code, argv, _ = compile_omg(work, f'{folder}/export.air', ddk, diagnosis, None)
@@ -129,11 +134,13 @@ def output_order(descriptors, source, golden):
 def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, recovery, board_case=None,
            replace_inputs=False, replace_weights=False, shape_config=None, original_board_args=False):
     meta = read(case/'case.json')
-    original_board_args = original_board_args or meta.get('native_convstate', meta.get('gdn_conv') == 'original')
+    original_board_args = original_board_args or native_tool_args(meta)
     if 'operator_counts' in meta:
         counts = meta['operator_counts']
         print(f'[{case.name}] 本次 AIR 配置：GDN 卷积={meta["gdn_conv"]}，SiluPatch={counts["SiluPatch"]}，'
               f'SoftplusPatch={counts["SoftplusPatch"]}', flush=True)
+        if meta.get('physical_convstate'):
+            print(f'[{case.name}] ConvState 使用本次 QKV 的物理行 60–63，卷积窗口为 67 行。', flush=True)
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
         raise ValueError(f'{case}: compiled input names differ from AIR')
     feeds = {**feeds, **{role: (case, row) for role, row in meta.get('input_files', {}).items()}}
@@ -200,7 +207,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board',
           replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False,
-          native_activations=False, silu_only=False, softplus_only=False):
+          native_activations=False, silu_only=False, softplus_only=False, physical_convstate=False):
     bundle = run/'package'
     if step == 'execute' and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -218,7 +225,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
     if manifest.get('gdn_conv', 'conv2d') != gdn_conv:
         raise ValueError(f'{bundle}: expected GDN {gdn_conv}. Select the same --gdn-conv as the AIR export.')
     for key, selected in dict(no_patch=no_patch, native_activations=native_activations,
-                              silu_only=silu_only, softplus_only=softplus_only).items():
+                              silu_only=silu_only, softplus_only=softplus_only, physical_convstate=physical_convstate).items():
         if manifest.get(key, False) != selected:
             raise ValueError(f'{bundle}: --{key.replace("_", "-")} selection differs from the AIR export')
     from decoder_handoff import runtime_file

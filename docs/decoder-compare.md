@@ -119,6 +119,33 @@ SiLU 使用原生实现。导出检查 0 个 `SiluPatch`、3 个 `SoftplusPatch`
 
 对照三次运行时固定源码、Conv2D、权重、输入和编译环境。若原生激活和 `--softplus-only` 均能加载执行，只有 `--silu-only` 在 `UpdateArgsForAicore` 处失败，就优先排查引入 SiluPatch 后的编译任务及其参数。加载阶段还没有产生可比较的推理输出。
 
+### 四层 SoftplusPatch 配合物理尾部 ConvState 写回
+
+在已有四层 golden 的 AIR 生成服务器执行
+
+```bash
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --softplus-only --physical-convstate
+```
+
+在 OMC 生成和板端执行服务器执行
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --softplus-only --physical-convstate
+```
+
+这组命令从相同的对齐源码导出一张四层图。与上一组 softplus-only 相比，新增的 `--physical-convstate` 将 L0–L2 的 `linear_attention_convstate_update` 调用替换为 `torch.cat` 和切片。拼接后的 68 行中，末 4 行写回状态，末 67 行送 Conv2D；四层 AIR 接口随之去掉 `conv_state_pos`。有效长度仍传给 GDR。导出日志列出原更新算子数（预期 0）和显式拼接的缓存数（预期 3）。
+
+默认对齐源码对原 CPro 的其他修改如下。
+
+| 位置 | 修改 |
+|---|---|
+| L3 full attention 的 RoPE | 用 INT32 `position_ids` 取 cos/sin 表中的行，Q/K 旋转在 FP32 计算，结果转回 hidden 的 dtype。 |
+| A8W4 投影 | 导出器使用 CPro 的 `QLinear`，激活为 INT8，W4 权重打包在 INT32 中。权重 scale 为 FP16，DynamicQuant 的 FP32 逐 token scale 在 W4 matmul 前显式转 FP16。 |
+| GDN 和激活 | 三个 GDN 使用 Conv2D 和原生 SiLU。每个 GDN 的 SoftplusPatch 接收和输出 FP16，下游衰减乘法恢复 FP32。GDR 使用 T64 chunk、FP16 的 Q/K/V、g、beta 和状态，`effective_length` 为 INT16。 |
+| MoE | 专家分支使用实际量化后的 INT8 张量进行 reshape，已量化输入直接使用。路由和共享专家门控按对应权重及输出 dtype 运算。 |
+
+导出日志打印实际命令和源码对照目录。导出完成后可在 `export/package/L00-L03/source.diff` 查看导出器、模型、wrapper 和 `utils.py` 相对配置目录的逐行差异。若配置目录本身已手改，差异以该目录当前的源码为准。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

@@ -168,7 +168,7 @@ def prepare_stage(args, run):
             prepared = taps_source(prepared, run/'source-taps')
     if args.gdn_conv != 'conv2d' or source_conv == 'original':
         stamp['gdn_conv'] = args.gdn_conv
-    if source_conv == 'original' and os.getenv('DECODER_CONV_CONTROL'):
+    if source_conv == 'original' and not getattr(args, 'physical_convstate', False) and os.getenv('DECODER_CONV_CONTROL'):
         stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
     controls = {name: True for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)}
     stamp.update(controls)
@@ -297,6 +297,8 @@ def main():
                                  help='use FP16 SiluPatch and stock Softplus in the aligned four-layer T64 model')
     activation_mode.add_argument('--softplus-only', action='store_true',
                                  help='use stock SiLU and FP16 SoftplusPatch in the aligned four-layer T64 model')
+    parser.add_argument('--physical-convstate', action='store_true',
+                        help='replace the four-layer T64 ConvState update with concatenation and physical-tail slices')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
     parser.add_argument('--run', type=Path, help='explicit path ending in the canonical case name')
     parser.add_argument('--remote-run', type=Path, help='case directory on the export host')
@@ -312,9 +314,11 @@ def main():
             parser.error('use --mode 4 --phase prefill for this four-layer control')
         if a.no_patch and a.patched_source:
             parser.error('--no-patch uses CPRO_SOURCE directly with the original GDN convolution')
+        if a.no_patch and a.physical_convstate:
+            parser.error('--physical-convstate changes the CPro model and cannot be used with --no-patch')
         if a.action == 'source':
             parser.error('prepare the editable base with source --gdn-conv original')
-        a.gdn_conv = a.gdn_conv or 'original'
+        a.gdn_conv = a.gdn_conv or ('conv2d' if a.physical_convstate else 'original')
         if a.no_patch and a.gdn_conv != 'original':
             parser.error('--no-patch runs the original GDN convolution from CPRO_SOURCE')
         if a.gdn_conv == 'taps':
@@ -338,7 +342,8 @@ def main():
         schedule = groups(a.mode)
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
                               prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations,
-                              silu_only=a.silu_only, softplus_only=a.softplus_only, omcs=len(schedule),
+                              silu_only=a.silu_only, softplus_only=a.softplus_only, physical_convstate=a.physical_convstate,
+                              omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
         return 0
     if a.action == 'source':
@@ -379,7 +384,8 @@ def main():
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
                          original_board_args=a.original_board_args, no_patch=a.no_patch,
-                         native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only):
+                         native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
+                         physical_convstate=a.physical_convstate):
                 return 1
         else:
             prepare_stage(a, site)

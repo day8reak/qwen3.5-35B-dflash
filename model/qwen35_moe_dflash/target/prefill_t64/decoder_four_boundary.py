@@ -157,6 +157,7 @@ def inspect_air(path, *, layers=4, physical_history=None, require_control=False,
             raise ValueError(f'{path}: unexpected shape for {r}')
     counts = Counter(n.type for n in graph.op)
     boundary = dict(inputs=inputs, outputs=records,
+                    convstate_update_nodes=len(conv), physical_conv_caches=len(set(history_inputs.values())),
                     operator_counts={kind: counts[kind] for kind in ('SiluPatch', 'SoftplusPatch', 'QuantBatchMatmulV4444')})
     if conv2d_rows is not None:
         from .decoder_four_silu import inspect_gdn_convs
