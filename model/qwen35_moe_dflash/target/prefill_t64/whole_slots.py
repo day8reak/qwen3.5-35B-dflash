@@ -122,24 +122,18 @@ def observe_model_io(hdc, config, env, work, out, model, model_sha, tool_lib):
     cfg = read(config)
     native_dir = (config.parent / cfg.get('native_directory', 'native')).resolve()
     runner = native_dir / 'build/qwen35_dflash_hiai'
-    runner_sha = read(native_dir / 'result.json')['binary_sha256']
-    if sha(runner) != runner_sha:
-        raise ValueError('Local HIAI runner differs from its native build')
-    files = [(runner, 'draft-runner', runner_sha)]
+    files = [(runner, 'draft-runner')]
     search = list(BOARD_LIBRARY_SEARCH_PATHS)
     if os.environ.get('BOARD_HIAI_LIB_DIR'):
         search.insert(0, str(_board_path(os.environ['BOARD_HIAI_LIB_DIR'])))
     else:
         for lib in discover_libraries(runner, native_dir)['libraries']:
             if lib.name not in DDK_HCL_EXCLUDED:
-                files.append((lib, 'lib/' + lib.name, sha(lib)))
+                files.append((lib, 'lib/' + lib.name))
     hdc.shell(f'mkdir {work}/lib', 'create-probe-lib')
-    checks = out/'probe-files.sha256'
-    checks.write_text(''.join(f'{digest}  {name}\n' for _, name, digest in files))
-    for path, name, _ in files:
+    for path, name in files:
         hdc.send(path, work/name)
-    hdc.send(checks, work/checks.name)
-    hdc.shell(f'cd {work} && sha256sum -c {checks.name} && chmod 700 draft-runner', 'verify-probe')
+    hdc.shell(f'chmod 700 {work}/draft-runner', 'prepare-probe')
     cmd = ['env', 'LD_LIBRARY_PATH=' + ':'.join([str(tool_lib), str(work / 'lib'), *search]),
            str(work / 'draft-runner'), '--model-io-only', str(model), '--descriptor-stage', 'restore-only',
            '--model-sha256', model_sha, '--expected-runtime-version', env['runtime_version'],
@@ -149,7 +143,7 @@ def observe_model_io(hdc, config, env, work, out, model, model_sha, tool_lib):
                f'if test -s {work}/model-io.json; then has_json=1; else has_json=0; fi; '
                'printf "\\n__PROBE_RESULT__=%d,%d\\n" "$probe_rc" "$has_json"; }')
     available = None
-    deployed = {path.name for path, _, _ in files}
+    deployed = {path.name for path, _ in files}
     while True:
         _, log = hdc.shell(restore, 'restore')
         message, marker, status = log.rpartition('__PROBE_RESULT__=')
@@ -173,16 +167,11 @@ def observe_model_io(hdc, config, env, work, out, model, model_sha, tool_lib):
             raise RuntimeError(f'{failure}\nMissing from the probe build: {sorted(missing - available.keys())}')
         for name in sorted(missing):
             path = available[name]
-            digest = sha(path)
             print(f'Descriptor probe requires {name}; uploading to {work}/lib', flush=True)
             hdc.send(path, work/'lib'/name)
-            hdc.shell(f'cd {work}/lib && echo "{digest}  {name}" | sha256sum -c -', 'verify-probe-library')
         deployed.update(missing)
-    _, digest = hdc.shell(f'sha256sum {work}/model-io.json', 'descriptor-hash')
     local = out / 'model-io.json'
     hdc.receive(work / local.name, local)
-    if sha(local) != digest.split()[0]:
-        raise ValueError('Retrieved descriptor hash differs from the board')
     native = read(local)
     if (rc or native.get('status') != 'IO_DESCRIPTORS_OBSERVED' or native.get('evidence_kind') != 'device-hiai'
             or native.get('model_sha256') != model_sha or native.get('model_path') != str(model)

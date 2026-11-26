@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import time
+import uuid
 
 from qwen35_moe_dflash.common.artifacts import share_for_transfer
 from qwen35_moe_dflash.common.hashing import sha256_file
@@ -36,7 +37,7 @@ def inventory(root, role, mode, phase):
                 raise ValueError(f'Missing golden receipt {folder/marker}')
             for path in sorted(folder.rglob('*')):
                 if path.is_file():
-                    yield path, sha256_file(path)
+                    yield path, None
         return
 
     def listed(folder, index, records):
@@ -70,9 +71,14 @@ def publish(root, role, args):
     site = root/('board' if role == 'omc' else 'export')
     records = []
     for path, digest in inventory(root, role, args.mode, args.phase):
-        records.append(dict(path=path.relative_to(site).as_posix(), bytes=path.stat().st_size, sha256=digest))
+        row = dict(path=path.relative_to(site).as_posix(), bytes=path.stat().st_size)
+        if digest is not None:
+            row['sha256'] = digest
+        records.append(row)
     header = dict(stage=role, case=root.name, files=records)
-    if role != 'golden':
+    if role == 'golden':
+        header['generation'] = uuid.uuid4().hex
+    else:
         header['gdn_conv'] = args.gdn_conv
     dest = receipt(root, role)
     with tempfile.TemporaryDirectory(prefix='.publish-', dir=root) as staging:
@@ -85,8 +91,28 @@ def publish(root, role, args):
     print(f'{role} transfer manifest: {len(records)} files → {dest}', flush=True)
 
 
-def valid_file(path, row):
-    return path.is_file() and path.stat().st_size == row['bytes'] and sha256_file(path) == row['sha256']
+def complete_file(path, row):
+    return path.is_file() and path.stat().st_size == row['bytes']
+
+
+def previous_files(dest, role, data, marker):
+    if (dest/marker).is_file():
+        prior = json.loads((dest/marker).read_bytes())
+        if prior == data:
+            return True, {}
+        if prior['stage'] == role:
+            return False, {r['path']: r.get('sha256') for r in prior['files']}
+    # Older receivers kept the AIR bundle's manifest but no transfer marker.
+    if role == 'air':
+        for name in ('air', 'package'):
+            manifest = dest/name/'manifest.json'
+            if manifest.is_file():
+                try:
+                    rows = json.loads(manifest.read_bytes())['files']
+                    return False, {f"{name}/{r['path']}": r.get('sha256') for r in rows}
+                except (ValueError, KeyError, TypeError):
+                    continue
+    return False, {}
 
 
 SSH_CHUNK = 256 << 20
@@ -180,7 +206,8 @@ def receive(root, remote, role, args):
         temp = Path(temp)
         index = receipt(source, role)
         fetch(index, temp/'manifest')
-        data = json.loads((temp/'manifest').read_bytes())
+        manifest = (temp/'manifest').read_bytes()
+        data = json.loads(manifest)
         if (data['stage'], data['case']) != (role, root.name) or data.get('gdn_conv', args.gdn_conv) != args.gdn_conv:
             raise ValueError(f'{index}: stage, case or GDN convolution mismatch')
         staged = temp/'incoming' if local else resume_directory(root, role, temp/'manifest')
@@ -190,28 +217,31 @@ def receive(root, remote, role, args):
               f'{sum(r["bytes"] for r in data["files"])/2**30:.2f} GiB', flush=True)
         if not data['files']:
             raise ValueError(f'Empty transfer manifest {index}')
+        marker = '.decoder-transfer.json'
+        same_generation, previous_ids = previous_files(dest, role, data, marker)
         seen = set()
         missing = []
         needed = 0
         for row in data['files']:
             rel = Path(row['path'])
-            if rel.is_absolute() or '..' in rel.parts or not rel.parts or rel in seen:
+            if rel.is_absolute() or '..' in rel.parts or not rel.parts or rel.parts[0] == marker or rel in seen:
                 raise ValueError(f'Invalid or duplicate transfer path {rel}')
             seen.add(rel)
             previous = dest/rel
             if local == root:
-                if not valid_file(previous, row):
+                if not complete_file(previous, row):
                     raise ValueError(f'Shared artifact changed: {previous}')
                 continue
             target = staged/rel
             if target.is_symlink() or target.resolve() != target:
                 raise ValueError(f'Unexpected transfer path: {target}')
             target.parent.mkdir(exist_ok=True, parents=True)
-            if valid_file(target, row):
+            if complete_file(target, row):
                 continue
             if target.exists() and (target.stat().st_size >= row['bytes'] or target.stat().st_nlink > 1):
                 target.unlink()
-            if previous.exists() and previous.resolve().is_relative_to(root) and valid_file(previous, row):
+            reuse = same_generation or (row.get('sha256') and previous_ids.get(row['path']) == row['sha256'])
+            if reuse and previous.resolve().is_relative_to(root) and complete_file(previous, row):
                 target.unlink(missing_ok=True)
                 os.link(previous.resolve(), target)
             else:
@@ -226,18 +256,19 @@ def receive(root, remote, role, args):
                 fetch(source/site_name/rel, target)
             else:
                 fetch(source/site_name/rel, target, row['bytes'])
-            if not valid_file(target, row):
+            if not complete_file(target, row):
                 target.unlink(missing_ok=True)
-                raise ValueError(f'Size or SHA-256 differs from {index}: {rel}')
+                raise ValueError(f'Incomplete file from {index}: {rel}')
             if number % 64 == 0 or number == len(missing):
-                print(f'已校验 {len(seen) - len(missing) + number}/{len(seen)} 个文件', flush=True)
+                print(f'已接收 {len(seen) - len(missing) + number}/{len(seen)} 个文件', flush=True)
         if local == root:
-            print('Producer and receiver share this verified case directory.', flush=True)
+            print('Producer and receiver share this case directory.', flush=True)
             return
         # Confirm a producer that restarted during the transfer did not replace the manifest.
         fetch(index, temp/'confirmed')
-        if (temp/'manifest').read_bytes() != (temp/'confirmed').read_bytes():
+        if manifest != (temp/'confirmed').read_bytes():
             raise ValueError(f'{source}: upstream stage changed during transfer')
+        (staged/marker).write_bytes(manifest)
         previous_dir = temp/'previous'
         if dest.exists():
             dest.rename(previous_dir)
@@ -251,4 +282,4 @@ def receive(root, remote, role, args):
             staged.parent.rmdir()
         for later in {'golden': ('golden', 'air', 'omc'), 'air': ('golden', 'air', 'omc'), 'omc': ('omc',)}[role]:
             receipt(root, later).unlink(missing_ok=True)
-        print(f'Checked and received {dest}', flush=True)
+        print(f'Received {dest}', flush=True)

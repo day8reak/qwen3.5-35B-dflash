@@ -213,7 +213,7 @@ def worker(args, action, root, remote):
         cmd.extend(['--gdn-conv', 'taps'])
     if args.recovery:
         cmd.append('--recovery')
-    label = {'transfer': '校验并接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
+    label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
              'compile': '编译 OMC 并保存 I/O 描述', 'execute': '上板执行已编译 OMC 并比较三端结果',
              'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
     print(f'[{directory_name(args.mode, args.phase)}] {label}', flush=True)

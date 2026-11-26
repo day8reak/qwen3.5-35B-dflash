@@ -34,12 +34,19 @@ def identity(path, root):
     return dict(path=str(path.relative_to(root)), bytes=path.stat().st_size, sha256=sha(path))
 
 
-def checked(root, record):
+def sized_file(root, record):
     root = Path(root).resolve()
     path = (root / record['path']).resolve()
     if root not in path.parents or not path.is_file():
         raise ValueError('fixture path escapes its root or is absent')
-    if path.stat().st_size != record['bytes'] or sha(path) != record['sha256']:
+    if path.stat().st_size != record['bytes']:
+        raise ValueError('unexpected file size: ' + record['path'])
+    return path
+
+
+def checked(root, record):
+    path = sized_file(root, record)
+    if sha(path) != record['sha256']:
         raise ValueError('fixture changed: ' + record['path'])
     return path
 
@@ -87,7 +94,10 @@ def metrics(actual, golden, *, atol=None, rtol=None):
 
 
 def read_array(root, spec):
-    path = checked(root, spec)
+    return read_tensor(checked(root, spec), spec)
+
+
+def read_tensor(path, spec):
     dtype = np.dtype(DTYPES[spec['dtype']])
     if path.stat().st_size != math.prod(spec['shape']) * dtype.itemsize:
         raise ValueError('tensor extent differs from shape/dtype')

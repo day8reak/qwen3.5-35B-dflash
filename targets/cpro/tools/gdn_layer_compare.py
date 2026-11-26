@@ -187,7 +187,8 @@ def run_board(args, run, bundle):
                 files.append(path)
                 operands.append(dict(spec, sha256=record['sha256']))
             receipt = run_v2(work, name, model, operands, files, build['outputs'], runtime,
-                             external_weights=weights, fixture_sha256=fixture, release_after_pull=True,
+                             external_weights=weights, build_records=(build['model'], build['weights']),
+                             fixture_sha256=fixture, release_after_pull=True,
                              slot_config=config if len(operands)>1 or len(build['outputs'])>1 else None)
             outputs = {}
             for s, r in zip(build['outputs'], receipt['outputs'], strict=True):

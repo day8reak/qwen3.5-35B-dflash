@@ -78,7 +78,7 @@ struct OptionalInt8Enum<Enum, std::void_t<decltype(Enum::INT8)>> {
 HiaiModelIoEnumTable HiaiModelIoEnums();
 struct HiaiModelIoProbe {
   HiaiProbe runtime;
-  std::string model_path, model_sha256;
+  std::string model_path;
   std::uint64_t model_bytes = 0;
   bool tensor_name_field_available = false;
   std::vector<HiaiModelIoTensor> inputs, outputs;

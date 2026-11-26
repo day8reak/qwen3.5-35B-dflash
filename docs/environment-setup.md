@@ -36,9 +36,9 @@ golden 和 AIR 生成成功时，脚本对本次 case 目录递归执行 `chmod 
 python3 targets/cpro/scripts/pull_artifacts.py --init GOLDEN_HOST AIR_HOST OMC_HOST
 ```
 
-每个接收环境只需自己会访问的上游端点。可手动配置，如 AIR 服务器接收 golden 用 `{"golden":{"host":"golden.example","port":22,"user":"alice"}}`，支持 SSH 密钥或 agent。上游目录不同于本机时，按产物填写 `DECODER_GOLDEN_REMOTE_ROOT`、`DECODER_AIR_REMOTE_ROOT` 或 `DECODER_OMC_REMOTE_ROOT`，其值是生产端的 **case 父目录**。共享文件系统也可设置对应的 `*_LOCAL_ROOT`，从已挂载的上游读取。磁盘预算应覆盖本机接收的文件、编译产物和 OMG 临时空间；重复接收时脚本复用校验相同的目标文件。
+每个接收环境只需自己会访问的上游端点。可手动配置，如 AIR 服务器接收 golden 用 `{"golden":{"host":"golden.example","port":22,"user":"alice"}}`，支持 SSH 密钥或 agent。上游目录不同于本机时，按产物填写 `DECODER_GOLDEN_REMOTE_ROOT`、`DECODER_AIR_REMOTE_ROOT` 或 `DECODER_OMC_REMOTE_ROOT`，其值是生产端的 **case 父目录**。共享文件系统也可设置对应的 `*_LOCAL_ROOT`，从已挂载的上游读取。磁盘预算应覆盖本机接收的文件、编译产物和 OMG 临时空间；重复接收同一份清单时，脚本复用已收齐的文件。
 
-通过 SSH 接收时，脚本用生成服务器上的 GNU `dd` 分段读取大文件，连接中断会自动重试。若重试后仍退出，在接收服务器再次执行同一条命令即可。接收进度保存在本次 case 的 `.receive-air/`、`.receive-golden/` 或 `.receive-omc/` 下。脚本会复核完整文件的 SHA-256，续传同一清单下未完成的文件，全部校验成功后发布产物并清理进度目录。
+通过 SSH 接收时，脚本用生成服务器上的 GNU `dd` 分段读取大文件，连接中断会自动重试。若重试后仍退出，在接收服务器再次执行同一条命令即可。接收进度保存在本次 case 的 `.receive-air/`、`.receive-golden/` 或 `.receive-omc/` 下。同一清单下按已收字节数续传，文件收齐后发布产物并清理进度目录。SSH 和 HDC 收发都跳过文件内容的哈希校验。
 
 四环境分步指令和两机组合命令见[Decoder 运行说明](decoder-compare.md)。
 

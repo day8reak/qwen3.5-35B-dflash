@@ -27,7 +27,7 @@ bash targets/cpro/scripts/decoder_run.sh
 | 3 | CPro OMC 生成服务器 | `bash targets/cpro/scripts/decoder_transfer.sh air` 成功后运行 `bash targets/cpro/scripts/decoder_omc.sh` |
 | 4 | CPro 板端执行服务器 | `bash targets/cpro/scripts/decoder_transfer.sh omc` 成功后运行 `bash targets/cpro/scripts/decoder_board.sh` |
 
-传输脚本在**接收方**运行。参数填上游的产物类型。每次核对生产端清单、文件字节数和 SHA-256，校验完成再发布到个人 case 目录。使用共享的同一个 case 时可直接执行下一阶段；不同挂载位置可传 `--local-source /挂载点/40-prefill-t64`。OMC 交接包含编译模型、外置权重、输入、参考输出和端口描述。运行时使用已有 OMC，无需在上板机安装 OMG。
+传输脚本在**接收方**运行。参数填上游的产物类型。按生产端清单接收文件，字节数齐全后发布到个人 case 目录。服务器之间和板端收发都跳过逐文件哈希校验。使用共享的同一个 case 时可直接执行下一阶段；不同挂载位置可传 `--local-source /挂载点/40-prefill-t64`。OMC 交接包含编译模型、外置权重、输入、参考输出和端口描述。运行时使用已有 OMC，无需在上板机安装 OMG。
 
 ## 选择层数、阶段和输入
 

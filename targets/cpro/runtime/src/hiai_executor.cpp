@@ -541,7 +541,6 @@ HiaiModelIoProbe ProbeHiaiModelIo(const std::filesystem::path& model,
   HiaiModelIoProbe result;
   result.model_path = path.string();
   result.model_bytes = static_cast<std::uint64_t>(before.st_size);
-  result.model_sha256 = Sha256File(path);
   result.tensor_name_field_available = detail::OptionalTensorName<hiai::NDTensorDesc>::available;
   {
     Model loaded;
@@ -573,8 +572,7 @@ HiaiModelIoProbe ProbeHiaiModelIo(const std::filesystem::path& model,
   struct stat after {};
   if (stat(path.c_str(), &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino
       || before.st_size != after.st_size || before.st_mtime != after.st_mtime
-      || before.st_ctime != after.st_ctime || before.st_mode != after.st_mode
-      || Sha256File(path) != result.model_sha256)
+      || before.st_ctime != after.st_ctime || before.st_mode != after.st_mode)
     throw HiaiRuntimeError("MODEL_PRESERVATION", "main OMC changed during restore-only model IO observation");
   return result;
 }

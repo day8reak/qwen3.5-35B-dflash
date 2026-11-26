@@ -25,7 +25,7 @@ from parse_model_json import GE_PROTO, inspect, read_omc
 from qwen35_moe_dflash.common.accuracy import ERROR_RATIO_FIELDS, THRESHOLDS
 from qwen35_moe_dflash.common.artifacts import output_path
 from qwen35_moe_dflash.target.board_tool_inspect import DEFAULT_TOOL
-from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha
+from qwen35_moe_dflash.target.layer_probe.common import checked, identity, read_array, save_json, sha, sized_file
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
 from qwen35_moe_dflash.target.prefill_t64.layer_template import parameterize
@@ -159,7 +159,7 @@ def compile_stage(run, bundle, step, graph, raw, ddk, diagnosis, bundle_hash, sh
             if typed_view(row['dtype'], row['shape']) != typed_view(wires[edge]['dtype'], wires[edge]['shape']):
                 raise ValueError(f'Shared {name} {direction} differs from {edge}')
             meta[direction] = [dict(row, edge=edge)]
-    return meta, checked(dest, meta['model']), [checked(dest, row) for row in meta['weights']]
+    return meta, sized_file(dest, meta['model']), [sized_file(dest, row) for row in meta['weights']]
 
 
 def compile_template(run, bundle, step, graph, raw, ddk, diagnosis, root):
@@ -329,7 +329,8 @@ def execute(run, bundle, meta, graph, raw, ddk, diagnosis, config, *, recovery=N
                     checkpoints = []
             if i >= len(checkpoints):
                 result = run_v2(stage, name, model, operands, paths, build['outputs'], runtime,
-                                external_weights=weights, fixture_sha256=fixture_hash,
+                                external_weights=weights, build_records=(build['model'], build.get('weights', [])),
+                                fixture_sha256=fixture_hash,
                                 slot_config=config if len(operands) > 1 or len(build['outputs']) > 1 else None)
             for s, r in zip(build['outputs'], result['outputs'], strict=True):
                 if r['bytes'] != s['bytes']:

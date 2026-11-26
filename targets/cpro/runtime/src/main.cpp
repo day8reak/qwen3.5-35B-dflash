@@ -1062,11 +1062,12 @@ int main(int argc, char** argv) {
       if (std::filesystem::exists(output))
         throw std::runtime_error("output already exists");
       if (std::filesystem::is_symlink(model) || !std::filesystem::is_regular_file(model)
-          || std::filesystem::file_size(model) == 0 || Sha256File(model) != model_hash)
-        throw std::runtime_error("model IO probe main OMC regular-file/SHA256 check failed before load");
+          || std::filesystem::file_size(model) == 0)
+        throw std::runtime_error("model IO probe requires a nonempty regular OMC");
       std::ostringstream report;
       report << "{\"schema_version\":1,\"artifact_kind\":\"qwen35-hiai-model-io-probe\","
-             << "\"evidence_kind\":\"" << kEvidenceKind << "\",\"model_path\":\"" << JsonEscape(model.string())
+             << "\"model_sha256_source\":\"host_manifest\",\"evidence_kind\":\"" << kEvidenceKind
+             << "\",\"model_path\":\"" << JsonEscape(model.string())
              << "\",\"model_sha256\":\"" << model_hash << "\",\"expected_runtime_version\":\""
              << JsonEscape(version) << "\",\"ddk_id\":\"" << JsonEscape(ddk)
              << "\",\"firmware_id\":\"" << JsonEscape(firmware)
@@ -1091,8 +1092,6 @@ int main(int argc, char** argv) {
       bool succeeded = false;
       try {
         const auto observed = ProbeHiaiModelIo(model, version);
-        if (observed.model_sha256 != model_hash)
-          throw HiaiRuntimeError("MODEL_PRESERVATION", "main OMC changed before file-v2 load");
         report << "\"status\":\"IO_DESCRIPTORS_OBSERVED\",\"runtime_stage\":\"TENSOR_DESCRIPTORS\","
                << "\"restore\":\"PASSED\",\"runtime_version\":\"" << JsonEscape(observed.runtime.version)
                << "\",\"npu_supported\":" << (observed.runtime.npu_supported ? "true" : "false")

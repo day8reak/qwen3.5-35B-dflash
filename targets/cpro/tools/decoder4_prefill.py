@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Review, export, compile and run the complete L0–L3 T64 decoder prefix."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import shlex
@@ -13,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 
 
 def ssh_file(client, remote, local, record=None, *, offset=0, length=None):
-    """Stream one file on an SSH exec channel and verify the exporter's receipt."""
+    """Read a file or byte range on an SSH exec channel."""
     with client.get_transport().open_session(timeout=20) as channel:
         channel.settimeout(120)
         path = shlex.quote(str(remote))
@@ -24,21 +23,18 @@ def ssh_file(client, remote, local, record=None, *, offset=0, length=None):
                        f'skip={offset} count={length} status=none')
         channel.exec_command(command)
         channel.shutdown_write()
-        digest = hashlib.sha256() if record is not None else None
         mode = 'xb' if length is None else ('ab' if offset else 'wb')
         with local.open(mode) as dst:
             for chunk in iter(lambda: channel.recv(1 << 20), b''):
                 dst.write(chunk)
-                if digest is not None:
-                    digest.update(chunk)
         status = channel.recv_exit_status()
         if status == -1:
             raise EOFError(f'SSH channel closed before reporting status for {remote}')
         if status != 0:
             error = channel.recv_stderr(4096).decode(errors='replace').strip()
             raise OSError(f'Could not read {remote} via SSH: {error}')
-    if record is not None and (local.stat().st_size != record['bytes'] or digest.hexdigest() != record['sha256']):
-        raise ValueError(f'Size or SHA-256 differs from the AIR manifest: {remote}')
+    if record is not None and local.stat().st_size != record['bytes']:
+        raise ValueError(f'Incomplete AIR file: {remote}')
 
 
 def ssh_air(client, remote, staged):

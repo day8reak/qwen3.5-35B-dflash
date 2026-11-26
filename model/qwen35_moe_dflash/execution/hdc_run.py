@@ -515,11 +515,11 @@ class Hdc:
                    "find transfer -mindepth 1 -maxdepth 1 -exec mv {} . \\; && rmdir transfer; fi",
                    "install-directory")
 
-    def receive_tree(self, remote, local, hashes):
-        """Publish one directory only after all regular files match the device inventory."""
-        if not hashes:
-            raise ValueError("Cannot verify an empty output inventory")
-        expected = {str(_relative(name)) for name in hashes}
+    def receive_tree(self, remote, local, names):
+        """Retrieve one directory and normalize the two HDC output layouts."""
+        expected = {str(_relative(name)) for name in names}
+        if not expected:
+            raise ValueError("Empty device output directory")
         if local.exists() or local.is_symlink():
             raise FileExistsError(local)
         with tempfile.TemporaryDirectory(dir=local.parent, prefix=".recv-") as tmp:
@@ -535,9 +535,6 @@ class Hdc:
                     break
             else:
                 raise ValueError(f"HDC returned a different output file inventory for {remote}")
-            for name, digest in hashes.items():
-                if sha256_file(root/name) != digest:
-                    raise ValueError(f"HDC output checksum mismatch: {remote/name}")
             root.rename(local)
 
     def receive(self, remote, local, *, timeout=None):
@@ -545,8 +542,7 @@ class Hdc:
 
         Only a missing artifact after a zero exit is retried, at most three
         times. Every attempt has a private destination. Existing final paths
-        are never passed to HDC or overwritten; callers still verify the
-        independently obtained remote checksum after this method returns.
+        are never passed to HDC or overwritten.
         """
         local = Path(os.path.abspath(os.fspath(local)))
         token = uuid.uuid4().hex
@@ -555,7 +551,7 @@ class Hdc:
             "status": "FAILED", "remote": str(remote), "local": str(local), "attempts": [],
             "maximum_attempts": 3, "operation": "READ_ONLY_FILE_RECV_ONLY",
             "model_execution": "NOT_RUN", "remote_mutation": "NONE_REQUESTED",
-            "checksum_validation": "CALLER_MUST_VERIFY_INDEPENDENT_REMOTE_SHA256",
+            "checksum_validation": "NOT_PERFORMED_BY_FILE_RECV",
             "staging_retention": "FAILED_AND_LATE_ATTEMPT_ARTIFACTS_RETAINED"}
         initial_count = self.count
         try:

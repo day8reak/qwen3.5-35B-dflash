@@ -20,7 +20,7 @@ from qwen35_moe_dflash.target.prefill_t64.whole_run import hiai_failure_stage
 
 
 def payload(stage, receipt):
-    # run_v2 completes the board's sha256sum -c before starting the V2 tool.
+    # The host records which compiled files it submitted to HDC.
     files = {}
     for line in (stage / 'files.sha256').read_text().splitlines():
         digest, name = line.split('  ', 1)

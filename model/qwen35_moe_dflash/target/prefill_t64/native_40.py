@@ -6,7 +6,7 @@ import tempfile
 
 import numpy as np
 
-from ..layer_probe.common import checked, identity, read_array, save_json, sha
+from ..layer_probe.common import identity, read_tensor, save_json, sha, sized_file
 from .chain_reference import YAML_BASIS, LAYERS
 from .decoder_four_boundary import output_roles, output_shape, state_roles
 from .l0_split import YAML_CPU_BASIS, score
@@ -56,10 +56,10 @@ def pack_goldens(reference, run, work):
                 if tuple(row['shape']) != output_shape(name) or row['dtype'] not in ('float16', 'float32'):
                     raise ValueError(f'{backend}: unexpected {name} descriptor {row}')
                 dest = Path('golden') / backend / (name + '.bin')
-                shutil.copyfile(checked(folder, row), work / dest)
+                shutil.copyfile(sized_file(folder, row), work / dest)
                 records[backend][name] = dict(row, path=str(dest))
     token_file = work / 'golden/token-text.json'
-    shutil.copyfile(checked(reference, ref['token_text_map']), token_file)
+    shutil.copyfile(sized_file(reference, ref['token_text_map']), token_file)
     return records, identity(token_file, work)
 
 
@@ -77,13 +77,16 @@ def compare(bundle, replay, write_matrices):
     pairs = {b: {r: {} for r in ('cpu', '310p', 'cpro')} for b in ('cpu', '310p', 'cpro')}
     predictions = {}
     valid = meta['fixture']['valid_rows']
-    pieces = read(checked(bundle, meta['tokens']))['pieces']
+    pieces = read(sized_file(bundle, meta['tokens']))['pieces']
     if len(pieces) != output_shape('logits')[-1]:
         raise ValueError('Vocabulary and single-token decode table sizes differ')
     for name, spec, record in zip(roles, io['outputs'], result['outputs'], strict=True):
         shape = output_shape(name)
-        actual = read_array(replay, dict(record, dtype=spec['dtype'], shape=spec['shape'])).reshape(shape)
-        values = {b: read_array(bundle, meta['goldens'][b][name]) for b in ('cpu', '310p')}
+        actual = read_tensor(sized_file(replay, record), spec).reshape(shape)
+        values = {}
+        for backend in ('cpu', '310p'):
+            golden = meta['goldens'][backend][name]
+            values[backend] = read_tensor(sized_file(bundle, golden), golden)
         values['cpro'] = actual
         if name == 'logits':
             for b, logits in values.items():

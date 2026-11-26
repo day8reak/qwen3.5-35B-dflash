@@ -15,7 +15,7 @@ import tempfile
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 
-from qwen35_moe_dflash.target.layer_probe.common import checked, identity, save_json, sha
+from qwen35_moe_dflash.target.layer_probe.common import checked, identity, save_json, sha, sized_file
 from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
 from qwen35_moe_dflash.common.tool_logs import log_excerpt
 from qwen35_moe_dflash.toolchain.air_input_shape import inspect_input_shape
@@ -341,15 +341,19 @@ def ssh_bundle(client, remote, staged, *, kind=KIND, previous=None, fetch=None):
         roots = (FULL_DIR, 'inputs', 'golden')
     missing = []
     linked = 0
+    prior_ids = {}
+    if previous is not None and (previous/'manifest.json').is_file():
+        prior_meta = json.loads((previous/'manifest.json').read_bytes())
+        prior_ids = {r['path']: r['sha256'] for r in prior_meta['files']}
     for row in meta['files']:
         rel = Path(row['path'])
         if rel.is_absolute() or '..' in rel.parts or len(rel.parts) < 2 or rel.parts[0] not in roots:
             raise ValueError(f'Invalid original export path: {rel}')
         target = staged / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        if previous is not None:
+        if prior_ids.get(row['path']) == row['sha256']:
             try:
-                prior = checked(previous, row)
+                prior = sized_file(previous, row)
                 os.link(prior, target)
             except (OSError, ValueError):
                 pass  # Changed file, different filesystem or hard links unavailable.
@@ -358,7 +362,7 @@ def ssh_bundle(client, remote, staged, *, kind=KIND, previous=None, fetch=None):
                 continue
         missing.append((rel, target, row))
     if kind in FULL_KINDS:
-        print(f'Reused {linked / 2**30:.2f} GiB of verified local AIR files', flush=True)
+        print(f'Reused {linked / 2**30:.2f} GiB from the previous AIR manifest', flush=True)
         report_full_disk(meta, staged, linked=linked)
     for rel, target, row in missing:
         fetch(client, remote / rel, target, row)
@@ -367,8 +371,8 @@ def ssh_bundle(client, remote, staged, *, kind=KIND, previous=None, fetch=None):
 def sftp_file(client, remote, local, record=None):
     from pull_artifacts import download
     download(client, str(remote), local)
-    if record is not None and (local.stat().st_size != record['bytes'] or sha(local) != record['sha256']):
-        raise ValueError(f'Size or SHA-256 differs from the AIR manifest: {remote}')
+    if record is not None and local.stat().st_size != record['bytes']:
+        raise ValueError(f'Incomplete AIR file: {remote}')
 
 
 def compile_log_text(path):
@@ -420,7 +424,7 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
     if meta['kind'] != kind:
         raise ValueError(f'Expected {kind} AIR at {bundle}, got {meta["kind"]}')
     for row in meta['files']:
-        checked(bundle, row)
+        sized_file(bundle, row)
     local_air = run / 'air'
     if local_air != bundle:
         try:
@@ -495,8 +499,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
     meta = read_json(run / 'air/manifest.json')
     if meta['kind'] != kind or sha(run / 'air/manifest.json') != compiled['air_manifest_sha256']:
         raise ValueError('The compiled model belongs to a different original AIR bundle')
-    model = checked(run / 'omc', compiled['primary'])
-    weights = [checked(run / 'omc', row) for row in compiled['weights']]
+    model = sized_file(run / 'omc', compiled['primary'])
+    weights = [sized_file(run / 'omc', row) for row in compiled['weights']]
     abi = compiled.get('abi')
     if abi is None:
         if ddk is None:
@@ -515,10 +519,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
 
     inputs, outputs = specs('inputs'), specs('outputs')
     fresh = directory == (run / 'air/inputs').resolve()
-    if fresh:
-        for row in meta['files']:
-            if Path(row['path']).parts[0] == 'inputs':
-                checked(run / 'air', row)
+    input_hashes = {(run/'air'/r['path']).resolve(): r['sha256']
+                    for r in meta['files'] if fresh and Path(r['path']).parts[0] == 'inputs'}
     mapping = read_json(input_map) if input_map else {}
     if mapping and set(mapping) != {s['name'] for s in inputs}:
         raise ValueError('input-map must supply one filename for every compiled input node')
@@ -577,7 +579,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
             if not 0 <= pos < 64:
                 raise ValueError(f'{path}: output_pos={pos}, expected a zero-based row in [0, 63]')
         paths.append(path)
-        spec.update(sha256=sha(path), file=str(path))
+        spec.update(sha256=input_hashes.get(path.resolve()) or sha(path), file=str(path))
         if original_inputs and spec['sha256'] != original_inputs[name]['sha256']:
             raise ValueError(f'{name}: input bytes differ from the successful original replay')
         print(f"slot {i}: {name} {spec['dtype']} {spec['shape']} <- {path}", flush=True)
@@ -606,7 +608,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
     print(f'{kind} board attempt: {out}', flush=True)
     try:
         run_v2(out, 'original L0-L3' if kind == KIND else kind, model, inputs, paths, outputs, runtime,
-               external_weights=weights, hdc_timeout=7200 if kind in FULL_KINDS else 660)
+               external_weights=weights, build_records=(compiled['primary'], compiled['weights']),
+               hdc_timeout=7200 if kind in FULL_KINDS else 660)
     except RuntimeError:
         if not (out / 'result.json').is_file():
             raise

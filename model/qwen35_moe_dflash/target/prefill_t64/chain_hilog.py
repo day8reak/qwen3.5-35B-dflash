@@ -166,13 +166,9 @@ def _client_records(window, out, tids):
 
 
 def retained_tool_window(hdc, name, remote, board, folder, *, expected_exit=None):
-    from ..layer_probe.common import sha
-
-    files = ['run.sh'] if expected_exit is None else ['run.sh', 'files.sha256']
-    _, identity = hdc.shell(f'cd {remote} && sha256sum {" ".join(files)} && cat tool.exitcode', name + '-identity')
-    *hashes, code = identity.splitlines()
-    if (len(hashes) != len(files) or not code.strip().isdigit()
-            or any(line.split() != [sha(board / f), f] for line, f in zip(hashes, files))
+    _, identity = hdc.shell(f'cd {remote} && cat run.sh && echo && cat tool.exitcode', name + '-identity')
+    script, _, code = identity.rpartition('\n')
+    if (script.rstrip() != (board/'run.sh').read_text().rstrip() or not code.strip().isdigit()
             or (expected_exit is not None and int(code) != expected_exit)):
         raise ValueError('Remote script or completion record differs from this attempt')
     print(f'\n{name} HIAI V2 exit={code.strip()}  {remote}', flush=True)

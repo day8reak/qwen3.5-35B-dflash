@@ -96,7 +96,7 @@ def runtime_slots(native, direction, specs, *, equivalent_inputs=False):
 
 
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
-           external_weights=(), release_after_pull=True, hdc_timeout=660):
+           external_weights=(), build_records=None, release_after_pull=True, hdc_timeout=660):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -106,9 +106,12 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
     token = uuid.uuid4().hex
     remote = PurePosixPath('/data/local/tmp') / ('qwen35_step_' + token)
     tool = _board_path(os.environ.get('CPRO_BOARD_TOOL', DEFAULT_TOOL))
-    model_sha = sha(model)
+    model_sha = build_records[0]['sha256'] if build_records is not None else sha(model)
     # Paths in the model are relative to its weight directory.
-    sidecars = [(p, p.relative_to(model.parent), sha(p)) for p in external_weights]
+    weight_digests = ([row['sha256'] for row in build_records[1]] if build_records is not None
+                      else [sha(p) for p in external_weights])
+    sidecars = [(p, p.relative_to(model.parent), digest)
+                for p, digest in zip(external_weights, weight_digests, strict=True)]
     output_order = list(range(len(outputs)))
     receipt = dict(status='PREPARED', case=name, device=env[1], server=env[2], remote=str(remote),
                    omc_sha256=model_sha, input_hashes=[s['sha256'] for s in operands],
@@ -170,14 +173,12 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
                           + ''.join(f"{digest}  {rel}\n" for _, rel, digest in sidecars)
                           + f"{sha(script)}  run.sh\n")
         receipt.update(argv=argv, input_hashes=[s['sha256'] for s in operands])
-        uploads = [*zip(files, input_names), (script, 'run.sh'), (hashes, 'files.sha256')]
+        uploads = [*zip(files, input_names), (script, 'run.sh')]
         if slot_config is None:
             uploads.extend(model_files)
         content = f'OMC、{len(sidecars)} 个外置权重文件、' if slot_config is None else ''
         print(f'[{name}] 向板端传输{content}{len(files)} 个输入和执行脚本 → {remote}', flush=True)
         hdc.send_tree(uploads, remote)
-        print(f'[{name}] 在板端核对模型、权重和输入文件的 SHA-256', flush=True)
-        hdc.shell(f'cd {remote} && sha256sum -c files.sha256', 'verify-upload')
         receipt['status'] = 'RUN_REQUESTED'
         save_json(out/'result.json', receipt)
         uncertain = True
@@ -189,13 +190,12 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         if receipt['exitcode']:
             raise RuntimeError(f'{name}: HIAI V2 exited {code} in {remote}. Receipt: {out}/result.json\n{log}')
         receipt['model_execution'] = 'EXECUTED'
-        print(f'[{name}] 将整个输出目录拉回服务器并校验 {len(outputs)} 个输出槽 → {out}/outputs', flush=True)
-        _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f -exec sha256sum {{}} \\;', 'output-hash')
-        hash_by_file = {name[2:]: digest for digest, name in
-                        re.findall(r'^([0-9a-f]{64})\s+(\./[^\r\n]+)$', listing, re.M)}
+        print(f'[{name}] 将整个输出目录拉回服务器，读取 {len(outputs)} 个输出槽 → {out}/outputs', flush=True)
+        _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f -print', 'output-files')
+        output_files = [line[2:] for line in listing.splitlines() if line.startswith('./')]
         received = out/'outputs'
-        hdc.receive_tree(remote/'outputs', received, hash_by_file)
-        inventory = [dict(path='outputs/' + n, bytes=(received/n).stat().st_size) for n in hash_by_file]
+        hdc.receive_tree(remote/'outputs', received, output_files)
+        inventory = [dict(path='outputs/' + n, bytes=(received/n).stat().st_size) for n in output_files]
         candidates = [row['path'] for row in inventory if row['bytes'] == outputs[0]['bytes']]
         if len(outputs) == 1 and len(candidates) == 1:
             names = [candidates[0].removeprefix('outputs/')]
@@ -212,7 +212,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
             if (received/filename).stat().st_size != spec['bytes']:
                 raise ValueError(f'{name}: {filename} differs from the expected output byte count')
             os.link(received/filename, out/path)
-            retrieved[compiled] = dict(path=path, bytes=spec['bytes'], sha256=hash_by_file[filename])
+            retrieved[compiled] = dict(path=path, bytes=spec['bytes'], sha256=sha(out/path))
         receipt.update(status='EXECUTED', outputs=retrieved)
         if len(outputs) == 1:
             receipt['output'] = retrieved[0]

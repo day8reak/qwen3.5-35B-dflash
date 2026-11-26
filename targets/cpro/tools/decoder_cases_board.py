@@ -11,7 +11,7 @@ from decoder4_prefill import pull_air, ssh_file
 from l0_silu_omcs import write_matrices
 from parse_model_json import GE_PROTO, inspect, read_omc
 from qwen35_moe_dflash.execution.serial_transport import _environment
-from qwen35_moe_dflash.target.layer_probe.common import checked, identity, metrics, read_array, save_json, sha
+from qwen35_moe_dflash.target.layer_probe.common import checked, identity, metrics, read_tensor, save_json, sha, sized_file
 from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, comparison_view, groups, preserved_cache
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import view
@@ -79,7 +79,7 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
     build = read(dest/'build.json')
     if any(build['stamp'].get(k) != v for k, v in stamp.items()):
         raise ValueError(f'{dest}: bundle or OMG changed. Run board again without --recovery.')
-    return build, checked(dest, build['model']), [checked(dest, r) for r in build['weights']]
+    return build, sized_file(dest, build['model']), [sized_file(dest, r) for r in build['weights']]
 
 
 def output_order(descriptors, source, golden):
@@ -115,7 +115,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
         root, row = feeds[role]
         if (row['dtype'], view(row['shape']), row['bytes']) != (spec['dtype'], view(spec['shape']), spec['bytes']):
             raise ValueError(f'{case.name}: {role} compiled input differs from feed: {spec} vs {row}')
-        paths.append(checked(root, row))
+        paths.append(sized_file(root, row))
         operands.append(dict(spec, sha256=row['sha256']))
     names = output_order(build['outputs'], meta['outputs'], golden)
     for role, spec in zip(names, build['outputs'], strict=True):
@@ -141,11 +141,12 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
             shutil.rmtree(folder)
         folder.mkdir()
         result = run_v2(folder, case.name, model, operands, paths, build['outputs'], runtime,
-                        fixture_sha256=stamp, external_weights=weights, release_after_pull=True, hdc_timeout=7200)
+                        fixture_sha256=stamp, external_weights=weights, build_records=(build['model'], build['weights']),
+                        release_after_pull=True, hdc_timeout=7200)
         save_json(saved, dict(binding=key, replay=folder.name, receipt=identity(folder/'result.json', folder)))
     values = {}
     for role, spec, row in zip(names, build['outputs'], result['outputs'], strict=True):
-        checked(folder, row)
+        sized_file(folder, row)
         values[role] = (folder, dict(row, dtype=spec['dtype'], shape=golden[role]['shape']))
     return values
 
@@ -170,7 +171,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
     from decoder_handoff import runtime_file
     for row in manifest['files']:
         if step != 'execute' or runtime_file(row['path']):
-            checked(bundle, row)
+            sized_file(bundle, row)
     fixture = bundle/'fixture'
     ref = read(fixture/'reference.json')
     length = ref['prompt_length']
@@ -202,10 +203,11 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
             raise
         feeds['hidden'] = values[f'hidden_{group[-1]}']
         for role, (folder, row) in values.items():
-            arrays = {'cpu': read_array(fixture, ref['cpu'][role]), '310p': read_array(fixture, ref['outputs'][role]),
-                      'cpro': read_array(folder, row)}
+            sources = {'cpu': (fixture, ref['cpu'][role]), '310p': (fixture, ref['outputs'][role]), 'cpro': (folder, row)}
+            arrays = {key: read_tensor(sized_file(root, spec), spec) for key, (root, spec) in sources.items()}
             if role.startswith(('key_cache_', 'value_cache_')):
-                before = read_array(fixture, ref['inputs'][role])
+                initial = ref['inputs'][role]
+                before = read_tensor(sized_file(fixture, initial), initial)
                 unchanged[role] = {b: preserved_cache(x, before, phase, length) for b, x in arrays.items()}
                 if not all(unchanged[role].values()):
                     failures.append(role + '/unwritten_slots')
