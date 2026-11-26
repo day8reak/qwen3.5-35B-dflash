@@ -120,11 +120,18 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
         raise ValueError('Expected the measured FP16 decoder entry [1,64,2048]')
     # Compare at the diagnostic graph's FP16 boundary. The original graph still receives both raw files.
     entry = (quant_embed.astype(np.float32) * embed_scale).astype(np.float16)
-    changes = int(np.count_nonzero(entry[:, :valid].view(np.uint16) != measured[:, :valid].view(np.uint16)))
+    different = entry.view(np.uint16) != measured.view(np.uint16)
+    changes = int(np.count_nonzero(different[:, :valid]))
     print(f'Original embedding * scale, rounded to FP16 vs 310P layer entry: {changes}/{valid*2048} changed')
+    tail = {}
+    if physical_history:
+        count = int(np.count_nonzero(different[:, -4:]))
+        tail['physical_tail_embedding_changed_fp16_elements'] = count
+        print(f'L0 入口（主机重建 embedding × scale → FP16）与 310P 实测 hidden：'
+              f'物理行 60–63 有 {count}/8192 个元素位模式不同。', flush=True)
     return dict(reference_sha256=sha(index), token_sha256=digest,
                 reference_inputs={k: meta['inputs'][entry_name if k == 'embedding' else k]['sha256'] for k in REFERENCE_INPUT_NAMES},
-                valid_rows=valid, conv_state_control=policy,
+                valid_rows=valid, conv_state_control=policy, **tail,
                 **({'prompt': meta['prompt'], 'embedding_changed_fp16_elements': changes} if yaml_prompt
                    else {'valid19_embedding_changed_fp16_elements': changes}))
 

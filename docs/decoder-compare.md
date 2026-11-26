@@ -99,6 +99,8 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 模型使用 FP16 `SiluPatch` 和原生 `F.softplus`。导出检查 14 个 `SiluPatch` 和 0 个 `SoftplusPatch`，包括 L0–L2 的 6 个卷积与门控激活，以及四层 MoE 的 8 个激活。在同一用例目录保留了基线的成功执行记录时，运行器还会对照两次运行的输入槽位。
 
+四个调用位置均直接使用 `torch.ops.npu.silu_patch`，传入连续 FP16 张量，算子返回同形状的 FP16 张量。GDN 卷积的激活以 FP16 送入 Q/K/V 分支。RMSNorm 门控的激活显式转回 FP32 再相乘。共享专家和路由专家将激活转回对应投影的 dtype 再相乘。旧版个人源码里的标准 SiLU 包装函数会在四层导出副本中展开；`export/package/L00-L03/source.diff` 可查看 `--silu-only` 或 `--physical-convstate` 实际采用的修改。
+
 V2 执行完毕后，终端以 `PASSED` 或 `FAILED_ACCURACY` 打印 `comparison.json` 的路径。精度未达标时会列出未通过项并以状态码 1 退出。加载或执行阶段的异常仍可从该阶段的报错和 `replay/result.json` 定位。
 
 ### 四层只启用 SoftplusPatch
@@ -134,6 +136,8 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 ```
 
 这组命令从相同的对齐源码导出一张四层图。与上一组 softplus-only 相比，新增的 `--physical-convstate` 将 L0–L2 的 `linear_attention_convstate_update` 调用替换为 `torch.cat` 和切片。拼接后的 68 行中，末 4 行写回状态，末 67 行送 Conv2D；四层 AIR 接口随之去掉 `conv_state_pos`。有效长度仍传给 GDR。导出日志列出原更新算子数（预期 0）和显式拼接的缓存数（预期 3）。
+
+要在这个已执行的配置上单独观察启用自定义 SiLU 对模型加载的影响，两端只去掉 `--softplus-only`。默认的两种自定义激活都会启用，预期 AIR 含 14 个 `SiluPatch` 和 3 个 `SoftplusPatch`。两次都用相同的四层 golden、Conv2D 和物理尾部 ConvState。若板端生成了矩阵，即已完成加载与推理；`FAILED_ACCURACY` 单独记录精度结果。
 
 默认对齐源码对原 CPro 的其他修改如下。
 

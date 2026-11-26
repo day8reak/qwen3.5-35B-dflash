@@ -38,7 +38,8 @@ def convert_{name}(x: Tensor):
 
 '''
 
-MODEL_HELPERS = '''def silu_patch(x):
+# Recognize previously generated editable source trees when preparing a four-layer run.
+_OLD_SILU_HELPERS = '''def silu_patch(x):
     return torch.ops.npu.silu_patch(x.to(torch.float16).contiguous())
 
 
@@ -49,16 +50,51 @@ def silu_same_dtype(x):
 '''
 
 
-SILU_CALLS = (
-    ('F.silu(gate.to(torch.float32))', 'silu_patch(gate).to(torch.float32)'),
-    ('F.silu(conv_out)', 'silu_same_dtype(conv_out)'),
-    ('self.act_fn = ACT2FN[config.hidden_act]',
-     "self.act_fn = silu_same_dtype if config.hidden_act in ('silu', 'swish') else ACT2FN[config.hidden_act]"),
-    ("self.act_fn = ACT2FN['silu']", 'self.act_fn = silu_same_dtype'),
-)
+_CONV_SILU = 'torch.ops.npu.silu_patch(conv_out.to(torch.float16).contiguous())'
+_GATE = ('F.silu(gate.to(torch.float32))',
+         'torch.ops.npu.silu_patch(gate.to(torch.float16).contiguous()).to(torch.float32)')
+_CONV = ('F.silu(conv_out)', _CONV_SILU + '.to(conv_out.dtype)')
+_SHARED_ACT = ('self.act_fn = ACT2FN[config.hidden_act]',
+               "self.act_fn = None if config.hidden_act in ('silu', 'swish') else ACT2FN[config.hidden_act]")
+_SHARED = ('return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))',
+           '''gate = self.gate_proj(x)
+        if self.act_fn is None:
+            gate = torch.ops.npu.silu_patch(gate.to(torch.float16).contiguous()).to(gate.dtype)
+        else:
+            gate = self.act_fn(gate)
+        return self.down_proj(gate * self.up_proj(x))''')
+_ROUTED = ('self.act_fn(x1) * x2',
+           'torch.ops.npu.silu_patch(x1.to(torch.float16).contiguous()).to(x1.dtype) * x2')
+SILU_CALLS = (_GATE, _CONV, _SHARED_ACT, _SHARED, _ROUTED)
 SOFTPLUS_CALL = ('F.softplus(a.float() + self.dt_bias)',
                  'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).to(torch.float16).contiguous()).float()')
-CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])', 'silu_same_dtype(out[:, :, -seq_len:])')
+CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])',
+                    'torch.ops.npu.silu_patch(out[:, :, -seq_len:].to(torch.float16).contiguous()).to(out.dtype)')
+
+
+def inline_old_silu(model):
+    """Inline this adapter's old wrappers in the export copy of an editable model."""
+    if _OLD_SILU_HELPERS not in model:
+        return model
+    model = model.replace(_OLD_SILU_HELPERS, '')
+    for old, new in (('silu_patch(gate).to(torch.float32)', _GATE[1]),
+                     ('silu_same_dtype(conv_out)', _CONV[1]),
+                     ('qkv_conv = silu_patch(conv_out)', 'qkv_conv = ' + _CONV_SILU),
+                     ('silu_same_dtype(out[:, :, -seq_len:])', CONV_HELPER_CALL[1])):
+        model = model.replace(old, new)
+    for wrapped, assignment, call in (
+            ("self.act_fn = silu_same_dtype if config.hidden_act in ('silu', 'swish') else ACT2FN[config.hidden_act]",
+             _SHARED_ACT[1], _SHARED),
+            ('self.act_fn = silu_same_dtype', "self.act_fn = ACT2FN['silu']", _ROUTED)):
+        if wrapped in model:
+            if model.count(call[0]) != 1:
+                raise ValueError(f'Cannot inline SiLU in the editable model: expected one {call[0]!r}')
+            model = model.replace(wrapped, assignment).replace(*call)
+    import ast
+    if any(isinstance(node, ast.Name) and node.id in ('silu_patch', 'silu_same_dtype')
+           for node in ast.walk(ast.parse(model))):
+        raise ValueError('The editable model has an additional call to a legacy SiLU wrapper')
+    return model
 
 
 def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplus=False):
@@ -73,11 +109,10 @@ def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplu
     if keep_silu:
         return exporter, model
     exporter = exporter.replace(activation_registration('silu_patch', GE_TYPE), '')
-    model = model.replace(MODEL_HELPERS, '')
-    # The aligned GDR converter requires half Q/K/V even when conv_out is FP32.
-    model = model.replace('qkv_conv = silu_patch(conv_out)', 'qkv_conv = F.silu(conv_out).to(torch.float16)')
     for original, patched in (*SILU_CALLS, CONV_HELPER_CALL):
         model = model.replace(patched, original)
+    # The aligned GDR converter requires half Q/K/V even when conv_out is FP32.
+    model = model.replace(_CONV_SILU, 'F.silu(conv_out).to(torch.float16)')
     for symbol in ('silu_patch', 'silu_same_dtype', GE_TYPE):
         if symbol in model or symbol in exporter:
             raise ValueError(f'Unsupported activation edit in selected CPro source: {symbol} remains')
@@ -105,10 +140,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
         registration += activation_registration("softplus_patch", "SoftplusPatch")
     edits = {
         EXPORTER: [(gdr_meta, registration + gdr_meta)],
-        MODELING: [
-            ('def rotate_half(', MODEL_HELPERS + 'def rotate_half('),
-            *SILU_CALLS,
-        ],
+        MODELING: list(SILU_CALLS),
     }
     if aligned or l0:
         edits[MODELING].append(SOFTPLUS_CALL)
@@ -130,7 +162,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
 
             # Keep the native wrapper and readout.
             # Feed GDR the FP16 activation that the custom SiLU already produced.
-            changes = [('qkv_conv = silu_same_dtype(conv_out)', 'qkv_conv = silu_patch(conv_out)')]
+            changes = [('qkv_conv = ' + _CONV[1], 'qkv_conv = ' + _CONV_SILU)]
             if native_convstate or layers != 40:
                 changes.append(('F.conv1d(padded, self.conv1d.weight,',
                                 'F.conv1d(padded.to(self.conv1d.weight.dtype), self.conv1d.weight,'))

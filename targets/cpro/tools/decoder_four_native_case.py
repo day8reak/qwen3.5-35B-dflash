@@ -20,7 +20,9 @@ from qwen35_moe_dflash.target.original_target_source import WRAPPER
 from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air
-from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import MODELING, inspect_activation_air, restore_native_activations
+from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import (
+    MODELING, inline_old_silu, inspect_activation_air, restore_native_activations,
+)
 from qwen35_moe_dflash.target.prefill_t64.source_model import adapt_four_layer_convolution
 
 
@@ -30,8 +32,10 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
     text = entry.read_text()
     # Editable sources generated before multi-depth export counted 30 GDR calls even at L=4.
     old = 'with cpro_export_contracts(True, chunk_size=64, gdn_layers=30):'
+    base_model = (prepared/MODELING).read_text()
+    model = inline_old_silu(base_model)
     restore_activations = native_activations or silu_only or softplus_only
-    edit_model = restore_activations or physical_convstate
+    edit_model = restore_activations or explicit_conv2d or physical_convstate or model != base_model
     if old not in text and not edit_model:
         return entry
     overlay = work/'source'
@@ -43,7 +47,6 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
             for module in path.iterdir():
                 if module.name not in (Path(MODELING).name, '__pycache__'):
                     (models/module.name).symlink_to(module.resolve(), target_is_directory=module.is_dir())
-            model = (prepared/MODELING).read_text()
             if restore_activations:
                 text, model = restore_native_activations(text, model, keep_silu=silu_only, keep_softplus=softplus_only)
             if explicit_conv2d or physical_convstate:
@@ -102,6 +105,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                       '  默认对齐源码补丁：L3 RoPE 按 position_ids 取表，FP32 旋转 Q/K 后转回 hidden dtype；'
                       'W4 matmul 使用 FP16 权重 scale 和逐 token scale；GDR 使用 FP16 算子端口；'
                       'MoE 使用量化后的 INT8 激活并对齐门控 dtype。', flush=True)
+            if physical_convstate or silu_only:
                 with (case/'source.diff').open('w', encoding='utf-8') as changes:
                     for name in (EXPORTER, MODELING, WRAPPER, 'utils.py'):
                         base = source/name
@@ -114,9 +118,11 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
             else:
                 env['QWEN35_SILU_SHAPES'] = str(trace)
                 if silu_only:
-                    print(f'[L00-L03] {prepared}：使用 FP16 SiluPatch 和原生 Softplus', flush=True)
+                    print(f'[L00-L03] {prepared}：直接调用 torch.ops.npu.silu_patch，FP16 输入和输出；使用原生 Softplus', flush=True)
                 elif softplus_only:
                     print(f'[L00-L03] {prepared}：使用原生 SiLU 和 FP16 SoftplusPatch', flush=True)
+                else:
+                    print(f'[L00-L03] {prepared}：使用 FP16 SiluPatch 和 FP16 SoftplusPatch', flush=True)
         print(f'[L00-L03] 使用原 CPro wrapper 导出四层 T64 AIR\n(cd {work} && {shlex.join(argv)})', flush=True)
         subprocess.run(argv, cwd=work, env=env, check=True)
         (work/EXPORT_DIR).rename(case/EXPORT_DIR)
