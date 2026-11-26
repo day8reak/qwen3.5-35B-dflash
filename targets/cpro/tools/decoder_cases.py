@@ -279,7 +279,10 @@ def worker(args, action, root, remote):
              'diagnose': '读取已失败的板端运行日志', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
     if getattr(args, 'gate_probe', False):
         label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
-        if args.gate_probe == 'report':
+        if args.gate_probe == 'l0-steps':
+            label = {'reference': '采集 L0 真实 310P 中间量并计算 CPU 对照', 'compile': '从四层 AIR 导出 L0 中间量并编译',
+                     'execute': '使用四层真实输入上板，按计算顺序生成 L0 三端矩阵'}[action]
+        elif args.gate_probe == 'report':
             label = '对照四层和门控小图的已有 AIR、编译日志及上板记录'
         elif args.gate_probe == 'gdn-bisect':
             label = {'compile': '从已有单层 GDN AIR 分段切图并编译 OMC',
@@ -335,10 +338,13 @@ def main():
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
-                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect'), help=argparse.SUPPRESS)
+                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps'), help=argparse.SUPPRESS)
     a = parser.parse_args()
+    probe_actions = ('compile', 'execute', '_compile', '_execute')
+    if a.gate_probe == 'l0-steps':
+        probe_actions += ('golden', '_reference')
     if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
-                         a.action not in ('compile', 'execute', '_compile', '_execute')):
+                         a.action not in probe_actions):
         parser.error('gate-probe uses the existing four-layer T64 prefill export')
     if any(getattr(a, name) for name in FOUR_LAYER_CONTROLS):
         if (a.mode, a.phase) != ('4', 'prefill'):
@@ -404,6 +410,14 @@ def main():
     if a.action.startswith('_'):
         a.action = a.action[1:]
         if a.gate_probe:
+            if a.gate_probe == 'l0-steps':
+                if a.action == 'reference':
+                    from l0_accuracy_reference import prepare
+                    prepare(root, *source_config('reference'))
+                    return 0
+                from l0_accuracy_report import run
+                ddk, config, _ = board_config(a.action)
+                return 0 if run(root, remote, a.action, ddk, config, a) else 1
             if a.gate_probe == 'report':
                 from decoder_gate_report import report
                 report(root)
@@ -449,7 +463,7 @@ def main():
             if os.getenv(key) and Path(os.environ[key]).expanduser().resolve().is_relative_to(root):
                 raise ValueError(f'{key} must be outside the replaceable result directory {root}')
         if a.action == 'diagnose' or a.gate_probe:
-            worker(a, a.action, root, remote)
+            worker(a, 'reference' if a.action == 'golden' else a.action, root, remote)
             return 0
         if (a.native_activations or a.silu_only or a.softplus_only) and a.action in ('board', 'compile', 'execute', 'transfer'):
             from decoder_four_inputs import remember_original_inputs

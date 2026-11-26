@@ -633,14 +633,15 @@ def slice_air(raw, step, wires):
         del op.dst_index[:]
         body.append(op)
     out = type(net)(name=net.name, type='NetOutput', id=net.id)
-    for edge in step['outputs']:
-        out.input.append(edge)
+    results = [bindings[e]+':0' if e in bindings else e for e in step['outputs']]
+    for edge, producer in zip(step['outputs'], results, strict=True):
+        out.input.append(producer)
         w = wires[edge]
         if w['shape'] is None:
             # The original producer and its exact operands are retained. OMG
             # infers this NetOutput as it would an original intermediate readout.
             desc = out.input_desc.add()
-            desc.CopyFrom(descriptor({op.name: op for op in body}, edge))
+            desc.CopyFrom(descriptor({op.name: op for op in body}, producer))
             if w['dtype']:
                 desc.dtype = codes[DTYPES[w['dtype']]].number
         else:
@@ -648,5 +649,5 @@ def slice_air(raw, step, wires):
     del graph.op[:]
     graph.op.extend([*body, out])
     graph.input[:] = [name + ':0' for name in bindings.values()]
-    graph.output[:] = [f'{out.name}:{i}' if via_net else e for i, e in enumerate(step['outputs'])]
+    graph.output[:] = [f'{out.name}:{i}' if via_net else e for i, e in enumerate(results)]
     return msg.SerializeToString(deterministic=True)

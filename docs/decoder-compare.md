@@ -344,3 +344,14 @@ bash targets/cpro/scripts/decoder_compare.sh diagnose --mode 4 --phase prefill
 先取日志再重跑，同名板端工作目录会在下次运行时覆盖。诊断使用本次板端时间和工具线程号关联客户端 PID，再查找 hiaiserver 同一请求的加载错误。运行输出会打印报告、完整时间窗口和匹配的客户端日志路径。
 
 四层 V2 返回成功而精度失败时，同一条 `diagnose` 命令离线读取保留的运行包，输出有效行的 embedding 重建差异和卷积控制量。保留了原生卷积 AIR 时还会打印 L0 QKV matmul 的输入与 scale 端口。
+
+### 四层 T64 实际输入下的 L0 逐步精度
+
+保留已运行的 `4-prefill-t64`。这组诊断使用其中的四层 AIR、物理尾部 ConvState、Conv2D 和自定义激活，支持 RMS 门控的 `[64,4096]` 视图。两台机器使用同一版仓库。
+
+1. 在 CPU、310P golden 生成环境执行 `bash targets/cpro/scripts/decoder_compare.sh l0-steps-reference`。脚本用原 YAML 的 prompt 再取一次 L0 的实际张量，对齐四层 fixture 的 token、输入 hidden 和两个返回缓存，并在 CPU 上用原 W4 权重独立计算。
+2. 在合设的 CPro OMC 生成及板端执行环境执行 `bash targets/cpro/scripts/decoder_compare.sh l0-steps`。它从现有 AIR 切出六组观测，从原始 embedding、scale、初始状态等输入算到观测点。参考文件沿用已有 SSH 配置或 `DECODER_GOLDEN_LOCAL_ROOT` 挂载。单独重跑已编译的诊断 OMC 可用 `decoder_compare.sh execute --gate-probe l0-steps --mode 4 --phase prefill`。
+
+结果在 `$AI_RUN_DIR/target/tests/4-prefill-t64/board/L00-L03/l0-steps/`。每个变量的说明和三端矩阵在 `cosine.txt`、`error_ratio.txt`，相对 L2 在 `matrices.csv`。先看 `comparison.json` 的 `four_layer_cache_control`，其中 `exact` 表示诊断切图与四层板端返回的同一个 L0 缓存逐元素相等。随后看 `first_cos_or_l2_crossing_by_group` 以及对应的上游张量；筛选条件为有效行余弦 ≤ 0.99 或相对 L2 ≥ 0.05。观测值包含上游累积误差，额外导出中间量也可能改变 OMG 优化。缺失、编译失败或无法对齐的项目列在 `missing`。
+
+`validN` 取 YAML prompt 的有效 token。`physical60_63` 单列最后四行，供对照按物理尾部更新的 ConvState。`expert_ids` 按每个 token 的专家集合计算，`route_weights` 按专家编号展开。专家内部的两次矩阵乘和 SwiGLU 只比较三端共同选中的同一 token 和 expert，范围名给出共同路由数与总数。310P 的融合 SwiGLU 只直接暴露乘积。GDR 取融合算子的实际入参、core 和最终状态。

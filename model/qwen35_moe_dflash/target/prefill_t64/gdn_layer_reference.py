@@ -21,7 +21,7 @@ from .gdr_stage_capture import observe_norm
 from .qkv_silu import STAGE as CONV_SILU, observe_conv
 
 
-def capture(source, config, observe_gdr):
+def capture(source, config, observe_gdr, *, input_ids=None, valid_rows=19, observe_block=None):
     import torch_npu
     import yaml
 
@@ -50,8 +50,9 @@ def capture(source, config, observe_gdr):
             def verify_prompt(mod, args, kw):
                 ids = cpu(bound(mod, args, kw)['input_ids']).numpy().astype('<i4')
                 digest = hashlib.sha256(ids.tobytes()).hexdigest()
-                if ids.shape != (1,64) or digest != VALID19_IDS_SHA256:
-                    raise ValueError('unexpected T64 valid19 prompt')
+                same_prompt = (digest == VALID19_IDS_SHA256 if input_ids is None else np.array_equal(ids, input_ids))
+                if ids.shape != (1,64) or not same_prompt:
+                    raise ValueError('unexpected T64 prompt tokens')
                 info['prompt_sha256'] = digest
             stack.callback(wrapper.register_forward_pre_hook(verify_prompt, with_kwargs=True).remove)
 
@@ -64,8 +65,8 @@ def capture(source, config, observe_gdr):
                 history, state = vals['past_key_values']
                 for name, value in zip(ENTRY, (x, history, state, vals['effective_length']), strict=True):
                     put(name, value)
-                if observed['length'].tolist() != [19] or observed['history'].any() or observed['state'].any():
-                    raise ValueError('expected fresh T64 prefill with 19 valid rows')
+                if observed['length'].tolist() != [valid_rows] or observed['history'].any() or observed['state'].any():
+                    raise ValueError(f'expected fresh T64 prefill with {valid_rows} valid rows')
             stack.callback(layer.register_forward_pre_hook(enter, with_kwargs=True).remove)
             observe_gdr(wrapper, log, stack, snapshot, layer_index=0)
             observe_conv(layer, snapshot, stack)
@@ -140,7 +141,7 @@ def capture(source, config, observe_gdr):
                 s = snapshot['gdr']
                 call, = log['l0_gdr']['calls']
                 if (call.get('error') or s['attrs'] != dict(chunk_size=64, output_final_state=True,
-                        use_qk_l2norm_in_kernel=True) or s['inputs']['effective_length'].tolist() != [19]):
+                        use_qk_l2norm_in_kernel=True) or s['inputs']['effective_length'].tolist() != [valid_rows]):
                     raise ValueError(f'unexpected 310P GDR call: {call}')
                 for k in ('query','key','value','g','beta'):
                     put(k, s['inputs'][k])
@@ -157,10 +158,13 @@ def capture(source, config, observe_gdr):
                 joined = np.concatenate([observed['history'], observed['qkv'].T[None]], axis=2)
                 if (not np.array_equal(canonical('window', joined[:, :, -67:]), observed['window']) or
                         not np.array_equal(joined[:, :, -4:], observed['new_history']) or
-                        not np.array_equal(cpu(output).reshape(64,2048).numpy()[:19], observed['out'][:19])):
+                        not np.array_equal(cpu(output).reshape(64,2048).numpy()[:valid_rows], observed['out'][:valid_rows])):
                     raise ValueError('NZ physical history or out_proj return differs from the GDN module output')
-                raise Done()
+                if observe_block is None:
+                    raise Done()
             stack.callback(layer.register_forward_hook(leave).remove)
+            if observe_block is not None:
+                observe_block(text.layers[0], stack, Done)
         try:
             run_segment_prefill(entry, config, arm)
         except Done:

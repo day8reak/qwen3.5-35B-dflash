@@ -35,6 +35,10 @@ def input_wire(node, fallback_shape):
 
 
 def probe_cases(raw, meta, mode):
+    if mode == 'l0-steps':
+        from qwen35_moe_dflash.target.prefill_t64.l0_accuracy_air import readouts
+        yield from readouts(raw, meta)
+        return
     if mode == 'gdn-bisect':
         from qwen35_moe_dflash.target.prefill_t64.gdn_layer_air import gdn_load_sections
         yield from gdn_load_sections(raw, meta)
@@ -167,7 +171,7 @@ def compile_cases(folder, case, meta, record, ddk, mode):
     save_json(index, report)
 
 
-def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights, valid_rows=None, board_case=None):
+def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights, valid_rows=None, board_case=None, real_inputs=None):
     build, model, weights = compiled(base, base, None, None, row['source'])
     replay = base/'replay'
     if replay.exists():
@@ -187,6 +191,14 @@ def execute_case(base, row, runtime, config, *, replace_inputs, replace_weights,
             raise ValueError(f'{base.name}: unexpected gate input {spec}')
         path = replay/(name + '.bin')
         role = feeds[name]['name'] if feeds else None
+        if real_inputs is not None:
+            source, records = real_inputs
+            record = records[role]
+            if dtype != record['dtype'] or spec['bytes'] != record['bytes']:
+                raise ValueError(f'{base.name}: {name} and original {role} input descriptors differ')
+            paths.append(sized_file(source, record))
+            operands.append(dict(spec, sha256=record['sha256']))
+            continue
         if role in ('history', 'state'):
             data = np.zeros(shape, dtype=dtype)
         elif role == 'length':

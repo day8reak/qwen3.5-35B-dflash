@@ -170,34 +170,50 @@ class CpuPrefill:
             stages.update(query=q.to(x.dtype), core=core.transpose(1, 2), proj_input=y)
         return self.project(y, prefix + '.o_proj', layer.o_proj), states
 
-    def routes(self, x, layer, prefix):
+    def routes(self, x, layer, prefix, *, stages=None):
         logits = self.project(x.flatten(0, 1), prefix + '.gate', layer.gate)
+        if stages is not None:
+            stages['router_logits'] = logits
         probs, ids = logits.float().softmax(dim=-1).topk(layer.top_k, dim=-1)
         if layer.norm_topk_prob:
             probs = probs / probs.sum(dim=-1, keepdim=True)
         return probs.to(torch.float16), ids
 
-    def moe(self, x, layer, prefix, *, routes=None):
+    def moe(self, x, layer, prefix, *, routes=None, stages=None):
         flat = x.flatten(0, 1)
         shared = layer.shared_expert
         shared_prefix = prefix + '.shared_expert.'
         gate, up = [self.project(flat, shared_prefix + name, getattr(shared, name))
                     for name in ('gate_proj', 'up_proj')]
-        shared_out = self.project(F.silu(gate)*up, shared_prefix + 'down_proj', shared.down_proj)
+        shared_silu = F.silu(gate)
+        product = shared_silu * up
+        shared_out = self.project(product, shared_prefix + 'down_proj', shared.down_proj)
         shared_gate = F.linear(flat.float(), layer.shared_expert_gate.weight.float()).to(flat.dtype)
+        if stages is not None:
+            stages.update(shared_gate_proj=gate, shared_up=up, shared_silu=shared_silu, shared_product=product,
+                          shared_down=shared_out, shared_gate_logit=shared_gate)
         shared_out = shared_out * shared_gate.sigmoid()
-        probs, ids = self.routes(x, layer, prefix) if routes is None else routes
+        probs, ids = self.routes(x, layer, prefix, stages=stages) if routes is None else routes
         n, h = layer.num_experts, x.size(-1)
         middle = self.model.config.moe_intermediate_size
         w13, s13 = self.weights.logical('target.' + prefix + '.experts.gate_up_proj', (n, middle*2, h))
         w2, s2 = self.weights.logical('target.' + prefix + '.experts.down_proj', (n, h, middle))
         routed = torch.empty((*ids.shape, h), dtype=torch.float16)
+        if stages is not None:
+            gate_up = routed.new_empty((*ids.shape, 2*middle))
+            expert_product = routed.new_empty((*ids.shape, middle))
         for expert in ids.unique().tolist():
             rows, slots = torch.where(ids == expert)
             gate, up = linear(flat[rows], w13[expert], s13[expert, ..., None]).chunk(2, dim=-1)
             act = (F.silu(gate.float()) * up.float()).to(torch.float16)
+            if stages is not None:
+                gate_up[rows, slots] = torch.cat((gate, up), -1)
+                expert_product[rows, slots] = act
             routed[rows, slots] = linear(act, w2[expert], s2[expert, ..., None])
         output = (routed.float() * probs.float().unsqueeze(-1)).sum(dim=1).to(torch.float16)
+        if stages is not None:
+            stages.update(shared_weighted=shared_out, routed=output, expert_ids=ids, route_weights=probs,
+                          expert_gate_up=gate_up, expert_product=expert_product, expert_down=routed)
         return (output + shared_out).reshape_as(x)
 
     @torch.inference_mode()
