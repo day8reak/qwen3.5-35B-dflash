@@ -195,6 +195,12 @@ bash targets/cpro/scripts/decoder_compare.sh gate-probe
 
 `board/L00-L03/gate-probes/result.json` 汇总每项状态。定位加载问题时查看 `LOAD_MODEL_FAILED` 项的 HiLog，确认是否复现同一条 `OpUpdateKernelArgs failed`。如果四项都为 `EXECUTED`，说明该门控与这两个下游节点单独组合可以运行，后续应检查它们在整图中的上游和编译任务。四层模型及其 replay 记录保留在原目录。
 
+四项均执行成功后，在保留这些产物的 OMC 生成服务器运行以下命令。它从已有文件打印四层的各条门控输入链、FP32 乘法另一侧的来源，以及成功小图的相应连线。报告按节点名列出 OMG 的 `RuntimeConfig` 记录，按门控形状对照 `BuildSingleOp` 的端口字段，并列出本次编译目录里保留的同名 kernel JSON 参数。整图中多个节点可能共用同一形状，具体失败的板端任务仍需有任务标识的服务端日志确认。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh gate-report
+```
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

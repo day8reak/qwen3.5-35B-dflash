@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-decoder_compare.sh {golden|air|compile|execute|diagnose|gate-probe|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
+decoder_compare.sh {golden|air|compile|execute|diagnose|gate-probe|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
                    [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only|--gdn-silu-site {conv|gate}|--all-silu-no-gate-cast] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data.
@@ -14,6 +14,7 @@ transfer {golden|air|omc}  Receive a stage from its producer on this downstream 
 execute     Run compiled OMCs through HDC and compare CPU / 310P / CPro.
 diagnose    Inspect a retained board failure or four-layer accuracy mismatch.
 gate-probe  Compile and run four small OMCs from the existing four-layer T64 RMS gate on the OMC/board host.
+gate-report Compare retained AIR edges, kernel build logs and metadata for the full model and the silu-cast-mul probe.
 prepare     On the combined reference/export host: capture reference, compute CPU golden, export static AIR.
 board       On the DDK host: fetch, compile, run on device and compare CPU / 310P / CPro.
 plan        Print the layers, sequence length and number of OMCs without running the model.
@@ -37,6 +38,9 @@ HELP
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    gate-report)
+        shift
+        exec bash "$0" compile --gate-probe report --mode 4 --phase prefill "$@" ;;
     gate-probe)
         shift
         bash "$0" compile --gate-probe --mode 4 --phase prefill "$@"

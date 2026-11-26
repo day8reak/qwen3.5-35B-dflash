@@ -271,7 +271,7 @@ def worker(args, action, root, remote):
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
     if getattr(args, 'gate_probe', False):
-        cmd.append('--gate-probe')
+        cmd.extend(['--gate-probe', args.gate_probe])
     if args.recovery:
         cmd.append('--recovery')
     label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
@@ -279,6 +279,8 @@ def worker(args, action, root, remote):
              'diagnose': '读取已失败的板端运行日志', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
     if getattr(args, 'gate_probe', False):
         label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
+        if args.gate_probe == 'report':
+            label = '对照四层和门控小图的已有 AIR、编译日志及上板记录'
     print(f'[{directory_name(args.mode, args.phase)}] {label}', flush=True)
     if setup:
         print(f'  加载环境脚本 {script}（{name}）', flush=True)
@@ -321,7 +323,7 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
-    parser.add_argument('--gate-probe', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--gate-probe', nargs='?', const='slices', choices=('slices', 'report'), help=argparse.SUPPRESS)
     a = parser.parse_args()
     if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
                          a.action not in ('compile', 'execute', '_compile', '_execute')):
@@ -389,6 +391,10 @@ def main():
     if a.action.startswith('_'):
         a.action = a.action[1:]
         if a.gate_probe:
+            if a.gate_probe == 'report':
+                from decoder_gate_report import report
+                report(root)
+                return 0
             from decoder_gate_probe import probe
             ddk, config, _ = board_config(a.action)
             return 0 if probe(root, a.action, ddk, config, replace_inputs=a.replace_inputs) else 1
