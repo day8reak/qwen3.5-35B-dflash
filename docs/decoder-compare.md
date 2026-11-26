@@ -201,6 +201,10 @@ bash targets/cpro/scripts/decoder_compare.sh gate-probe
 bash targets/cpro/scripts/decoder_compare.sh gate-report
 ```
 
+报告还用 `omg --mode=1` 分别解析两份已经上板的 OMC。在 `OMC 连线` 段，每个可见子图按自己的节点名解析输出 0，列出引用它的消费者输入槽、图输出以及生产者的 `dst_name` 记录，并打印原 Cast 和 Mul 同名节点的实际输入。若只在子图的 `NetOutput` 看到引用，表示该值到达这个子图的出口。若 OMG 只暴露外层 `GraphOp`，内部连线的状态仍需从编译阶段图定位。
+
+`[AIR shape]` 段分别读取卷积 SiLU 和 RMS 门控 SiLU 的输入、输出及直接消费端。每个端口的 `ge_dims` 来自 `TensorDescriptor.shape.dim`，`fx_dims` 来自 `_meta` 字符串，`fx_tensor` 是 FX 张量名。对照卷积端口、下游转置的输入输出和同次 OMG 的 `BuildSingleOp` 记录，可以定位 `[1,8192,64]` 与 `[1,64,8192]` 首次出现差异的位置。单独的导出器 shape trace 只记录了自定义算子的输入。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

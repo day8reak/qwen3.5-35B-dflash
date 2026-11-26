@@ -166,18 +166,20 @@ def attributes(node):
     raise ValueError("node attr must be a map or key/value list")
 
 
-def graphs(value, path="$"):
-    """Stop at graph op arrays: their nested subgraphs are not host inputs."""
+def graphs(value, path="$", *, include_nested=False):
+    """For host I/O stop at the first op array. Diagnostics may inspect nested graphs."""
     if isinstance(value, dict):
         if isinstance(value.get("op"), list):
             yield path, value
-            return
+            if not include_nested:
+                return
         for key, child in value.items():
             if isinstance(child, (dict, list)):
-                yield from graphs(child, path + "/" + key)
+                yield from graphs(child, path + "/" + key, include_nested=include_nested)
     elif isinstance(value, list):
         for i, child in enumerate(value):
-            yield from graphs(child, path + "/" + str(i))
+            if isinstance(child, (dict, list)):
+                yield from graphs(child, path + "/" + str(i), include_nested=include_nested)
 
 
 def dtype(value, enum):

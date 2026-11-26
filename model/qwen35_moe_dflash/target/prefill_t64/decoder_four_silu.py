@@ -2,6 +2,7 @@
 from collections import Counter, defaultdict
 from difflib import unified_diff
 from math import prod
+import re
 from shutil import copyfile
 
 from ..original_target_source import EXPORTER, SOURCE_FILES
@@ -323,6 +324,15 @@ def inspect_gdn_convs(graph, count, rows):
     return dict(nodes=count, operands_with_shapes=observed, expected_shapes=expected)
 
 
+def activation_port_shape(desc):
+    """Keep the GE descriptor and the FX annotation as independent observations."""
+    meta = desc.attr['_meta'].s.decode(errors='replace') if '_meta' in desc.attr else ''
+    match = re.search(r'shape\s*=\s*torch\.Size\(\[\s*((?:-?\d+\s*,\s*)*-?\d+)?\s*\]\)', meta)
+    fx_dims = [int(d) for d in re.findall(r'-?\d+', match.group(0))] if match else None
+    fx_tensor = desc.attr['_fx_tensor_name'].s.decode(errors='replace') if '_fx_tensor_name' in desc.attr else None
+    return dict(ge_dims=list(desc.shape.dim), fx_dims=fx_dims, fx_tensor=fx_tensor)
+
+
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
                            check_convs=False, gdn_conv="conv2d", moe_silu=True, gdn_silu_site=None,
                            all_silu_no_gate_cast=False):
@@ -406,8 +416,10 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
             if dims and dims != (-2,):  # GE's unknown-rank marker
                 if len(dims) != len(shape) or any(d != -1 and d != actual for d, actual in zip(dims, shape)):
                     raise ValueError(f'{name}: AIR port {dims} differs from traced shape {shape}')
-        records[op.type].append(dict(name=name, shape=list(shape), numel=prod(shape), consumers=consumers))
-        print(f'{name}: FP16{shape} -> FP16{shape}; consumers={consumers}', flush=True)
+        ports = dict(x=activation_port_shape(x), z=activation_port_shape(z))
+        records[op.type].append(dict(name=name, shape=list(shape), numel=prod(shape), consumers=consumers,
+                                     air_ports=ports))
+        print(f'{name}: converter input={shape}; FP16 x={ports["x"]} -> FP16 z={ports["z"]}; consumers={consumers}', flush=True)
     result = {}
     if check_convs:
         if gdn_conv == 'taps':
