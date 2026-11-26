@@ -140,9 +140,10 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
             raise ValueError(f'{case.name}: {role} compiled input differs from feed: {spec} vs {row}')
         paths.append(sized_file(root, row))
         operands.append(dict(spec, sha256=row['sha256']))
-    if meta.get('native_activations'):
+    if meta.get('native_activations') or meta.get('silu_only'):
         from decoder_four_inputs import compare_original_inputs
-        compare_original_inputs(base.parent.parent, operands, meta['inputs'], [s['sha256'] for s in operands])
+        compare_original_inputs(base.parent.parent, operands, meta['inputs'], [s['sha256'] for s in operands],
+                                baseline='native_activations' if meta.get('silu_only') else 'no_patch')
     names = output_order(build['outputs'], meta['outputs'], golden)
     for role, spec in zip(names, build['outputs'], strict=True):
         ref = golden[role]
@@ -192,7 +193,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board',
-          replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False, native_activations=False):
+          replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False,
+          native_activations=False, silu_only=False):
     bundle = run/'package'
     if step == 'execute' and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -213,6 +215,8 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         raise ValueError(f'{bundle}: --no-patch selection differs from the AIR export')
     if manifest.get('native_activations', False) != native_activations:
         raise ValueError(f'{bundle}: --native-activations selection differs from the AIR export')
+    if manifest.get('silu_only', False) != silu_only:
+        raise ValueError(f'{bundle}: --silu-only selection differs from the AIR export')
     from decoder_handoff import runtime_file
     for row in manifest['files']:
         if step != 'execute' or runtime_file(row['path']):
@@ -277,9 +281,13 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
                                                 for r, s in row.items()} for b, row in scores.items()}, display=False)
     print(f'[{mode}/{phase}] 汇总 CPU、310P、CPro 的 3×3 精度矩阵 → {run}', flush=True)
     write_matrices(run/'matrices.csv', scores)
+    status = 'FAILED_ACCURACY' if failures else 'PASSED'
     save_json(run/'comparison.json', dict(mode=mode, phase=phase, prompt=ref['prompt'], prompt_length=length,
                                           logits_position=ref['logits_position'], bundle_sha256=stamp, failed=failures,
                                           unchanged_kv=unchanged, top1=predictions,
-                                          status='FAILED_ACCURACY' if failures else 'PASSED'))
-    print(f'Top1 {predictions}; matrices and comparison: {run}', flush=True)
+                                          status=status))
+    print(f'Top1 {predictions}', flush=True)
+    if failures:
+        print('CPro 对 310P 比较或缓存写入检查未通过：' + ', '.join(failures), flush=True)
+    print(f'{status} {run / "comparison.json"}', flush=True)
     return not failures

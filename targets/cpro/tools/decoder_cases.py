@@ -13,7 +13,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/'model'))
-from qwen35_moe_dflash.target.prefill_t64.decoder_cases import MODES, PHASES, case_name, directory_name, groups
+from qwen35_moe_dflash.target.prefill_t64.decoder_cases import FOUR_LAYER_CONTROLS, MODES, PHASES, case_name, directory_name, groups
 
 
 def required(name):
@@ -162,10 +162,8 @@ def prepare_stage(args, run):
         stamp['gdn_conv'] = args.gdn_conv
     if args.gdn_conv == 'original' and os.getenv('DECODER_CONV_CONTROL'):
         stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
-    if args.no_patch:
-        stamp['no_patch'] = True
-    if getattr(args, 'native_activations', False):
-        stamp['native_activations'] = True
+    controls = {name: True for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)}
+    stamp.update(controls)
     stamp.update(reference_sha256=sha(fixture/'reference.json'), config=sha(cfg),
                  cpro_source=str(prepared),
                  cpro_sources={str(p.relative_to(prepared)): sha(p) for p in cpro_python_files(prepared)},
@@ -180,15 +178,13 @@ def prepare_stage(args, run):
         import decoder_four_native_case
         exporter = decoder_four_native_case.export
         options['no_patch'] = args.no_patch
-        if stamp.get('native_activations'):
-            options['native_activations'] = True
+        options.update(controls)
         stamp['adapters']['decoder_four_native_case'] = sha(decoder_four_native_case.__file__)
     else:
         exporter = decoder_case_air.export
     if package.exists():
         prior = json.loads((package/'manifest.json').read_bytes())
-        if (prior.get('no_patch', False) != args.no_patch
-                or prior.get('native_activations', False) != stamp.get('native_activations', False)
+        if (any(prior.get(k, False) != stamp.get(k, False) for k in FOUR_LAYER_CONTROLS)
                 or any(prior.get(k) != v for k, v in stamp.items())):
             raise ValueError('Existing export uses different sources or reference')
         for row in prior['files']:
@@ -258,10 +254,9 @@ def worker(args, action, root, remote):
             cmd.extend(['--local-source', str(args.local_source)])
     if getattr(args, 'gdn_conv', 'conv2d') != 'conv2d':
         cmd.extend(['--gdn-conv', args.gdn_conv])
-    if getattr(args, 'no_patch', False):
-        cmd.append('--no-patch')
-    if getattr(args, 'native_activations', False):
-        cmd.append('--native-activations')
+    for control in FOUR_LAYER_CONTROLS:
+        if getattr(args, control, False):
+            cmd.append('--' + control.replace('_', '-'))
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
     if args.recovery:
@@ -290,6 +285,8 @@ def main():
                                  help='run the exporter directly from CPRO_SOURCE for four-layer T64 prefill')
     activation_mode.add_argument('--native-activations', action='store_true',
                                  help='keep the aligned four-layer native GDN graph and restore stock SiLU and Softplus')
+    activation_mode.add_argument('--silu-only', action='store_true',
+                                 help='use FP16 SiluPatch and stock Softplus in the aligned four-layer T64 model')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
     parser.add_argument('--run', type=Path, help='explicit path ending in the canonical case name')
     parser.add_argument('--remote-run', type=Path, help='case directory on the export host')
@@ -300,7 +297,7 @@ def main():
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     a = parser.parse_args()
-    if a.no_patch or a.native_activations:
+    if any(getattr(a, name) for name in FOUR_LAYER_CONTROLS):
         if (a.mode, a.phase) != ('4', 'prefill'):
             parser.error('use --mode 4 --phase prefill for this four-layer control')
         if a.no_patch and a.patched_source:
@@ -325,7 +322,8 @@ def main():
     if a.action == 'plan':
         schedule = groups(a.mode)
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
-                              prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations, omcs=len(schedule),
+                              prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations,
+                              silu_only=a.silu_only, omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
         return 0
     if a.action == 'source':
@@ -365,7 +363,8 @@ def main():
             ddk, config, diag = board_config(a.action)
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
-                         original_board_args=a.original_board_args, no_patch=a.no_patch, native_activations=a.native_activations):
+                         original_board_args=a.original_board_args, no_patch=a.no_patch,
+                         native_activations=a.native_activations, silu_only=a.silu_only):
                 return 1
         else:
             prepare_stage(a, site)
@@ -386,9 +385,9 @@ def main():
         if a.action == 'diagnose':
             worker(a, 'diagnose', root, remote)
             return 0
-        if a.native_activations and a.action in ('board', 'compile', 'execute', 'transfer'):
+        if (a.native_activations or a.silu_only) and a.action in ('board', 'compile', 'execute', 'transfer'):
             from decoder_four_inputs import remember_original_inputs
-            remember_original_inputs(root)
+            remember_original_inputs(root, baseline='native_activations' if a.silu_only else 'no_patch')
         if a.action in ('prepare', 'golden'):
             source_config('reference')
             if a.action == 'prepare':
@@ -458,4 +457,11 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except subprocess.CalledProcessError as error:
+        # A decoder worker has already printed its result or original traceback to this terminal.
+        if __file__ not in error.cmd:
+            raise
+        code = error.returncode
+        raise SystemExit(code if code > 0 else 128 - code) from None

@@ -21,23 +21,24 @@ from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_a
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import MODELING, inspect_activation_air, restore_native_activations
 
 
-def four_layer_entry(prepared, work, *, native_activations=False):
+def four_layer_entry(prepared, work, *, native_activations=False, silu_only=False):
     entry = prepared/EXPORTER
     text = entry.read_text()
     # Editable sources generated before multi-depth export counted 30 GDR calls even at L=4.
     old = 'with cpro_export_contracts(True, chunk_size=64, gdn_layers=30):'
-    if old not in text and not native_activations:
+    restore_activations = native_activations or silu_only
+    if old not in text and not restore_activations:
         return entry
     overlay = work/'source'
     overlay.mkdir()
     for path in prepared.iterdir():
-        if native_activations and path.name == 'models':
+        if restore_activations and path.name == 'models':
             models = overlay/'models'
             models.mkdir()
             for module in path.iterdir():
                 if module.name not in (Path(MODELING).name, '__pycache__'):
                     (models/module.name).symlink_to(module.resolve(), target_is_directory=module.is_dir())
-            text, model = restore_native_activations(text, (prepared/MODELING).read_text())
+            text, model = restore_native_activations(text, (prepared/MODELING).read_text(), keep_silu=silu_only)
             (overlay/MODELING).write_text(model)
         elif path.name not in (EXPORTER, '__pycache__'):
             (overlay/path.name).symlink_to(path.resolve(), target_is_directory=path.is_dir())
@@ -45,12 +46,14 @@ def four_layer_entry(prepared, work, *, native_activations=False):
     return overlay/EXPORTER
 
 
-def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=False, native_activations=False):
+def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=False, native_activations=False,
+           silu_only=False):
     dest = root/case_name(ref['layers'])
     if dest.is_dir():
         saved = json.loads((dest/'case.json').read_bytes())
         if (saved.get('air_directory') != EXPORT_DIR or saved.get('no_patch', False) != no_patch
-                or saved.get('native_activations', False) != native_activations):
+                or saved.get('native_activations', False) != native_activations
+                or saved.get('silu_only', False) != silu_only):
             raise ValueError(f'{dest}: existing four-layer export uses a different source mode')
         for row in saved['files']:
             sized_file(dest, row)
@@ -68,7 +71,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         export_config = work/'export.yaml'
         export_config.write_text(yaml.safe_dump(cfg))
         entry = ((source/EXPORTER).resolve(strict=True) if no_patch else
-                 four_layer_entry(prepared, work, native_activations=native_activations))
+                 four_layer_entry(prepared, work, native_activations=native_activations, silu_only=silu_only))
         argv = native_export_argv(entry, 4, export_config)
         env = os.environ.copy()
         trace = work/'activations.txt'
@@ -81,6 +84,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                 print(f'[L00-L03] {prepared}：保留对齐修复，使用原生 SiLU 和 Softplus', flush=True)
             else:
                 env['QWEN35_SILU_SHAPES'] = str(trace)
+                if silu_only:
+                    print(f'[L00-L03] {prepared}：使用 FP16 SiluPatch 和原生 Softplus', flush=True)
         print(f'[L00-L03] 使用原 CPro wrapper 导出四层 T64 AIR\n(cd {work} && {shlex.join(argv)})', flush=True)
         subprocess.run(argv, cwd=work, env=env, check=True)
         (work/EXPORT_DIR).rename(case/EXPORT_DIR)
@@ -96,8 +101,13 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                 raise ValueError(f'Custom activation remains in native-activation AIR: {counts}')
             observations = dict(native_activations=True, operator_counts=counts)
         else:
-            observations = inspect_activation_air(air, trace, layers=4, softplus=True,
+            observations = inspect_activation_air(air, trace, layers=4, softplus=not silu_only,
                                                   check_convs=physical_history, gdn_conv=gdn_conv)
+            if silu_only:
+                counts = boundary['operator_counts']
+                observations.update(silu_only=True, operator_counts=counts)
+                print(f'[L00-L03] AIR 实测 SiluPatch={counts["SiluPatch"]}, SoftplusPatch={counts["SoftplusPatch"]}',
+                      flush=True)
         if not no_patch:
             precision = four_precision(air)
             if precision['mismatches']:

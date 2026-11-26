@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'HELP'
 decoder_compare.sh {golden|air|compile|execute|diagnose|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
-                   [--gdn-conv {conv2d|taps|original}] [--no-patch|--native-activations] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
+                   [--gdn-conv {conv2d|taps|original}] [--no-patch|--native-activations|--silu-only] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data.
 air         Export CPro AIR from the golden case.
@@ -21,6 +21,7 @@ plan        Print the layers, sequence length and number of OMCs without running
 --original-board-args  Run the existing OMC with the owner's V2 command flags. This is the default for --gdn-conv original.
 --no-patch  Export four-layer T64 prefill directly from CPRO_SOURCE with the native OMG and V2 settings.
 --native-activations  Use stock SiLU and Softplus with the aligned four-layer T64 native GDN export.
+--silu-only  Use FP16 SiluPatch and stock Softplus with the same four-layer T64 export.
 --recovery  Reuse verified completed OMC outputs in layerwise mode when resuming on the same board.
 DECODER_ENV may point to a host-local shell configuration file.
 HELP

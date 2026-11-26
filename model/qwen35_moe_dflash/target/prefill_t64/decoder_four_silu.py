@@ -61,16 +61,23 @@ SOFTPLUS_CALL = ('F.softplus(a.float() + self.dt_bias)',
 CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])', 'silu_same_dtype(out[:, :, -seq_len:])')
 
 
-def restore_native_activations(exporter, model):
+def restore_native_activations(exporter, model, *, keep_silu=False):
     """Undo only this adapter's activation edits in a copy of the selected aligned sources."""
-    for name, kind in (('silu_patch', GE_TYPE), ('softplus_patch', 'SoftplusPatch')):
-        exporter = exporter.replace(activation_registration(name, kind), '')
+    exporter = exporter.replace(activation_registration('softplus_patch', 'SoftplusPatch'), '')
+    original, patched = SOFTPLUS_CALL
+    model = model.replace(patched, original)
+    for symbol in ('softplus_patch', 'SoftplusPatch'):
+        if symbol in model or symbol in exporter:
+            raise ValueError(f'Unsupported activation edit in selected CPro source: {symbol} remains')
+    if keep_silu:
+        return exporter, model
+    exporter = exporter.replace(activation_registration('silu_patch', GE_TYPE), '')
     model = model.replace(MODEL_HELPERS, '')
     # The aligned GDR converter requires half Q/K/V even when conv_out is FP32.
     model = model.replace('qkv_conv = silu_patch(conv_out)', 'qkv_conv = F.silu(conv_out).to(torch.float16)')
-    for original, patched in (*SILU_CALLS, SOFTPLUS_CALL, CONV_HELPER_CALL):
+    for original, patched in (*SILU_CALLS, CONV_HELPER_CALL):
         model = model.replace(patched, original)
-    for symbol in ('silu_patch', 'softplus_patch', 'silu_same_dtype', GE_TYPE, 'SoftplusPatch'):
+    for symbol in ('silu_patch', 'silu_same_dtype', GE_TYPE):
         if symbol in model or symbol in exporter:
             raise ValueError(f'Unsupported activation edit in selected CPro source: {symbol} remains')
     return exporter, model

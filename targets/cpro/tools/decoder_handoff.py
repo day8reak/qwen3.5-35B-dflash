@@ -12,7 +12,7 @@ import uuid
 
 from qwen35_moe_dflash.common.artifacts import share_for_transfer
 from qwen35_moe_dflash.common.hashing import sha256_file
-from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, groups
+from qwen35_moe_dflash.target.prefill_t64.decoder_cases import FOUR_LAYER_CONTROLS, case_name, groups
 
 
 def receipt(root, role):
@@ -80,10 +80,7 @@ def publish(root, role, args):
         header['generation'] = uuid.uuid4().hex
     else:
         header['gdn_conv'] = args.gdn_conv
-        if getattr(args, 'no_patch', False):
-            header['no_patch'] = True
-        if getattr(args, 'native_activations', False):
-            header['native_activations'] = True
+        header.update({name: True for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)})
     dest = receipt(root, role)
     with tempfile.TemporaryDirectory(prefix='.publish-', dir=root) as staging:
         tmp = Path(staging)/dest.name
@@ -214,10 +211,10 @@ def receive(root, remote, role, args):
         data = json.loads(manifest)
         if (data['stage'], data['case']) != (role, root.name) or data.get('gdn_conv', args.gdn_conv) != args.gdn_conv:
             raise ValueError(f'{index}: stage, case or GDN convolution mismatch')
-        if role != 'golden' and data.get('no_patch', False) != getattr(args, 'no_patch', False):
-            raise ValueError(f'{index}: --no-patch selection differs from the upstream {role} export')
-        if role != 'golden' and data.get('native_activations', False) != getattr(args, 'native_activations', False):
-            raise ValueError(f'{index}: --native-activations selection differs from the upstream {role} export')
+        if role != 'golden':
+            for name in FOUR_LAYER_CONTROLS:
+                if data.get(name, False) != getattr(args, name, False):
+                    raise ValueError(f'{index}: --{name.replace("_", "-")} selection differs from the upstream {role} export')
         staged = temp/'incoming' if local else resume_directory(root, role, temp/'manifest')
         staged.mkdir(exist_ok=True)
         roles = {'golden': 'air', 'air': 'omc', 'omc': 'board'}
