@@ -139,6 +139,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
         counts = meta['operator_counts']
         print(f'[{case.name}] 本次 AIR 配置：GDN 卷积={meta["gdn_conv"]}，SiluPatch={counts["SiluPatch"]}，'
               f'SoftplusPatch={counts["SoftplusPatch"]}', flush=True)
+        if meta.get('gdn_silu_site'):
+            print(f'[{case.name}] --gdn-silu-site {meta["gdn_silu_site"]}', flush=True)
         if meta.get('physical_convstate'):
             print(f'[{case.name}] ConvState 使用本次 QKV 的物理行 60–63，卷积窗口为 67 行。', flush=True)
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
@@ -207,7 +209,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board',
           replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False,
-          native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, physical_convstate=False):
+          native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
+          physical_convstate=False):
     bundle = run/'package'
     if step == 'execute' and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -226,7 +229,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         raise ValueError(f'{bundle}: expected GDN {gdn_conv}. Select the same --gdn-conv as the AIR export.')
     for key, selected in dict(no_patch=no_patch, native_activations=native_activations,
                               silu_only=silu_only, softplus_only=softplus_only, gdn_silu_only=gdn_silu_only,
-                              physical_convstate=physical_convstate).items():
+                              gdn_silu_site=gdn_silu_site, physical_convstate=physical_convstate).items():
         if manifest.get(key, False) != selected:
             raise ValueError(f'{bundle}: --{key.replace("_", "-")} selection differs from the AIR export')
     from decoder_handoff import runtime_file

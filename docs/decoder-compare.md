@@ -170,6 +170,15 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 生成三端矩阵说明这张 OMC 完成了加载和推理。若只有启用 MoE 自定义 SiLU 的整图加载失败，可进一步分别隔离共享专家和路由专家。若这张图仍在 `UpdateArgsForAicore` 失败，则保留 GDN 的调用就能复现该加载现象。
 
+要区分 GDN 内的两个调用位置，两台服务器都把上述命令中的 `--gdn-silu-only` 换成同一个选项。仍使用已有 golden 和一张四层 OMC。
+
+| 选项 | 使用 SiluPatch 的位置与 AIR 预期 | 另一处的计算 |
+|---|---|---|
+| `--gdn-silu-site conv` | L0–L2 卷积后，各 1 个 `[1,8192,64]` | RMS 门控恢复 `F.silu(gate.to(torch.float32))` |
+| `--gdn-silu-site gate` | L0–L2 RMS 门控，各 1 个 `[2048,128]` | 卷积后使用原生 SiLU，Q/K/V 分支接收 FP16 |
+
+两个选项均保留 3 个 `SoftplusPatch` 和 MoE 的原生 SiLU。上板日志打印本次编译的 `conv` 或 `gate` 选择，AIR 导出时按形状核对调用位置。若只有一组加载失败，该位置及其相邻图值得优先排查。若两组分别能加载，同时启用两处才失败，则需要对照组合图的编译任务。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

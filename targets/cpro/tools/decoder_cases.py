@@ -170,7 +170,7 @@ def prepare_stage(args, run):
         stamp['gdn_conv'] = args.gdn_conv
     if source_conv == 'original' and not getattr(args, 'physical_convstate', False) and os.getenv('DECODER_CONV_CONTROL'):
         stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
-    controls = {name: True for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)}
+    controls = {name: getattr(args, name) for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)}
     stamp.update(controls)
     stamp.update(reference_sha256=sha(fixture/'reference.json'), config=sha(cfg),
                  cpro_source=str(prepared),
@@ -263,8 +263,11 @@ def worker(args, action, root, remote):
     if getattr(args, 'gdn_conv', 'conv2d') != 'conv2d' or any(getattr(args, k, False) for k in FOUR_LAYER_CONTROLS):
         cmd.extend(['--gdn-conv', args.gdn_conv])
     for control in FOUR_LAYER_CONTROLS:
-        if getattr(args, control, False):
+        value = getattr(args, control, False)
+        if value:
             cmd.append('--' + control.replace('_', '-'))
+            if isinstance(value, str):
+                cmd.append(value)
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
     if args.recovery:
@@ -299,6 +302,8 @@ def main():
                                  help='use stock SiLU and FP16 SoftplusPatch in the aligned four-layer T64 model')
     activation_mode.add_argument('--gdn-silu-only', action='store_true',
                                  help='use SiluPatch only in GDN, stock SiLU in MoE, and keep GDN SoftplusPatch')
+    activation_mode.add_argument('--gdn-silu-site', choices=('conv', 'gate'), default=False,
+                                 help='enable SiluPatch only after the GDN convolution or only at its RMS gate; keep SoftplusPatch')
     parser.add_argument('--physical-convstate', action='store_true',
                         help='replace the four-layer T64 ConvState update with concatenation and physical-tail slices')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
@@ -345,6 +350,7 @@ def main():
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
                               prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations,
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
+                              gdn_silu_site=a.gdn_silu_site,
                               physical_convstate=a.physical_convstate,
                               omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
@@ -388,7 +394,7 @@ def main():
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
                          original_board_args=a.original_board_args, no_patch=a.no_patch,
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
-                         gdn_silu_only=a.gdn_silu_only, physical_convstate=a.physical_convstate):
+                         gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site, physical_convstate=a.physical_convstate):
                 return 1
         else:
             prepare_stage(a, site)

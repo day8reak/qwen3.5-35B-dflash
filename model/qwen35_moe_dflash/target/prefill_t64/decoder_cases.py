@@ -2,7 +2,8 @@
 
 MODES = ('linear', 'full', '4', '40', 'layerwise')
 PHASES = ('prefill', 'decode')
-FOUR_LAYER_CONTROLS = ('no_patch', 'native_activations', 'silu_only', 'softplus_only', 'gdn_silu_only', 'physical_convstate')
+FOUR_LAYER_CONTROLS = ('no_patch', 'native_activations', 'silu_only', 'softplus_only',
+                       'gdn_silu_only', 'gdn_silu_site', 'physical_convstate')
 
 
 def directory_name(mode, phase):

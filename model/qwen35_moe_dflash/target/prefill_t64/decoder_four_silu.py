@@ -98,6 +98,22 @@ def inline_old_silu(model):
     return model
 
 
+def native_conv_silu(model):
+    model = model.replace(_CONV[1], _CONV[0]).replace(CONV_HELPER_CALL[1], CONV_HELPER_CALL[0])
+    # The aligned GDR converter requires half Q/K/V even when conv_out is FP32.
+    return model.replace(_CONV_SILU, 'F.silu(conv_out).to(torch.float16)')
+
+
+def select_gdn_silu(model, site):
+    for original, patched in MOE_SILU_CALLS:
+        model = model.replace(patched, original)
+    if site == 'conv':
+        return model.replace(_GATE[1], _GATE[0])
+    if site == 'gate':
+        return native_conv_silu(model)
+    return model
+
+
 def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplus=False):
     """Undo only this adapter's activation edits in a copy of the selected aligned sources."""
     if not keep_softplus:
@@ -110,10 +126,9 @@ def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplu
     if keep_silu:
         return exporter, model
     exporter = exporter.replace(activation_registration('silu_patch', GE_TYPE), '')
-    for original, patched in (*SILU_CALLS, CONV_HELPER_CALL):
+    model = native_conv_silu(model)
+    for original, patched in (_GATE, *MOE_SILU_CALLS):
         model = model.replace(patched, original)
-    # The aligned GDR converter requires half Q/K/V even when conv_out is FP32.
-    model = model.replace(_CONV_SILU, 'F.silu(conv_out).to(torch.float16)')
     for symbol in ('silu_patch', 'silu_same_dtype', GE_TYPE):
         if symbol in model or symbol in exporter:
             raise ValueError(f'Unsupported activation edit in selected CPro source: {symbol} remains')
@@ -284,7 +299,7 @@ def inspect_gdn_convs(graph, count, rows):
 
 
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
-                           check_convs=False, gdn_conv="conv2d", moe_silu=True):
+                           check_convs=False, gdn_conv="conv2d", moe_silu=True, gdn_silu_site=None):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -298,7 +313,8 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
         traced[name] = shape
     linear = 0 if full_only else layers - layers // 4
     expert_layers = layers if moe_silu else 0
-    expected = {GE_TYPE: Counter({(1, 8192, rows): linear, (rows * 32, 128): linear,
+    expected = {GE_TYPE: Counter({(1, 8192, rows): 0 if gdn_silu_site == 'gate' else linear,
+                                  (rows * 32, 128): 0 if gdn_silu_site == 'conv' else linear,
                                   (rows, 512): expert_layers, (rows * 8, 512): expert_layers}),
                 "SoftplusPatch": Counter({(1, rows, 32): linear if softplus else 0})}
     if not silu:

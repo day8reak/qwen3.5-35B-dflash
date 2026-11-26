@@ -80,7 +80,7 @@ def publish(root, role, args):
         header['generation'] = uuid.uuid4().hex
     else:
         header['gdn_conv'] = args.gdn_conv
-        header.update({name: True for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)})
+        header.update({name: getattr(args, name) for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)})
     dest = receipt(root, role)
     with tempfile.TemporaryDirectory(prefix='.publish-', dir=root) as staging:
         tmp = Path(staging)/dest.name
