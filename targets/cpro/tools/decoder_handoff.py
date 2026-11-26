@@ -20,7 +20,7 @@ def receipt(root, role):
 
 
 def runtime_file(path):
-    return path.startswith('fixture/') or path.endswith('/case.json')
+    return path.startswith(('fixture/', 'L00-L03/inputs/')) or path.endswith('/case.json')
 
 
 def inventory(root, role, mode, phase):

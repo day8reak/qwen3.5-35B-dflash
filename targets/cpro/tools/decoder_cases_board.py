@@ -6,7 +6,7 @@ import shutil
 
 import numpy as np
 
-from decoder4_original import compile_log_text, compile_omg
+from decoder4_original import EXPORT_DIR, compile_log_text, compile_omg
 from decoder4_prefill import pull_air, ssh_file
 from l0_silu_omcs import write_matrices
 from parse_model_json import GE_PROTO, inspect, read_omc
@@ -53,15 +53,19 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
     if not dest.exists():
         if ddk is None:
             raise FileNotFoundError(f'Run compile and provide its output to execute: {dest}')
-        graph_size = sum(r['bytes'] for r in read(case/'case.json')['files'] if r['path'].startswith('weight/'))
+        meta = read(case/'case.json')
+        folder = meta.get('air_directory', 'weight')
+        if folder not in ('weight', EXPORT_DIR):
+            raise ValueError(f'{case}: unexpected AIR directory {folder}')
+        graph_size = sum(r['bytes'] for r in meta['files'] if r['path'].startswith(folder + '/'))
         print(f'{case.name}: AIR with weights {graph_size / 2**30:.2f} GiB, '
               f'available before OMG {shutil.disk_usage(base).free / 2**30:.2f} GiB', flush=True)
         work = base/'compile'
         if work.exists():
             shutil.rmtree(work)
         work.mkdir()
-        (work/'weight').symlink_to(case/'weight', target_is_directory=True)
-        code, argv, _ = compile_omg(work, 'weight/export.air', ddk, diagnosis, None)
+        (work/folder).symlink_to(case/folder, target_is_directory=True)
+        code, argv, _ = compile_omg(work, f'{folder}/export.air', ddk, diagnosis, None)
         if code:
             raise RuntimeError(compile_log_text(work/'compile.log'))
         model, = (work/'model').rglob('*.omc')
@@ -112,6 +116,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     meta = read(case/'case.json')
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
         raise ValueError(f'{case}: compiled input names differ from AIR')
+    feeds = {**feeds, **{role: (case, row) for role, row in meta.get('input_files', {}).items()}}
     operands, paths = [], []
     for spec in build['inputs']:
         role = meta['inputs'][spec['name']]
@@ -209,7 +214,8 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         except Exception as exc:
             save_json(run/'comparison.json', dict(status='INTERRUPTED', message=str(exc), **progress))
             raise
-        feeds['hidden'] = values[f'hidden_{group[-1]}']
+        if mode == 'layerwise':
+            feeds['hidden'] = values[f'hidden_{group[-1]}']
         for role, (folder, row) in values.items():
             sources = {'cpu': (fixture, ref['cpu'][role]), '310p': (fixture, ref['outputs'][role]), 'cpro': (folder, row)}
             arrays = {key: read_tensor(sized_file(root, spec), spec) for key, (root, spec) in sources.items()}

@@ -121,7 +121,8 @@ for module in model_wrapper.model.modules():
     call, = [n for n in ast.walk(fn) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
              and ast.unparse(n.value.func) == 'torchair.dynamo_export']
     branch, = [n for n in ast.walk(fn) if isinstance(n, ast.If) and call in n.body]
-    context = ast.parse(f'cpro_export_contracts(True, chunk_size=64, gdn_layers={gdn_layers})',
+    count = str(gdn_layers) if split else 'num_hidden_layers - num_hidden_layers // 4'
+    context = ast.parse(f'cpro_export_contracts(True, chunk_size=64, gdn_layers={count})',
                         mode='eval').body
     branch.body[branch.body.index(call)] = ast.With(items=[ast.withitem(context_expr=context)], body=[call])
     return _replace_functions(text, [(fn, ast.unparse(ast.fix_missing_locations(fn)))])

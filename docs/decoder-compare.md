@@ -55,7 +55,7 @@ bash targets/cpro/scripts/decoder_run.sh
 
 - `board/matrices.csv` 包含三端的 3×3 矩阵，行是 actual，列是 reference。`board/comparison.json` 包含 prompt、logits 位置、预测 token 和未达阈值的张量。逐层模式还有 `board/Lxx/matrices.csv`。
 - 线性层比较完整 conv/recurrent 状态，full 层比较有效 K/V。逐层模式另外检查写入区以外的 KV。单层和四层的 logits 取所测最后一层输出并接原模型 head。
-- 整网 T64 沿用原 CPro wrapper 和量化 embedding。其它组合从实测入口 hidden 和状态开始。W4 scale、RoPE、MoE、GDN、FP16 SiluPatch 和 SoftplusPatch 的整网检查见[原 CPro 整网 prefill](target-prefill40-single.md)。
+- 四层和整网 T64 均使用原 CPro 导出入口、量化 embedding 与逐 token 的 embedding scale。四层设置 `num_hidden_layers=4`，将 L0–L3 连同最终 norm/head 导成一张 AIR。原生接口返回 logits、前三层各自的 conv/recurrent state，以及 L3 的 K/V，共 9 个输出。其余组合从实测入口 hidden 和状态开始。W4 scale、RoPE、MoE、GDN、FP16 SiluPatch 和 SoftplusPatch 的整网检查见[原 CPro 整网 prefill](target-prefill40-single.md)。
 - 板端固定使用 `/data/local/tmp/qwen35_case_<用例>/work`，例如 `qwen35_case_40-prefill-t64/work`。逐层模式在用例名后追加层号，例如 `40x1-prefill-t64-L00`。
 - 每次上传当前 OMC。脚本按清单里的文件标识和板上的字节数复用输入、外置权重，缺失或变化的文件随 OMC 一次上传。成功后一次拉回输出目录并按槽位绑定，删除板端 OMC 和输出，留下当前输入和权重。失败现场保留到同用例下次启动，路径见 `result.json` 的 `remote` 字段。
 

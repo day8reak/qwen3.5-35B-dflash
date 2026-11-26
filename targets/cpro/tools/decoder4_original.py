@@ -50,16 +50,21 @@ def four_precision(air, layers=4):
     return result
 
 
-def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=False):
+def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=False, decoder_fixture=False):
     import numpy as np
     from qwen35_moe_dflash.target.layer_probe.common import read_array
     from qwen35_moe_dflash.target.prefill_t64.chain_reference import BASIS, VALID19_IDS_SHA256, YAML_BASIS
 
-    meta = json.loads((reference / 'manifest.json').read_bytes())
+    index = reference / ('reference.json' if decoder_fixture else 'manifest.json')
+    meta = json.loads(index.read_bytes())
     valid = meta['valid_rows']
     basis = YAML_BASIS if physical_history else BASIS
-    if ((meta.get('reference'), meta.get('status'), meta.get('physical_rows'), meta.get('output_pos'))
-            != (basis, 'CAPTURED', 64, valid-1) or not 1 <= valid <= 64 or (not physical_history and valid != 19)):
+    if decoder_fixture:
+        matched = (meta['mode'], meta['phase'], meta['layers'], meta['logits_position'], meta['prompt_length']) == (
+            '4', 'prefill', [0, 1, 2, 3], valid-1, valid)
+    else:
+        matched = (meta.get('reference'), meta.get('status'), meta.get('output_pos')) == (basis, 'CAPTURED', valid-1)
+    if not matched or meta['physical_rows'] != 64 or not 1 <= valid <= 64 or (not physical_history and valid != 19):
         raise ValueError(f'Unexpected measured T64 reference: {reference}')
     def tensor(name):
         return read_array(reference, meta['inputs'][name])
@@ -106,18 +111,24 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     for name, array in arrays.items():
         array.tofile(folder / (name + '.bin'))
     print(f'Original runtime input fixture: valid{valid}, output_pos={valid-1}, ConvState: {policy}', flush=True)
-    measured = tensor('embedding')
+    entry_name = 'hidden' if decoder_fixture else 'embedding'
+    measured = tensor(entry_name)
     if measured.shape != (1, 64, 2048) or measured.dtype != np.float16:
         raise ValueError('Expected the measured FP16 decoder entry [1,64,2048]')
     # Compare at the diagnostic graph's FP16 boundary. The original graph still receives both raw files.
     entry = (quant_embed.astype(np.float32) * embed_scale).astype(np.float16)
     changes = int(np.count_nonzero(entry[:, :valid].view(np.uint16) != measured[:, :valid].view(np.uint16)))
     print(f'Original embedding * scale, rounded to FP16 vs 310P layer entry: {changes}/{valid*2048} changed')
-    return dict(reference_sha256=sha(reference / 'manifest.json'), token_sha256=digest,
-                reference_inputs={k: meta['inputs'][k]['sha256'] for k in REFERENCE_INPUT_NAMES},
+    return dict(reference_sha256=sha(index), token_sha256=digest,
+                reference_inputs={k: meta['inputs'][entry_name if k == 'embedding' else k]['sha256'] for k in REFERENCE_INPUT_NAMES},
                 valid_rows=valid, conv_state_control=policy,
                 **({'prompt': meta['prompt'], 'embedding_changed_fp16_elements': changes} if physical_history
                    else {'valid19_embedding_changed_fp16_elements': changes}))
+
+
+def native_export_argv(entry, layers, config):
+    return [sys.executable, '-u', str(entry), 'mode=export', 'quant_mode=enable',
+            f'num_hidden_layers={layers}', 'seq_len=64', 'topK=16', f'config={config}', 'quant_bits=4']
 
 
 def full_source_hashes(source):
@@ -211,8 +222,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if cfg != configured:
             export_config = work / 'export-config.yaml'
             export_config.write_text(yaml.safe_dump(cfg))
-        argv = [sys.executable, '-u', str(entry), 'mode=export', 'quant_mode=enable',
-                f'num_hidden_layers={layers}', 'seq_len=64', 'topK=16', f'config={export_config}', 'quant_bits=4']
+        argv = native_export_argv(entry, layers, export_config)
         if not uses_baseline:
             fixture = prefill_inputs(work / 'inputs', reference, cfg, conv_control, physical_history=full)
         else:

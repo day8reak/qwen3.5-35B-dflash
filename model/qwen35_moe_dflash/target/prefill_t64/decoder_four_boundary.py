@@ -31,7 +31,7 @@ def data_edges(op):
     return [edge for edge in op.input if edge and not edge.endswith(':-1')]
 
 
-def inspect_air(path, *, layers=4):
+def inspect_air(path, *, layers=4, physical_history=False):
     _, graph = graph_message(path.read_bytes(), 'NetOutput')
     nodes = {n.name: n for n in graph.op}
     net, = [n for n in graph.op if n.type == 'NetOutput']
@@ -44,11 +44,12 @@ def inspect_air(path, *, layers=4):
     full = [n for n in graph.op if n.type == 'AdnFusedInferAttention']
     linear_layers = [i for i in range(layers) if i % 4 != 3]
     full_layers = list(range(3, layers, 4))
-    # The 40-layer path uses the same physical-tail update as the verified L0.
+    # The aligned native wrapper saves the last four physical QKV rows.
     # Bind each concat to its input cache and each returned slice to that concat.
     from .attention_steps import CONCATS, SPLITS
     history_inputs = {}
-    if layers == 40:
+    physical_history = physical_history or layers == 40
+    if physical_history:
         for op in graph.op:
             if op.type in CONCATS:
                 caches = [e for e in data_edges(op) if nodes[e.rsplit(':', 1)[0]].type in ('RefData', 'Data')
@@ -56,7 +57,7 @@ def inspect_air(path, *, layers=4):
                 if len(caches) == 1:
                     history_inputs[op.name + ':0'] = caches[0]
         if conv or len(set(history_inputs.values())) != len(linear_layers):
-            raise ValueError(f'{path}: expected physical-tail updates of all 30 distinct conv caches')
+            raise ValueError(f'{path}: expected physical-tail updates of {len(linear_layers)} distinct conv caches')
     if (len(conv) + len(history_inputs), len(gdr), len(full)) != (len(linear_layers), len(linear_layers), len(full_layers)):
         raise ValueError(f'{path}: incompatible ConvState, GDR and full-attention counts for {layers} layers')
 
@@ -87,7 +88,7 @@ def inspect_air(path, *, layers=4):
 
     for i, g in zip(linear_layers, gdr, strict=True):
         state_aliases(g, 5, 1, f'recurrent_state_{i}')
-    if layers == 40:
+    if physical_history:
         for i, (joined, old) in zip(linear_layers, history_inputs.items(), strict=True):
             aliases[old] = aliases[joined] = f'conv_state_{i}'
         for op in graph.op:

@@ -153,6 +153,11 @@ def prepare_stage(args, run):
                  cpro_source=str(prepared),
                  cpro_sources={str(p.relative_to(prepared)): sha(p) for p in cpro_python_files(prepared)},
                  adapters={m.__name__: sha(m.__file__) for m in (decoder_case_air, source_model, source_exporter, decoder_four_silu)})
+    exporter = decoder_case_air.export
+    if (args.mode, args.phase) == ('4', 'prefill'):
+        import decoder_four_native_case
+        exporter = decoder_four_native_case.export
+        stamp['adapters']['decoder_four_native_case'] = sha(decoder_four_native_case.__file__)
     if package.exists():
         prior = json.loads((package/'manifest.json').read_bytes())
         if any(prior[k] != v for k, v in stamp.items()):
@@ -171,7 +176,7 @@ def prepare_stage(args, run):
             staged.rename(working)
     if json.loads((working/'binding.json').read_bytes()) != stamp:
         raise ValueError(f'{working}: interrupted export belongs to another source or fixture. Run prepare again.')
-    decoder_case_air.export(working, fixture, ref, src, cfg, prepared, gdn_conv=args.gdn_conv)
+    exporter(working, fixture, ref, src, cfg, prepared, gdn_conv=args.gdn_conv)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
     save_json(working/'manifest.json', dict(**stamp, files=files))
     share_for_transfer(working)
