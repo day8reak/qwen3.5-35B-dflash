@@ -183,6 +183,18 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 在上面两条命令中都把 `--gdn-silu-only` 换成 `--all-silu-no-gate-cast`。导出器核对 14 个 FP16 `SiluPatch`，其中 GDN 卷积后和 RMS 门控各 3 个，MoE 共享专家和路由专家各 4 个，同时核对 3 个 FP16 `SoftplusPatch`。GDN 门控调用变为 `torch.ops.npu.silu_patch(gate.to(torch.float16).contiguous())`。RMSNorm 的另一侧仍按原精度计算，乘法的类型提升仍可能生成 Cast。导出日志的三行 `[GDN 门控 AIR]` 显示每个门控输出在 AIR 中的直接下游节点，`export/package/L00-L03/case.json` 的 `silu_patch.nodes[].consumers` 也记录该信息。
 
+### 从四层 AIR 定位 RMS 门控加载失败
+
+在能访问已有四层 AIR、OMG 和板卡的服务器上运行：
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh gate-probe
+```
+
+命令从当前 `4-prefill-t64` 的 AIR 中取第一个形状为 `[2048,128]` 的 RMS 门控，复制实际节点及其属性，沿用四层原生 OMG 参数和 HIAI V2。四张小 OMC 分别为 `cast-mul`（FP16 输入接原 Cast 和 FP32 Mul）、`silu`、`silu-cast` 和 `silu-cast-mul`。切口使用固定的合成浮点输入。这个实验测加载和执行，不衡量模型精度。
+
+`board/L00-L03/gate-probes/result.json` 汇总每项状态。定位加载问题时查看 `LOAD_MODEL_FAILED` 项的 HiLog，确认是否复现同一条 `OpUpdateKernelArgs failed`。如果四项都为 `EXECUTED`，说明该门控与这两个下游节点单独组合可以运行，后续应检查它们在整图中的上游和编译任务。四层模型及其 replay 记录保留在原目录。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。

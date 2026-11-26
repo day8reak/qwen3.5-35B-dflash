@@ -270,11 +270,15 @@ def worker(args, action, root, remote):
                 cmd.append(value)
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
+    if getattr(args, 'gate_probe', False):
+        cmd.append('--gate-probe')
     if args.recovery:
         cmd.append('--recovery')
     label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
              'compile': '编译 OMC 并保存 I/O 描述', 'execute': '上板执行已编译 OMC 并比较三端结果',
              'diagnose': '读取已失败的板端运行日志', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
+    if getattr(args, 'gate_probe', False):
+        label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
     print(f'[{directory_name(args.mode, args.phase)}] {label}', flush=True)
     if setup:
         print(f'  加载环境脚本 {script}（{name}）', flush=True)
@@ -317,7 +321,11 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
+    parser.add_argument('--gate-probe', action='store_true', help=argparse.SUPPRESS)
     a = parser.parse_args()
+    if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
+                         a.action not in ('compile', 'execute', '_compile', '_execute')):
+        parser.error('gate-probe uses the existing four-layer T64 prefill export')
     if any(getattr(a, name) for name in FOUR_LAYER_CONTROLS):
         if (a.mode, a.phase) != ('4', 'prefill'):
             parser.error('use --mode 4 --phase prefill for this four-layer control')
@@ -380,6 +388,10 @@ def main():
         return 0 if diagnose_case(root, a.mode, a.phase) else 1
     if a.action.startswith('_'):
         a.action = a.action[1:]
+        if a.gate_probe:
+            from decoder_gate_probe import probe
+            ddk, config, _ = board_config(a.action)
+            return 0 if probe(root, a.action, ddk, config, replace_inputs=a.replace_inputs) else 1
         site = root/('board' if a.action in ('compile', 'execute', 'board') else 'export')
         from decoder_handoff import publish, receive
         if a.action == 'transfer':
@@ -415,8 +427,8 @@ def main():
                     'CPRO_TRANSFER_CONFIG', 'RUNTIME_CONFIG', 'TBE_DIAGNOSIS'):
             if os.getenv(key) and Path(os.environ[key]).expanduser().resolve().is_relative_to(root):
                 raise ValueError(f'{key} must be outside the replaceable result directory {root}')
-        if a.action == 'diagnose':
-            worker(a, 'diagnose', root, remote)
+        if a.action == 'diagnose' or a.gate_probe:
+            worker(a, a.action, root, remote)
             return 0
         if (a.native_activations or a.silu_only or a.softplus_only) and a.action in ('board', 'compile', 'execute', 'transfer'):
             from decoder_four_inputs import remember_original_inputs
