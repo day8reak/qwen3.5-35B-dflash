@@ -115,9 +115,28 @@ def select_gdn_silu(model, site):
 
 
 def omit_gate_output_cast(model):
-    if model.count(_GATE_SILU) != 1:
-        raise ValueError('Expected one FP16 SiluPatch call on the GDN RMS gate in the CPro model source')
-    return model.replace(_GATE[1], _GATE_SILU).replace(_GATE_SILU + '.float()', _GATE_SILU)
+    import ast
+    from .decoder_four_source import preserve_source
+    from .source_model import _call, _definition
+
+    tree = ast.parse(model)
+    norm = _definition(tree, 'Qwen3_5MoeRMSNormGated')
+    forward = _definition(norm, 'forward')
+    gate = _call(forward, 'torch.ops.npu.silu_patch')
+
+    class OmitGateCast(ast.NodeTransformer):
+        def visit_Call(self, node):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.value is gate and func.attr in ('float', 'to'):
+                call = ast.unparse(node)
+                suffix = call[len(ast.unparse(gate)):]
+                if suffix not in ('.float()', '.to(torch.float32)', '.to(dtype=torch.float32)'):
+                    raise ValueError(f'Unexpected GDN RMS gate cast in {norm.name}.forward: {call}')
+                return gate
+            return self.generic_visit(node)
+
+    OmitGateCast().visit(forward)
+    return preserve_source(model, ast.unparse(tree))
 
 
 def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplus=False):
