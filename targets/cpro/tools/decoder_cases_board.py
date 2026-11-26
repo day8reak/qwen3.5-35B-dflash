@@ -143,6 +143,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
             print(f'[{case.name}] --gdn-silu-site {meta["gdn_silu_site"]}', flush=True)
         if meta.get('all_silu_no_gate_cast'):
             print(f'[{case.name}] --all-silu-no-gate-cast：GDN 和 MoE 全部使用 SiluPatch，GDN 门控源码省略输出 Cast。', flush=True)
+        if meta.get('rms_silu_layers'):
+            print(f'[{case.name}] RMS 门控 SiluPatch 层={meta["rms_silu_layers"]}', flush=True)
         if meta.get('physical_convstate'):
             print(f'[{case.name}] ConvState 使用本次 QKV 的物理行 60–63，卷积窗口为 67 行。', flush=True)
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
@@ -212,7 +214,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board',
           replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False,
           native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
-          all_silu_no_gate_cast=False, physical_convstate=False):
+          all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False):
     bundle = run/'package'
     if step == 'execute' and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -232,7 +234,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
     for key, selected in dict(no_patch=no_patch, native_activations=native_activations,
                               silu_only=silu_only, softplus_only=softplus_only, gdn_silu_only=gdn_silu_only,
                               gdn_silu_site=gdn_silu_site, all_silu_no_gate_cast=all_silu_no_gate_cast,
-                              physical_convstate=physical_convstate).items():
+                              physical_convstate=physical_convstate, rms_silu_layers=rms_silu_layers).items():
         if manifest.get(key, False) != selected:
             raise ValueError(f'{bundle}: --{key.replace("_", "-")} selection differs from the AIR export')
     from decoder_handoff import runtime_file

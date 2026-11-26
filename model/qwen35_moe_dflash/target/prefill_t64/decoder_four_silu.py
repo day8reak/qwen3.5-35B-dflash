@@ -115,7 +115,7 @@ def select_gdn_silu(model, site):
     return model
 
 
-def omit_gate_output_cast(model):
+def omit_gate_output_cast(model, *, select_layers=False):
     import ast
     from .decoder_four_source import preserve_source
     from .source_model import _call, _definition
@@ -127,17 +127,56 @@ def omit_gate_output_cast(model):
 
     class OmitGateCast(ast.NodeTransformer):
         def visit_Call(self, node):
+            if node is gate and select_layers:
+                native = ast.Call(func=ast.parse('F.silu', mode='eval').body, args=gate.args, keywords=[])
+                return ast.IfExp(test=ast.parse('self.use_silu_patch', mode='eval').body, body=gate, orelse=native)
             func = node.func
             if isinstance(func, ast.Attribute) and func.value is gate and func.attr in ('float', 'to'):
                 call = ast.unparse(node)
                 suffix = call[len(ast.unparse(gate)):]
                 if suffix not in ('.float()', '.to(torch.float32)', '.to(dtype=torch.float32)'):
                     raise ValueError(f'Unexpected GDN RMS gate cast in {norm.name}.forward: {call}')
-                return gate
+                return self.visit(gate)
             return self.generic_visit(node)
 
     OmitGateCast().visit(forward)
     return preserve_source(model, ast.unparse(tree))
+
+
+def set_rms_gate_layers(model, selected):
+    """Set a static boolean on each original RMS gate before TorchAir traces the wrapper."""
+    from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNormGated
+
+    gates = {}
+    for name, module in model.named_modules():
+        if isinstance(module, Qwen3_5MoeRMSNormGated):
+            match = re.search(r'(?:^|\.)layers\.(\d+)\.', name)
+            if match is None or int(match[1]) in gates:
+                raise ValueError(f'Cannot bind RMS gate to one decoder layer: {name}')
+            gates[int(match[1])] = module
+    if set(gates) != {0, 1, 2}:
+        raise ValueError(f'Expected RMS gates on L0-L2, found {sorted(gates)}')
+    for layer, module in sorted(gates.items()):
+        module.use_silu_patch = layer in selected
+        print(f'[GDN RMS L{layer}] {"SiluPatch" if module.use_silu_patch else "F.silu"} (FP16)', flush=True)
+
+
+def configure_gate_export(exporter, selected):
+    import ast
+    from .source_model import _call
+
+    call = _call(ast.parse(exporter), 'torchair.dynamo_export')
+    wrapper, = [kw.value.id for kw in call.keywords if kw.arg == 'model' and isinstance(kw.value, ast.Name)]
+    lines = exporter.splitlines(keepends=True)
+    at = call.lineno - 1
+    indent = lines[at][:call.col_offset]
+    if indent.strip():
+        raise ValueError('Expected a standalone torchair.dynamo_export call')
+    lines[at:at] = [
+        indent + 'from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import set_rms_gate_layers\n',
+        f'{indent}set_rms_gate_layers({wrapper}, {selected!r})\n',
+    ]
+    return ''.join(lines)
 
 
 def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplus=False):
@@ -335,7 +374,7 @@ def activation_port_shape(desc):
 
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
                            check_convs=False, gdn_conv="conv2d", moe_silu=True, gdn_silu_site=None,
-                           all_silu_no_gate_cast=False):
+                           all_silu_no_gate_cast=False, rms_gate_count=None):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -349,8 +388,11 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
         traced[name] = shape
     linear = 0 if full_only else layers - layers // 4
     expert_layers = layers if moe_silu else 0
+    gate_count = 0 if gdn_silu_site == 'conv' else linear
+    if rms_gate_count is not None:
+        gate_count = rms_gate_count
     expected = {GE_TYPE: Counter({(1, 8192, rows): 0 if gdn_silu_site == 'gate' else linear,
-                                  (rows * 32, 128): 0 if gdn_silu_site == 'conv' else linear,
+                                  (rows * 32, 128): gate_count,
                                   (rows, 512): expert_layers, (rows * 8, 512): expert_layers}),
                 "SoftplusPatch": Counter({(1, rows, 32): linear if softplus else 0})}
     if not silu:

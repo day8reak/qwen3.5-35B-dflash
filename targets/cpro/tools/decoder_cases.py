@@ -312,6 +312,9 @@ def main():
                                  help='enable SiluPatch only after the GDN convolution or only at its RMS gate; keep SoftplusPatch')
     activation_mode.add_argument('--all-silu-no-gate-cast', action='store_true',
                                  help='use all GDN and MoE SiluPatch calls and omit the explicit FP32 cast after the GDN gate')
+    activation_mode.add_argument('--rms-silu-layers', default=False,
+                                 choices=('none', '0', '1', '2', '0,1', '0,2', '1,2', '0,1,2'),
+                                 help='use FP16 SiluPatch on the selected RMS gates and FP16 F.silu on the other gates')
     parser.add_argument('--physical-convstate', action='store_true',
                         help='replace the four-layer T64 ConvState update with concatenation and physical-tail slices')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
@@ -363,6 +366,7 @@ def main():
                               prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations,
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
                               gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
+                              rms_silu_layers=a.rms_silu_layers,
                               physical_convstate=a.physical_convstate,
                               omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
@@ -416,7 +420,8 @@ def main():
                          original_board_args=a.original_board_args, no_patch=a.no_patch,
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
                          gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site,
-                         all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate):
+                         all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate,
+                         rms_silu_layers=a.rms_silu_layers):
                 return 1
         else:
             prepare_stage(a, site)

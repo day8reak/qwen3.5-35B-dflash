@@ -213,6 +213,24 @@ bash targets/cpro/scripts/decoder_compare.sh gate-upstream
 
 三张 OMC 都以同一个 FP32 门控乘积为输出。`z-branch` 保留原 `in_proj_z` 的 DynamicQuant、W4 投影、Reshape 和权重，乘法的 RMS 侧直接读取 bin。`rms-branch` 保留原 RMSNorm 和 gamma，SiLU 输入直接读取 bin。`both-branches` 同时保留两侧。切口使用固定合成输入验证加载和执行。结果在 `board/L00-L03/gate-upstream/result.json`。比较四层故障时，核对失败阶段和该次 HiLog 的 `OpUpdateKernelArgs failed`。
 
+### 在四层整图按层选择 RMS 门控 SiLU
+
+`gate-upstream` 的三项均为 `EXECUTED` 时，可以在原四层 T64 导出和上板流程中使用 `--rms-silu-layers`。先用 `none` 让三个 RMS 门控对相同的连续 FP16 输入调用 `F.silu`。此时仍有 11 个 `SiluPatch`（3 个卷积和 8 个 MoE）和 3 个 `SoftplusPatch`。保留了 Conv2D、物理尾部 ConvState 和门控乘法的类型提升。
+
+在 CPro AIR 生成服务器复用已生成的 golden 并重新导出四层 AIR。
+
+```bash
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate --rms-silu-layers none
+```
+
+在合并部署的 OMC 和板端执行服务器接收、编译、上板。两端使用相同的层选择。此命令会覆盖当前四层运行目录中的旧板端结果。
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate --rms-silu-layers none
+```
+
+如果 `none` 能执行，在两条命令中都改用 `0`，仅将 L0 的 RMS 门控换回 `SiluPatch`。也可选 `1`、`2` 或升序逗号列表来定位单层或组合触发条件。导出时逐层打印门控选择，并核对 AIR 中 RMS 门控形状的自定义节点数。出现精度矩阵或 `FAILED_ACCURACY` 表示模型已执行。复现原加载问题需在该次运行看到 `load_model` 和 `OpUpdateKernelArgs failed`。
+
 ### 用原 CPro 的板端命令重跑已有 OMC
 
 在板端执行服务器上，可以保留现有四层 `taps` OMC 和输入，只改变传给 `model_run_tool_internal` 的参数。脚本按当前 OMC 的槽位绑定输入，并传入 `--model`、`--input`、`--times=1`、`--modelmanager_itf=V2`、外置权重的 `--weight_dir`、`--enable_item=1`、`--input_shape`、`--output_shape` 和 `--output_dir`。加载方式和输入输出类型使用工具默认值。实际命令保存在 `board/L00-L03/replay/run.sh`，退出状态在同目录的 `result.json`。
