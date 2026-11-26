@@ -4,6 +4,8 @@
 
 沿用已安装的模型环境和工具链，只配置本次所需阶段；无需替换已有 PyTorch 或共享 DDK。
 
+做 decoder 三端对比时，78 和 35 各配置一次，每次分别运行 `decoder_compare.sh prepare` 和 `decoder_compare.sh board`。共享工具链、个人目录和配置示例见[两机配置](../environment-setup.md)。
+
 ## Docker 重进后的配置恢复
 
 按下面顺序执行。第1步每次重进Docker恢复；第2、3步首次配置时执行；已有 `qwen35-cpro.env` 时，第1步后直接进入第4步。示例中的安装路径和设备值需替换为本机实际值，私有路径和设备配置保存在仓库外。

@@ -35,9 +35,12 @@ def source_config(action):
     return src, (src/cfg).resolve(strict=True)
 
 
-def board_config():
+def board_config(*, before_setup=False):
     root = required('AI_RUN_DIR')
-    return (required('CPRO_DDK_ROOT'),
+    ddk = os.getenv('CPRO_DDK_ROOT') or os.getenv('DDK_PATH')
+    if not ddk and not (before_setup and os.getenv('DECODER_DDK_SETUP')):
+        raise SystemExit('Set CPRO_DDK_ROOT or load a DDK setup script that exports DDK_PATH.')
+    return (Path(ddk).expanduser().resolve() if ddk else None,
             Path(os.getenv('RUNTIME_CONFIG', root/'runtime/runtime.json')).resolve(strict=True),
             Path(os.getenv('TBE_DIAGNOSIS', root/'common/tbe-diagnosis')).resolve())
 
@@ -158,11 +161,30 @@ def prepare_stage(args, run):
 
 
 def worker(args, action, root, remote):
-    env = {'reference': ('DECODER_NZ_ENV', 'qwen3_5_w4'), 'air': ('DECODER_EXPORT_ENV', 'qwen3_5_cpro'),
-           'board': ('DECODER_BOARD_ENV', 'custom_pypto')}[action]
-    name = os.getenv(*env)
-    cmd = ([sys.executable] if name in ('current', os.getenv('CONDA_DEFAULT_ENV')) else
-           ['conda', 'run', '--no-capture-output', '-n', name, 'python'])
+    environment_key, default_env, setup_key = {
+        'reference': ('DECODER_NZ_ENV', 'qwen3_5_w4', 'DECODER_NZ_SETUP'),
+        'air': ('DECODER_EXPORT_ENV', 'qwen3_5_cpro', 'DECODER_EXPORT_SETUP'),
+        'board': ('DECODER_BOARD_ENV', 'custom_pypto', 'DECODER_DDK_SETUP'),
+    }[action]
+    name = os.getenv(environment_key, default_env)
+    current = name in ('current', os.getenv('CONDA_DEFAULT_ENV'), os.getenv('CONDA_PREFIX'))
+    cmd = [] if current else [os.getenv('CONDA_EXE') or 'conda', 'run', '--no-capture-output',
+                              '-p' if os.path.isabs(name) else '-n', name]
+    setup = os.getenv(setup_key)
+    if action != 'board' and not setup:
+        setup = os.getenv('DECODER_CANN_SETUP')
+    python = sys.executable if current else 'python'
+    if setup:
+        script = Path(setup).expanduser().resolve(strict=True)
+        if not script.is_file():
+            raise ValueError(f'Expected an environment setup script at {script}')
+        # Activate the vendor toolchain inside this worker's conda environment.
+        # Keep its changes local and pass argv as positional arguments, including paths with spaces.
+        cmd.extend(['bash', '-c', 'decoder_setup_script=$1; shift; decoder_python=$(command -v "$1") || exit 1; shift; '
+                    'load_setup() { source "$decoder_setup_script"; }; load_setup || exit $?; exec "$decoder_python" "$@"',
+                    'decoder-env', str(script), python])
+    else:
+        cmd.append(python)
     cmd.extend(['-u', __file__, '_'+action, '--mode', args.mode, '--phase', args.phase,
                 '--run', str(root), '--remote-run', str(remote)])
     if args.recovery:
@@ -170,6 +192,8 @@ def worker(args, action, root, remote):
     label = {'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
              'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
     print(f'[{directory_name(args.mode, args.phase)}] {label}', flush=True)
+    if setup:
+        print(f'  加载环境脚本 {script}（{name}）', flush=True)
     subprocess.run(cmd, check=True)
 
 
@@ -230,7 +254,8 @@ def main():
         marker = root/'.decoder-case'
         if root.exists() and any(root.iterdir()) and (marker.is_symlink() or not marker.is_file() or marker.read_text() != slug):
             raise ValueError(f'{root} contains files from an unknown run; choose another --run-root')
-        for key in ('CPRO_PATCHED_SOURCE', 'TARGET_SOURCE', 'CPRO_SOURCE', 'NZ_CONFIG', 'TARGET_CONFIG', 'DECODER_ENV'):
+        for key in ('CPRO_PATCHED_SOURCE', 'TARGET_SOURCE', 'CPRO_SOURCE', 'NZ_CONFIG', 'TARGET_CONFIG', 'DECODER_ENV',
+                    'CPRO_TRANSFER_CONFIG', 'RUNTIME_CONFIG', 'TBE_DIAGNOSIS'):
             if os.getenv(key) and Path(os.environ[key]).expanduser().resolve().is_relative_to(root):
                 raise ValueError(f'{key} must be outside the replaceable result directory {root}')
         if a.action == 'prepare':
@@ -247,7 +272,7 @@ def main():
             worker(a, 'reference', root, remote)
             worker(a, 'air', root, remote)
         else:
-            board_config()
+            board_config(before_setup=True)
             site = root/'board'
             if site.is_symlink():
                 raise ValueError(f'Unexpected board directory symlink: {site}')

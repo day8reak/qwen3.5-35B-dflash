@@ -15,7 +15,8 @@ import sys
 import tempfile
 
 
-DEFAULT_CONFIG = Path.home() / '.config' / 'qwen35-cpro' / 'transfer.json'
+DEFAULT_CONFIG = Path(os.getenv('CPRO_TRANSFER_CONFIG') or
+                      Path.home() / '.config' / 'qwen35-cpro' / 'transfer.json').expanduser()
 
 
 def initialize(config, hosts):

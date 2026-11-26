@@ -15,10 +15,10 @@ cp -n targets/cpro/scripts/decoder.env.example ~/.config/qwen35-cpro/decoder.env
 |---|---|
 | 两机 | `AI_RUN_DIR` 是该机可写的运行根目录。设置相同的 `DECODER_MODE`、`DECODER_PHASE`。命令行的 `--mode`、`--phase` 可覆盖本次选择。 |
 | 78 | `TARGET_SOURCE` 是含 `inference_segment.py` 的 310P 工程，`CPRO_SOURCE` 是原始 CPro 工程。两份配置 `NZ_CONFIG`、`TARGET_CONFIG` 默认各自指向对应工程的 `config/qwen3_5_moe.yaml`。使用同一份 YAML 时可将两项设为同一绝对路径。 |
-| 35 | 加载 DDK 环境，设置 `CPRO_DDK_ROOT`、HDC 服务地址 `BIP` 和设备序列号 `SN`。DDK 需要原模型算子及 FP16 输入输出的 SiluPatch、SoftplusPatch。运行配置默认是 `$AI_RUN_DIR/runtime/runtime.json`。 |
-| 35 获取 AIR | 配置 SSH 的 `air` 端点，首次可执行 `python targets/cpro/scripts/pull_artifacts.py --init AIR主机名 OMC主机名`。如果两机目录不同，设置 `DECODER_REMOTE_RUN_ROOT` 指向 **78 的 case 父目录**。共享同一绝对路径时直接读取本地导出。 |
+| 35 | 设置 `CPRO_DDK_ROOT`、HDC 服务地址 `BIP` 和设备序列号 `SN`。DDK 需要原模型算子及 FP16 输入输出的 SiluPatch、SoftplusPatch。运行配置默认是 `$AI_RUN_DIR/runtime/runtime.json`。 |
+| 35 获取 AIR | 配置 35 上个人 SSH 设置里的 `air` 端点。首次可执行 `python targets/cpro/scripts/pull_artifacts.py --init AIR主机名 OMC主机名`。使用自选凭据路径时，初始化和运行都指定同一个 `CPRO_TRANSFER_CONFIG`。如果两机目录不同，设置 `DECODER_REMOTE_RUN_ROOT` 指向 **78 的 case 父目录**。共享同一绝对路径时直接读取本地导出。 |
 
-入口也会读取已导出的环境变量。可用 `DECODER_ENV=/绝对路径/decoder.env` 指定配置文件。示例文件列出了三个 conda 环境的默认名以及可覆盖的工具路径；环境名设为 `current` 会用当前 Python。[详细环境配置](environment-setup.md)
+入口也会读取已导出的环境变量。可用 `DECODER_ENV=/绝对路径/decoder.env` 指定配置文件。三个 conda 环境可用名称或绝对 prefix 指定。`current` 使用当前 Python。配置中的 `DECODER_CANN_SETUP`（78）和 `DECODER_DDK_SETUP`（35）会在相应环境内自动加载。已有初始化的 shell 可省略这两项。同机共享安装、权重与个人目录的分工见环境配置。[详细环境配置](environment-setup.md)
 
 ### 输入 prompt
 
