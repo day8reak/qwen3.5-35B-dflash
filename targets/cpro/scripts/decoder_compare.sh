@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-decoder_compare.sh {golden|air|compile|execute|diagnose|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-input-rmsnorm-air|l0-input-rmsnorm|l0-shared-gate-reference|l0-shared-gate|l0-shared-gate-fp16|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
+decoder_compare.sh {golden|air|compile|execute|diagnose|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-input-rmsnorm-air|l0-input-rmsnorm-omc|l0-input-rmsnorm|l0-shared-gate-reference|l0-shared-gate|l0-shared-gate-fp16|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
                    [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only|--gdn-silu-site {conv|gate}|--all-silu-no-gate-cast|--rms-silu-layers LAYERS|--rms-silu-token-view] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data.
@@ -23,6 +23,7 @@ l0-steps-reference  Capture CPU and 310P L0 intermediates for the existing four-
 l0-steps    Read out L0 from the existing four-layer AIR, run with its real inputs and write three-way matrices.
 l0-steps-same-input   Run the L0 readouts with the saved 310P hidden as the CPro decoder input.
 l0-input-rmsnorm-air   Extract the single L0 input RMSNorm AIR, its operands and the captured 310P output.
+l0-input-rmsnorm-omc   Compile single-op/export.air to single-op/export.omc. Use --rmsnorm-air custom.air for a custom op.
 l0-input-rmsnorm       Export, compile and run this RMSNorm on the same 310P input.
 l0-shared-gate-reference   Export the L0 scalar gate weight and saved reference rows on the golden host.
 l0-shared-gate   Compare the saved gate logits and weighted outputs offline on the CPro host.
@@ -66,9 +67,10 @@ case "${1:-}" in
     l0-steps-reference)
         shift
         exec bash "$0" golden --gate-probe l0-steps --mode 4 --phase prefill "$@" ;;
-    l0-input-rmsnorm-air)
+    l0-input-rmsnorm-air|l0-input-rmsnorm-omc)
+        mode=$1
         shift
-        exec bash "$0" compile --gate-probe l0-input-rmsnorm-air --mode 4 --phase prefill "$@" ;;
+        exec bash "$0" compile --gate-probe "$mode" --mode 4 --phase prefill "$@" ;;
     l0-steps|l0-steps-same-input|l0-shared-gate-fp16|l0-input-rmsnorm)
         mode=$1
         shift

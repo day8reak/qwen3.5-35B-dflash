@@ -7,6 +7,7 @@ import tempfile
 
 import numpy as np
 
+from decoder4_original import compile_log_text, compile_native_prefill
 from decoder_cases_board import compiled, read
 from decoder_gate_probe import air_bundle, execute_case
 from l0_accuracy_report import compiled_output_slots, get_reference, reference_matches
@@ -18,6 +19,7 @@ from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_mess
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import activation_port_shape
 from qwen35_moe_dflash.target.prefill_t64.l0_split import slice_air, wire
 from qwen35_moe_dflash.target.prefill_t64.layer_template import parameter
+from qwen35_moe_dflash.toolchain.existing_air import select_generated_omc
 
 
 KIND = 'l0-input-rmsnorm'
@@ -175,15 +177,39 @@ def export(root, remote, base, temp):
     return info
 
 
+def export_single_op(base):
+    script = Path(__file__).resolve().parents[1]/'scripts/export_l0_rmsnorm_air.py'
+    subprocess.run([sys.executable, str(script), '--case-dir', str(base)], check=True)
+
+
 def run(root, remote, action, ddk, config, args):
     base = root/'board/L00-L03'/KIND
+    if args.gate_probe == 'l0-input-rmsnorm-omc':
+        air = base/'single-op'/(args.rmsnorm_air or 'export.air')
+        if args.rmsnorm_air is None and not air.parent.exists() and (base/'case.json').is_file():
+            export_single_op(base)
+        if not air.is_file():
+            raise FileNotFoundError(f'{air}: 请先生成这个单算子 AIR')
+        log = air.with_suffix('.compile.log')
+        with tempfile.TemporaryDirectory(dir=air.parent, prefix='.omg-') as tmp:
+            work = Path(tmp)
+            try:
+                code, _, _ = compile_native_prefill(work, str(air.resolve()), ddk, external_weights=False)
+            finally:
+                if (work/'compile.log').is_file():
+                    (work/'compile.log').replace(log)
+            if code:
+                raise RuntimeError(compile_log_text(log))
+            output = air.with_suffix('.omc')
+            select_generated_omc(work).replace(output)
+        print(f'OMC: {output}\nOMG log: {log}', flush=True)
+        return True
     if action == 'compile':
         base.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base.parent) as tmp:
             info = export(root, remote, base, Path(tmp))
         if args.gate_probe == 'l0-input-rmsnorm-air':
-            script = Path(__file__).resolve().parents[1]/'scripts/export_l0_rmsnorm_air.py'
-            subprocess.run([sys.executable, str(script), '--case-dir', str(base)], check=True)
+            export_single_op(base)
         if ddk is not None:
             compiled(base, base, ddk, None, info['source'])
         return True

@@ -100,6 +100,14 @@ python export_l0_rmsnorm_air.py --op-type "${RMS_OP_TYPE:?}" --output-ports y --
 
 `--input-ports` 可指定注册的两个输入名，`--output-ports y rstd` 可声明第二个 FP32 输出。AIR 对外只暴露归一化结果。若基线打印的 epsilon 与 `1e-6` 不同，给上面的命令加上同值的 `--epsilon`。epsilon 属性名可用 `--epsilon-attr` 指定，若注册接口无此属性，传 `--epsilon-attr ''`。只需生成内置模型时可直接运行 `python export_l0_rmsnorm_air.py --output export.air`。
 
+在 CPro OMC 生成服务器的仓库根目录执行以下命令，从该用例的 `single-op/export.air` 生成同目录的 `export.omc`。OMG 从 AIR 读取输入名和静态形状。编译日志是 `export.compile.log`，上板输入仍是同目录的 `x.bin`、`gamma.bin`。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh l0-input-rmsnorm-omc
+```
+
+如果只有上一轮捕获的 `case.json` 和输入文件，默认编译命令会先创建缺少的 `single-op/` 目录并生成 FP16 单算子包。若已在同目录导出 `custom.air`，在命令末尾加 `--rmsnorm-air custom.air`，得到 `custom.omc` 和 `custom.compile.log`。
+
 四层 T64 用例的 310P 实测输入在 `export/fixture/inputs/hidden.bin`，OMC 生成服务器收到的副本在 `board/package/fixture/inputs/hidden.bin`。它是 1 × 64 × 2048 的 FP16 张量，共 262144 字节。L0 逐步采集用 `input_layernorm` 的前钩子记录 `310p_block_entry`，并与这份输入逐元素核对。对应的实测归一化结果是 `values.npz` 中的 `310p_hidden`，来自紧接该层归一化的 GDN 入口。
 
 在当前同时配置 CPro OMC 生成和板端执行环境的服务器运行：

@@ -272,6 +272,8 @@ def worker(args, action, root, remote):
         cmd.extend(board_upload_flags(args))
     if getattr(args, 'gate_probe', False):
         cmd.extend(['--gate-probe', args.gate_probe])
+        if args.rmsnorm_air:
+            cmd.extend(['--rmsnorm-air', args.rmsnorm_air])
     if args.recovery:
         cmd.append('--recovery')
     label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
@@ -287,6 +289,8 @@ def worker(args, action, root, remote):
         elif args.gate_probe == 'l0-shared-gate-fp16':
             label = {'compile': '编译 L0 共享门控 FP16 MatMul → FP32 Cast 对照',
                      'execute': '用相同 L0 输入上板，对比标量门控和共享专家加权输出'}[action]
+        elif args.gate_probe == 'l0-input-rmsnorm-omc':
+            label = '把已有 RMSNorm 单算子 AIR 编译为同目录的 OMC'
         elif args.gate_probe in ('l0-input-rmsnorm', 'l0-input-rmsnorm-air'):
             label = '上板单测 L0 input_layernorm' if action == 'execute' else '提取 L0 input_layernorm 和真实 310P 输入输出'
         elif args.gate_probe == 'l0-steps-same-input':
@@ -352,14 +356,19 @@ def main():
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
                         choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate', 'l0-shared-gate-fp16',
-                                 'l0-input-rmsnorm', 'l0-input-rmsnorm-air'), help=argparse.SUPPRESS)
+                                 'l0-input-rmsnorm', 'l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc'), help=argparse.SUPPRESS)
+    parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
     a = parser.parse_args()
+    if a.rmsnorm_air is not None and (a.gate_probe != 'l0-input-rmsnorm-omc'
+                                      or Path(a.rmsnorm_air).name != a.rmsnorm_air
+                                      or Path(a.rmsnorm_air).suffix != '.air'):
+        parser.error('--rmsnorm-air takes a .air filename for l0-input-rmsnorm-omc')
     probe_actions = ('compile', 'execute', '_compile', '_execute')
     if a.gate_probe == 'l0-embedding':
         probe_actions = ('golden', '_reference')
     elif a.gate_probe == 'l0-shared-gate':
         probe_actions = ('golden', '_reference', 'compile', '_compile')
-    elif a.gate_probe == 'l0-input-rmsnorm-air':
+    elif a.gate_probe in ('l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc'):
         probe_actions = ('compile', '_compile')
     elif a.gate_probe == 'l0-steps':
         probe_actions += ('golden', '_reference')
@@ -452,7 +461,7 @@ def main():
                 from l0_shared_gate_fp16 import run
                 ddk, config, _ = board_config(a.action)
                 return 0 if run(root, remote, a.action, ddk, config, a) else 1
-            if a.gate_probe in ('l0-input-rmsnorm', 'l0-input-rmsnorm-air'):
+            if a.gate_probe in ('l0-input-rmsnorm', 'l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc'):
                 from l0_input_rmsnorm import run
                 ddk, config, _ = (None, None, None) if a.gate_probe.endswith('-air') else board_config(a.action)
                 return 0 if run(root, remote, a.action, ddk, config, a) else 1

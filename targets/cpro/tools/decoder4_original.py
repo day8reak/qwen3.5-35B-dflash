@@ -460,12 +460,13 @@ def compile_omg(out, air_path, ddk, diagnosis, platform, *, use_origin_format=Tr
     return result.returncode, argv, env.get('SOC_VERSION')
 
 
-def compile_native_prefill(out, air_path, ddk):
+def compile_native_prefill(out, air_path, ddk, *, external_weights=True):
     """Use the owner's Linux OMG entry with the fixed gear of this prefill export."""
     shape = inspect_input_shape(out/air_path)['input_shape']
     wrapper = ddk/'tools/tools_omg/omg'
     argv = [str(wrapper), '--model', air_path, '--output', 'model', '--framework', '1',
-            '--limit_partition_size=false', '--save_weights_as_external_data=true', '--input_shape=' + shape]
+            '--limit_partition_size=false', f'--save_weights_as_external_data={str(external_weights).lower()}',
+            '--input_shape=' + shape]
     setup = ddk/'tools/tools_ascendc/set_ascendc_env.sh'
     # A configured compile worker has already sourced its own DDK setup.
     if os.getenv('DECODER_DDK_SETUP') and os.getenv('QWEN35_DECODER_SETUP_LOADED') == str(setup.resolve()):
