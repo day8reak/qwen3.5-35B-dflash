@@ -353,26 +353,25 @@ bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-con
 
 该用例执行 L0 的 GDN、残差和 MoE。CPU 和 CPro 的单层入口来自同一组 embedding 编码和 scale。GDN 门控 SiLU 的原始输入形状为 `[2048,128]`。共享专家的标量门控在 PyTorch 中对 FP16 激活与 FP16 权重做点积，将结果转成 FP32 后做 sigmoid。导出时打印在 AIR 中找到的 `FP16 MatMul → FP32 Cast → Sigmoid` 数量。查看 `$AI_RUN_DIR/target/tests/1-linear-prefill-t64/board/matrices.csv` 中 `hidden_0` 的有效 token，以及同目录的 `comparison.json`。
 
-要在完整 L0 上对比自定义 RMSNorm，可在两端使用同一个新运行目录。AIR 环境运行
+要用板端 dump 观察完整 L0 的自定义 RMSNorm，在 78（310P 与 AIR 环境）执行
 
 ```bash
-export DECODER_RUN_ROOT="$AI_RUN_DIR/target/tests/rmsnorm-native-shapes"
-bash targets/cpro/scripts/decoder_prepare.sh --mode linear --phase prefill --gdn-conv conv2d --rmsnorm-patch
+bash targets/cpro/scripts/decoder_prepare.sh --mode linear --phase prefill --gdn-conv conv2d --rmsnorm-patch --dump
 ```
 
-OMC 和板端合设的环境运行
+在 35（OMG 与 HDC 环境）执行
 
 ```bash
-export DECODER_RUN_ROOT="$AI_RUN_DIR/target/tests/rmsnorm-native-shapes"
-args=(--mode linear --phase prefill --gdn-conv conv2d --rmsnorm-patch)
-bash targets/cpro/scripts/decoder_transfer.sh air "${args[@]}"
-bash targets/cpro/scripts/decoder_omc.sh "${args[@]}"
-bash targets/cpro/scripts/decoder_compare.sh l0-dump --gdn-conv conv2d --rmsnorm-patch
+bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-conv conv2d --rmsnorm-patch --dump
 ```
 
 `--rmsnorm-patch` 在普通和 GDN 门控 RMSNorm 的 PyTorch 调用处使用 `torch.ops.npu.rmsnorm_patch`。AIR 端口为 FP16 ND 的 `x, gamma → z`，gamma 长度等于 x 的最后一维。单层普通 RMSNorm 传入预计算的有效 gamma，门控 RMSNorm 使用原权重。OpDef 没有 epsilon 参数，精度对照需核实 kernel 的固定 epsilon。实际节点见 `export/package/L00/case.json` 的 `rmsnorm_nodes`。
 
-`l0-dump` 对已编译的完整 L0 调用 V2，传入 `--enable_item=2`，模型成功执行后再运行 `data_proc_tool_internal`。每次运行单独保存到 `board/L00/operator-dump/attempt-*/L00/replay/`。该目录的 `result.json` 记录实际命令、退出码、回收文件的长度和张量候选，`dump/` 保存解析器产物。比对前须从 dump 中核对本次模型、算子、输入输出槽位、形状与 dtype。
+`--dump` 使用原 decoder 用例目录。78 保存同一批 token 和 L0 入口的 CPU/310P 中间值。35 只编译一个完整 L0 OMC，使用 V2 和 `--enable_item=2` 执行一次，再运行 `data_proc_tool_internal`，拉回解析器输出。从用例目录可查看
+
+- `board/L00/replay/dump/` 和 `dump-inventory.json`（同级）。完整文件树、文件大小、板端推理时间窗口和解析器命令。`parser.log` 保存解析器输出。
+- `board/package/fixture/l0-steps-reference/values.npz` 和同级的 `tensors.json`。CPU、310P 参考张量及其名称、dtype 和形状。
+- `board/comparison.json` 和 `board/matrices.csv`。同一次推理的整层输出三端比较。中间值与 Python 变量的对应关系待根据本机解析器的实际 dump 格式确认，状态为 `PENDING_PORT_MAPPING`。
 
 - 板端的 `model_run_tool_internal` 使用 V2，显式传入 `--input_shape` 和 `--output_shape`。每项按端口顺序写作 `名称:物理维度`，同一方向的多个端口用分号连接。旧编译记录缺少输出名称时，同机可用的 OMG 可以从现有 OMC 补读元数据；仍缺名称时，执行端通过 `runtime.json` 配套的描述查询工具读取板上模型。完整调用保存在该次 `replay/run.sh` 和 `replay/result.json` 的 `argv` 字段。
 - 板端固定使用 `/data/local/tmp/qwen35_case_<用例>/work`，例如 `qwen35_case_40-prefill-t64/work`。逐层模式在用例名后追加层号，例如 `40x1-prefill-t64-L00`。

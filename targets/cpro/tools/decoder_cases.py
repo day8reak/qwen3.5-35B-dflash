@@ -136,6 +136,8 @@ def prepare_stage(args, run):
     fixture = run/'fixture'
     package = run/'package'
     stamp = dict(mode=args.mode, phase=args.phase)
+    if args.dump:
+        stamp['dump'] = True
     if args.action == 'reference':
         from qwen35_moe_dflash.target.prefill_t64 import (
             chain_reference, cpu_reference, decoder_case_reference, decoder_embedding, split_cpu_reference,
@@ -160,11 +162,16 @@ def prepare_stage(args, run):
             ref = decoder_case_reference.capture(working, args.mode, args.phase, src, cfg)
             ref['binding'] = binding
             decoder_case_reference.cpu_reference(working, ref, src)
+            if args.dump:
+                from l0_accuracy_reference import capture_reference
+                capture_reference(working, working/'l0-steps-reference', src, cfg)
             working.rename(fixture)
         return
     from qwen35_moe_dflash.target.original_target_source import cpro_python_files
     prepared = src if args.no_patch else prepared_source(run, source_conv)
     ref = json.loads((fixture/'reference.json').read_bytes())
+    if args.dump and not (fixture/'l0-steps-reference/values.npz').is_file():
+        raise ValueError('The dump run requires the L0 intermediate golden from decoder_prepare.sh --dump')
     if (ref['mode'], ref['phase']) != (args.mode, args.phase):
         raise ValueError('Reference differs from selected case')
     if args.mode != '40' and not ref.get('embedding_inputs'):
@@ -292,6 +299,8 @@ def worker(args, action, root, remote):
         cmd.extend(board_upload_flags(args))
     if getattr(args, 'rmsnorm_patch', False):
         cmd.append('--rmsnorm-patch')
+    if args.dump:
+        cmd.append('--dump')
     if getattr(args, 'gate_probe', False):
         cmd.extend(['--gate-probe', args.gate_probe])
         if args.rmsnorm_air:
@@ -382,6 +391,8 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--rmsnorm-patch', action='store_true', help='use the custom FP16 RmsnormPatch in the CPro decoder')
+    parser.add_argument('--dump', action='store_true',
+                        help='capture L0 Python intermediates and dump one complete linear prefill OMC on the board')
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
                         choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate', 'l0-shared-gate-fp16',
@@ -389,6 +400,8 @@ def main():
                                  'l0-decay-report', 'l0-original-omg', 'l0-dump'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
     a = parser.parse_args()
+    if a.dump and ((a.mode, a.phase) != ('linear', 'prefill') or a.gate_probe):
+        parser.error('--dump requires --mode linear --phase prefill with the regular decoder stages')
     if a.rms_silu_token_view and a.action in ('prepare', 'golden', 'air', '_air'):
         parser.error('--rms-silu-token-view selects historical AIRs. Omit it when exporting the native gate shape.')
     if a.no_patch and a.rmsnorm_patch:
@@ -444,7 +457,7 @@ def main():
     if a.action == 'plan':
         schedule = groups(a.mode)
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
-                              prompt='310P YAML prompts[0]', rmsnorm_patch=a.rmsnorm_patch, no_patch=a.no_patch, native_activations=a.native_activations,
+                              prompt='310P YAML prompts[0]', dump=a.dump, rmsnorm_patch=a.rmsnorm_patch, no_patch=a.no_patch, native_activations=a.native_activations,
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
                               gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
                               rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view,
@@ -536,7 +549,7 @@ def main():
             ddk, config, diag = board_config(a.action)
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
-                         original_board_args=a.original_board_args, no_patch=a.no_patch, rmsnorm_patch=a.rmsnorm_patch,
+                         original_board_args=a.original_board_args, no_patch=a.no_patch, rmsnorm_patch=a.rmsnorm_patch, dump=a.dump,
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
                          gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site,
                          all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate,

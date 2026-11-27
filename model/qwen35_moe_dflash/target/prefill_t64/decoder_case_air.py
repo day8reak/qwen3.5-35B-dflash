@@ -121,7 +121,11 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
         raise ValueError(f'{name}: export inputs differ from the actual decoder inputs')
     if set(edges) != set(output_names(group, final)):
         raise ValueError(f'{name}: missing converter output identities')
-    save_json(dest/'case.json', dict(layers=group, rmsnorm_nodes=norms, qlinear_ports=audit['matmuls'],
+    dump_nodes = {}
+    if ref.get('binding', {}).get('dump'):
+        dump_nodes = dict(silu_patch=operators['silu_patch'], softplus_patch=operators['softplus_patch'],
+                          gdr_ports=audit['gdrs'])
+    save_json(dest/'case.json', dict(layers=group, rmsnorm_nodes=norms, qlinear_ports=audit['matmuls'], **dump_nodes,
                                      shared_gates=gates, gdn_convs=operators['gdn_convs'],
                                      inputs=bindings, outputs=bind_outputs(graph, edges),
                                      files=files_under(dest, dest)))

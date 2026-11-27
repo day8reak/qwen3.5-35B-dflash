@@ -13,7 +13,7 @@ import torch
 from qwen35_moe_dflash.common.artifacts import share_for_transfer
 from qwen35_moe_dflash.target import prefill_fixture as pf
 from qwen35_moe_dflash.target.layer_probe.capture import cpu
-from qwen35_moe_dflash.target.layer_probe.common import read_tensor, sized_file
+from qwen35_moe_dflash.target.layer_probe.common import read_tensor, save_json, sized_file
 from qwen35_moe_dflash.target.layer_probe.qlinear_math import dynamic_quant
 from qwen35_moe_dflash.target.prefill_t64.cpu_reference import CpuPrefill, norm, verify_floating_weights
 from qwen35_moe_dflash.target.prefill_t64.gdn_layer_reference import capture, evaluate
@@ -146,9 +146,13 @@ def observe_decoder(block, stack, done, values):
     stack.callback(block.register_forward_hook(leave).remove)
 
 
-@torch.inference_mode()
 def prepare(root, source, config):
     fixture = root/'export/fixture'
+    capture_reference(fixture, root/'l0-steps-reference', source, config)
+
+
+@torch.inference_mode()
+def capture_reference(fixture, folder, source, config):
     ref = json.loads((fixture/'reference.json').read_bytes())
     valid = ref['valid_rows']
     def tensor(name):
@@ -159,13 +163,13 @@ def prepare(root, source, config):
                                   embedding_rows=retained_embedding(fixture, ref),
                                   valid_rows=valid, observe_block=lambda b,s,d: observe_decoder(b,s,d,extra))
     if not np.array_equal(extra['block_entry'], tensor('hidden')):
-        raise ValueError('L0 input hidden differs from the retained four-layer reference')
+        raise ValueError('L0 input hidden differs from the retained decoder reference')
     for native_key, role in [('new_history','conv_state_0'), ('recurrent_cache','recurrent_state_0')]:
         row = ref['outputs'][role]
         if not np.array_equal(native[native_key], read_tensor(sized_file(fixture, row), row)):
-            raise ValueError(f'310P {role} differs from the retained four-layer reference')
+            raise ValueError(f'310P {role} differs from the retained decoder reference')
     if Path(info['quant_weights']).resolve() != Path(ref['quanted_pth']).resolve():
-        raise ValueError('310P and four-layer reference use different W4 checkpoints')
+        raise ValueError('310P and the decoder reference use different W4 checkpoints')
     owner = pf.import_source(source)
     loader = sys.modules[owner.Qwen3_5MoeForCausalLMWrapper.__module__].load_npu_model
     checkpoint = Path(ref['model_file'])
@@ -192,7 +196,6 @@ def prepare(root, source, config):
         golden[role+'_a8'], golden[role+'_scale'] = codes, scale
     native.update(extra)
     arrays = {backend+'_'+k: a for backend, values in [('cpu', golden), ('310p', native)] for k,a in values.items()}
-    folder = root/'l0-steps-reference'
     folder.mkdir(exist_ok=True)
     dest = folder/'values.npz'
     with tempfile.TemporaryDirectory(dir=folder) as temp:
@@ -201,5 +204,8 @@ def prepare(root, source, config):
                  fixture_hidden=np.array(ref['inputs']['hidden']['sha256']),
                  fixture_state=np.array(ref['outputs']['recurrent_state_0']['sha256']))
         staged.replace(dest)
+    if ref.get('binding', {}).get('dump'):
+        save_json(folder/'tensors.json', dict(valid_rows=valid, archive=dest.name,
+                  tensors={k: dict(dtype=str(a.dtype), shape=list(a.shape)) for k, a in arrays.items()}))
     share_for_transfer(folder)
     print(f'L0 参考值 CPU {len(golden)} 项、310P {len(native)} 项：{dest}', flush=True)

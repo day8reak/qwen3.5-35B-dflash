@@ -183,6 +183,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     saved = base/'completed.json'
     if original_board_args:
         key['original_board_args'] = True
+    if operator_dump:
+        key['operator_dump'] = True
     if recovery and saved.exists() and not (replace_inputs or replace_weights):
         record = read(saved)
         if record['binding'] != key:
@@ -222,7 +224,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board', original_omg=False,
           replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False, rmsnorm_patch=False,
-          operator_dump=False,
+          operator_dump=False, dump=False,
           native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
           all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False, rms_silu_token_view=False):
     bundle = run/'package'
@@ -253,6 +255,8 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         if step != 'execute' or runtime_file(row['path']):
             sized_file(bundle, row)
     fixture = bundle/'fixture'
+    if dump and (not manifest.get('dump') or not (fixture/'l0-steps-reference/values.npz').is_file()):
+        raise ValueError(f'{bundle}: missing the intermediate golden for this --dump run')
     ref = read(fixture/'reference.json')
     length = ref['prompt_length']
     stamp = sha(bundle/'manifest.json')
@@ -289,7 +293,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         replay(attempt, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, False,
                directory_name(mode, phase) + '-dump', replace_inputs, replace_weights, shape_config=config,
                original_board_args=original_board_args or gdn_conv == 'original', operator_dump=True)
-        return True
+        return read(attempt/'replay/result.json')['operator_dump']['status'] == 'FILES_RECEIVED_REVIEW_REQUIRED'
     scores = {b: {r: {} for r in ('cpu', '310p', 'cpro')} for b in ('cpu', '310p', 'cpro')}
     failures, unchanged, predictions = [], {}, {}
     for group in groups(mode):
@@ -306,7 +310,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
                 board_case += '-' + case.name
             values = replay(base, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, recovery,
                             board_case, replace_inputs, replace_weights, shape_config=config,
-                            original_board_args=original_board_args or gdn_conv == 'original')
+                            original_board_args=original_board_args or gdn_conv == 'original', operator_dump=dump)
         except Exception as exc:
             save_json(run/'comparison.json', dict(status='INTERRUPTED', message=str(exc), **progress))
             raise
@@ -337,12 +341,24 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
     print(f'[{mode}/{phase}] 汇总 CPU、310P、CPro 的 3×3 精度矩阵 → {run}', flush=True)
     write_matrices(run/'matrices.csv', scores)
     status = 'FAILED_ACCURACY' if failures else 'PASSED'
+    dump_info = {}
+    if dump:
+        folder = run/'L00/replay'
+        inventory = read(folder/'dump-inventory.json')
+        dump_info = dict(output_comparison=status,
+                         operator_dump=dict(status=inventory['status'], inventory='L00/replay/dump-inventory.json',
+                                             reference='package/fixture/l0-steps-reference/values.npz',
+                                             intermediate_comparison='PENDING_PORT_MAPPING'))
+        if inventory['status'] != 'FILES_RECEIVED_REVIEW_REQUIRED':
+            status = 'INCOMPLETE_DUMP'
+        elif not failures:
+            status = 'DUMP_RECEIVED'
     save_json(run/'comparison.json', dict(mode=mode, phase=phase, prompt=ref['prompt'], prompt_length=length,
                                           logits_position=ref['logits_position'], bundle_sha256=stamp, failed=failures,
                                           unchanged_kv=unchanged, top1=predictions,
-                                          status=status))
+                                          status=status, **dump_info))
     print(f'Top1 {predictions}', flush=True)
     if failures:
         print('CPro 对 310P 比较或缓存写入检查未通过：' + ', '.join(failures), flush=True)
     print(f'{status} {run / "comparison.json"}', flush=True)
-    return not failures
+    return status in ('PASSED', 'DUMP_RECEIVED')

@@ -261,7 +261,8 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         receipt.update(status='EXECUTED', outputs=retrieved)
         if len(outputs) == 1:
             receipt['output'] = retrieved[0]
-        if release_after_pull:
+        if release_after_pull and (not operator_dump or
+                                  receipt['operator_dump']['status'] == 'FILES_RECEIVED_REVIEW_REQUIRED'):
             save_json(out/'result.json', receipt)
             try:
                 print(f'[{name}] 输出已回收并核对，清理本次执行文件，保留板端缓存 {root}/cache', flush=True)

@@ -76,6 +76,8 @@ def publish(root, role, args):
             row['sha256'] = digest
         records.append(row)
     header = dict(stage=role, case=root.name, files=records)
+    if getattr(args, 'dump', False):
+        header['dump'] = True
     if role == 'golden':
         header['generation'] = uuid.uuid4().hex
     else:
@@ -209,6 +211,8 @@ def receive(root, remote, role, args):
         fetch(index, temp/'manifest')
         manifest = (temp/'manifest').read_bytes()
         data = json.loads(manifest)
+        if getattr(args, 'dump', False) and not data.get('dump'):
+            raise ValueError(f'{index}: upstream {role} was prepared without --dump')
         if (data['stage'], data['case']) != (role, root.name) or data.get('gdn_conv', args.gdn_conv) != args.gdn_conv:
             raise ValueError(f'{index}: stage, case or GDN convolution mismatch')
         if role != 'golden':

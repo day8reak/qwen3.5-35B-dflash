@@ -1,4 +1,5 @@
 """Collect data_proc_tool's export after one successful V2 decoder invocation."""
+from collections import Counter
 from pathlib import PurePosixPath
 import re
 import shlex
@@ -18,8 +19,8 @@ def collect(hdc, remote, out, tool_dir, receipt):
     # The model process has exited and we still own the board lock. The parser can
     # export service history, so keep its directory structure for model attribution.
     print(f'解析算子 dump → {destination}', flush=True)
-    _, code = hdc.shell(f'cd {remote} && mkdir {destination} && '
-                        f'{{ env LD_LIBRARY_PATH={tool_dir} {shlex.join(argv)} >parser.log 2>&1; echo $?; }}',
+    _, code = hdc.shell(f'mkdir {destination} && cd {destination} && '
+                        f'{{ env LD_LIBRARY_PATH={tool_dir} {shlex.join(argv)} >../parser.log 2>&1; echo $?; }}',
                         'parse-operator-dump')
     report['parser_exitcode'] = int(code.strip())
     _, log = hdc.shell(f'cat {remote}/parser.log', 'dump-parser-log')
@@ -47,11 +48,24 @@ def collect(hdc, remote, out, tool_dir, receipt):
     report['tensor_candidates'] = candidates
     if report['parser_exitcode']:
         report['status'] = 'PARSER_FAILED'
-    elif not candidates:
-        report['status'] = 'NO_IDENTIFIED_TENSOR_FILES'
+    elif not any(files.values()):
+        report['status'] = 'NO_DUMP_DATA'
     else:
         report['status'] = 'FILES_RECEIVED_REVIEW_REQUIRED'
+    _, window = hdc.shell(f'cd {remote} && stat -c "%n %y" tool.started tool.exitcode', 'dump-device-window')
+    _, stdout = hdc.shell(f'cat {remote}/tool.stdout', 'dump-model-stdout')
+    tids = sorted(set(re.findall(r'client_tid=(\d+)', stdout)))
+    inventory = out/'dump-inventory.json'
+    save_json(inventory, dict(**report, attempt=receipt['attempt'], model_argv=receipt['argv'],
+                              omc_sha256=receipt['omc_sha256'], model_exitcode=receipt['exitcode'],
+                              device_window=window.splitlines(), client_tids=tids, total_bytes=sum(files.values())))
     save_json(out/'result.json', receipt)
-    print(f"{report['status']}：回收 {len(files)} 个文件，{len(candidates)} 个张量候选。{out}/result.json", flush=True)
-    if report['status'] != 'FILES_RECEIVED_REVIEW_REQUIRED':
-        raise RuntimeError(f"{report['status']}: inspect {out}/parser.log and {out}/result.json")
+    print(f"[dump] {report['status']}，parser 退出码 {report['parser_exitcode']}，回收 {len(files)} 个文件，"
+          f"{sum(files.values()):,} 字节。完整清单 {inventory}", flush=True)
+    examples = Counter()
+    for name, size in sorted(files.items()):
+        path = PurePosixPath(name)
+        kind = path.suffix.lower()
+        if examples[kind] < 3 and sum(examples.values()) < 20:
+            print(f'  {size:>12,}  {name}', flush=True)
+            examples[kind] += 1
