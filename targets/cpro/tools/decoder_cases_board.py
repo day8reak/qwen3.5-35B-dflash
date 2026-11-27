@@ -76,6 +76,8 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
         else:
             code, argv, _ = compile_omg(work, f'{folder}/export.air', ddk, diagnosis, None)
         if code:
+            from split_stage_log import report_compile_node
+            report_compile_node(work)
             raise RuntimeError(compile_log_text(work/'compile.log'))
         model, = work.rglob('*.omc')
         io = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)

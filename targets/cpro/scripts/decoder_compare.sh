@@ -12,7 +12,7 @@ compile     Compile the local AIR package with OMG and record OMC I/O.
 transfer {golden|air|omc}  Receive a stage from its producer on this downstream host.
             --local-source DIR reads a mounted upstream case directory.
 execute     Run compiled OMCs through HDC and compare CPU / 310P / CPro.
-diagnose    Inspect a retained board failure or four-layer accuracy mismatch.
+diagnose    Inspect a retained OMG tiling failure, board failure or four-layer accuracy mismatch.
 gate-probe  Compile and run four small OMCs from the existing four-layer T64 RMS gate on the OMC/board host.
 gate-upstream  Reconnect the first gate to its original z projection, RMSNorm, then both. Compile and run three OMCs.
 gdn-export  Export one L0 linear attention AIR from the retained four-layer T64 physical-history package.

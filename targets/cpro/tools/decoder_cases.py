@@ -220,7 +220,8 @@ def prepare_stage(args, run):
         from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
         with tempfile.TemporaryDirectory(dir=run, prefix='decoder-source-') as tmp:
             token_gate = (args.mode, args.phase) == ('linear', 'prefill')
-            adapted = export_source(prepared, Path(tmp)/'source', token_gate=token_gate)
+            adapted = export_source(prepared, Path(tmp)/'source', token_gate=token_gate,
+                                    fold_norm_gamma=exporter is decoder_case_air.export)
             exporter(working, fixture, ref, src, cfg, adapted, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
     save_json(working/'manifest.json', dict(**stamp, files=files))
@@ -290,7 +291,7 @@ def worker(args, action, root, remote):
         cmd.append('--recovery')
     label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
              'compile': '编译 OMC 并保存 I/O 描述', 'execute': '上板执行已编译 OMC 并比较三端结果',
-             'diagnose': '读取已失败的板端运行日志', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
+             'diagnose': '诊断已保留的 OMG 编译或板端失败记录', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
     if getattr(args, 'gate_probe', False):
         label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
         if args.gate_probe == 'l0-embedding':

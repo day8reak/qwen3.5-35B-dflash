@@ -6,7 +6,7 @@ from shutil import copyfile
 from ..original_target_source import EXPORTER
 from .decoder_four_silu import MODELING
 from .decoder_four_source import preserve_source
-from .source_model import _definition
+from .source_model import _call, _definition
 
 
 def fp16_shared_gate(source):
@@ -81,7 +81,7 @@ def inspect_shared_gates(graph, layers):
     return gates
 
 
-def export_source(source, dest, *, lookup=False, token_gate=False):
+def export_source(source, dest, *, lookup=False, token_gate=False, fold_norm_gamma=False):
     """Keep imported helpers beside the run-local model; preserve editable sources."""
     from .decoder_four_silu import inline_old_silu, token_view_rms_gate
 
@@ -95,6 +95,16 @@ def export_source(source, dest, *, lookup=False, token_gate=False):
     model = fp16_shared_gate((source/MODELING).read_text())
     if token_gate:
         model = token_view_rms_gate(inline_old_silu(model))
+    if fold_norm_gamma:
+        tree = ast.parse(model)
+        norm = _definition(_definition(tree, 'Qwen3_5MoeRMSNorm'), 'forward')
+        call = _call(norm, 'torch_npu.npu_rms_norm')
+        operand = ast.unparse(call.args[1])
+        if operand == 'self.weight + 1.0':
+            call.args[1] = ast.parse('self.export_gamma', mode='eval').body
+            model = preserve_source(model, ast.unparse(tree))
+        elif operand != 'self.export_gamma':
+            raise ValueError(f'Unrecognized ordinary RMSNorm gamma expression: {operand}')
     (dest/MODELING).write_text(model)
     if lookup:
         (dest/EXPORTER).write_text(lookup_exporter((source/EXPORTER).read_text()))

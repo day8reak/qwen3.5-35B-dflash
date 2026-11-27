@@ -131,6 +131,7 @@ def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d'):
     try:
         import export_glm_model_qwen3_5_moe as exporter
         from models.export_model_wrapper_qwen3_5_moe import load_npu_model
+        from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
 
         lib = torch.library.Library('decoder_compare', 'DEF')
         lib.define('readout(Tensor x, str role) -> Tensor')
@@ -160,6 +161,10 @@ def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d'):
             exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.config.num_experts,
                 start_layer_idx=first, device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
             model.eval().to(dtype=torch.float16)
+            for module in model.modules():
+                if isinstance(module, Qwen3_5MoeRMSNorm):
+                    gamma = (module.weight + 1.0).detach().contiguous()
+                    module.register_buffer('export_gamma', gamma, persistent=False)
             types = ['full_attention' if i % 4 == 3 else 'linear_attention' for i in range(first, last+1)]
             if model.model.start_layer_idx != first or [m.block_type for m in model.model.layers] != types:
                 raise ValueError(f'Incorrect CPro checkpoint slice L{first}–L{last}')

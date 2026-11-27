@@ -310,6 +310,46 @@ def diagnose_four_accuracy(board, comparison, receipt):
             print(f'当前运行包未包含源 AIR ({air})。请在保留 export/package 的编译环境查看 QKV 端口。')
 
 
+def report_compile_node(work):
+    """Look up the operator named in a failed OMG tiling task in its source AIR."""
+    log = work/'compile.log'
+    if not log.is_file():
+        return False
+    pattern = re.compile(r'compile_task\.cc Compile\(\d+\)::\s*"?(\w+)\s+(\S+)\s+compileInfo is null')
+    with log.open(errors='replace') as lines:
+        failure = next((m for line in lines if (m := pattern.search(line))), None)
+    if failure is None:
+        return False
+    kind, name = failure.groups()
+    print(f'[OMG tiling] {log} — {name} ({kind})', flush=True)
+    try:
+        from qwen35_moe_dflash.target.prefill_t64.attention_slice import port_info
+        from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
+        air, = work.glob('*/export.air')
+        _, graph = graph_message(air.read_bytes(), 'NetOutput')
+        nodes = {node.name: node for node in graph.op}
+        print(f'[源 AIR] {air}')
+        node = nodes.get(name)
+        if node is None or node.type != kind:
+            print(f'源 AIR 中未找到同名同类型节点 {name} ({kind})')
+            return True
+        for slot, edge in enumerate(node.input):
+            producer, _, index = edge.rpartition(':')
+            if not index.isdecimal() or producer not in nodes:
+                continue
+            parent = nodes[producer]
+            port = port_info(graph, parent.output_desc[int(index)])
+            print(f'  input[{slot}] ← {edge} ({parent.type}, {port}), 上游 {list(parent.input)}')
+        for consumer in graph.op:
+            for slot, edge in enumerate(consumer.input):
+                origin, _, index = edge.rpartition(':')
+                if origin == name and index.isdecimal():
+                    print(f'  {edge} → {consumer.name} ({consumer.type}) input[{slot}]')
+    except (ImportError, OSError, ValueError, KeyError, IndexError) as exc:
+        print(f'无法读取失败任务对应的源 AIR：{exc}')
+    return True
+
+
 def diagnose_case(root, mode, phase):
     from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name, groups
 
@@ -320,6 +360,8 @@ def diagnose_case(root, mode, phase):
         stages_to_check = [board/case_name(group)/'replay' for group in groups(mode)]
     stages = []
     for replay in stages_to_check:
+        if report_compile_node(replay.parent/'compile'):
+            return True
         path = replay/'result.json'
         if path.is_file():
             receipt = load(path)
