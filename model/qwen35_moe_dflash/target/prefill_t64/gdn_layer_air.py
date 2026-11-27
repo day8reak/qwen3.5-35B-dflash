@@ -186,10 +186,12 @@ def gdn_load_sections(raw, meta):
 
     wire_errors = {}
 
-    def add_wire(edge, role, desc, views, expected_dtype):
+    def add_wire(edge, role, desc, views, expected_dtype=None):
         info = activation_port_shape(desc)
         shape = next((v for v in (info['ge_dims'], info['fx_dims']) if v and min(v) > 0), views[0])
-        if list(shape) not in views or port_info(graph, desc)['dtype'] != DTYPES[expected_dtype]:
+        if expected_dtype is None:
+            expected_dtype = {1: 'float32', 2: 'float16'}.get(desc.dtype)
+        if list(shape) not in views or not expected_dtype or port_info(graph, desc)['dtype'] != DTYPES[expected_dtype]:
             wire_errors[edge] = f'{edge}: unexpected {role} descriptor {port_info(graph, desc)}, FX {info["fx_dims"]}'
             return
         # state/length or a returned cache can also be a public port of the whole AIR.
@@ -202,7 +204,7 @@ def gdn_load_sections(raw, meta):
         else:
             desc = gdr.input_desc[list(gdr.input).index(edge)]
         add_wire(edge, role, desc, shapes(role), 'int16' if role == 'effective_length' else 'float16')
-    add_wire(product, 'product', mul.output_desc[0], [[2048, 128]], 'float32')
+    add_wire(product, 'product', mul.output_desc[0], [[2048, 128]])
 
     hidden, history = inputs['hidden'], inputs['history']
     entry = [inputs[k] for k in ENTRY]
@@ -214,7 +216,7 @@ def gdn_load_sections(raw, meta):
     qkv_results = [edges[k] for k in ('query', 'key', 'value')] + [outputs['new_history']]
     decay_results = [edges['g'], edges['beta']]
     gate_operand = only((e for e in operands(mul) if not walk.depends(e, core)), 'z gate operand')
-    add_wire(gate_operand, 'gate_operand', descriptor(nodes, gate_operand), [[2048, 128]], 'float32')
+    add_wire(gate_operand, 'gate_operand', mul.input_desc[list(mul.input).index(gate_operand)], [[2048, 128]])
     out = outputs['out']
 
     # Cuts follow data edges. Cross-cut cases keep both producers at a join or
@@ -245,7 +247,7 @@ def gdn_load_sections(raw, meta):
         before, = operands(gate)
         after = gate.name + ':0'
         kernel_shape = [64, 4096] if meta.get('rms_silu_token_view') else [2048, 128]
-        add_wire(before, 'gate_input', gate.input_desc[0], [kernel_shape], 'float16')
+        add_wire(before, 'gate_input', gate.input_desc[0], [kernel_shape])
         add_wire(after, 'gate_silu', gate.output_desc[0], [kernel_shape], 'float16')
         cases.extend([
             ('z-project', [hidden], [before], 1, False),
@@ -369,7 +371,7 @@ def stages(raw, meta, *, whole=False):
                      ('rms','product','biased_a','softplus','g') else 'float16')
             if name.endswith('_quant') and key == inputs[0] and quant[p].input_desc:
                 dtype = types[port_info(graph, quant[p].input_desc[0])['dtype']]
-            if ((key in ('biased_a', 'softplus', 'g') or (name.endswith('_quant') and key == inputs[0]))
+            if ((key in ('rms', 'product', 'biased_a', 'softplus', 'g', 'conv') or (name.endswith('_quant') and key == inputs[0]))
                     and desc['dtype'] in ('DT_FLOAT16', 'DT_FLOAT')):
                 dtype = types[desc['dtype']]
             wires[edge] = wire(key,shape,dtype)

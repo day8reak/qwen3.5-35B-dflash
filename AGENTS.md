@@ -1,6 +1,6 @@
 # CPro decoder 运行约定
 
-CPro 模型计算的修改直接写在 PyTorch 源码中，从修改后的源码用 TorchAir 导出 AIR。SiluPatch、SoftplusPatch 和 RmsnormPatch 在 PyTorch 调用处直接使用上游张量的 dtype，向 GE 转发原操作数。编译端按算子注册类型选择实现。正式模型应能从源码直接导出并编译。定位用的 AIR 切片、探针和独立生成图须注明用途，不作为整网修复的中间步骤。
+CPro 模型计算的修改直接写在 PyTorch 源码中，从修改后的源码用 TorchAir 导出 AIR。SiluPatch、SoftplusPatch 和 RmsnormPatch 在 PyTorch 调用处直接使用上游张量的 dtype，向 GE 转发原操作数。下游直接使用这三个算子的返回值，保留原模型的模块返回类型转换。编译端按算子注册类型选择实现。正式模型应能从源码直接导出并编译。定位用的 AIR 切片、探针和独立生成图须注明用途，不作为整网修复的中间步骤。
 
 本机是编辑机，没有本项目的运行环境，也连不上执行服务器和板卡。不要在本机运行项目测试，包括单元测试、模拟测试和冒烟测试。本机只做源码和文档修改、静态审阅与 Git 差异检查。需要实测时，把命令交给用户在对应环境执行：CPU/310P golden 生成服务器、CPro AIR 生成服务器、CPro OMC 生成服务器或 CPro 板端执行服务器。依据对应服务器的日志报告结果。
 

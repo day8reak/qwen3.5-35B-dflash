@@ -477,11 +477,12 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projec
         op = nodes[by_shape[shape]]
         x, = data_edges(op)
         z = op.name + ':0'
-        if [d.dtype for d in op.input_desc] != [2] or [d.dtype for d in op.output_desc] != [2]:
-            raise ValueError(f'{op.name}: expected FP16 input and output. Re-export the CPro AIR.')
+        input_dtype = {1: 'float32', 2: 'float16'}.get(op.input_desc[0].dtype)
+        if not input_dtype or [d.dtype for d in op.output_desc] != [2]:
+            raise ValueError(f'{op.name}: expected a floating input and FP16 output')
         groups[name + '_input'] = [x]
         groups[name + '_silu'] = [z]
-        wires[x], wires[z] = wire(name + '_x', shape, 'float16'), wire(name + '_z', shape, 'float16')
+        wires[x], wires[z] = wire(name + '_x', shape, input_dtype), wire(name + '_z', shape, 'float16')
     # Carry the state and the activation from the *same* ConvState/GDR invocation.
     if linear:
         if not legacy:
@@ -492,9 +493,10 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projec
                 raise ValueError('Convolution and returned history must consume the same QKV history')
         groups['conv_input'].append(result[f'conv_state_{layer}'])
         gate, = groups['gate_silu']
-        _, norm = gate_product(graph, gate)
+        mul, norm = gate_product(graph, gate)
         groups['gdr_norm'] = [norm, result[f'recurrent_state_{layer}']]
-        wires[norm] = wire('norm', (2048, 128), 'float32')
+        norm_dtype = mul.input_desc[list(mul.input).index(norm)].dtype
+        wires[norm] = wire('norm', (2048, 128), {1: 'float32', 2: 'float16'}[norm_dtype])
     for role, edge in result.items():
         wires[edge] = wire(role, *specs[role])
         if role not in state_ports.values():

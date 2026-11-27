@@ -58,16 +58,19 @@ def probe_cases(raw, meta, mode):
     gate = next((op for op in graph.op if op.name in gates and op.type == 'SiluPatch'), None)
     if gate is None:
         raise ValueError(f'The selected four-layer AIR has no {kernel_shape} RMS gate SiluPatch')
-    if ([d.dtype for d in gate.input_desc], [d.dtype for d in gate.output_desc]) != ([2], [2]):
-        raise ValueError(f'{gate.name}: expected FP16 SiluPatch ports')
+    if [d.dtype for d in gate.output_desc] != [2]:
+        raise ValueError(f'{gate.name}: expected FP16 SiluPatch output')
     gate_input, = data_edges(gate)
     gate_out = gate.name + ':0'
     chain, peer = rms_gate_path(graph, gate_out)
     mul = chain[-1]
     gate_operand, = [edge for edge in data_edges(mul) if edge != peer]
     mul_out = mul.name + ':0'
-    wires = {edge: wire(edge, kernel_shape, 'float16') for edge in (gate_input, gate_out)}
-    wires.update({e: wire(e, SHAPE, 'float32') for e in (peer, gate_operand, mul_out)})
+    wires = {gate_input: input_wire(gate, kernel_shape), gate_out: wire(gate_out, kernel_shape, 'float16')}
+    floating = {1: 'float32', 2: 'float16'}
+    for e in (peer, gate_operand):
+        wires[e] = wire(e, SHAPE, floating[mul.input_desc[list(mul.input).index(e)].dtype])
+    wires[mul_out] = wire(mul_out, SHAPE, floating[mul.output_desc[0].dtype])
     by_name = {op.name: op for op in graph.op}
     cases = []
     if mode == 'upstream':

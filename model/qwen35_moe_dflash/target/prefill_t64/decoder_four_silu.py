@@ -55,29 +55,31 @@ def _silu_call(value):
 
 _CONV_SILU = _silu_call('conv_out')
 _GATE_SILU = _silu_call('gate')
-_GATE = ('F.silu(gate.to(torch.float32))', _GATE_SILU + '.to(torch.float32)')
-_CONV = ('F.silu(conv_out)', _CONV_SILU + '.to(conv_out.dtype)')
+_GATE = ('F.silu(gate.to(torch.float32))', _GATE_SILU)
+_CONV = ('F.silu(conv_out)', _CONV_SILU)
 _SHARED_ACT = ('self.act_fn = ACT2FN[config.hidden_act]',
                "self.act_fn = None if config.hidden_act in ('silu', 'swish') else ACT2FN[config.hidden_act]")
 _SHARED = ('return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))',
            f'''gate = self.gate_proj(x)
         if self.act_fn is None:
-            gate = {_GATE_SILU}.to(gate.dtype)
+            gate = {_GATE_SILU}
         else:
             gate = self.act_fn(gate)
         return self.down_proj(gate * self.up_proj(x))''')
 _ROUTED = ('self.act_fn(x1) * x2',
-           _silu_call('x1') + '.to(x1.dtype) * x2')
+           _silu_call('x1') + ' * x2')
 MOE_SILU_CALLS = (_SHARED_ACT, _SHARED, _ROUTED)
 SILU_CALLS = (_GATE, _CONV, *MOE_SILU_CALLS)
 SOFTPLUS_CALL = ('F.softplus(a.float() + self.dt_bias)',
-                 'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).contiguous()).float()')
+                 'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).contiguous())')
 CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])',
-                    _silu_call('out[:, :, -seq_len:]') + '.to(out.dtype)')
+                    _silu_call('out[:, :, -seq_len:]'))
 
 
 def update_activation_calls(model):
     """Update casts and wrappers from older versions in the run-local Python copy."""
+    if _OLD_SILU_HELPERS in model:
+        model = _inline_legacy_silu(model)
     model = model.replace('torch.ops.npu.softplus_patch((a.float() + self.dt_bias).to(torch.float16).contiguous()',
                           'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).contiguous()')
     for value, owner in (('gate', 'gate'), ('conv_out', 'conv_out'), ('x1', 'x1'),
@@ -85,8 +87,15 @@ def update_activation_calls(model):
         for old in (f'{value}.to(torch.float16)', f'({value}.half() if {owner}.dtype == torch.float32 else {value})'):
             model = model.replace(f'torch.ops.npu.silu_patch({old}.contiguous()',
                                   _silu_call(value).removesuffix(')'))
-    if _OLD_SILU_HELPERS not in model:
-        return model
+        call = _silu_call(value)
+        model = model.replace(call + f'.to({owner}.dtype)', call)
+    for suffix in ('.to(torch.float32)', '.to(dtype=torch.float32)', '.float()'):
+        model = model.replace(_GATE_SILU + suffix, _GATE_SILU)
+        model = model.replace(SOFTPLUS_CALL[1] + suffix, SOFTPLUS_CALL[1])
+    return model.replace(_CONV_SILU + '.to(mixed_qkv.dtype)', _CONV_SILU)
+
+
+def _inline_legacy_silu(model):
     model = model.replace(_OLD_SILU_HELPERS, '')
     for old, new in (('silu_patch(gate).to(torch.float32)', _GATE[1]),
                      ('silu_same_dtype(conv_out)', _CONV[1]),
@@ -109,9 +118,9 @@ def update_activation_calls(model):
 
 
 def native_conv_silu(model):
-    model = model.replace(_CONV[1], _CONV[0]).replace(CONV_HELPER_CALL[1], CONV_HELPER_CALL[0])
     # The aligned GDR converter requires half Q/K/V even when conv_out is FP32.
-    return model.replace(_CONV_SILU, 'F.silu(conv_out).to(torch.float16)')
+    model = model.replace(_CONV_SILU, 'F.silu(conv_out).to(torch.float16)')
+    return model.replace(CONV_HELPER_CALL[1], CONV_HELPER_CALL[0])
 
 
 def select_gdn_silu(model, site):
@@ -226,7 +235,7 @@ def restore_native_activations(exporter, model, *, keep_silu=False, keep_softplu
         return exporter, model
     exporter = exporter.replace(activation_registration('silu_patch', GE_TYPE), '')
     model = native_conv_silu(model)
-    for original, patched in (_GATE, *MOE_SILU_CALLS):
+    for original, patched in (*MOE_SILU_CALLS, _GATE):
         model = model.replace(patched, original)
     for symbol in ('silu_patch', 'silu_same_dtype', GE_TYPE):
         if symbol in model or symbol in exporter:
@@ -275,13 +284,9 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
             from .source_model import (_adapt_experts, _definition, _rotate_fp32,
                                        explicit_gdn_conv2d, physical_conv_history, use_position_gathers)
 
-            # Keep the native wrapper and readout.
-            # Feed GDR the FP16 activation that the custom SiLU already produced.
-            changes = [('qkv_conv = ' + _CONV[1], 'qkv_conv = ' + _CONV_SILU)]
             if native_convstate or layers != 40:
-                changes.append(('F.conv1d(padded, self.conv1d.weight,',
-                                'F.conv1d(padded.to(self.conv1d.weight.dtype), self.conv1d.weight,'))
-            for old, new in changes:
+                old = 'F.conv1d(padded, self.conv1d.weight,'
+                new = 'F.conv1d(padded.to(self.conv1d.weight.dtype), self.conv1d.weight,'
                 if text.count(old) != 1:
                     raise ValueError(f'Expected one {old!r} in native GDN')
                 text = text.replace(old, new)
@@ -295,6 +300,8 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
                                  ('self.cos_cached', 'self.sin_cached'), 'position_ids')
             _adapt_experts(tree)
             text = preserve_source(text, ast.unparse(ast.fix_missing_locations(tree)))
+        if name == MODELING and l0:
+            text = update_activation_calls(text)
         path.write_text(text)
     changed = [EXPORTER, MODELING]
     if l0:
@@ -352,22 +359,14 @@ def vector_length(op, producers):
 
 
 def gate_product(graph, gate):
-    """Resolve an FP16 activation through its widening cast to an FP32 product."""
-    cast, = [op for op in graph.op if op.type == 'Cast' and list(op.input) == [gate]]
-    if ([d.dtype for d in cast.input_desc], [d.dtype for d in cast.output_desc]) != ([2], [1]):
-        raise ValueError(f'{cast.name}: expected FP16 gate to FP32')
-    value = cast.name + ':0'
-    mul, = [op for op in graph.op if op.type == 'Mul' and value in op.input]
-    if [d.dtype for d in mul.input_desc] != [1, 1] or [d.dtype for d in mul.output_desc] != [1]:
-        raise ValueError(f'{mul.name}: activation product must be FP32')
-    norm, = [e for e in mul.input if e and e != value and not e.endswith(':-1')]
-    return mul, norm
+    path, peer = rms_gate_path(graph, gate)
+    return path[-1], peer
 
 
 def rms_gate_path(graph, edge):
-    """Follow the custom gate's data output across its views and FP32 cast to the RMS product."""
+    """Follow an FP16 activation to its product, allowing type promotion by the exporter."""
     chain = []
-    widened = False
+    dtype = 2  # GE DT_FLOAT16
     while True:
         uses = [op for op in graph.op if (op.type == 'Mul' and edge in op.input)
                 or (op.type in ('Reshape', 'View', 'Identity', 'TensorMove', 'Cast') and op.input and op.input[0] == edge)]
@@ -376,14 +375,17 @@ def rms_gate_path(graph, edge):
         op = uses[0]
         chain.append(op)
         if op.type == 'Mul':
-            if not widened or [d.dtype for d in op.input_desc] != [1, 1] or [d.dtype for d in op.output_desc] != [1]:
-                raise ValueError(f'{op.name}: expected FP32 multiplication after the FP16 gate')
+            inputs = [d.dtype for d in op.input_desc]
+            if (len(inputs) != 2 or inputs[list(op.input).index(edge)] != dtype
+                    or any(t not in (1, 2) for t in inputs) or op.output_desc[0].dtype not in (1, 2)):
+                raise ValueError(f'{op.name}: unexpected Mul ports for activation operand dtype {dtype}')
             peer, = [e for e in op.input if e and e != edge and not e.endswith(':-1')]
             return chain, peer
         if op.type == 'Cast':
-            if widened or (op.input_desc[0].dtype, op.output_desc[0].dtype) != (2, 1):
-                raise ValueError(f'{op.name}: expected one FP16 to FP32 gate cast')
-            widened = True
+            src, dst = op.input_desc[0].dtype, op.output_desc[0].dtype
+            if src != dtype or dst not in (1, 2):
+                raise ValueError(f'{op.name}: unexpected floating operand cast {src} → {dst}')
+            dtype = dst
         edge = op.name + ':0'
 
 

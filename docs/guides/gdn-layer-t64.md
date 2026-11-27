@@ -61,7 +61,7 @@ bash targets/cpro/scripts/gdn_layer_t64.sh board
 | 1 | `core`、`final_state`、`recurrent_cache` | 分别对应 `core_attn_out`、GDR 输出 1 的 `last_recurrent_state` 和层返回的 `past_key_values[1]`。状态比较整个 `[1,32,128,128]`。逐算子模式读取板端 GDR 的 FP16 状态，按 AIR 校验从该状态到缓存的每一步。导出器可以先转 FP32 对齐 fake meta，再转回 FP16 写缓存，数值相同。`--whole` 直接读取整层返回的缓存。 |
 | 1 | `rms` | `self.norm.forward` 中的 `hidden_states = npu_rms_norm(...)[0]`，已乘归一化权重，尚未乘门值。 |
 | 1 | `gate_silu` | `self.norm.forward` 中的 `F.silu(gate.to(torch.float32))`，其中 `gate` 来自 z 投影。CPro 从第二个独立 SiluPatch OMC 读回 FP16 激活，和两份原生参考按各自实际 dtype 对比。下一段在乘法前将该激活转为 FP32。 |
-| 1 | `product`、`gated` | `out = hidden_states * SiLU(gate)` 的 FP32 乘积，以及 `return out.to(input_dtype)` 整理成 `out_proj` 输入后的值。 |
+| 1 | `product`、`gated` | `out = hidden_states * SiLU(gate)` 的乘积，以及 `return out.to(input_dtype)` 整理成 `out_proj` 输入后的值。 |
 | 2 | `out_a8`、`out_scale`、`out` | 最后一次 DynamicQuant 和 W4 matmul。`out` 对应整个 GDN 返回的 `output`，每个 token 有 2048 个分量。 |
 
 激活一律按原张量的时间轴对齐前 19 个 token，卷积张量的时间轴在末维。浮点矩阵给出 cosine、relative L2、KL、RMSE、平均相对误差、最大和平均绝对误差，以及逐元素超差比例。行是实际值，列是参考值，例如 CPro 行 / 310P 列的 relative L2 分母是 310P 张量的 L2 范数。浮点 `passed` 沿用项目五指标阈值，逐元素超差使用 `atol=1e-5, rtol=1e-3`。INT8 的 `error_ratio` 是不同编码的元素占比，`max_abs` 是最大编码差，按完全一致判定。板端执行完成和数值是否过阈值分别记录。

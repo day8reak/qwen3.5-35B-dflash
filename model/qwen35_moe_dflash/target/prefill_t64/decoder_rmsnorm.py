@@ -45,9 +45,8 @@ def patch_sources(model, exporter):
         suite, = [v for _, v in ast.iter_fields(parents[statement]) if isinstance(v, list) and statement in v]
         at = suite.index(statement)
         # Native gated RMS may widen x just before its call. Read the original
-        # operand while it is still in scope and preserve the native result dtype.
+        # operand while it is still in scope.
         operand = before_float(x)
-        original_dtype = f'.type_as({ast.unparse(x)})' if operand is x else '.float()'
         capture = at
         if isinstance(x, ast.Name) and at:
             prev = suite[at - 1]
@@ -55,10 +54,9 @@ def patch_sources(model, exporter):
                     and before_float(prev.value) is not prev.value):
                 capture = at - 1
                 operand = before_float(prev.value)
-                original_dtype = '.float()'
         suite[at:at] = ast.parse(f'rms_gamma = {ast.unparse(before_float(gamma))}').body
         suite[capture:capture] = ast.parse(f'rms_x = {ast.unparse(operand)}').body
-        z = _expr('torch.ops.npu.rmsnorm_patch(rms_x.contiguous(), rms_gamma.contiguous())' + original_dtype)
+        z = _expr('torch.ops.npu.rmsnorm_patch(rms_x.contiguous(), rms_gamma.contiguous())')
         if isinstance(use, ast.Subscript) and ast.unparse(use.slice) == '0':
             parent = parents[use]
             for field, value in ast.iter_fields(parent):
