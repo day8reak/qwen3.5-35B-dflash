@@ -82,6 +82,14 @@
 
 ## 单测 L0 的 input_layernorm
 
+在 CPro AIR 生成服务器的 `qwen3_5_cpro` 环境，可以直接用 Python 生成单算子 AIR。
+
+```bash
+python targets/cpro/scripts/export_l0_rmsnorm_air.py --output l0_input_rmsnorm.air
+```
+
+该模型有两个运行时输入，分别是 `x [1,64,2048]` 和有效 `gamma [2048]`，输出是 `torch_npu.npu_rms_norm(x, gamma, epsilon)[0]`。默认两个输入均为 FP16，epsilon 为 `1e-6`。复现某次四层导出的端口时，可按其实际配置传入 `--dtype`、`--gamma-dtype` 和 `--epsilon`。权重和激活在执行模型时提供。
+
 四层 T64 用例的 310P 实测输入在 `export/fixture/inputs/hidden.bin`，OMC 生成服务器收到的副本在 `board/package/fixture/inputs/hidden.bin`。它是 1 × 64 × 2048 的 FP16 张量，共 262144 字节。L0 逐步采集用 `input_layernorm` 的前钩子记录 `310p_block_entry`，并与这份输入逐元素核对。对应的实测归一化结果是 `values.npz` 中的 `310p_hidden`，来自紧接该层归一化的 GDN 入口。
 
 在当前同时配置 CPro OMC 生成和板端执行环境的服务器运行：
