@@ -6,7 +6,7 @@ from .gdn_layer_air import four_layer_gdn
 from .l0_split import slice_dependencies, wire
 
 
-def readouts(raw, meta):
+def readouts(raw, meta, *, same_input=False):
     block = four_layer_gdn(raw, meta)
     _, graph = graph_message(raw, 'ChunkGatedDeltaRule')
     nodes = {n.name: n for n in graph.op}
@@ -49,6 +49,23 @@ def readouts(raw, meta):
     moe = peer(final, residual_edge)
     post_norm = consumer(residual_edge, NORMS)
     prefix_inputs = {n+':0': role for n, role in meta['inputs'].items()}
+    input_specs = meta['input_files'].copy()
+    if same_input:
+        # Intercept the common embedding product before the residual and norm paths fork.
+        original = {e for e, role in prefix_inputs.items() if role in ('inputs_embeds', 'embed_scale')}
+        product = walk.strip(entry)
+        multiply = walk.expect(product, {'Mul'})
+        if (len(original) != 2 or {walk.strip(e) for e in operands(multiply)} != original
+                or not walk.depends(hidden, product)):
+            raise ValueError(f'{product}: expected the embedding × scale feeding L0 RMSNorm and residual')
+        shape = input_specs['inputs_embeds']['shape']
+        dtype = {1: 'float32', 2: 'float16'}.get(multiply.output_desc[0].dtype)
+        if list(shape) != [1, 64, 2048] or not dtype:
+            raise ValueError(f'{product}: unsupported L0 embedding shape or dtype')
+        # Removing both public embedding inputs also rejects cuts that still reach either port.
+        prefix_inputs = {e: role for e, role in prefix_inputs.items() if e not in original}
+        prefix_inputs[product] = 'l0_entry'
+        input_specs['l0_entry'] = dict(shape=shape, dtype=dtype)
     edges = dict(block_entry=entry, hidden=hidden, **projections, window=conv.input[0], conv=conv_silu.input[0],
                  conv_silu=conv_silu.name+':0', new_history=history, **gdr_inputs,
                  biased_a=walk.nearest(soft.input[0], added), softplus=soft.name+':0',
@@ -79,7 +96,7 @@ def readouts(raw, meta):
         wires = {}
         for edge in feeds:
             role = prefix_inputs[edge]
-            spec = meta['input_files'][role]
+            spec = input_specs[role]
             wires[edge] = wire(role, spec['shape'], spec['dtype'])
         for edge, names in aliases.items():
             wires.setdefault(edge, dict(name=names[0], shape=None, dtype=None))

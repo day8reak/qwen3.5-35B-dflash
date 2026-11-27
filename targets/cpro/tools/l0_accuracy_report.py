@@ -13,7 +13,7 @@ from decoder_gate_probe import air_bundle, compile_cases, execute_case
 from decoder_handoff import ssh_reader
 from gdn_matrices_txt import BACKENDS, render
 from qwen35_moe_dflash.common.accuracy import floating_metrics
-from qwen35_moe_dflash.target.layer_probe.common import read_tensor, save_json, sized_file
+from qwen35_moe_dflash.target.layer_probe.common import identity, read_tensor, save_json, sized_file
 from qwen35_moe_dflash.target.prefill_t64.gdn_layer_stages import DESCRIPTION, SHAPES, STATE, canonical
 
 EXPERT = {'expert_gate_up', 'expert_product', 'expert_down'}
@@ -39,6 +39,14 @@ for projection, width in [('shared_gate_proj',2048), ('shared_up',2048), ('share
         name = projection + suffix
         WIDTHS[name] = size
         EXPLAIN[name] = EXPLAIN[projection] + ' 的 ' + description
+
+
+def reference_matches(refs, directory, fixture):
+    ids = fixture['inputs']['input_ids']
+    return (int(refs['valid']) == fixture['valid_rows']
+            and str(refs['fixture_hidden']) == fixture['inputs']['hidden']['sha256']
+            and str(refs['fixture_state']) == fixture['outputs']['recurrent_state_0']['sha256']
+            and np.array_equal(refs['ids'], read_tensor(sized_file(directory, ids), ids)))
 
 
 def get_reference(root, remote, folder):
@@ -185,15 +193,37 @@ def original_caches(root, meta, fixture, values):
     return result
 
 
-def compare(root, folder, bundle, ref_path, meta, report, observed):
+def same_entry_feeds(root, case, folder, input_files, report):
+    """Bind the captured FP16 rows at the original embedding product's declared dtype."""
+    fixture = root/'board/package/fixture'
+    spec = read(fixture/'reference.json')['inputs']['hidden']
+    hidden_path = sized_file(fixture, spec)
+    if spec['dtype'] != 'float16' or list(spec['shape']) != [1, 64, 2048]:
+        raise ValueError(f'Unexpected 310P L0 entry: {spec}')
+    records = {role: dict(row, path=str((case/row['path']).relative_to(root)))
+               for role, row in input_files.items() if role not in ('inputs_embeds', 'embed_scale')}
+    dtypes = {feed['dtype'] for row in report['cases'].values() if row['status'] == 'COMPILED'
+              for feed in row['feeds'].values() if feed['name'] == 'l0_entry'}
+    if not dtypes:
+        return root, records  # Preserve individual cut/compile failures in the report.
+    if dtypes == {'float16'}:
+        entry = dict(spec, path=str(hidden_path.relative_to(root)))
+    elif dtypes == {'float32'}:
+        path = folder/'l0_entry_fp32.bin'
+        read_tensor(hidden_path, spec).astype('<f4').tofile(path)
+        entry = dict(identity(path, root), dtype='float32', shape=spec['shape'])
+    else:
+        raise ValueError(f'Inconsistent L0 entry dtypes in the compiled slices: {dtypes}')
+    records['l0_entry'] = entry
+    return root, records
+
+
+def compare(root, folder, bundle, ref_path, meta, report, observed, *, same_input=False):
     fixture = read(bundle/'fixture/reference.json')
     missing = {}
     with np.load(ref_path, allow_pickle=False) as refs:
         valid = int(refs['valid'])
-        if (valid != fixture['valid_rows'] or str(refs['fixture_hidden']) != fixture['inputs']['hidden']['sha256']
-                or str(refs['fixture_state']) != fixture['outputs']['recurrent_state_0']['sha256']
-                or not np.array_equal(refs['ids'], read_tensor(sized_file(bundle/'fixture', fixture['inputs']['input_ids']),
-                                                               fixture['inputs']['input_ids']))):
+        if not reference_matches(refs, bundle/'fixture', fixture):
             raise ValueError('Reference captures belong to a different four-layer fixture')
         cpu, nz = [{key[len(b)+1:]:refs[key] for key in refs.files if key.startswith(b+'_')} for b in BACKENDS[:2]]
     matrices = {}
@@ -246,12 +276,24 @@ def compare(root, folder, bundle, ref_path, meta, report, observed):
                         first.setdefault(label, role)
     if matrices:
         render(csv_path)
-    try:
-        anchors = original_caches(root, meta, fixture, cpro)
-    except (OSError, ValueError, KeyError) as err:
-        anchors = {'unavailable':str(err)}
+    if same_input:
+        anchors = {'not_applicable': 'The original four-layer replay used the quantized embedding.'}
+        shape = (64, 2048)
+        entry = cpro.get('block_entry')
+        exact = (entry is not None and entry.size == np.prod(shape)
+                 and all(np.array_equal(entry.reshape(shape), v['block_entry'].reshape(shape)) for v in (cpu, nz)))
+        if not exact:
+            missing['block_entry_control'] = 'CPro L0 entry missing or differs from the common CPU/310P input'
+        print(f'三端 L0 入口全部 64 行逐元素相同：{exact}', flush=True)
+    else:
+        try:
+            anchors = original_caches(root, meta, fixture, cpro)
+        except (OSError, ValueError, KeyError) as err:
+            anchors = {'unavailable':str(err)}
     status = 'INCOMPLETE' if missing else 'COMPARED'
     save_json(folder/'comparison.json', dict(status=status, valid_rows=valid, source_air=report['air'],
+              input_basis='310p_block_entry' if same_input else 'cpro_embedding',
+              **({'block_entry_exact': exact} if same_input else {}),
               missing=missing, four_layer_cache_control=anchors, first_cos_or_l2_crossing_by_group=first, tensors=matrices))
     print(f'相对四层原 OMC 的缓存对照：{anchors}\n分组首个超过精度门限的观测点：{first}\n'
           f'{status} {folder}/comparison.json', flush=True)
@@ -264,9 +306,11 @@ def run(root, remote, action, ddk, config, args):
     parent = root/'board/L00-L03'
     bundle = root/'board/package'
     case, meta, record = air_bundle(bundle/'L00-L03', root/'export/package/L00-L03' if action=='compile' else None)
-    folder = parent/'l0-steps'
+    mode = args.gate_probe
+    same_input = mode == 'l0-steps-same-input'
+    folder = parent/mode
     if action == 'compile':
-        compile_cases(folder, case, meta, record, ddk, 'l0-steps')
+        compile_cases(folder, case, meta, record, ddk, mode)
         return True   # Replay successful groups even when another group failed to build.
     report = read(folder/'compile.json')
     if report['air'] != record or not report['complete']:
@@ -276,15 +320,24 @@ def run(root, remote, action, ddk, config, args):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
     for filename in ('comparison.json','matrices.csv','cosine.txt','error_ratio.txt','result.json'):
         (folder/filename).unlink(missing_ok=True)
-    ref_path = get_reference(root, remote, folder)
+    old_reference = parent/'l0-steps/values.npz'
+    ref_path = None
+    if same_input and old_reference.is_file():
+        fixture = read(bundle/'fixture/reference.json')
+        with np.load(old_reference, allow_pickle=False) as refs:
+            if reference_matches(refs, bundle/'fixture', fixture):
+                ref_path = old_reference
+    if ref_path is None:
+        ref_path = get_reference(root, remote, folder)
     runtime = read(config.parent/read(config)['assets'])['environment']
+    feeds = same_entry_feeds(root, case, folder, meta['input_files'], report) if same_input else (case, meta['input_files'])
     observed = {}
     for label, row in report['cases'].items():
         if row['status'] == 'COMPILED':
             try:
-                observed[label] = execute_case(folder/label, row, runtime, config, real_inputs=(case, meta['input_files']),
+                observed[label] = execute_case(folder/label, row, runtime, config, real_inputs=feeds,
                       replace_inputs=args.replace_inputs, replace_weights=args.replace_weights,
-                      board_case='4-prefill-t64-l0-steps-'+label)
+                      board_case=f'4-prefill-t64-{mode}-{label}')
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
                 if 'BOARD_MODEL_IO_BUSY' in str(exc):
                     raise
@@ -292,4 +345,4 @@ def run(root, remote, action, ddk, config, args):
         else:
             observed[label] = dict(status=row['status'], error=row.get('error'))
         save_json(folder/'result.json', observed)
-    return compare(root, folder, bundle, ref_path, meta, report, observed)
+    return compare(root, folder, bundle, ref_path, meta, report, observed, same_input=same_input)

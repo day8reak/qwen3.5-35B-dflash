@@ -364,6 +364,10 @@ bash targets/cpro/scripts/decoder_compare.sh l0-embedding
 1. 在 CPU、310P golden 生成环境执行 `bash targets/cpro/scripts/decoder_compare.sh l0-steps-reference`。脚本用原 YAML 的 prompt 再取一次 L0 的实际张量，对齐四层 fixture 的 token、输入 hidden 和两个返回缓存，并在 CPU 上用原 W4 权重独立计算。
 2. 在合设的 CPro OMC 生成及板端执行环境执行 `bash targets/cpro/scripts/decoder_compare.sh l0-steps`。它从现有 AIR 切出六组观测，从原始 embedding、scale、初始状态等输入算到观测点。参考文件沿用已有 SSH 配置或 `DECODER_GOLDEN_LOCAL_ROOT` 挂载。单独重跑已编译的诊断 OMC 可用 `decoder_compare.sh execute --gate-probe l0-steps --mode 4 --phase prefill`。
 
+已采集的 T64、19 个有效 token 的一次运行中，310P 在 `embed_tokens(input_ids)` 查 FP16 表，输出与 L0 入口逐元素相同。CPro 的 INT8 embedding 乘 scale 后，主机重建与该入口的相对 L2 为 2.472%，板端与主机重建的相对 L2 为 0.0263%。这两项测量都在 L0 投影的 DynamicQuant 之前。
+
+要单独观察 L0 计算造成的偏差，在合设的 OMC 生成及板端执行环境运行 `bash targets/cpro/scripts/decoder_compare.sh l0-steps-same-input`。它复用四层 AIR 和已有的 CPU/310P 参考，把 CPro 的 embedding 乘法输出替换成同一份 310P 层入口。原图端口为 FP32 时，对 FP16 输入做精确扩宽。对照结果写在 `board/L00-L03/l0-steps-same-input/`。先看“**三端 L0 入口全部 64 行逐元素相同**”，再按有效 token 比较 `out`、`post_norm` 和 `shared_gate_logit`。原四层运行使用量化 embedding，因此其返回缓存仅在原输入诊断中作为切图对照。
+
 结果在 `$AI_RUN_DIR/target/tests/4-prefill-t64/board/L00-L03/l0-steps/`。每个变量的说明和三端矩阵在 `cosine.txt`、`error_ratio.txt`，相对 L2 在 `matrices.csv`。先看 `comparison.json` 的 `four_layer_cache_control`，其中 `exact` 表示诊断切图与四层板端返回的同一个 L0 缓存逐元素相等。随后看 `first_cos_or_l2_crossing_by_group` 以及对应的上游张量；筛选条件为有效行余弦 ≤ 0.99 或相对 L2 ≥ 0.05。观测值包含上游累积误差，额外导出中间量也可能改变 OMG 优化。缺失、编译失败或无法对齐的项目列在 `missing`。
 
 `validN` 取 YAML prompt 的有效 token。`physical60_63` 单列最后四行，供对照按物理尾部更新的 ConvState。`expert_ids` 按每个 token 的专家集合计算，`route_weights` 按专家编号展开。专家内部的两次矩阵乘和 SwiGLU 只比较三端共同选中的同一 token 和 expert，范围名给出共同路由数与总数。310P 的融合 SwiGLU 只直接暴露乘积。GDR 取融合算子的实际入参、core 和最终状态。

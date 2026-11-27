@@ -35,9 +35,9 @@ def input_wire(node, fallback_shape):
 
 
 def probe_cases(raw, meta, mode):
-    if mode == 'l0-steps':
+    if mode in ('l0-steps', 'l0-steps-same-input'):
         from qwen35_moe_dflash.target.prefill_t64.l0_accuracy_air import readouts
-        yield from readouts(raw, meta)
+        yield from readouts(raw, meta, same_input=mode == 'l0-steps-same-input')
         return
     if mode == 'gdn-bisect':
         from qwen35_moe_dflash.target.prefill_t64.gdn_layer_air import gdn_load_sections
