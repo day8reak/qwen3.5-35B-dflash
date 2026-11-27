@@ -235,6 +235,8 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 `--rms-silu-token-view` 在 L0、L1、L2 的 RMS 门控上都调用 `torch.ops.npu.silu_patch`。每层将同一批连续 FP16 元素从 `[2048,128]` 排成 `[64,4096]`，逐元素激活，再恢复为 `[2048,128]`，转 FP32 与逐 head 的 RMSNorm 结果相乘。四层共导出 14 个 `SiluPatch` 和 3 个 `SoftplusPatch`，共用一个 OMC。
 
+门控改动写入导出用源码副本的 `models/modeling_qwen3_5_moe_hiai_cpro.py`，位置是 `Qwen3_5MoeRMSNormGated.forward`。原 CPro 导出脚本通过 TorchAir 将该调用映射为 `SiluPatch`，生成的 AIR 直接交给 OMG。可在本次运行的 `export/package/L00-L03/source.diff` 中查看实际 PyTorch 源码差异。
+
 CPro AIR 生成服务器复用当前四层 golden：
 
 ```bash
