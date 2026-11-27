@@ -22,6 +22,64 @@ def compare(actual, reference, valid):
     return metrics(token_rows(actual)[:valid], token_rows(reference)[:valid])
 
 
+def inspect_entry_dumps(replay, files, nodes, feed, refs, valid):
+    """Compare plausible byte views of exact AIR node names without assigning dump slots."""
+    # The numbers surrounding the name are opaque; extract the shape and type
+    # only from the observed filename convention. Extra singleton axes are common.
+    pattern = re.compile(r'^_\d+_\d+_(.+?)_(float|float16|float32|half|fp16|fp32)_'
+                         r'(\d+(?:_\d+)*)_(\d+)_(\d+)\.dump$', re.I)
+    targets = {'feed': feed, 'cpu_hidden': refs['cpu_hidden'], '310p_hidden': refs['310p_hidden']}
+    groups = {}
+    skipped = {}
+    named_files = []
+    for name, size in sorted(files.items()):
+        match = pattern.fullmatch(Path(name).name)
+        if not match or match[1] not in nodes:
+            continue
+        named_files.append(name)
+        dims = [int(dim) for dim in match[3].split('_')]
+        if [dim for dim in dims if dim != 1] != [64, 2048]:
+            skipped[name] = f'filename dimensions {dims}'
+            continue
+        if size not in (feed.size * 2, feed.size * 4, feed.size * 2 + 32, feed.size * 4 + 32):
+            skipped[name] = f'file size {size}'
+            continue
+        path = sized_file(replay / 'dump', dict(path=name, bytes=size))
+        raw = path.read_bytes()
+        groups.setdefault((match[1], match[2], raw), []).append(name)
+    print(f'精确节点 {sorted(nodes)}，匹配文件 {len(named_files)} 个，符合维度和长度的独立内容组 {len(groups)} 个')
+    if not groups:
+        print('上述节点没有可按完整 [64,2048] 检查的文件，输入输出端口仍待定位。')
+    for name, why in skipped.items():
+        print(f'  跳过 {name} ({why})')
+    report = []
+    for (node, tag, raw), names in groups.items():
+        print(f'  {node}  文件名类型={tag}  字节={len(raw)}  相同内容={names}')
+        payload = feed.size * (4 if len(raw) >= feed.size * 4 else 2)
+        extra = len(raw) - payload
+        views = []
+        for offset in ([0, extra] if extra else [0]):
+            # A previous shared-gate output had a float-sized buffer containing
+            # packed halves at the start. Compare that hypothesis independently.
+            dtypes = ('<f4', '<f2') if payload == feed.size * 4 else ('<f2',)
+            for dtype in dtypes:
+                array = np.frombuffer(raw, dtype=dtype, count=feed.size, offset=offset).reshape(64, 2048)
+                scores = {}
+                for key, target in targets.items():
+                    result = compare(array, target, valid)
+                    scores[key] = {k: result[k] for k in ('cosine', 'relative_l2', 'nonfinite_actual',
+                                                           'exact_elements', 'total_elements')}
+                    scores[key]['exact_all64'] = bool(np.array_equal(array, token_rows(target)))
+                views.append(dict(dtype=array.dtype.name, offset=offset, bytes_used=array.nbytes,
+                                  unused_bytes=len(raw) - array.nbytes, comparisons=scores))
+                print(f'    {array.dtype.name}@{offset}: feed全64行相等={scores["feed"]["exact_all64"]}, '
+                      f'有效行与feed相等元素={scores["feed"]["exact_elements"]}/{scores["feed"]["total_elements"]}, '
+                      f'有效{valid}行 cos/rel_L2 ' + '  '.join(
+                          f'{key}={s["cosine"]}/{s["relative_l2"]}' for key, s in scores.items()))
+        report.append(dict(node=node, filename_type=tag, files=names, bytes=len(raw), views=views))
+    return dict(matched_files=named_files, skipped=skipped, byte_views=report)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('case', type=Path, help='1-linear-prefill-t64 directory on the board host')
@@ -67,6 +125,8 @@ def main():
             raise ValueError('Intermediate archive does not belong to this reference fixture')
         for backend in ('cpu', '310p'):
             results[f'host_feed_vs_{backend}_entry'] = compare(feed, refs[backend + '_block_entry'], valid)
+        entry_nodes = {edge.rsplit(':', 1)[0] for edge in hidden_edges} | set(entry_norms)
+        first_norm = inspect_entry_dumps(replay, files, entry_nodes, feed, refs, valid)
         if args.rms_io:
             if args.rms_io[0] == args.rms_io[1]:
                 parser.error('Provide separate confirmed x and z dump paths')
@@ -84,7 +144,7 @@ def main():
     dest = replay / 'l0-input-rmsnorm-dump.json'
     save_json(dest, dict(attempt=inventory['attempt'], valid_rows=valid, dense_fp16_x_z=args.rms_io,
                          input_norms=entry_norms, air_norms=norms, candidate_files=candidates,
-                         comparisons=results))
+                         entry_dump_candidates=first_norm, comparisons=results))
     print(f'完整候选清单和对比：{dest}')
 
 
