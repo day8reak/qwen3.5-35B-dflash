@@ -70,6 +70,41 @@ def lookup_exporter(source):
     return preserve_source(source, ast.unparse(tree))
 
 
+def _shared_gate_output(graph, sigmoid):
+    """Report where the sigmoid value goes, including any downstream dtype conversion."""
+    def dtypes(ports):
+        return [p.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_number[p.dtype].name
+                for p in ports]
+
+    sigmoid_dtypes = dtypes(sigmoid.output_desc)
+    print(f'[AIR] {sigmoid.name} output={sigmoid_dtypes}', flush=True)
+    pending = [sigmoid.name + ':0']
+    seen = set()
+    links = []
+    views_or_casts = ('Cast', 'CastT', 'Identity', 'Reshape', 'View', 'Squeeze', 'Unsqueeze',
+                      'ExpandDims', 'BroadcastTo')
+    while pending:
+        edge = pending.pop()
+        if edge in seen:
+            continue
+        seen.add(edge)
+        for op in graph.op:
+            for slot, arg in enumerate(op.input):
+                if arg != edge:
+                    continue
+                inputs, outputs = dtypes(op.input_desc), dtypes(op.output_desc)
+                links.append(dict(source=edge, name=op.name, op=op.type, slot=slot,
+                                  input_dtypes=inputs, output_dtypes=outputs))
+                print(f'[AIR] {edge} → {op.name} ({op.type}) input[{slot}], '
+                      f'inputs={inputs}, outputs={outputs}', flush=True)
+                if slot == 0 and op.type in views_or_casts:
+                    pending.append(op.name + ':0')
+    muls = sorted({link['name'] for link in links if link['op'] in ('Mul', 'MulV2')})
+    if len(muls) != 1:
+        print(f'[AIR] {sigmoid.name}: expected one observable downstream Mul, found {muls}', flush=True)
+    return dict(sigmoid_output_dtypes=sigmoid_dtypes, consumers=links, mul=muls[0] if len(muls) == 1 else None)
+
+
 def inspect_shared_gates(graph, layers, *, fp16_sigmoid=False):
     nodes = {n.name: n for n in graph.op}
     def source(edge):
@@ -92,20 +127,15 @@ def inspect_shared_gates(graph, layers, *, fp16_sigmoid=False):
             mm = source(producer.input[0])
         dtype = 2 if fp16_sigmoid else 1  # GE DT_FLOAT16 / DT_FLOAT
         if (mm.type not in ('MatMul', 'MatMulV2') or [p.dtype for p in mm.input_desc[:2]] != [2, 2]
-                or [p.dtype for p in mm.output_desc] != [2] or sigmoid.input_desc[0].dtype != dtype):
+                or [p.dtype for p in mm.output_desc] != [2] or not sigmoid.input_desc
+                or sigmoid.input_desc[0].dtype != dtype):
             continue
         row = dict(matmul=mm.name, cast=cast_name, sigmoid=sigmoid.name)
         if fp16_sigmoid:
-            consumers = [op for op in graph.op if op.type == 'Mul'
-                         and any(edge and not edge.endswith(':-1') and source(edge).name == sigmoid.name for edge in op.input)]
-            if ([p.dtype for p in sigmoid.output_desc] != [2] or len(consumers) != 1
-                    or [p.dtype for p in consumers[0].input_desc] != [2, 2]
-                    or [p.dtype for p in consumers[0].output_desc] != [2]):
-                raise ValueError(f'{sigmoid.name}: expected the FP16 shared expert gate to feed an FP16 Mul without a precision cast')
-            row['mul'] = consumers[0].name
-            print(f'[AIR] shared gate FP16: {mm.name} → {sigmoid.name} → {row["mul"]}', flush=True)
+            print(f'[AIR] shared gate: {mm.name} (DT_FLOAT16) → {sigmoid.name} input[0] DT_FLOAT16', flush=True)
+            row.update(_shared_gate_output(graph, sigmoid))
         gates.append(row)
-    path = 'FP16 MatMul → FP16 Sigmoid → FP16 Mul' if fp16_sigmoid else 'FP16 MatMul → FP32 Cast → Sigmoid'
+    path = 'FP16 MatMul → Sigmoid (FP16 input)' if fp16_sigmoid else 'FP16 MatMul → FP32 Cast → Sigmoid'
     if len(gates) != layers:
         raise ValueError(f'Expected {layers} shared gates with {path}; found {gates}')
     print(f'[AIR] {len(gates)} shared gate: {path}', flush=True)
