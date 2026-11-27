@@ -82,13 +82,23 @@
 
 ## 单测 L0 的 input_layernorm
 
-在 CPro AIR 生成服务器的 `qwen3_5_cpro` 环境，可以直接用 Python 生成单算子 AIR。
+已有 L0 捕获文件时，在其所在服务器运行以下命令，可把单算子 AIR、实际输入和导出脚本放进同一目录。
 
 ```bash
-python targets/cpro/scripts/export_l0_rmsnorm_air.py --output l0_input_rmsnorm.air
+case_dir="${AI_RUN_DIR:?}/target/tests/4-prefill-t64/board/L00-L03/l0-input-rmsnorm"
+python targets/cpro/scripts/export_l0_rmsnorm_air.py --case-dir "$case_dir"
 ```
 
-该模型有两个运行时输入，分别是 `x [1,64,2048]` 和有效 `gamma [2048]`，输出是 `torch_npu.npu_rms_norm(x, gamma, epsilon)[0]`。默认两个输入均为 FP16，epsilon 为 `1e-6`。复现某次四层导出的端口时，可按其实际配置传入 `--dtype`、`--gamma-dtype` 和 `--epsilon`。权重和激活在执行模型时提供。
+默认生成目录为 `$case_dir/single-op/`，也可以用 `--output-dir` 指定。目录里有 `export.air`、`x.bin`、`gamma.bin`、`export_l0_rmsnorm_air.py` 和脚本使用的 GE 描述文件 `torchair-ge-ir.pb`。Python 需要 NumPy 和 protobuf。两个 Data 节点按 x、gamma 的顺序输入，NetOutput 取唯一计算节点的第 0 个输出。默认 x 和 y 均为 FP16 `[1,64,2048]`，gamma 为 FP16 `[2048]`。脚本取 310P 实测 x 和原 CPro AIR 的有效 gamma，按指定端口类型写入两个 bin。epsilon 优先取 `--epsilon`，其次取捕获值，缺省时用 `1e-6`。
+
+在生成目录中可用已有输入导出采用相同数值接口的自定义算子。以下命令适用于注册输入名为 `x/gamma`、单输出名为 `y`、浮点属性名为 `epsilon` 的实现。将环境变量 `RMS_OP_TYPE` 设为 DDK 中注册的 GE OpType。
+
+```bash
+cd "$case_dir/single-op"
+python export_l0_rmsnorm_air.py --op-type "${RMS_OP_TYPE:?}" --output-ports y --output custom.air
+```
+
+`--input-ports` 可指定注册的两个输入名，`--output-ports y rstd` 可声明第二个 FP32 输出。AIR 对外只暴露归一化结果。若基线打印的 epsilon 与 `1e-6` 不同，给上面的命令加上同值的 `--epsilon`。epsilon 属性名可用 `--epsilon-attr` 指定，若注册接口无此属性，传 `--epsilon-attr ''`。只需生成内置模型时可直接运行 `python export_l0_rmsnorm_air.py --output export.air`。
 
 四层 T64 用例的 310P 实测输入在 `export/fixture/inputs/hidden.bin`，OMC 生成服务器收到的副本在 `board/package/fixture/inputs/hidden.bin`。它是 1 × 64 × 2048 的 FP16 张量，共 262144 字节。L0 逐步采集用 `input_layernorm` 的前钩子记录 `310p_block_entry`，并与这份输入逐元素核对。对应的实测归一化结果是 `values.npz` 中的 `310p_hidden`，来自紧接该层归一化的 GDN 入口。
 
@@ -98,7 +108,7 @@ python targets/cpro/scripts/export_l0_rmsnorm_air.py --output l0_input_rmsnorm.a
 bash targets/cpro/scripts/decoder_compare.sh l0-input-rmsnorm
 ```
 
-只需生成 AIR 和输入输出 bin 时，使用 `l0-input-rmsnorm-air`。脚本从原 AIR 的 embedding 乘法下游定位 L0 的输入 RMSNorm，保留该节点的属性和两个端口类型。单算子 AIR 读入 x 和有效 gamma，返回归一化输出 y。gamma 取自原 CPro AIR 的常量支路。脚本按每个输入的实际端口类型准备板端文件，并打印路径、shape、dtype 和字节数。
+只需生成 AIR 和输入输出 bin 时，使用 `l0-input-rmsnorm-air`。脚本从原 AIR 的 embedding 乘法下游定位 L0 的输入 RMSNorm，保留该节点的属性和两个端口类型，同时在 `single-op/` 中生成上述可替换的 FP16 单算子包。原 AIR 显式记录 epsilon 时，这条命令将它传给单算子生成脚本。脚本打印各自的输入路径、shape、dtype 和字节数。
 
 产物按用例放在 `board/L00-L03/l0-input-rmsnorm/`。其中 `weight/export.air` 是单算子模型，`input_310p.bin` 和 `output_310p.bin` 是 310P 捕获值，`gamma.bin` 是 CPro 算子的第二个输入。上板结果在 `replay/`，`comparison.json` 分别给出有效 token 和全部 64 行的指标。
 

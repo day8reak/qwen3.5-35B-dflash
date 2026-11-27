@@ -1,6 +1,8 @@
 """Extract and replay the first decoder input RMSNorm on the captured 310P embedding."""
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 
 import numpy as np
@@ -179,6 +181,9 @@ def run(root, remote, action, ddk, config, args):
         base.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base.parent) as tmp:
             info = export(root, remote, base, Path(tmp))
+        if args.gate_probe == 'l0-input-rmsnorm-air':
+            script = Path(__file__).resolve().parents[1]/'scripts/export_l0_rmsnorm_air.py'
+            subprocess.run([sys.executable, str(script), '--case-dir', str(base)], check=True)
         if ddk is not None:
             compiled(base, base, ddk, None, info['source'])
         return True
