@@ -287,6 +287,8 @@ def worker(args, action, root, remote):
         elif args.gate_probe == 'l0-shared-gate-fp16':
             label = {'compile': '编译 L0 共享门控 FP16 MatMul → FP32 Cast 对照',
                      'execute': '用相同 L0 输入上板，对比标量门控和共享专家加权输出'}[action]
+        elif args.gate_probe in ('l0-input-rmsnorm', 'l0-input-rmsnorm-air'):
+            label = '上板单测 L0 input_layernorm' if action == 'execute' else '提取 L0 input_layernorm 和真实 310P 输入输出'
         elif args.gate_probe == 'l0-steps-same-input':
             label = {'compile': '从 embedding 乘法之后切 L0 并编译诊断 OMC',
                      'execute': '用实测 310P 入口运行 L0 三端对照'}[action]
@@ -349,13 +351,16 @@ def main():
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
-                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate', 'l0-shared-gate-fp16'), help=argparse.SUPPRESS)
+                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate', 'l0-shared-gate-fp16',
+                                 'l0-input-rmsnorm', 'l0-input-rmsnorm-air'), help=argparse.SUPPRESS)
     a = parser.parse_args()
     probe_actions = ('compile', 'execute', '_compile', '_execute')
     if a.gate_probe == 'l0-embedding':
         probe_actions = ('golden', '_reference')
     elif a.gate_probe == 'l0-shared-gate':
         probe_actions = ('golden', '_reference', 'compile', '_compile')
+    elif a.gate_probe == 'l0-input-rmsnorm-air':
+        probe_actions = ('compile', '_compile')
     elif a.gate_probe == 'l0-steps':
         probe_actions += ('golden', '_reference')
     if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
@@ -446,6 +451,10 @@ def main():
             if a.gate_probe == 'l0-shared-gate-fp16':
                 from l0_shared_gate_fp16 import run
                 ddk, config, _ = board_config(a.action)
+                return 0 if run(root, remote, a.action, ddk, config, a) else 1
+            if a.gate_probe in ('l0-input-rmsnorm', 'l0-input-rmsnorm-air'):
+                from l0_input_rmsnorm import run
+                ddk, config, _ = (None, None, None) if a.gate_probe.endswith('-air') else board_config(a.action)
                 return 0 if run(root, remote, a.action, ddk, config, a) else 1
             if a.gate_probe == 'report':
                 from decoder_gate_report import report

@@ -80,6 +80,20 @@
 | `moe_out` | `shared_weighted + routed`，共享专家与路由专家合并后的 MoE 输出。 | 每 token × 2048 |
 | `block_out` | 第二条残差相加，`residual + moe_out`。这是 L0 的最终 hidden，也是 L1 收到的输入。 | 每 token × 2048 |
 
+## 单测 L0 的 input_layernorm
+
+四层 T64 用例的 310P 实测输入在 `export/fixture/inputs/hidden.bin`，OMC 生成服务器收到的副本在 `board/package/fixture/inputs/hidden.bin`。它是 1 × 64 × 2048 的 FP16 张量，共 262144 字节。L0 逐步采集用 `input_layernorm` 的前钩子记录 `310p_block_entry`，并与这份输入逐元素核对。对应的实测归一化结果是 `values.npz` 中的 `310p_hidden`，来自紧接该层归一化的 GDN 入口。
+
+在当前同时配置 CPro OMC 生成和板端执行环境的服务器运行：
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh l0-input-rmsnorm
+```
+
+只需生成 AIR 和输入输出 bin 时，使用 `l0-input-rmsnorm-air`。脚本从原 AIR 的 embedding 乘法下游定位 L0 的输入 RMSNorm，保留该节点的属性和两个端口类型。单算子 AIR 读入 x 和有效 gamma，返回归一化输出 y。gamma 取自原 CPro AIR 的常量支路。脚本按每个输入的实际端口类型准备板端文件，并打印路径、shape、dtype 和字节数。
+
+产物按用例放在 `board/L00-L03/l0-input-rmsnorm/`。其中 `weight/export.air` 是单算子模型，`input_310p.bin` 和 `output_310p.bin` 是 310P 捕获值，`gamma.bin` 是 CPro 算子的第二个输入。上板结果在 `replay/`，`comparison.json` 分别给出有效 token 和全部 64 行的指标。
+
 ## 与矩阵文件对照
 
 | 报告范围 | 取哪些值 |

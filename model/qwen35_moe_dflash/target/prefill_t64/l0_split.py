@@ -600,8 +600,8 @@ def plan(raw, trace, *, layer=0, head=True, verify_precision=False, split_projec
     return chain
 
 
-def slice_air(raw, step, wires):
-    msg, graph = graph_message(raw, 'SiluPatch')
+def slice_air(raw, step, wires, *, required_op='SiluPatch'):
+    msg, graph = graph_message(raw, required_op)
     net, = [n for n in graph.op if n.type == 'NetOutput']
     via_net = list(graph.output[:1]) == [net.name + ':0']
     body = []
