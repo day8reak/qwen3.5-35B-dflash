@@ -15,6 +15,7 @@ from ..layer_probe.common import checked, read_array, save_json
 from ..layer_probe.replay import export_input_identity
 from .chain_air import Head, checkpoint_paths
 from .decoder_cases import case_name, cpro_input_records, groups, output_names, state_roles
+from .decoder_source import inspect_shared_gates
 from .decoder_four_boundary import data_edges
 from .decoder_four_silu import inspect_activation_air
 from .decode_cache_control import graph_message
@@ -106,17 +107,19 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     air = dest/'weight/export.air'
     _, graph = graph_message(air.read_bytes(), 'NetOutput')
     audit = prefill_precision(graph, group, final, rows=rows)
+    gates = inspect_shared_gates(graph, len(group))
     if audit['mismatches']:
         raise ValueError('\n'.join(audit['mismatches']))
     operators = inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,
-                                       check_convs=True, gdn_conv=gdn_conv)
+                                       check_convs=True, gdn_conv=gdn_conv,
+                                       rms_silu_token_view=(ref['mode'], ref['phase']) == ('linear', 'prefill'))
     bindings = {node: list(args)[index] for node, index in evidence['nodes'].items()}
     if (set(bindings.values()) != set(args) or set(bindings) !=
             {n.name for n in graph.op if n.type in ('Data', 'RefData')}):
         raise ValueError(f'{name}: export inputs differ from the actual decoder inputs')
     if set(edges) != set(output_names(group, final)):
         raise ValueError(f'{name}: missing converter output identities')
-    save_json(dest/'case.json', dict(layers=group, gdn_convs=operators['gdn_convs'], inputs=bindings, outputs=bind_outputs(graph, edges),
+    save_json(dest/'case.json', dict(layers=group, shared_gates=gates, gdn_convs=operators['gdn_convs'], inputs=bindings, outputs=bind_outputs(graph, edges),
                                      files=files_under(dest, dest)))
 
 

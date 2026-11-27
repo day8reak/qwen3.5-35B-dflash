@@ -324,7 +324,24 @@ bash targets/cpro/scripts/decoder_compare.sh source --mode 4 --phase prefill --g
 
 - `board/matrices.csv` 包含三端的 3×3 矩阵，行是 actual，列是 reference。`board/comparison.json` 包含 prompt、logits 位置、预测 token 和未达阈值的张量。逐层模式还有 `board/Lxx/matrices.csv`。
 - 线性层比较完整 conv/recurrent 状态，full 层比较有效 K/V。逐层模式另外检查写入区以外的 KV。单层和四层的 logits 取所测最后一层输出并接原模型 head。
-- 四层和整网 T64 均使用原 CPro 导出入口、量化 embedding 与逐 token 的 embedding scale。四层设置 `num_hidden_layers=4`，将 L0–L3 连同最终 norm/head 导成一张 AIR。原生接口返回 logits、前三层各自的 conv/recurrent state，以及 L3 的 K/V，共 9 个输出。其余组合从实测入口 hidden 和状态开始。W4 scale、RoPE、MoE、GDN、FP16 SiluPatch 和 SoftplusPatch 的整网检查见[原 CPro 整网 prefill](target-prefill40-single.md)。
+- 四层 T64 的 310P golden 通过 wrapper 的 `if` 分支将 INT8 embedding 行乘以逐 token FP32 scale。两个操作数按实际调用保存到 `export/fixture/embedding_inputs/`，包括 padding 行。CPU 用这两份数据重建 L0 输入，四层 CPro OMC 直接接收这两份数据。四层图返回 logits、前三层的 conv/recurrent state 和 L3 的 K/V，共 9 个输出。
+- 40 层 T64 整网推理默认走 wrapper 的 `else` 分支。310P 和 CPro 都用同一组 token ID 查 checkpoint 的 `embed_tokens`。CPro T64 图接收 `input_ids.bin`（INT64，形状 `[1,64]`）。切换旧的外部 embedding 整网时，重新导 AIR、编译 OMC，首次运行加 `--replace-inputs --replace-weights`。独立 decoder block 和 T1 对照接收已采集的入口 hidden 与状态。其余算子配置见[原 CPro 整网 prefill](target-prefill40-single.md)。
+
+### 共享专家门控的 L0 整层回归
+
+在合设的 CPU/310P golden 与 CPro AIR 生成环境执行：
+
+```bash
+bash targets/cpro/scripts/decoder_prepare.sh --mode linear --phase prefill --gdn-conv conv2d
+```
+
+在合设的 CPro OMC 生成与板端执行环境执行：
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-conv conv2d --replace-inputs --replace-weights
+```
+
+该用例执行 L0 的 GDN、残差和 MoE。CPU 和 CPro 的单层入口来自同一组 embedding 编码和 scale。GDN 的 RMS 门控沿用 `[64,4096]` 的 SiLU 视图。共享专家的标量门控在 PyTorch 中对 FP16 激活与 FP16 权重做点积，将结果转成 FP32 后做 sigmoid。导出时打印在 AIR 中找到的 `FP16 MatMul → FP32 Cast → Sigmoid` 数量。查看 `$AI_RUN_DIR/target/tests/1-linear-prefill-t64/board/matrices.csv` 中 `hidden_0` 的有效 token，以及同目录的 `comparison.json`。
 - 板端的 `model_run_tool_internal` 使用 V2，显式传入 `--input_shape` 和 `--output_shape`。每项按端口顺序写作 `名称:物理维度`，同一方向的多个端口用分号连接。旧编译记录缺少输出名称时，同机可用的 OMG 可以从现有 OMC 补读元数据；仍缺名称时，执行端通过 `runtime.json` 配套的描述查询工具读取板上模型。完整调用保存在该次 `replay/run.sh` 和 `replay/result.json` 的 `argv` 字段。
 - 板端固定使用 `/data/local/tmp/qwen35_case_<用例>/work`，例如 `qwen35_case_40-prefill-t64/work`。逐层模式在用例名后追加层号，例如 `40x1-prefill-t64-L00`。
 - 每次上传当前 OMC。脚本按清单里的文件标识和板上的字节数复用输入、外置权重，缺失或变化的文件随 OMC 一次上传。成功后一次拉回输出目录并按槽位绑定，删除板端 OMC 和输出，留下当前输入和权重。失败现场保留到同用例下次启动，路径见 `result.json` 的 `remote` 字段。

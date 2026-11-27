@@ -125,6 +125,9 @@ def token_view_rms_gate(model):
     forward = _definition(_definition(tree, 'Qwen3_5MoeRMSNormGated'), 'forward')
     kernel = _call(forward, 'torch.ops.npu.silu_patch')
     value, = kernel.args
+    if (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+            and value.func.attr == 'reshape' and [ast.unparse(arg) for arg in value.args] == ['-1', '4096']):
+        return model
 
     class TokenView(ast.NodeTransformer):
         def visit_Call(self, node):

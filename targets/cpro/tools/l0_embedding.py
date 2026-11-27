@@ -13,6 +13,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from qwen35_moe_dflash.target.layer_probe.capture import bound, cpu
 from qwen35_moe_dflash.target.layer_probe.common import read_tensor, save_json
 from qwen35_moe_dflash.target.prefill_t64.chain_reference import driver_prompt, run_segment_prefill
+from qwen35_moe_dflash.target.prefill_t64.decoder_embedding import retained_embedding
 
 
 def array(t):
@@ -83,7 +84,7 @@ class EmbeddingTrace(TorchDispatchMode):
         return out
 
 
-def capture(source, config, ids, hidden, valid):
+def capture(source, config, ids, hidden, valid, embedding_rows=None):
     trace = EmbeddingTrace(source, ids, valid, hidden.shape[-1])
     wrapper_inputs = {}
 
@@ -133,7 +134,7 @@ def capture(source, config, ids, hidden, valid):
             stack.enter_context(trace)
 
         try:
-            run_segment_prefill(source/'inference_segment.py', config, arm)
+            run_segment_prefill(source/'inference_segment.py', config, arm, embedding_rows=embedding_rows)
         except AtLayerZero:
             return wrapper_inputs, trace.events
         raise ValueError('Original prefill did not enter L0')
@@ -176,7 +177,7 @@ def diagnose(root, source, config):
         raise ValueError('Nonfinite CPro embedding scale on a valid token')
     reconstructed = codes.astype(np.float32) * scale
     golden = hidden.reshape(ids.size, width)[:valid]
-    wrapper, events = capture(source, config, ids, hidden, valid)
+    wrapper, events = capture(source, config, ids, hidden, valid, retained_embedding(fixture, ref))
     baseline = row_metrics(reconstructed.astype(golden.dtype), golden)
     print(f'CPro 输入主机重建 vs 实测 310P 入口 {baseline}', flush=True)
     print(f'310P wrapper 实参 {wrapper}', flush=True)

@@ -157,4 +157,4 @@ bash targets/cpro/scripts/decoder_compare.sh l0-shared-gate
 bash targets/cpro/scripts/decoder_compare.sh l0-shared-gate-fp16
 ```
 
-该命令编译并执行一个 L0 `shared-router` 切片。它把共享专家标量门控的两个 MatMul 操作数显式转为 FP16，将 FP16 结果数值转换为 FP32 后送入原 sigmoid。输出按 OMC 声明的类型读取。对照报告在 `board/L00-L03/l0-shared-gate-fp16/result.json`。先看有效 token 的 logit 与同入口点积是否接近，再看实测 `shared_weighted` 对 310P 的相对 L2，以及 `shared_down` 相对原切片的变化。
+该命令针对保留的旧 FP32 MatMul AIR，编译并执行一个 L0 `shared-router` 切片。它把共享专家标量门控的两个 MatMul 操作数显式转为 FP16，将 FP16 结果数值转换为 FP32 后送入原 sigmoid。对照报告在 `board/L00-L03/l0-shared-gate-fp16/result.json`。新导出的整层已在 PyTorch 中指定相同的类型转换。整层命令见[共享专家门控的 L0 整层回归](../decoder-compare.md#共享专家门控的-l0-整层回归)。在四层新 AIR 上运行常规 `l0-shared-gate` 对照，读取有效 token 的实测 logit 与同入口点积的偏差，以及 `shared_weighted` 对 310P 的相对 L2。

@@ -21,7 +21,7 @@ from .gdr_stage_capture import observe_norm
 from .qkv_silu import STAGE as CONV_SILU, observe_conv
 
 
-def capture(source, config, observe_gdr, *, input_ids=None, valid_rows=19, observe_block=None):
+def capture(source, config, observe_gdr, *, input_ids=None, valid_rows=19, observe_block=None, embedding_rows=None):
     import torch_npu
     import yaml
 
@@ -166,7 +166,7 @@ def capture(source, config, observe_gdr, *, input_ids=None, valid_rows=19, obser
             if observe_block is not None:
                 observe_block(text.layers[0], stack, Done)
         try:
-            run_segment_prefill(entry, config, arm)
+            run_segment_prefill(entry, config, arm, embedding_rows=embedding_rows)
         except Done:
             pass
     if set(observed) != set(SHAPES) or 'prompt_sha256' not in info:

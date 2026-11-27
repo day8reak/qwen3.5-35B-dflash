@@ -18,16 +18,28 @@ LAYERS = 40
 VALID19_IDS_SHA256 = 'ec5119e4b49de3c9e0cd48b7cff7faf13b18a0a10dda89c2a5180b194f05eaf7'
 
 
-def run_segment_prefill(entry, config, arm, *, decode=False):
+def run_segment_prefill(entry, config, arm, *, decode=False, embedding_rows=None):
     """Attach an observer on entry to the original W4 segmented prefill driver."""
     from ..layer_probe.steps import working_directory
 
     old_profile = sys.getprofile()
 
+    def external_embedding(wrapper, args, kwargs):
+        import torch
+        ids = kwargs['input_ids']
+        codes, scales = embedding_rows(ids.detach().cpu().numpy())
+        return args, dict(kwargs, inputs_embeds=torch.from_numpy(codes).to(ids.device),
+                          embed_scale=torch.from_numpy(scales).to(ids.device))
+
     def entered(frame, event, _):
         if (event == 'call' and frame.f_code.co_filename == str(entry)
                 and frame.f_code.co_name == 'prefill_chunk_segment1'):
             sys.setprofile(old_profile)
+            if embedding_rows is not None:
+                wrapper = frame.f_locals['model_wrapper']
+                if wrapper.embedding_in_omc or wrapper.mul_twice:
+                    raise ValueError('Golden requires the external embedding branch with one scale multiplication')
+                cleanup.callback(wrapper.register_forward_pre_hook(external_embedding, with_kwargs=True).remove)
             arm(frame)
 
     with ExitStack() as cleanup:
@@ -127,6 +139,8 @@ def capture(source, config, baseline, output, *, decoder_tails=False, states=Fal
                             report['inputs'][name] = tensor_record(root, name, value)
                     if start == 0:
                         value = cpu(v['input_ids'])
+                        if yaml_prompt and (v.get('embed_scale') is not None or v.get('inputs_embeds') is not None):
+                            raise ValueError('40-layer prefill expects token IDs and the wrapper embed_tokens branch')
                         if ids is not None and not np.array_equal(value.numpy(), ids):
                             raise ValueError('prompt differs from retained valid19 token IDs')
                         if yaml_prompt:

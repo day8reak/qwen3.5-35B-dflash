@@ -38,12 +38,15 @@ FULL_DIR = 'glm_export_air_cpro_40block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
 
-def four_precision(air, layers=4):
+def four_precision(air, layers=4, *, check_shared_gates=False):
     from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
     from qwen35_moe_dflash.target.prefill_t64.l0_split import prefill_precision
 
     _, graph = graph_message(air.read_bytes(), 'NetOutput')
     result = prefill_precision(graph, range(layers), head=True)
+    if check_shared_gates:
+        from qwen35_moe_dflash.target.prefill_t64.decoder_source import inspect_shared_gates
+        result['shared_gates'] = inspect_shared_gates(graph, layers)
     status = 'MISMATCH' if result['mismatches'] else 'MATCH'
     print(f'{layers}-layer AIR {air} — {status}: {len(result["matmuls"])} W4 matmuls, {len(result["gdrs"])} GDRs')
     for issue in result['mismatches']:
@@ -51,7 +54,8 @@ def four_precision(air, layers=4):
     return result
 
 
-def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=False, decoder_fixture=False, yaml_prompt=False):
+def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=False, decoder_fixture=False,
+                   yaml_prompt=False, lookup=False):
     import numpy as np
     from qwen35_moe_dflash.target.layer_probe.common import read_array
     from qwen35_moe_dflash.target.prefill_t64.chain_reference import BASIS, VALID19_IDS_SHA256, YAML_BASIS
@@ -78,9 +82,20 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     vocab = int(cfg.get('vocab_size', 248320))
     if np.any(ids < 0) or np.any(ids >= vocab):
         raise ValueError('Captured token ID outside the embedding vocabulary')
-    emb = np.memmap(cfg['embedding_weight_path'], mode='r', dtype='i1').reshape(vocab, 2048)
-    scales = np.memmap(cfg['embedding_scale_path'], mode='r', dtype='<f4').reshape(vocab, 1)
-    quant_embed, embed_scale = emb[ids], scales[ids]
+    if lookup:
+        embedding_files = {'input_ids': ids.astype('<i8')}
+    elif decoder_fixture:
+        from qwen35_moe_dflash.target.prefill_t64.decoder_embedding import retained_embedding
+        rows = retained_embedding(reference, meta)
+        if rows is None:
+            raise ValueError('Recreate the four-layer golden with decoder_golden.sh to capture the external embedding operands')
+        quant_embed, embed_scale = rows(ids)
+        embedding_files = dict(inputs_embeds=quant_embed, embed_scale=embed_scale)
+    else:
+        emb = np.memmap(cfg['embedding_weight_path'], mode='r', dtype='i1').reshape(vocab, 2048)
+        scales = np.memmap(cfg['embedding_scale_path'], mode='r', dtype='<f4').reshape(vocab, 1)
+        quant_embed, embed_scale = emb[ids], scales[ids]
+        embedding_files = dict(inputs_embeds=quant_embed, embed_scale=embed_scale)
     positions = np.arange(64, dtype='<i4')
     if (not np.array_equal(tensor('position_ids').reshape(-1), positions) or
             not np.array_equal(tensor('new_kv_cache_pos').reshape(-1), positions) or
@@ -100,7 +115,7 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
         ctrl = np.zeros(128, dtype='<i4')
         ctrl[0] = valid
         policy = f'trial [{valid}, 0 x 127] derived from observed valid64 control; partial-length semantics unverified'
-    arrays = dict(inputs_embeds=quant_embed, embed_scale=embed_scale, attention_mask=mask,
+    arrays = dict(**embedding_files, attention_mask=mask,
                   position_ids=positions[None], new_kv_cache_pos=positions,
                   output_pos=np.array([valid-1], dtype='<i4'), allQLen=np.array([valid], dtype='<i8'),
                   effective_length=np.array([valid], dtype='<i2'), conv_state_pos=ctrl,
@@ -115,6 +130,12 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
         array.tofile(folder / (name + '.bin'))
     print(f'Original runtime input fixture: valid{valid}, output_pos={valid-1}, ConvState: {policy}', flush=True)
     entry_name = 'hidden' if decoder_fixture else 'embedding'
+    fixture = dict(reference_sha256=sha(index), token_sha256=digest, valid_rows=valid, conv_state_control=policy,
+                   reference_inputs={k: meta['inputs'][entry_name if k == 'embedding' else k]['sha256']
+                                     for k in REFERENCE_INPUT_NAMES})
+    if lookup:
+        print('[40/prefill] wrapper else: input_ids INT64[1,64] → embed_tokens', flush=True)
+        return dict(**fixture, prompt=meta['prompt'], embedding='lookup')
     measured = tensor(entry_name)
     if measured.shape != (1, 64, 2048) or measured.dtype != np.float16:
         raise ValueError('Expected the measured FP16 decoder entry [1,64,2048]')
@@ -129,9 +150,7 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
         tail['physical_tail_embedding_changed_fp16_elements'] = count
         print(f'L0 入口（主机重建 embedding × scale → FP16）与 310P 实测 hidden：'
               f'物理行 60–63 有 {count}/8192 个元素位模式不同。', flush=True)
-    return dict(reference_sha256=sha(index), token_sha256=digest,
-                reference_inputs={k: meta['inputs'][entry_name if k == 'embedding' else k]['sha256'] for k in REFERENCE_INPUT_NAMES},
-                valid_rows=valid, conv_state_control=policy, **tail,
+    return dict(**fixture, embedding='external', **tail,
                 **({'prompt': meta['prompt'], 'embedding_changed_fp16_elements': changes} if yaml_prompt
                    else {'valid19_embedding_changed_fp16_elements': changes}))
 
@@ -212,7 +231,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 same_control = conv_control.read_bytes() == (dest/'inputs/conv_state_pos.bin').read_bytes()
             else:
                 same_control = saved['fixture']['conv_state_control'].startswith('trial [')
-        if (same_control and saved['kind'] == kind and saved['sources'] == sources and saved['config_sha256'] == sha(config)
+        if (same_control and saved['fixture'].get('embedding') == 'lookup' and saved['kind'] == kind
+                and saved['sources'] == sources and saved['config_sha256'] == sha(config)
                 and saved['fixture']['reference_sha256'] == sha(reference/'manifest.json')):
             with tempfile.TemporaryDirectory(dir=run, prefix='check-source-') as tmp:
                 if prepared is None:
@@ -221,6 +241,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 if kind == TAPS_FULL_KIND:
                     from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
                     tree = taps_source(tree, Path(tmp)/'variant')
+                from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
+                tree = export_source(tree, Path(tmp)/'decoder', lookup=True, token_gate=True)
                 if full_source_hashes(tree) == saved['silu_patch']['source_sha256']:
                     for row in saved['files']:
                         checked(dest, row)
@@ -249,12 +271,16 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     # The owner's exporter deletes its relative export directory on startup.
     with tempfile.TemporaryDirectory(dir=run, prefix='export-') as temp:
         work = Path(temp)
-        # Resolve relative resource paths like the original project cwd while isolating new output.
         if full:
+            from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
             from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
+            staged = export_source(staged, work/'decoder', lookup=True, token_gate=True)
+            entry = staged / EXPORTER
             measured = json.loads((reference / 'manifest.json').read_bytes())
             cfg.update({k: str(v) for k, v in checkpoint_paths(source, config, measured).items()})
-        for key in ('model_file', 'quanted_pth', 'embedding_weight_path', 'embedding_scale_path'):
+        resource_keys = ('model_file', 'quanted_pth') if full else (
+            'model_file', 'quanted_pth', 'embedding_weight_path', 'embedding_scale_path')
+        for key in resource_keys:
             original = Path(cfg[key])
             real = (source / original).resolve(strict=True)
             if not original.is_absolute():
@@ -267,7 +293,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         argv = native_export_argv(entry, layers, export_config)
         if not uses_baseline:
             fixture = prefill_inputs(work / 'inputs', reference, cfg, conv_control,
-                                    physical_history=full and not native_convstate, yaml_prompt=full)
+                                    physical_history=full and not native_convstate, yaml_prompt=full, lookup=full)
         else:
             inputs = work / 'inputs'
             inputs.mkdir()
@@ -299,7 +325,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if kind != KIND:
             variant.update(inspect_activation_air(
                 air, shape_trace, layers=layers, full_only=layer is not None and layer % 4 == 3,
-                softplus=aligned, check_convs=full and not native_convstate, gdn_conv='taps' if kind == TAPS_FULL_KIND else 'conv2d'))
+                softplus=aligned, check_convs=full and not native_convstate, rms_silu_token_view=full,
+                gdn_conv='taps' if kind == TAPS_FULL_KIND else 'conv2d'))
             if uses_baseline:
                 variant['original_manifest_sha256'] = sha(base_manifest)
             if split:
@@ -322,7 +349,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 print(f'Native AIR boundary: {len(boundary["inputs"])} inputs, '
                       f'{[row["role"] for row in boundary["outputs"]]}', flush=True)
                 if aligned:
-                    variant['precision'] = four_precision(air, layers)
+                    variant['precision'] = four_precision(air, layers, check_shared_gates=full)
                     if variant['precision']['mismatches']:
                         raise ValueError('Native prefill export differs from the reviewed W4/GDR port contracts')
             staged_files = [EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py']
@@ -333,6 +360,11 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             variant['silu_patch']['source_sha256'] = (full_source_hashes(staged) if full else
                                                      {n: sha(staged / n) for n in staged_files})
         abi = inspect_input_shape(air)
+        if full:
+            from parse_model_json import GE_PROTO
+            ports = [(GE_PROTO[p['dtype_raw']], p['shape']) for p in abi['inputs']]
+            if ports.count(('INT64', [1, 64])) != 1 or ('INT8', [1, 64, 2048]) in ports or ('FP32', [1, 64, 1]) in ports:
+                raise ValueError('Expected 40-layer lookup AIR with one INT64 token-ID input and no external embedding inputs')
         files = [identity(p, work) for p in sorted(air.parent.rglob('*')) if p.is_file()]
         files.extend(identity(p, work) for p in sorted((work / 'inputs').glob('*.bin')))
         if uses_baseline:
@@ -546,6 +578,7 @@ def original_filename(name, src, dtype, *, fresh_zero_states):
     """Match the original exporter's descriptors, before singleton dimensions can fold."""
     dims = tuple(src['shape'])
     known = {
+        ('int64', (1, 64)): 'input_ids',
         ('int8', (1, 64, 2048)): 'inputs_embeds',
         ('float32', (1, 64, 1)): 'embed_scale',
         ('float32', (1, 1, 64, 2048)): 'attention_mask',
@@ -578,6 +611,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
 
     compiled = read_json(run / 'omc/manifest.json')
     meta = read_json(run / 'air/manifest.json')
+    if kind in FULL_KINDS and meta['fixture'].get('embedding') != 'lookup':
+        raise ValueError('This 40-layer OMC uses external embedding. Regenerate the 40-layer AIR and OMC for token-ID inference.')
     if meta['kind'] != kind or sha(run / 'air/manifest.json') != compiled['air_manifest_sha256']:
         raise ValueError('The compiled model belongs to a different original AIR bundle')
     model = sized_file(run / 'omc', compiled['primary'])

@@ -13,6 +13,7 @@ from ..layer_probe.common import read_array, save_json, sha
 from .chain_reference import driver_prompt, run_segment_prefill
 from .cpu_reference import CpuPrefill, verify_floating_weights
 from .decoder_cases import groups, output_names, state_roles
+from .decoder_embedding import golden_embedding
 from .decoder_four_boundary import output_shape
 from .segment_prefix import tensor_record
 from .split_cpu_reference import decoder
@@ -25,8 +26,12 @@ def capture(root, mode, phase, source, config):
     wanted = {k for group in schedule for k in output_names(group, group[-1] == layers[-1])}
     report = dict(mode=mode, phase=phase, layers=layers, inputs={}, cpro_inputs={}, outputs={},
                   config_sha256=sha(config), source_sha256=sha(source/'inference_segment.py'))
+    external = mode != '40'
     for name in ('inputs', 'cpro_inputs', '310p'):
         (root/name).mkdir()
+    if external:
+        report['embedding_inputs'] = {}
+        (root/'embedding_inputs').mkdir()
     active = False
     prefill_token = None
     prefill_cache = {}
@@ -92,6 +97,10 @@ def capture(root, mode, phase, source, config):
                     record('inputs', key, v[key])
                 record('inputs', 'all_length', torch.as_tensor(v['allQLen'], dtype=torch.int64))
                 record('inputs', 'input_ids', ids)
+                if external:
+                    for name in ('inputs_embeds', 'embed_scale'):
+                        record('embedding_inputs', name, v[name])
+                    print(f"[310P golden] external embedding: {v['inputs_embeds'].dtype} × {v['embed_scale'].dtype}", flush=True)
             hook(first, enter_wrapper, True)
             for start, wrapper in ((0, first), (split, second)):
                 for i, block in enumerate(wrapper.model.model.layers, start):
@@ -172,7 +181,8 @@ def capture(root, mode, phase, source, config):
             hook(second, readout)
 
         try:
-            run_segment_prefill(source/'inference_segment.py', config, arm, decode=rows == 1)
+            run_segment_prefill(source/'inference_segment.py', config, arm, decode=rows == 1,
+                                embedding_rows=golden_embedding(source, config) if external else None)
         except Complete:
             pass
     if set(report['outputs']) != wanted:
@@ -192,6 +202,10 @@ def cpu_reference(root, ref, source):
     if ref['phase'] == 'decode':
         controls['kv_length'] = ref['prompt_length'] + 1
     hidden = tensor('hidden')
+    if ref.get('embedding_inputs') and ref['layers'][0] == 0:
+        from .decoder_embedding import retained_embedding
+        codes, scales = retained_embedding(root, ref)(tensor('input_ids').numpy())
+        hidden = (torch.from_numpy(codes).float() * torch.from_numpy(scales)).half()
     owner = pf.import_source(source)
     loader = sys.modules[owner.Qwen3_5MoeForCausalLMWrapper.__module__].load_npu_model
     checkpoint = Path(ref['model_file'])

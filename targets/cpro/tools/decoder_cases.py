@@ -135,12 +135,15 @@ def prepare_stage(args, run):
     package = run/'package'
     stamp = dict(mode=args.mode, phase=args.phase)
     if args.action == 'reference':
-        from qwen35_moe_dflash.target.prefill_t64 import decoder_case_reference, cpu_reference, split_cpu_reference
+        from qwen35_moe_dflash.target.prefill_t64 import (
+            chain_reference, cpu_reference, decoder_case_reference, decoder_embedding, split_cpu_reference,
+        )
         inputs = ('inference_segment.py', 'inference.py', 'utils.py', 'models/export_model_wrapper_qwen3_5_moe.py',
                   'models/modeling_qwen3_5_moe_hiai_nz.py')
         binding = dict(**stamp, config_sha256=sha(cfg), source_files={k: sha(src/k) for k in inputs},
                        math_sources={m.__name__: sha(m.__file__) for m in
-                                     (decoder_case_reference, cpu_reference, split_cpu_reference)})
+                                     (decoder_case_reference, cpu_reference, split_cpu_reference,
+                                      chain_reference, decoder_embedding)})
         if fixture.exists():
             ref = json.loads((fixture/'reference.json').read_bytes())
             if ref.get('binding') != binding:
@@ -162,6 +165,8 @@ def prepare_stage(args, run):
     ref = json.loads((fixture/'reference.json').read_bytes())
     if (ref['mode'], ref['phase']) != (args.mode, args.phase):
         raise ValueError('Reference differs from selected case')
+    if args.mode != '40' and not ref.get('embedding_inputs'):
+        raise ValueError('Regenerate the decoder golden to capture the external embedding rows and scales')
     if args.gdn_conv == 'taps':
         from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
         if args.mode != 'full':
@@ -178,9 +183,9 @@ def prepare_stage(args, run):
                  adapters={})
     from qwen35_moe_dflash.target.prefill_t64 import decoder_case_air
     if not args.no_patch:
-        from qwen35_moe_dflash.target.prefill_t64 import source_model, source_exporter, decoder_four_silu
+        from qwen35_moe_dflash.target.prefill_t64 import source_model, source_exporter, decoder_four_silu, decoder_source
         stamp['adapters'] = {m.__name__: sha(m.__file__)
-                             for m in (decoder_case_air, source_model, source_exporter, decoder_four_silu)}
+                             for m in (decoder_case_air, source_model, source_exporter, decoder_four_silu, decoder_source)}
     options = dict(gdn_conv=args.gdn_conv)
     if (args.mode, args.phase) == ('4', 'prefill'):
         import decoder_four_native_case
@@ -209,7 +214,14 @@ def prepare_stage(args, run):
             staged.rename(working)
     if json.loads((working/'binding.json').read_bytes()) != stamp:
         raise ValueError(f'{working}: interrupted export belongs to another source or fixture. Run prepare again.')
-    exporter(working, fixture, ref, src, cfg, prepared, **options)
+    if args.no_patch:
+        exporter(working, fixture, ref, src, cfg, prepared, **options)
+    else:
+        from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
+        with tempfile.TemporaryDirectory(dir=run, prefix='decoder-source-') as tmp:
+            token_gate = (args.mode, args.phase) == ('linear', 'prefill')
+            adapted = export_source(prepared, Path(tmp)/'source', token_gate=token_gate)
+            exporter(working, fixture, ref, src, cfg, adapted, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
     save_json(working/'manifest.json', dict(**stamp, files=files))
     share_for_transfer(working)

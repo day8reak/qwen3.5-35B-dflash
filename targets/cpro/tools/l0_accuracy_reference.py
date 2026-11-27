@@ -17,6 +17,7 @@ from qwen35_moe_dflash.target.layer_probe.common import read_tensor, sized_file
 from qwen35_moe_dflash.target.layer_probe.qlinear_math import dynamic_quant
 from qwen35_moe_dflash.target.prefill_t64.cpu_reference import CpuPrefill, norm, verify_floating_weights
 from qwen35_moe_dflash.target.prefill_t64.gdn_layer_reference import capture, evaluate
+from qwen35_moe_dflash.target.prefill_t64.decoder_embedding import retained_embedding
 from trace_segment_attention import observe_l1_gdr_length
 
 
@@ -155,6 +156,7 @@ def prepare(root, source, config):
         return read_tensor(sized_file(fixture, row), row)
     extra = {}
     native, params, info = capture(source, config, observe_l1_gdr_length, input_ids=tensor('input_ids'),
+                                  embedding_rows=retained_embedding(fixture, ref),
                                   valid_rows=valid, observe_block=lambda b,s,d: observe_decoder(b,s,d,extra))
     if not np.array_equal(extra['block_entry'], tensor('hidden')):
         raise ValueError('L0 input hidden differs from the retained four-layer reference')

@@ -203,7 +203,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         if not no_patch:
             if explicit_conv2d:
                 observations['gdn_convs'] = boundary['gdn_convs']
-            precision = four_precision(air)
+            precision = four_precision(air, check_shared_gates=True)
             if precision['mismatches']:
                 raise ValueError('\n'.join(precision['mismatches']))
             observations['precision'] = precision
