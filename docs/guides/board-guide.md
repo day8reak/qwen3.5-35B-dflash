@@ -32,7 +32,7 @@ MODE=full
 bash targets/cpro/scripts/split_prefill_t64.sh board --mode "$MODE"
 ```
 
-`--run DIR` 指定该模式的运行目录。当前默认目录分别是 `$AI_RUN_DIR/target/tests` 下的 `l0-split-silupatch-t64-valid19-03`、`prefill-split-full-t64-valid19-03` 和 `prefill-split-40-t64-valid19-03`。各模式均使用 CPro W4 投影，导出时检查每个量化 matmul 的 weight scale 和 per-token scale 都是 FP16，并将端口记录在各层的 `air/manifest.json` 的 `precision` 字段里。linear 层返回物理序列末四行的卷积状态，按有效长度更新 GDR 状态。full 层在 FP32 计算 RoPE，再将 Q/K 转回 attention 的输入类型。各层在 FP16 计算残差，在分段接口以 FP32 传递 decoder hidden。
+`--run DIR` 指定该模式的运行目录。当前默认目录分别是 `$AI_RUN_DIR/target/tests` 下的 `l0-split-silupatch-t64-valid19-03`、`prefill-split-full-t64-valid19-03` 和 `prefill-split-40-t64-valid19-03`。各模式均使用 CPro W4 投影，导出时记录原 QLinear 和 DynamicQuant 传给每个量化 matmul 的浮点 scale 类型，并将端口记录在各层的 `air/manifest.json` 的 `precision` 字段里。linear 层返回物理序列末四行的卷积状态，按有效长度更新 GDR 状态。full 层在 FP32 计算 RoPE，再将 Q/K 转回 attention 的输入类型。各层在 FP16 计算残差，在分段接口以 FP32 传递 decoder hidden。
 
 **用两个前缀测后四层。** `last4` 默认复用同一个 `40` 运行目录。在 CPro AIR 生成服务器执行 `air --mode last4` 会复用或导出 L36–L39 的 AIR，并准备两个入口。若已有同次 40 层参考，脚本读 `L35/cpu` 和 310P capture 中的 L35 输出。缺少 CPU 边界时，从同一 prompt 计算 CPU 前缀。CPro 板端执行服务器上的 `board --mode last4` 分别执行两路，把各自位置 18 logits 的 top1 ID 与原 tokenizer 解出的文本写入 `replay-*/prefill.json` 的 `predictions.cpu` 和 `predictions.310p`。两路的实际 CPro 输出和精度矩阵分别放在 `cpu/Lxx/`、`310p/Lxx/`。这两个目录名表示前 36 层的来源。运行中断后使用 `board --mode last4 --recovery`。
 

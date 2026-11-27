@@ -108,6 +108,8 @@ def board_upload_flags(args):
 def native40(args, run, remote):
     tool = Path(__file__).with_name('decoder4_original.py')
     argv = [sys.executable, '-u', str(tool), args.action, '--aligned40', '--gdn-conv', args.gdn_conv, '--run', str(run)]
+    if args.rmsnorm_patch and args.action != 'reference':
+        argv.append('--rmsnorm-patch')
     if args.action in ('board', 'execute'):
         argv.extend(board_upload_flags(args))
     if args.action in ('compile', 'execute', 'board'):
@@ -177,6 +179,8 @@ def prepare_stage(args, run):
         stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
     controls = {name: getattr(args, name) for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)}
     stamp.update(controls)
+    if args.rmsnorm_patch:
+        stamp['rmsnorm_patch'] = True
     stamp.update(reference_sha256=sha(fixture/'reference.json'), config=sha(cfg),
                  cpro_source=str(prepared),
                  cpro_sources={str(p.relative_to(prepared)): sha(p) for p in cpro_python_files(prepared)},
@@ -186,7 +190,10 @@ def prepare_stage(args, run):
         from qwen35_moe_dflash.target.prefill_t64 import source_model, source_exporter, decoder_four_silu, decoder_source
         stamp['adapters'] = {m.__name__: sha(m.__file__)
                              for m in (decoder_case_air, source_model, source_exporter, decoder_four_silu, decoder_source)}
-    options = dict(gdn_conv=args.gdn_conv)
+        if args.rmsnorm_patch:
+            from qwen35_moe_dflash.target.prefill_t64 import decoder_rmsnorm
+            stamp['adapters'][decoder_rmsnorm.__name__] = sha(decoder_rmsnorm.__file__)
+    options = dict(gdn_conv=args.gdn_conv, rmsnorm_patch=args.rmsnorm_patch)
     if (args.mode, args.phase) == ('4', 'prefill'):
         import decoder_four_native_case
         exporter = decoder_four_native_case.export
@@ -197,7 +204,7 @@ def prepare_stage(args, run):
         exporter = decoder_case_air.export
     if package.exists():
         prior = json.loads((package/'manifest.json').read_bytes())
-        if (any(prior.get(k, False) != stamp.get(k, False) for k in FOUR_LAYER_CONTROLS)
+        if (any(prior.get(k, False) != stamp.get(k, False) for k in (*FOUR_LAYER_CONTROLS, 'rmsnorm_patch'))
                 or any(prior.get(k) != v for k, v in stamp.items())):
             raise ValueError('Existing export uses different sources or reference')
         for row in prior['files']:
@@ -219,8 +226,7 @@ def prepare_stage(args, run):
     else:
         from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
         with tempfile.TemporaryDirectory(dir=run, prefix='decoder-source-') as tmp:
-            token_gate = (args.mode, args.phase) == ('linear', 'prefill')
-            adapted = export_source(prepared, Path(tmp)/'source', token_gate=token_gate,
+            adapted = export_source(prepared, Path(tmp)/'source', rmsnorm_patch=args.rmsnorm_patch,
                                     fold_norm_gamma=exporter is decoder_case_air.export)
             exporter(working, fixture, ref, src, cfg, adapted, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
@@ -284,6 +290,8 @@ def worker(args, action, root, remote):
                 cmd.append(value)
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
+    if getattr(args, 'rmsnorm_patch', False):
+        cmd.append('--rmsnorm-patch')
     if getattr(args, 'gate_probe', False):
         cmd.extend(['--gate-probe', args.gate_probe])
         if args.rmsnorm_air:
@@ -317,6 +325,8 @@ def worker(args, action, root, remote):
             label = '对照四层和门控小图的已有 AIR、编译日志及上板记录'
         elif args.gate_probe == 'l0-decay-report':
             label = '查看现有 L0 AIR 和 OMC 的 Softplus 衰减支路'
+        elif args.gate_probe == 'l0-dump':
+            label = '执行完整 L0 OMC，解析并回收算子中间 dump'
         elif args.gate_probe == 'l0-original-omg':
             label = {'compile': '用原 CPro OMG 参数编译已有 L0 AIR', 'execute': '用原 V2 参数执行对照 OMC'}[action]
         elif args.gate_probe == 'gdn-bisect':
@@ -357,7 +367,7 @@ def main():
     activation_mode.add_argument('--all-silu-no-gate-cast', action='store_true',
                                  help='use all GDN and MoE SiluPatch calls and omit the explicit FP32 cast after the GDN gate')
     activation_mode.add_argument('--rms-silu-token-view', action='store_true',
-                                 help='use the custom FP16 SiLU with a [64,4096] view on all four-layer RMS gates')
+                                 help='select a previously exported four-layer [64,4096] AIR for replay')
     activation_mode.add_argument('--rms-silu-layers', default=False,
                                  choices=('none', '0', '1', '2', '0,1', '0,2', '1,2', '0,1,2'),
                                  help='use FP16 SiluPatch on the selected RMS gates and FP16 F.silu on the other gates')
@@ -371,13 +381,18 @@ def main():
     parser.add_argument('--replace-weights', action='store_true', help='upload every external board weight again')
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
+    parser.add_argument('--rmsnorm-patch', action='store_true', help='use the custom FP16 RmsnormPatch in the CPro decoder')
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
                         choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate', 'l0-shared-gate-fp16',
                                  'l0-input-rmsnorm', 'l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc',
-                                 'l0-decay-report', 'l0-original-omg'), help=argparse.SUPPRESS)
+                                 'l0-decay-report', 'l0-original-omg', 'l0-dump'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
     a = parser.parse_args()
+    if a.rms_silu_token_view and a.action in ('prepare', 'golden', 'air', '_air'):
+        parser.error('--rms-silu-token-view selects historical AIRs. Omit it when exporting the native gate shape.')
+    if a.no_patch and a.rmsnorm_patch:
+        parser.error('--no-patch and --rmsnorm-patch select different RMSNorm implementations')
     if a.rmsnorm_air is not None and (a.gate_probe != 'l0-input-rmsnorm-omc'
                                       or Path(a.rmsnorm_air).name != a.rmsnorm_air
                                       or Path(a.rmsnorm_air).suffix != '.air'):
@@ -391,7 +406,9 @@ def main():
         probe_actions = ('compile', '_compile')
     elif a.gate_probe == 'l0-steps':
         probe_actions += ('golden', '_reference')
-    probe_mode = 'linear' if a.gate_probe in ('l0-original-omg', 'l0-decay-report') else '4'
+    elif a.gate_probe == 'l0-dump':
+        probe_actions = ('execute', '_execute')
+    probe_mode = 'linear' if a.gate_probe in ('l0-original-omg', 'l0-decay-report', 'l0-dump') else '4'
     if a.gate_probe and ((a.mode, a.phase) != (probe_mode, 'prefill') or
                          a.action not in probe_actions):
         parser.error(f'{a.gate_probe} requires --mode {probe_mode} --phase prefill and its supported stage')
@@ -427,7 +444,7 @@ def main():
     if a.action == 'plan':
         schedule = groups(a.mode)
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
-                              prompt='310P YAML prompts[0]', no_patch=a.no_patch, native_activations=a.native_activations,
+                              prompt='310P YAML prompts[0]', rmsnorm_patch=a.rmsnorm_patch, no_patch=a.no_patch, native_activations=a.native_activations,
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
                               gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
                               rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view,
@@ -463,11 +480,13 @@ def main():
                 from decoder_gate_report import report_linear_decay
                 report_linear_decay(root, board_config('compile')[0])
                 return 0
-            if a.gate_probe == 'l0-original-omg':
+            if a.gate_probe in ('l0-original-omg', 'l0-dump'):
                 from decoder_cases_board import board
                 ddk, config, diag = board_config(a.action)
+                original = a.gate_probe == 'l0-original-omg'
                 return 0 if board(root/'board', a.mode, a.phase, remote/'export', ddk, config, diag, False,
-                                  step=a.action, gdn_conv=a.gdn_conv, original_omg=True, original_board_args=True,
+                                  step=a.action, gdn_conv=a.gdn_conv, original_omg=original, rmsnorm_patch=a.rmsnorm_patch,
+                                  original_board_args=original or a.original_board_args, operator_dump=not original,
                                   replace_inputs=a.replace_inputs, replace_weights=a.replace_weights) else 1
             if a.gate_probe == 'l0-embedding':
                 from l0_embedding import diagnose
@@ -517,7 +536,7 @@ def main():
             ddk, config, diag = board_config(a.action)
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
-                         original_board_args=a.original_board_args, no_patch=a.no_patch,
+                         original_board_args=a.original_board_args, no_patch=a.no_patch, rmsnorm_patch=a.rmsnorm_patch,
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
                          gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site,
                          all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate,

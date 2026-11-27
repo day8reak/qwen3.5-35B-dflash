@@ -21,7 +21,7 @@ from ..layer_probe.replay import export_input_identity, source_bindings
 from ..layer_probe.steps import working_directory
 from .chain_reference import BASIS, LAYERS
 from .prepare import EXPORTER, MODELING, NZ, WRAPPER
-from .source_exporter import stage_exporter, stage_utils
+from .source_exporter import half_model_preserving_qlinear_scales, stage_exporter, stage_utils
 from .source_model import stage_model
 from .source_wrapper import stage_wrapper
 
@@ -246,7 +246,7 @@ def _export_batch(source, config, reference, root, *, decoder_pair=False):
                                        layer_num=4, start_layer_idx=base, quant_enable=True)
                 exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.config.num_experts,
                     start_layer_idx=base, device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
-                model.eval().to(dtype=torch.float16)
+                half_model_preserving_qlinear_scales(model.eval(), exporter.CproQLinear)
                 if (model.model.start_layer_idx != base or len(model.model.layers) != 4
                         or model.config.num_hidden_layers != LAYERS or not isinstance(model.lm_head, exporter.CproQLinear)):
                     raise ValueError(f'failed to load W4 decoder group at {base}')

@@ -20,18 +20,16 @@ def cpro_export_contracts(enabled, chunk_size=1, *, gdn_layers=3, sequence_rows=
     if not enabled:
         yield
         return
-    from ..layer_probe.candidates import qlinear_ge_scales
     from ..layer_probe.module_contracts import gdn_state_contract
 
     if chunk_size not in (1, 64) or sequence_rows not in (1, 64) or chunk_size > sequence_rows:
         raise ValueError('Unsupported GDR chunk width')
     active = _GDR_WIDTH.set(chunk_size)
     try:
-        with qlinear_ge_scales(True, expected_calls=None) as projections:
-            with gdn_state_contract(gdn_layers > 0, state_dtype='float16', expected_calls=gdn_layers * (sequence_rows // chunk_size),
-                                    sequence_rows=chunk_size) as gdr:
-                yield
-        print('CPro GE adapter calls:', {'qlinear': projections['calls'], 'gdn': gdr['calls'] if gdr else 0})
+        with gdn_state_contract(gdn_layers > 0, state_dtype='float16', expected_calls=gdn_layers * (sequence_rows // chunk_size),
+                                sequence_rows=chunk_size) as gdr:
+            yield
+        print('CPro GDR adapter calls:', gdr['calls'] if gdr else 0)
     finally:
         _GDR_WIDTH.reset(active)
 
@@ -41,6 +39,14 @@ def _only(items, label):
     if len(items) != 1:
         raise ValueError(f'expected one {label}, found {len(items)}')
     return items[0]
+
+
+def half_model_preserving_qlinear_scales(model, qlinear_cls):
+    """Cast the floating model while retaining the loader's original QLinear buffers."""
+    scales = [(module, module.scale) for module in model.modules() if isinstance(module, qlinear_cls)]
+    model.half()
+    for module, scale in scales:
+        module.scale = scale
 
 
 def _function(tree, name):
@@ -90,7 +96,7 @@ def stage_exporter(text):
     guard = ast.parse('validate_gdr_inputs(chunk_size, query, key, value, beta)').body[0]
     converter.body.insert(0, guard)
     imports = ('from qwen35_moe_dflash.target.prefill_t64.source_exporter '
-               'import cpro_export_contracts, validate_gdr_inputs\n'
+               'import cpro_export_contracts, validate_gdr_inputs, half_model_preserving_qlinear_scales\n'
                'from models.modeling_qwen3_5_moe_hiai_cpro import QLinear as CproQLinear\n')
     edits = [(quantize, ast.unparse(ast.fix_missing_locations(quantize))),
              (converter, imports + '\n' + ast.unparse(ast.fix_missing_locations(converter)))]
@@ -110,7 +116,7 @@ def stage_prefill_exporter(text, *, gdn_layers, split):
         load = _only((stmt for stmt in fn.body if quant in ast.walk(stmt)), 'quantization branch')
         init = ast.parse('''
 from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
-model_wrapper.model.eval().to(dtype=torch.float16)
+half_model_preserving_qlinear_scales(model_wrapper.model.eval(), CproQLinear)
 for module in model_wrapper.model.modules():
     if isinstance(module, Qwen3_5MoeRMSNorm):
         gamma = (module.weight + 1.0).detach().contiguous()

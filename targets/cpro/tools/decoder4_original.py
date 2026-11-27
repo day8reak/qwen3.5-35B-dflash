@@ -38,12 +38,15 @@ FULL_DIR = 'glm_export_air_cpro_40block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
 
-def four_precision(air, layers=4, *, check_shared_gates=False):
+def four_precision(air, layers=4, *, check_shared_gates=False, rmsnorm_patch=False):
     from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
     from qwen35_moe_dflash.target.prefill_t64.l0_split import prefill_precision
 
     _, graph = graph_message(air.read_bytes(), 'NetOutput')
     result = prefill_precision(graph, range(layers), head=True)
+    if rmsnorm_patch:
+        from qwen35_moe_dflash.target.prefill_t64.decoder_rmsnorm import inspect_ports
+        result['rmsnorm_nodes'] = inspect_ports(graph)
     if check_shared_gates:
         from qwen35_moe_dflash.target.prefill_t64.decoder_source import inspect_shared_gates
         result['shared_gates'] = inspect_shared_gates(graph, layers)
@@ -189,7 +192,7 @@ def full_source_hashes(source):
 
 
 def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None, l0_capture=None, prepared=None,
-           layer=None, head=True, standalone=True):
+           layer=None, head=True, standalone=True, rmsnorm_patch=False):
     import yaml
     split = kind in (L0_KIND, SPLIT_KIND)
     full = kind in FULL_KINDS
@@ -242,7 +245,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                     from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
                     tree = taps_source(tree, Path(tmp)/'variant')
                 from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
-                tree = export_source(tree, Path(tmp)/'decoder', lookup=True, token_gate=True)
+                tree = export_source(tree, Path(tmp)/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch)
                 if full_source_hashes(tree) == saved['silu_patch']['source_sha256']:
                     for row in saved['files']:
                         checked(dest, row)
@@ -274,7 +277,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if full:
             from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source, save_air_source
             from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
-            staged = export_source(staged, work/'decoder', lookup=True, token_gate=True)
+            staged = export_source(staged, work/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch)
             entry = staged / EXPORTER
             save_air_source(staged, work/'air-source')
             measured = json.loads((reference / 'manifest.json').read_bytes())
@@ -326,7 +329,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if kind != KIND:
             variant.update(inspect_activation_air(
                 air, shape_trace, layers=layers, full_only=layer is not None and layer % 4 == 3,
-                softplus=aligned, check_convs=full and not native_convstate, rms_silu_token_view=full,
+                softplus=aligned, check_convs=full and not native_convstate,
                 gdn_conv='taps' if kind == TAPS_FULL_KIND else 'conv2d'))
             if uses_baseline:
                 variant['original_manifest_sha256'] = sha(base_manifest)
@@ -350,7 +353,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 print(f'Native AIR boundary: {len(boundary["inputs"])} inputs, '
                       f'{[row["role"] for row in boundary["outputs"]]}', flush=True)
                 if aligned:
-                    variant['precision'] = four_precision(air, layers, check_shared_gates=full)
+                    variant['precision'] = four_precision(air, layers, check_shared_gates=full, rmsnorm_patch=rmsnorm_patch)
                     if variant['precision']['mismatches']:
                         raise ValueError('Native prefill export differs from the reviewed W4/GDR port contracts')
             staged_files = [EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py']
@@ -520,7 +523,7 @@ def compile_native_prefill(out, air_path, ddk, *, external_weights=True):
     return result.returncode, argv, os.environ.get('SOC_VERSION')
 
 
-def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weights=True):
+def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weights=True, rmsnorm_patch=False):
     from decoder4_prefill import pull_air
 
     run.mkdir(parents=True, exist_ok=True)
@@ -535,6 +538,8 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
                 raise ValueError(f'Expected {kind} AIR at {remote}')
             incoming.rename(bundle)
     meta = json.loads((bundle / 'manifest.json').read_bytes())
+    if kind in FULL_KINDS and bool(meta.get('precision', {}).get('rmsnorm_nodes')) != rmsnorm_patch:
+        raise ValueError(f'{bundle}: --rmsnorm-patch selection differs from the exported AIR')
     if meta['kind'] != kind:
         raise ValueError(f'Expected {kind} AIR at {bundle}, got {meta["kind"]}')
     for row in meta['files']:
@@ -770,6 +775,7 @@ def main():
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--source', type=Path)
     parser.add_argument('--prepared-source', type=Path, help='run the edited aligned40 exporter and model directly')
+    parser.add_argument('--rmsnorm-patch', action='store_true', help='use RmsnormPatch in the aligned40 PyTorch export')
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--conv-control', type=Path)
     parser.add_argument('--config', type=Path)
@@ -843,7 +849,7 @@ def main():
         if kind in (KIND, *FULL_KINDS) and (not args.source or not args.reference):
             parser.error('native export requires --source and --reference')
         export(run, args.source, args.config, args.reference, args.conv_control, kind=kind, baseline=args.baseline,
-               prepared=args.prepared_source.resolve(strict=True) if args.prepared_source else None)
+               prepared=args.prepared_source.resolve(strict=True) if args.prepared_source else None, rmsnorm_patch=args.rmsnorm_patch)
         return
     if args.action == 'execute' and not args.aligned40:
         parser.error('execute requires --aligned40')
@@ -869,10 +875,13 @@ def main():
         if args.action == 'execute':
             raise FileNotFoundError(f'Run compile and make its outputs available here: {compiled}')
         build(run, args.ddk.resolve(), args.tbe_diagnosis, args.remote_air or bundle, kind=kind,
-              bundle=bundle, platform=None if args.aligned or args.aligned40 else 'kirinx90', external_weights=not args.retry_load)
+              bundle=bundle, platform=None if args.aligned or args.aligned40 else 'kirinx90',
+              external_weights=not args.retry_load, rmsnorm_patch=args.rmsnorm_patch)
     else:
         manifest = bundle / 'manifest.json'
         air_meta = json.loads(manifest.read_bytes())
+        if args.aligned40 and bool(air_meta.get('precision', {}).get('rmsnorm_nodes')) != args.rmsnorm_patch:
+            raise ValueError(f'{bundle}: --rmsnorm-patch selection differs from the compiled model')
         record = json.loads(compiled.read_bytes())
         if (air_meta['kind'] != kind or record['air_manifest_sha256'] != sha(manifest)
                 or not (run / 'air').samefile(bundle)):

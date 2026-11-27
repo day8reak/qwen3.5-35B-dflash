@@ -20,6 +20,7 @@ from .decoder_four_boundary import data_edges
 from .decoder_four_silu import inspect_activation_air
 from .decode_cache_control import graph_message
 from .l0_split import prefill_precision
+from .source_exporter import half_model_preserving_qlinear_scales
 
 
 class DecoderGraph(torch.nn.Module):
@@ -77,7 +78,7 @@ def bind_outputs(graph, converter_edges):
     return result
 
 
-def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges, gdn_conv):
+def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges, gdn_conv, rmsnorm_patch):
     rows = 64 if ref['phase'] == 'prefill' else 1
     name = case_name(group)
     linear = sum(i % 4 != 3 for i in group)
@@ -107,24 +108,27 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     air = dest/'weight/export.air'
     _, graph = graph_message(air.read_bytes(), 'NetOutput')
     audit = prefill_precision(graph, group, final, rows=rows)
+    from .decoder_rmsnorm import inspect_ports
+    norms = inspect_ports(graph) if rmsnorm_patch else []
     gates = inspect_shared_gates(graph, len(group))
     if audit['mismatches']:
         raise ValueError('\n'.join(audit['mismatches']))
     operators = inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,
-                                       check_convs=True, gdn_conv=gdn_conv,
-                                       rms_silu_token_view=(ref['mode'], ref['phase']) == ('linear', 'prefill'))
+                                       check_convs=True, gdn_conv=gdn_conv)
     bindings = {node: list(args)[index] for node, index in evidence['nodes'].items()}
     if (set(bindings.values()) != set(args) or set(bindings) !=
             {n.name for n in graph.op if n.type in ('Data', 'RefData')}):
         raise ValueError(f'{name}: export inputs differ from the actual decoder inputs')
     if set(edges) != set(output_names(group, final)):
         raise ValueError(f'{name}: missing converter output identities')
-    save_json(dest/'case.json', dict(layers=group, shared_gates=gates, gdn_convs=operators['gdn_convs'], inputs=bindings, outputs=bind_outputs(graph, edges),
+    save_json(dest/'case.json', dict(layers=group, rmsnorm_nodes=norms, qlinear_ports=audit['matmuls'],
+                                     shared_gates=gates, gdn_convs=operators['gdn_convs'],
+                                     inputs=bindings, outputs=bind_outputs(graph, edges),
                                      files=files_under(dest, dest)))
 
 
 @torch.no_grad()
-def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d'):
+def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d', rmsnorm_patch=False):
     plan = groups(ref['mode'])
     paths = checkpoint_paths(source, config, ref)
     driver = Path(__file__)
@@ -162,7 +166,7 @@ def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d'):
                                    layer_num=last-first+1, start_layer_idx=first, quant_enable=True)
             exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.config.num_experts,
                 start_layer_idx=first, device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
-            model.eval().to(dtype=torch.float16)
+            half_model_preserving_qlinear_scales(model.eval(), exporter.CproQLinear)
             for module in model.modules():
                 if isinstance(module, Qwen3_5MoeRMSNorm):
                     gamma = (module.weight + 1.0).detach().contiguous()
@@ -177,7 +181,7 @@ def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d'):
                     dest = Path(tmp_case)/'case'
                     dest.mkdir()
                     export_case(dest, fixtures, ref, group, final, blocks, Head(model) if final else None,
-                                exporter, edges, gdn_conv)
+                                exporter, edges, gdn_conv, rmsnorm_patch)
                     dest.rename(root/case_name(group))
             del blocks, model
     finally:

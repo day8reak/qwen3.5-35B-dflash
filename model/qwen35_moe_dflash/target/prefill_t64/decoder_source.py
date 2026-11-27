@@ -6,7 +6,7 @@ from shutil import copyfile
 from ..original_target_source import EXPORTER, cpro_python_files
 from .decoder_four_silu import MODELING
 from .decoder_four_source import preserve_source
-from .source_model import _call, _definition
+from .source_model import _call, _definition, restore_qlinear_scales
 
 
 def save_air_source(source, destination, *, decoder_files=()):
@@ -94,9 +94,9 @@ def inspect_shared_gates(graph, layers):
     return gates
 
 
-def export_source(source, dest, *, lookup=False, token_gate=False, fold_norm_gamma=False):
+def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_patch=False):
     """Keep imported helpers beside the run-local model; preserve editable sources."""
-    from .decoder_four_silu import inline_old_silu, token_view_rms_gate
+    from .decoder_four_silu import inline_old_silu, remove_activation_views
 
     (dest/'models').mkdir(parents=True)
     for folder in (Path('.'), Path('models')):
@@ -105,9 +105,11 @@ def export_source(source, dest, *, lookup=False, token_gate=False, fold_norm_gam
             if path.name == '__pycache__' or rel in (Path('models'), Path(EXPORTER), Path(MODELING)):
                 continue
             (dest/rel).symlink_to(path.resolve(), target_is_directory=path.is_dir())
-    model = fp16_shared_gate((source/MODELING).read_text())
-    if token_gate:
-        model = token_view_rms_gate(inline_old_silu(model))
+    model = remove_activation_views((source/MODELING).read_text())
+    model = inline_old_silu(fp16_shared_gate(model))
+    tree = ast.parse(model)
+    restore_qlinear_scales(tree)
+    model = preserve_source(model, ast.unparse(tree))
     if fold_norm_gamma:
         tree = ast.parse(model)
         norm = _definition(_definition(tree, 'Qwen3_5MoeRMSNorm'), 'forward')
@@ -118,9 +120,12 @@ def export_source(source, dest, *, lookup=False, token_gate=False, fold_norm_gam
             model = preserve_source(model, ast.unparse(tree))
         elif operand != 'self.export_gamma':
             raise ValueError(f'Unrecognized ordinary RMSNorm gamma expression: {operand}')
+    exporter = (source/EXPORTER).read_text()
+    if rmsnorm_patch:
+        from .decoder_rmsnorm import patch_sources
+        model, exporter = patch_sources(model, exporter)
     (dest/MODELING).write_text(model)
     if lookup:
-        (dest/EXPORTER).write_text(lookup_exporter((source/EXPORTER).read_text()))
-    else:
-        copyfile(source/EXPORTER, dest/EXPORTER)
+        exporter = lookup_exporter(exporter)
+    (dest/EXPORTER).write_text(exporter)
     return dest

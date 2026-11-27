@@ -77,7 +77,7 @@ bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv con
 bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --native-activations
 ```
 
-此选项以对齐后的 CPro 源码为基础，在本次导出的副本上恢复原生 SiLU 和 Softplus。W4 scale、RoPE、GDR、MoE 等修复继续生效。导出时打印并检查 `SiluPatch=0` 和 `SoftplusPatch=0`，同时检查 W4 和 GDR 端口。两种四层原生卷积对照都从相同的 golden、embedding 权重和 YAML 配置生成输入。原 CPro wrapper 接收 INT8 embedding 及逐 token FP32 scale。普通分层诊断图和 T1 decoder 图接收 FP16 hidden。原生卷积还接收 128 个 INT32 的 `conv_state_pos`，默认首项为有效长度、其余项为零。可用 `DECODER_CONV_CONTROL` 指定原板端 bin。
+此选项以对齐后的 CPro 源码为基础，在本次导出的副本上恢复原生 SiLU 和 Softplus。W4 沿用原始 scale 路径，RoPE、GDR、MoE 的对齐修改继续生效。导出时打印并检查 `SiluPatch=0` 和 `SoftplusPatch=0`，同时检查 W4 和 GDR 端口。两种四层原生卷积对照都从相同的 golden、embedding 权重和 YAML 配置生成输入。原 CPro wrapper 接收 INT8 embedding 及逐 token FP32 scale。普通分层诊断图和 T1 decoder 图接收 FP16 hidden。原生卷积还接收 128 个 INT32 的 `conv_state_pos`，默认首项为有效长度、其余项为零。可用 `DECODER_CONV_CONTROL` 指定原板端 bin。
 
 同一运行目录中保留了成功的 `--no-patch` 记录时，板端执行服务器会先保存其输入槽位，再逐项对照本次的角色、shape、dtype 和已有 bin 内容标识。该对照使用服务器上的清单与执行记录。
 
@@ -144,8 +144,8 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 | 位置 | 修改 |
 |---|---|
 | L3 full attention 的 RoPE | 用 INT32 `position_ids` 取 cos/sin 表中的行，Q/K 旋转在 FP32 计算，结果转回 hidden 的 dtype。 |
-| A8W4 投影 | 导出器使用 CPro 的 `QLinear`，激活为 INT8，W4 权重打包在 INT32 中。权重 scale 为 FP16，DynamicQuant 的 FP32 逐 token scale 在 W4 matmul 前显式转 FP16。 |
-| GDN 和激活 | 三个 GDN 使用 Conv2D 和原生 SiLU。每个 GDN 的 SoftplusPatch 接收和输出 FP16，下游衰减乘法恢复 FP32。GDR 使用 T64 chunk、FP16 的 Q/K/V、g、beta 和状态，`effective_length` 为 INT16。 |
+| A8W4 投影 | 导出器使用 CPro 的 `QLinear`，激活为 INT8，W4 权重打包在 INT32 中。权重 scale 使用原加载器的 dtype，逐 token scale 走原 TorchAir converter。单层的 `case.json` 记录每个 W4 matmul 在 AIR 中实际收到的 dtype。 |
+| GDN 和激活 | 默认对齐导出使用 Conv2D、SiluPatch 和 SoftplusPatch。卷积、门控和专家使用上游给出的激活形状。Softplus 的偏置加法和下游衰减乘法用 FP32，自定义激活的输入输出用 FP16。GDR 使用 T64 chunk、FP16 的 Q/K/V、g、beta 和状态，`effective_length` 为 INT16。 |
 | MoE | 专家分支使用实际量化后的 INT8 张量进行 reshape，已量化输入直接使用。路由和共享专家门控按对应权重及输出 dtype 运算。 |
 
 导出日志打印实际命令和源码对照目录。导出完成后可在 `export/package/L00-L03/source.diff` 查看导出器、模型、wrapper 和 `utils.py` 相对配置目录的逐行差异。若配置目录本身已手改，差异以该目录当前的源码为准。
@@ -231,25 +231,25 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 如果 `none` 能执行，在两条命令中都改用 `0`，仅将 L0 的 RMS 门控换回 `SiluPatch`。也可选 `1`、`2` 或升序逗号列表来定位单层或组合触发条件。导出时逐层打印门控选择，并核对 AIR 中 RMS 门控形状的自定义节点数。出现精度矩阵或 `FAILED_ACCURACY` 表示模型已执行。复现原加载问题需在该次运行看到 `load_model` 和 `OpUpdateKernelArgs failed`。
 
-### 四层 T64 保留全部自定义 SiLU，按 token 做 RMS 门控激活
+### 四层 T64 按原门控形状调用自定义激活
 
-`--rms-silu-token-view` 在 L0、L1、L2 的 RMS 门控上都调用 `torch.ops.npu.silu_patch`。每层将同一批连续 FP16 元素从 `[2048,128]` 排成 `[64,4096]`，逐元素激活，再恢复为 `[2048,128]`，转 FP32 与逐 head 的 RMSNorm 结果相乘。四层共导出 14 个 `SiluPatch` 和 3 个 `SoftplusPatch`，共用一个 OMC。
+L0、L1、L2 的 RMS 门控直接将 `[2048,128]` 传给 `SiluPatch`，衰减支路将 `[1,64,32]` 传给 `SoftplusPatch`。旧的 `--rms-silu-token-view` 用于选择已经导出过的 `[64,4096]` 四层产物。
 
 门控改动写入导出用源码副本的 `models/modeling_qwen3_5_moe_hiai_cpro.py`，位置是 `Qwen3_5MoeRMSNormGated.forward`。原 CPro 导出脚本通过 TorchAir 将该调用映射为 `SiluPatch`，生成的 AIR 直接交给 OMG。可在本次运行的 `export/package/L00-L03/source.diff` 中查看实际 PyTorch 源码差异。
 
 CPro AIR 生成服务器复用当前四层 golden：
 
 ```bash
-bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate --rms-silu-token-view
+bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate
 ```
 
 CPro OMC 生成和板端执行共用的服务器：
 
 ```bash
-bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate --rms-silu-token-view
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --physical-convstate
 ```
 
-导出日志的三行 `[GDN 门控 AIR]` 显示转换器看到的形状和通向 FP32 乘法的数据边。`[GDN 门控 OMG]` 显示编译日志可读到的 kernel 输入和输出形状。若 OMG 仍打印 `(2048,128)` 或端口缺失，仅凭 AIR 无法确认编译后的形状变化。板端实际执行后，在 `4-prefill-t64/board/comparison.json` 查看三端精度。重跑会覆盖当前四层结果。
+四层包的 `case.json` 记录转换器观测到的激活形状。板端执行后，在 `4-prefill-t64/board/comparison.json` 查看三端精度。
 
 ### 导出完整 L0 linear attention
 
@@ -293,7 +293,7 @@ bash targets/cpro/scripts/decoder_board.sh --mode 4 --phase prefill --gdn-conv t
 
 ### 从原 CPro 源码生成四层或四十层 prefill
 
-`--gdn-conv original` 保留原 CPro wrapper、`LinearAttentionConvstateUpdate` 的 `linear_update_tensor` 输入和模型源码中的 `F.conv1d`。模型继续使用修正的 CPro QLinear 与 FP16 尺度、RoPE、MoE、GDR 接口以及 FP16 输入输出的 `SiluPatch` 和 `SoftplusPatch`。导出单张图，返回 logits 和每层两个状态。四层有 9 个输出，四十层有 81 个输出。板端使用上一节的 V2 参数。
+`--gdn-conv original` 保留原 CPro wrapper、`LinearAttentionConvstateUpdate` 的 `linear_update_tensor` 输入和模型源码中的 `F.conv1d`。模型继续使用CPro QLinear 和原始 scale 路径、RoPE、MoE、GDR 接口以及 FP16 输入输出的 `SiluPatch` 和 `SoftplusPatch`。导出单张图，返回 logits 和每层两个状态。四层有 9 个输出，四十层有 81 个输出。板端使用上一节的 V2 参数。
 
 已有对应 CPU 和 310P golden 时，在 AIR 生成服务器运行第一条，在 OMC 生成和板端执行共用的服务器运行第二条。首次运行或更换输入 prompt 时，第一条改用 `decoder_prepare.sh`。两条命令均可将 `--mode 4` 改为 `--mode 40`。
 
@@ -351,7 +351,29 @@ bash targets/cpro/scripts/decoder_prepare.sh --mode linear --phase prefill --gdn
 bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-conv conv2d --replace-inputs --replace-weights
 ```
 
-该用例执行 L0 的 GDN、残差和 MoE。CPU 和 CPro 的单层入口来自同一组 embedding 编码和 scale。GDN 的 RMS 门控沿用 `[64,4096]` 的 SiLU 视图。共享专家的标量门控在 PyTorch 中对 FP16 激活与 FP16 权重做点积，将结果转成 FP32 后做 sigmoid。导出时打印在 AIR 中找到的 `FP16 MatMul → FP32 Cast → Sigmoid` 数量。查看 `$AI_RUN_DIR/target/tests/1-linear-prefill-t64/board/matrices.csv` 中 `hidden_0` 的有效 token，以及同目录的 `comparison.json`。
+该用例执行 L0 的 GDN、残差和 MoE。CPU 和 CPro 的单层入口来自同一组 embedding 编码和 scale。GDN 门控 SiLU 的原始输入形状为 `[2048,128]`。共享专家的标量门控在 PyTorch 中对 FP16 激活与 FP16 权重做点积，将结果转成 FP32 后做 sigmoid。导出时打印在 AIR 中找到的 `FP16 MatMul → FP32 Cast → Sigmoid` 数量。查看 `$AI_RUN_DIR/target/tests/1-linear-prefill-t64/board/matrices.csv` 中 `hidden_0` 的有效 token，以及同目录的 `comparison.json`。
+
+要在完整 L0 上对比自定义 RMSNorm，可在两端使用同一个新运行目录。AIR 环境运行
+
+```bash
+export DECODER_RUN_ROOT="$AI_RUN_DIR/target/tests/rmsnorm-native-shapes"
+bash targets/cpro/scripts/decoder_prepare.sh --mode linear --phase prefill --gdn-conv conv2d --rmsnorm-patch
+```
+
+OMC 和板端合设的环境运行
+
+```bash
+export DECODER_RUN_ROOT="$AI_RUN_DIR/target/tests/rmsnorm-native-shapes"
+args=(--mode linear --phase prefill --gdn-conv conv2d --rmsnorm-patch)
+bash targets/cpro/scripts/decoder_transfer.sh air "${args[@]}"
+bash targets/cpro/scripts/decoder_omc.sh "${args[@]}"
+bash targets/cpro/scripts/decoder_compare.sh l0-dump --gdn-conv conv2d --rmsnorm-patch
+```
+
+`--rmsnorm-patch` 在普通和 GDN 门控 RMSNorm 的 PyTorch 调用处使用 `torch.ops.npu.rmsnorm_patch`。AIR 端口为 FP16 ND 的 `x, gamma → z`，gamma 长度等于 x 的最后一维。单层普通 RMSNorm 传入预计算的有效 gamma，门控 RMSNorm 使用原权重。OpDef 没有 epsilon 参数，精度对照需核实 kernel 的固定 epsilon。实际节点见 `export/package/L00/case.json` 的 `rmsnorm_nodes`。
+
+`l0-dump` 对已编译的完整 L0 调用 V2，传入 `--enable_item=2`，模型成功执行后再运行 `data_proc_tool_internal`。每次运行单独保存到 `board/L00/operator-dump/attempt-*/L00/replay/`。该目录的 `result.json` 记录实际命令、退出码、回收文件的长度和张量候选，`dump/` 保存解析器产物。比对前须从 dump 中核对本次模型、算子、输入输出槽位、形状与 dtype。
+
 - 板端的 `model_run_tool_internal` 使用 V2，显式传入 `--input_shape` 和 `--output_shape`。每项按端口顺序写作 `名称:物理维度`，同一方向的多个端口用分号连接。旧编译记录缺少输出名称时，同机可用的 OMG 可以从现有 OMC 补读元数据；仍缺名称时，执行端通过 `runtime.json` 配套的描述查询工具读取板上模型。完整调用保存在该次 `replay/run.sh` 和 `replay/result.json` 的 `argv` 字段。
 - 板端固定使用 `/data/local/tmp/qwen35_case_<用例>/work`，例如 `qwen35_case_40-prefill-t64/work`。逐层模式在用例名后追加层号，例如 `40x1-prefill-t64-L00`。
 - 每次上传当前 OMC。脚本按清单里的文件标识和板上的字节数复用输入、外置权重，缺失或变化的文件随 OMC 一次上传。成功后一次拉回输出目录并按槽位绑定，删除板端 OMC 和输出，留下当前输入和权重。失败现场保留到同用例下次启动，路径见 `result.json` 的 `remote` 字段。

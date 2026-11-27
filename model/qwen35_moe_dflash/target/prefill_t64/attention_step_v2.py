@@ -122,7 +122,8 @@ def observed_named_shape(native, direction, specs):
 
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
            external_weights=(), build_records=None, release_after_pull=True, hdc_timeout=660, board_case=None,
-           replace_inputs=False, replace_weights=False, decoder_shapes=None, shape_config=None, original_board_args=False):
+           replace_inputs=False, replace_weights=False, decoder_shapes=None, shape_config=None, original_board_args=False,
+           operator_dump=False):
     from ..prefill_output_inventory import _logged_slots
 
     env = _environment()
@@ -155,6 +156,8 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         print(f'[{name}] 检查板卡、固件版本和板端剩余空间', flush=True)
         _acquire_global(hdc, GLOBAL_LOCK, token, 0)
         held = True
+        if operator_dump:
+            hdc.shell(f'test -x {tool.parent}/data_proc_tool_internal', 'dump-parser-preflight')
         _, fw = hdc.shell('param get const.ohos.fullname', 'firmware')
         if fw.strip() != runtime['firmware_id'].strip():
             raise ValueError(f"Board firmware {fw.strip()!r} differs from {runtime['firmware_id']!r}")
@@ -201,7 +204,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
                           *load_flags, '--direct_from_file=true']
         argv = [str(tool), f'--model={remote}/model.omc', *([f'--weight_dir={remote}'] if sidecars else []),
                 '--input=' + ','.join(str(remote/n) for n in input_names), *shape_flags,
-                *load_flags, '--enable_item=1', f'--output_dir={remote}/outputs']
+                *load_flags, f'--enable_item={2 if operator_dump else 1}', f'--output_dir={remote}/outputs']
         command = f'timeout -k 5 600 env LD_LIBRARY_PATH={tool.parent} ' + shlex.join(argv)
         script = out/'run.sh'
         script.write_text(f'# attempt {token}\ncd {remote} || exit 1\ntouch tool.started || exit 1\n{command} >tool.stdout 2>tool.stderr\n'
@@ -229,6 +232,9 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         if receipt['exitcode']:
             raise RuntimeError(f'{name}: HIAI V2 exited {code} in {remote}. Receipt: {out}/result.json\n{log}')
         receipt['model_execution'] = 'EXECUTED'
+        if operator_dump:
+            from .operator_dump import collect
+            collect(hdc, remote, out, tool.parent, receipt)
         print(f'[{name}] 将整个输出目录拉回服务器，读取 {len(outputs)} 个输出槽 → {out}/outputs', flush=True)
         _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f -print', 'output-files')
         output_files = [line[2:] for line in listing.splitlines() if line.startswith('./')]
@@ -261,7 +267,8 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
                 print(f'[{name}] 输出已回收并核对，清理本次执行文件，保留板端缓存 {root}/cache', flush=True)
                 hdc.shell(f'cd {remote} && test ! -L {remote} && '
                           f'test "$(cat .qwen35-hdc-owner)" = {token} && '
-                          'rm -rf outputs model.omc draft-runner lib', 'cleanup-board')
+                          'rm -rf outputs model.omc draft-runner lib' + (' operator-dump' if operator_dump else ''),
+                          'cleanup-board')
                 receipt['board_cleanup'] = 'OUTPUTS_REMOVED_CACHE_RETAINED'
             except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
                 receipt['board_cleanup'] = 'UNCONFIRMED'

@@ -23,14 +23,14 @@ from qwen35_moe_dflash.target.prefill_t64.decoder_source import save_air_source
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import (
     MODELING, configure_gate_export, inline_old_silu, inspect_activation_air, omit_gate_output_cast,
-    restore_native_activations, select_gdn_silu, token_view_rms_gate,
+    restore_native_activations, select_gdn_silu,
 )
 from qwen35_moe_dflash.target.prefill_t64.source_model import adapt_four_layer_convolution
 
 
 def four_layer_entry(prepared, work, *, native_activations=False, silu_only=False, softplus_only=False,
                      gdn_silu_only=False, gdn_silu_site=False, all_silu_no_gate_cast=False,
-                     explicit_conv2d=False, physical_convstate=False, rms_layers=None, rms_silu_token_view=False):
+                     explicit_conv2d=False, physical_convstate=False, rms_layers=None):
     entry = prepared/EXPORTER
     text = entry.read_text()
     # Editable sources generated before multi-depth export counted 30 GDR calls even at L=4.
@@ -41,8 +41,6 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
         model = select_gdn_silu(model, gdn_silu_site)
     if all_silu_no_gate_cast or rms_layers is not None:
         model = omit_gate_output_cast(model, select_layers=rms_layers is not None)
-    if rms_silu_token_view:
-        model = token_view_rms_gate(model)
     if rms_layers is not None:
         text = configure_gate_export(text, rms_layers)
     restore_activations = native_activations or silu_only or softplus_only
@@ -72,18 +70,20 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
 
 def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=False, native_activations=False,
            silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
-           all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False, rms_silu_token_view=False):
+           all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False,
+           rmsnorm_patch=False):
     dest = root/case_name(ref['layers'])
     if dest.is_dir():
         saved = json.loads((dest/'case.json').read_bytes())
         if (saved.get('air_directory') != EXPORT_DIR or saved.get('gdn_conv', 'conv2d') != gdn_conv
                 or saved.get('no_patch', False) != no_patch
+                or saved.get('rmsnorm_patch', False) != rmsnorm_patch
                 or saved.get('native_activations', False) != native_activations
                 or saved.get('silu_only', False) != silu_only or saved.get('softplus_only', False) != softplus_only
                 or saved.get('gdn_silu_only', False) != gdn_silu_only
                 or saved.get('gdn_silu_site', False) != gdn_silu_site
                 or saved.get('all_silu_no_gate_cast', False) != all_silu_no_gate_cast
-                or saved.get('rms_silu_token_view', False) != rms_silu_token_view
+                or saved.get('rms_silu_token_view', False)
                 or saved.get('rms_silu_layers', False) != rms_silu_layers
                 or saved.get('physical_convstate', False) != physical_convstate):
             raise ValueError(f'{dest}: existing four-layer export uses a different source mode')
@@ -102,7 +102,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         rms_layers = None
         if rms_silu_layers:
             rms_layers = () if rms_silu_layers == 'none' else tuple(map(int, rms_silu_layers.split(',')))
-        gate_control = all_silu_no_gate_cast or rms_layers is not None or rms_silu_token_view
+        gate_control = all_silu_no_gate_cast or rms_layers is not None
         activation_control = native_activations or silu_only or softplus_only or restrict_silu_to_gdn or gate_control
         use_native_tools = gdn_conv == 'original' or activation_control or physical_convstate
         explicit_conv2d = (activation_control or physical_convstate) and gdn_conv == 'conv2d'
@@ -114,8 +114,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                  four_layer_entry(prepared, work, native_activations=native_activations, silu_only=silu_only,
                                   softplus_only=softplus_only, gdn_silu_only=gdn_silu_only, gdn_silu_site=gdn_silu_site,
                                   all_silu_no_gate_cast=all_silu_no_gate_cast, explicit_conv2d=explicit_conv2d,
-                                  physical_convstate=physical_convstate, rms_layers=rms_layers,
-                                  rms_silu_token_view=rms_silu_token_view))
+                                  physical_convstate=physical_convstate, rms_layers=rms_layers))
         save_air_source(entry.parent, root/'air-source')
         argv = native_export_argv(entry, 4, export_config)
         env = os.environ.copy()
@@ -128,7 +127,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
             if physical_convstate:
                 print('[L00-L03] ConvState：拼接旧状态与本次 QKV，末 4 行写回，末 67 行送卷积。\n'
                       '  默认对齐源码补丁：L3 RoPE 按 position_ids 取表，FP32 旋转 Q/K 后转回 hidden dtype；'
-                      'W4 matmul 使用 FP16 权重 scale 和逐 token scale；GDR 使用 FP16 算子端口；'
+                      'W4 matmul 沿用原 QLinear scale 和 TorchAir converter；GDR 使用 FP16 算子端口；'
                       'MoE 使用量化后的 INT8 激活并对齐门控 dtype。', flush=True)
             if physical_convstate or silu_only or restrict_silu_to_gdn or gate_control:
                 with (case/'source.diff').open('w', encoding='utf-8') as changes:
@@ -144,8 +143,6 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                 env['QWEN35_SILU_SHAPES'] = str(trace)
                 if silu_only:
                     print(f'[L00-L03] {prepared}：直接调用 torch.ops.npu.silu_patch，FP16 输入和输出；使用原生 Softplus', flush=True)
-                elif rms_silu_token_view:
-                    print('[L00-L03] L0–L2 RMS 门控用 FP16 SiluPatch [64,4096]，恢复 head 视图后做 FP32 乘法', flush=True)
                 elif rms_layers is not None:
                     print(f'[L00-L03] RMS 门控 SiluPatch 层={rms_silu_layers}，其余 RMS 门控使用 FP16 F.silu。'
                           '卷积、MoE 使用 SiluPatch，GDN 衰减使用 SoftplusPatch。', flush=True)
@@ -183,8 +180,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                                                   check_convs=not use_native_tools, gdn_conv=gdn_conv,
                                                   moe_silu=not restrict_silu_to_gdn, gdn_silu_site=gdn_silu_site,
                                                   all_silu_no_gate_cast=all_silu_no_gate_cast or rms_layers is not None,
-                                                  rms_gate_count=None if rms_layers is None else len(rms_layers),
-                                                  rms_silu_token_view=rms_silu_token_view)
+                                                  rms_gate_count=None if rms_layers is None else len(rms_layers))
             if activation_control or physical_convstate:
                 counts = boundary['operator_counts']
                 if gdn_silu_only:
@@ -193,8 +189,6 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                     observations['gdn_silu_site'] = gdn_silu_site
                 if all_silu_no_gate_cast:
                     observations['all_silu_no_gate_cast'] = True
-                if rms_silu_token_view:
-                    observations['rms_silu_token_view'] = True
                 if rms_layers is not None:
                     observations['rms_silu_layers'] = rms_silu_layers
                 if silu_only or softplus_only:
@@ -205,7 +199,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         if not no_patch:
             if explicit_conv2d:
                 observations['gdn_convs'] = boundary['gdn_convs']
-            precision = four_precision(air, check_shared_gates=True)
+            precision = four_precision(air, check_shared_gates=True, rmsnorm_patch=rmsnorm_patch)
             if precision['mismatches']:
                 raise ValueError('\n'.join(precision['mismatches']))
             observations['precision'] = precision
@@ -230,7 +224,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         outputs = [dict(name=row['role'], edge=row['edge']) for row in boundary['outputs']]
         save_json(case/'case.json', dict(air_directory=EXPORT_DIR, layers=ref['layers'], argv=argv,
                   gdn_conv=gdn_conv, native_convstate=not physical_history, native_tool_args=use_native_tools,
-                  physical_convstate=physical_convstate, **({'export_configuration': depth} if depth else {}),
+                  physical_convstate=physical_convstate, rmsnorm_patch=rmsnorm_patch,
+                  **({'export_configuration': depth} if depth else {}),
                   inputs=names, input_files=feeds, outputs=outputs, files=files, fixture=measured,
                   **observations))
         case.rename(dest)

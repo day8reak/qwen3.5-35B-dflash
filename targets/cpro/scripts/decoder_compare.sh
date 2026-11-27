@@ -3,8 +3,8 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-decoder_compare.sh {golden|air|compile|execute|diagnose|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-input-rmsnorm-air|l0-input-rmsnorm-omc|l0-input-rmsnorm|l0-shared-gate-reference|l0-shared-gate|l0-shared-gate-fp16|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
-                   [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only|--gdn-silu-site {conv|gate}|--all-silu-no-gate-cast|--rms-silu-layers LAYERS|--rms-silu-token-view] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
+decoder_compare.sh {golden|air|compile|execute|diagnose|l0-dump|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-input-rmsnorm-air|l0-input-rmsnorm-omc|l0-input-rmsnorm|l0-shared-gate-reference|l0-shared-gate|l0-shared-gate-fp16|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
+                   [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only|--gdn-silu-site {conv|gate}|--all-silu-no-gate-cast|--rms-silu-layers LAYERS|--rms-silu-token-view] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--rmsnorm-patch] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data.
 air         Export CPro AIR from the golden case.
@@ -30,6 +30,8 @@ l0-shared-gate   Compare the saved gate logits and weighted outputs offline on t
 l0-shared-gate-fp16   Run one same-input L0 shared-router OMC with FP16 scalar MatMul and an FP32 cast before sigmoid.
 l0-decay-report   Show the SoftplusPatch to GDR decay path in the retained single-layer AIR and visible OMC graphs.
 l0-original-omg   Compile the retained single-layer AIR with the original OMG command and replay with the original V2 flags.
+l0-dump     Run the complete L0 prefill OMC with V2 --enable_item=2 and retrieve the parsed operator dump.
+--rmsnorm-patch  Export the decoder with FP16 RmsnormPatch(x, gamma). Use the same switch for transfer, compile and replay.
 gate-report Compare AIR and OMC gate edges, kernel build logs and metadata for the full model and the silu-cast-mul probe.
 prepare     On the combined reference/export host: capture reference, compute CPU golden, export static AIR.
 board       On the DDK host: fetch, compile, run on device and compare CPU / 310P / CPro.
@@ -44,7 +46,7 @@ plan        Print the layers, sequence length and number of OMCs without running
 --gdn-silu-only  Use FP16 SiluPatch at both GDN sites, stock SiLU in every MoE, and FP16 SoftplusPatch in GDN.
 --gdn-silu-site {conv|gate}  Keep SiluPatch at one GDN site in L0–L2. MoE uses stock SiLU and GDN uses SoftplusPatch.
 --all-silu-no-gate-cast  Enable all GDN and MoE SiluPatch sites and SoftplusPatch. Omit the explicit FP32 cast on each GDN RMS gate output.
---rms-silu-token-view  Keep every custom activation. Run the three four-layer RMS gate SiluPatch kernels on FP16 [64,4096].
+--rms-silu-token-view  Select an existing four-layer [64,4096] AIR for replay. New exports use the upstream gate shape.
 --rms-silu-layers LAYERS  Use SiluPatch on these RMS gates (none, 0, 1, 2, 0,1, 0,2, 1,2, or 0,1,2).
              Other RMS gates use FP16 F.silu. Convolution and MoE keep SiluPatch, decay keeps SoftplusPatch.
              The activation controls accept --gdn-conv conv2d for explicit NCHW Conv2D with native ConvState inputs.
@@ -57,6 +59,9 @@ HELP
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    l0-dump)
+        shift
+        exec bash "$0" execute --mode linear --phase prefill --gate-probe l0-dump "$@" ;;
     l0-decay-report)
         shift
         exec bash "$0" compile --mode linear --phase prefill --gate-probe l0-decay-report "$@" ;;

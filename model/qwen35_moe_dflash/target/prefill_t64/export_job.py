@@ -67,7 +67,8 @@ def _export_air(job):
                                 device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
     if segment:
         # Match inference_segment.py after the quantized weights have been loaded.
-        wrapper.model.to(dtype=torch.float16)
+        from .source_exporter import half_model_preserving_qlinear_scales
+        half_model_preserving_qlinear_scales(wrapper.model, exporter.CproQLinear)
     for i, layer in enumerate(layers):
         if i < 3:
             attention = layer.linear_attn

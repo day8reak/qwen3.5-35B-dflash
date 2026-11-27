@@ -54,17 +54,21 @@ def _convert(node, method, arguments=()):
                     args=list(arguments), keywords=[])
 
 
-def _register_fp16_scale(tree):
+def restore_qlinear_scales(tree):
+    """Undo only our two weight-scale casts when reusing a prepared CPro source."""
     cls = _definition(tree, 'QLinear')
     init = _definition(cls, '__init__')
     scale = _one((call for call in ast.walk(init) if isinstance(call, ast.Call)
                   and ast.unparse(call.func) == 'self.register_buffer'
                   and isinstance(call.args[0], ast.Constant) and call.args[0].value == 'scale'),
                  'registered scale')
-    dtype = _expr('torch.float16')
-    scale.args[1] = _convert(scale.args[1], 'to', [dtype])
+    if isinstance(scale.args[1], ast.Call) and ast.unparse(scale.args[1]).endswith('.to(torch.float16)'):
+        scale.args[1] = scale.args[1].func.value
     scale_arg = _call(_definition(cls, 'forward'), 'torch_npu.npu_quant_matmul').args[2]
-    scale_arg.func.value = _convert(scale_arg.func.value, 'to', [dtype])
+    if isinstance(scale_arg, ast.Call) and isinstance(scale_arg.func, ast.Attribute):
+        source = scale_arg.func.value
+        if isinstance(source, ast.Call) and ast.unparse(source).endswith('.to(torch.float16)'):
+            scale_arg.func.value = source.func.value
 
 
 def _rotate_fp32(tree, original):
@@ -200,8 +204,8 @@ def stage_model(text, *, single_token=True, trace_chunk=False):
         raise ValueError('The CPro model source differs from both reviewed baselines')
     tree = ast.parse(text)
     original = digest == _ORIGINAL
-    if original:
-        _register_fp16_scale(tree)
+    if not original:
+        restore_qlinear_scales(tree)
     _rotate_fp32(tree, original)
     _adapt_gdn(tree, original, single_token)
     if trace_chunk:

@@ -146,7 +146,8 @@ def export(source, config, reference, output, *, baseline=None, four_decoders=Fa
             else:
                 exporter.quant_model_inplace(model, str(paths['quanted_pth']), model.model.config.num_experts,
                                              device='cpu', quant_bits=4, qlinear_cls=exporter.CproQLinear)
-                model.model.to(dtype=torch.float16)
+                from .source_exporter import half_model_preserving_qlinear_scales
+                half_model_preserving_qlinear_scales(model.model, exporter.CproQLinear)
                 for module in model.modules():
                     if isinstance(module, Qwen3_5MoeRMSNorm):
                         module.register_buffer('export_gamma', (module.weight + 1.).detach().contiguous(), persistent=False)

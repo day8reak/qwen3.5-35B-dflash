@@ -51,31 +51,43 @@ def silu_same_dtype(x):
 '''
 
 
-_CONV_SILU = 'torch.ops.npu.silu_patch(conv_out.to(torch.float16).contiguous())'
-_GATE_SILU = 'torch.ops.npu.silu_patch(gate.to(torch.float16).contiguous())'
+def _silu_call(value, owner=None):
+    # dtype is static while TorchAir traces this call. Keep the original tensor on the FP16 path.
+    owner = owner or value
+    operand = f'({value}.half() if {owner}.dtype == torch.float32 else {value}).contiguous()'
+    return f'torch.ops.npu.silu_patch({operand})'
+
+
+_CONV_SILU = _silu_call('conv_out')
+_GATE_SILU = _silu_call('gate')
 _GATE = ('F.silu(gate.to(torch.float32))', _GATE_SILU + '.to(torch.float32)')
 _CONV = ('F.silu(conv_out)', _CONV_SILU + '.to(conv_out.dtype)')
 _SHARED_ACT = ('self.act_fn = ACT2FN[config.hidden_act]',
                "self.act_fn = None if config.hidden_act in ('silu', 'swish') else ACT2FN[config.hidden_act]")
 _SHARED = ('return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))',
-           '''gate = self.gate_proj(x)
+           f'''gate = self.gate_proj(x)
         if self.act_fn is None:
-            gate = torch.ops.npu.silu_patch(gate.to(torch.float16).contiguous()).to(gate.dtype)
+            gate = {_GATE_SILU}.to(gate.dtype)
         else:
             gate = self.act_fn(gate)
         return self.down_proj(gate * self.up_proj(x))''')
 _ROUTED = ('self.act_fn(x1) * x2',
-           'torch.ops.npu.silu_patch(x1.to(torch.float16).contiguous()).to(x1.dtype) * x2')
+           _silu_call('x1') + '.to(x1.dtype) * x2')
 MOE_SILU_CALLS = (_SHARED_ACT, _SHARED, _ROUTED)
 SILU_CALLS = (_GATE, _CONV, *MOE_SILU_CALLS)
 SOFTPLUS_CALL = ('F.softplus(a.float() + self.dt_bias)',
                  'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).to(torch.float16).contiguous()).float()')
 CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])',
-                    'torch.ops.npu.silu_patch(out[:, :, -seq_len:].to(torch.float16).contiguous()).to(out.dtype)')
+                    _silu_call('out[:, :, -seq_len:]', 'out') + '.to(out.dtype)')
 
 
 def inline_old_silu(model):
     """Inline this adapter's old wrappers in the export copy of an editable model."""
+    for value, owner in (('gate', 'gate'), ('conv_out', 'conv_out'), ('x1', 'x1'),
+                         ('out[:, :, -seq_len:]', 'out')):
+        old = f'torch.ops.npu.silu_patch({value}.to(torch.float16).contiguous()'
+        # Keep any previously selected token-view reshape following the operand.
+        model = model.replace(old, _silu_call(value, owner).removesuffix(')'))
     if _OLD_SILU_HELPERS not in model:
         return model
     model = model.replace(_OLD_SILU_HELPERS, '')
@@ -115,29 +127,29 @@ def select_gdn_silu(model, site):
     return model
 
 
-def token_view_rms_gate(model):
-    """Present each T64 token's 32 contiguous 128-wide heads to the FP16 kernel together."""
+def remove_activation_views(model):
+    """Undo the two activation-only view pairs in previously prepared Python sources."""
     import ast
     from .decoder_four_source import preserve_source
-    from .source_model import _call, _definition
 
     tree = ast.parse(model)
-    forward = _definition(_definition(tree, 'Qwen3_5MoeRMSNormGated'), 'forward')
-    kernel = _call(forward, 'torch.ops.npu.silu_patch')
-    value, = kernel.args
-    if (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
-            and value.func.attr == 'reshape' and [ast.unparse(arg) for arg in value.args] == ['-1', '4096']):
-        return model
-
-    class TokenView(ast.NodeTransformer):
-        def visit_Call(self, node):
-            if node is kernel:
-                expr = f'torch.ops.npu.silu_patch(({ast.unparse(value)}).reshape(-1, 4096)).reshape(-1, 128)'
-                return ast.parse(expr, mode='eval').body
-            return self.generic_visit(node)
-
-    TokenView().visit(forward)
-    return preserve_source(model, ast.unparse(tree))
+    pairs = {'torch.ops.npu.silu_patch': (['-1', '4096'], 'reshape', ['-1', '128']),
+             'torch.ops.npu.softplus_patch': (['-1', '32'], 'reshape_as', ['a'])}
+    changed = False
+    for out in ast.walk(tree):
+        if not isinstance(out, ast.Call) or not isinstance(out.func, ast.Attribute):
+            continue
+        kernel = out.func.value
+        if not isinstance(kernel, ast.Call) or len(kernel.args) != 1:
+            continue
+        shape = pairs.get(ast.unparse(kernel.func))
+        inp = kernel.args[0]
+        if (shape and isinstance(inp, ast.Call) and isinstance(inp.func, ast.Attribute)
+                and inp.func.attr == 'reshape'
+                and ([ast.unparse(a) for a in inp.args], out.func.attr, [ast.unparse(a) for a in out.args]) == shape):
+            out.func, out.args, out.keywords = kernel.func, [inp.func.value], kernel.keywords
+            changed = True
+    return preserve_source(model, ast.unparse(tree)) if changed else model
 
 
 def omit_gate_output_cast(model, *, select_layers=False):
@@ -263,7 +275,7 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
         if name == MODELING and aligned and not l0:
             import ast
             from .decoder_four_source import preserve_source
-            from .source_model import (_adapt_experts, _definition, _register_fp16_scale, _rotate_fp32,
+            from .source_model import (_adapt_experts, _definition, _rotate_fp32,
                                        explicit_gdn_conv2d, physical_conv_history, use_position_gathers)
 
             # Keep the native wrapper and readout.
@@ -281,7 +293,6 @@ def stage(source, dest, *, aligned=False, l0=False, layer=None, head=True, layer
                 gdn = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
                 physical_conv_history(gdn)
                 explicit_gdn_conv2d(gdn)
-            _register_fp16_scale(tree)
             _rotate_fp32(tree, original=True)
             use_position_gathers(tree, 'Qwen3_5MoeRotaryEmbedding',
                                  ('self.cos_cached', 'self.sin_cached'), 'position_ids')
@@ -422,7 +433,7 @@ def activation_port_shape(desc):
 
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
                            check_convs=False, gdn_conv="conv2d", moe_silu=True, gdn_silu_site=None,
-                           all_silu_no_gate_cast=False, rms_gate_count=None, rms_silu_token_view=False):
+                           all_silu_no_gate_cast=False, rms_gate_count=None):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -439,7 +450,7 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
     gate_count = 0 if gdn_silu_site == 'conv' else linear
     if rms_gate_count is not None:
         gate_count = rms_gate_count
-    gate_shape = (rows, 4096) if rms_silu_token_view else (rows * 32, 128)
+    gate_shape = (rows * 32, 128)
     expected = {GE_TYPE: Counter({(1, 8192, rows): 0 if gdn_silu_site == 'gate' else linear,
                                   gate_shape: gate_count,
                                   (rows, 512): expert_layers, (rows * 8, 512): expert_layers}),
@@ -491,10 +502,7 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
                 raise ValueError(f'{name}: expected a FP32 to FP16 cast of biased_a')
             gate_product(graph, name + ':0')
         elif shape == gate_shape:
-            if rms_silu_token_view:
-                chain, _ = rms_gate_path(graph, name + ':0')
-                print(f'[GDN 门控 AIR] {name} {list(shape)} → ' + ' → '.join(n.name for n in chain), flush=True)
-            elif all_silu_no_gate_cast:
+            if all_silu_no_gate_cast:
                 # Type promotion at the unchanged multiplication can still generate a Cast.
                 targets = ', '.join(f"{r['name']} ({r['op']}, {r['input_dtype']} → {', '.join(r['output_dtypes'])})"
                                     for r in consumers)

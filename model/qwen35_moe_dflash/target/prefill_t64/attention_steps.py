@@ -9,7 +9,7 @@ VIEWS = {'Reshape', 'Cast', 'Identity', 'TensorMove', 'Transpose', 'TransData',
          'Permute', 'ExpandDims', 'Unsqueeze', 'Squeeze'}
 SPLITS = {'Split', 'SplitV', 'SplitD', 'SplitVD', 'Slice', 'SliceD', 'StridedSlice', 'StridedSliceD', 'StridedSliceV2'}
 CONCATS = {'Concat', 'ConcatD', 'ConcatV2'}
-NORMS = {'RmsNorm', 'RMSNorm', 'AdnRmsNorm'}
+NORMS = {'RmsNorm', 'RMSNorm', 'AdnRmsNorm', 'RmsnormPatch'}
 MATMUL = 'QuantBatchMatmulV4444'
 
 

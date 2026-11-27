@@ -46,7 +46,7 @@
 | 报告变量 | 直接上游与含义 | T64 逻辑形状 |
 |---|---|---|
 | `rms` | `core` 在每个 head 的 128 维上做 RMSNorm，再乘该层的 gamma。它是门控乘法的一侧。 | 64×32×128 |
-| `gate_silu` | 对 `z` 做 SiLU，构成门控乘法的另一侧。当前 CPro 的 SiluPatch 输入、输出均为 FP16，使用 64×4096 视图。 | 64×32×128 |
+| `gate_silu` | 对 `z` 做 SiLU，构成门控乘法的另一侧。当前 CPro 的 SiluPatch 输入、输出均为 FP16，T64 导出时直接接收 2048×128 的门控张量。 | 64×32×128 |
 | `product` | `rms × gate_silu` 的逐元素乘积。当前 CPro 在两个分支汇合处做 FP32 乘法。 | 64×32×128 |
 | `gated` | 将 `product` 转回 FP16，并合并 32 个 head，形成 `out_proj` 的浮点输入。 | 64×4096 |
 | `out_a8`、`out_scale`、`out` | `out_proj(gated)` 的输入编码、输入尺度、GDN 最终输出。查 `out_scale[t]` 时，从同一后端的 `gated[t, :]` 求行绝对最大值再除以 127。 | 64×4096、64、64×2048 |

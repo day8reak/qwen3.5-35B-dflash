@@ -64,7 +64,8 @@ def load_four_decoder_weights(model, weight_path):
 
     quant_model_inplace(model, str(weight_path), model.model.config.num_experts,
                         start_layer_idx=0, device='cpu', quant_bits=4, qlinear_cls=CproQLinear)
-    model.model.to(dtype=torch.float16)
+    from qwen35_moe_dflash.target.prefill_t64.source_exporter import half_model_preserving_qlinear_scales
+    half_model_preserving_qlinear_scales(model.model, CproQLinear)
     for module in model.modules():
         if isinstance(module, Qwen3_5MoeRMSNorm):
             gamma = (module.weight + 1.0).detach().contiguous()

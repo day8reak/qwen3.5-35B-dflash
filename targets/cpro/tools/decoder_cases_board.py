@@ -139,7 +139,7 @@ def output_order(descriptors, source, golden):
 
 
 def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, recovery, board_case=None,
-           replace_inputs=False, replace_weights=False, shape_config=None, original_board_args=False):
+           replace_inputs=False, replace_weights=False, shape_config=None, original_board_args=False, operator_dump=False):
     meta = read(case/'case.json')
     original_board_args = original_board_args or native_tool_args(meta)
     if 'operator_counts' in meta:
@@ -200,7 +200,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
         try:
             result = run_v2(folder, case.name, model, operands, paths, build['outputs'], runtime,
                             decoder_shapes=(named_shapes(operands), build.get('output_shape')), shape_config=shape_config,
-                            original_board_args=original_board_args,
+                            original_board_args=original_board_args, operator_dump=operator_dump,
                             fixture_sha256=stamp, external_weights=weights, build_records=(build['model'], build['weights']),
                             board_case=board_case, hdc_timeout=7200, replace_inputs=replace_inputs, replace_weights=replace_weights)
         except RuntimeError:
@@ -221,7 +221,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board', original_omg=False,
-          replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False,
+          replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False, rmsnorm_patch=False,
+          operator_dump=False,
           native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
           all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False, rms_silu_token_view=False):
     bundle = run/'package'
@@ -240,7 +241,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         raise ValueError(f'{bundle}: mode/phase mismatch')
     if manifest.get('gdn_conv', 'conv2d') != gdn_conv:
         raise ValueError(f'{bundle}: expected GDN {gdn_conv}. Select the same --gdn-conv as the AIR export.')
-    for key, selected in dict(no_patch=no_patch, native_activations=native_activations,
+    for key, selected in dict(no_patch=no_patch, rmsnorm_patch=rmsnorm_patch, native_activations=native_activations,
                               silu_only=silu_only, softplus_only=softplus_only, gdn_silu_only=gdn_silu_only,
                               gdn_silu_site=gdn_silu_site, all_silu_no_gate_cast=all_silu_no_gate_cast,
                               physical_convstate=physical_convstate, rms_silu_layers=rms_silu_layers,
@@ -276,6 +277,19 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
     runtime = read(config.parent/read(config)['assets'])['environment']
     pieces = read(fixture/'tokens.json')
     feeds = {k: (fixture, v) for k, v in cpro_input_records(ref).items()}
+    if operator_dump:
+        case = bundle/'L00'
+        base = run/case.name
+        build, model, weights = compiled(case, base, ddk, diagnosis, stamp)
+        directory = base/'operator-dump'
+        directory.mkdir(exist_ok=True)
+        attempt = Path(tempfile.mkdtemp(dir=directory, prefix='attempt-'))/case.name
+        attempt.mkdir()
+        print(f'完整 L0 中间结果目录：{attempt}/replay', flush=True)
+        replay(attempt, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, False,
+               directory_name(mode, phase) + '-dump', replace_inputs, replace_weights, shape_config=config,
+               original_board_args=original_board_args or gdn_conv == 'original', operator_dump=True)
+        return True
     scores = {b: {r: {} for r in ('cpu', '310p', 'cpro')} for b in ('cpu', '310p', 'cpro')}
     failures, unchanged, predictions = [], {}, {}
     for group in groups(mode):

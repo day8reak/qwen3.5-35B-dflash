@@ -80,7 +80,7 @@ def publish(root, role, args):
         header['generation'] = uuid.uuid4().hex
     else:
         header['gdn_conv'] = args.gdn_conv
-        header.update({name: getattr(args, name) for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)})
+        header.update({name: getattr(args, name) for name in (*FOUR_LAYER_CONTROLS, 'rmsnorm_patch') if getattr(args, name, False)})
     dest = receipt(root, role)
     with tempfile.TemporaryDirectory(prefix='.publish-', dir=root) as staging:
         tmp = Path(staging)/dest.name
@@ -212,7 +212,7 @@ def receive(root, remote, role, args):
         if (data['stage'], data['case']) != (role, root.name) or data.get('gdn_conv', args.gdn_conv) != args.gdn_conv:
             raise ValueError(f'{index}: stage, case or GDN convolution mismatch')
         if role != 'golden':
-            for name in FOUR_LAYER_CONTROLS:
+            for name in (*FOUR_LAYER_CONTROLS, 'rmsnorm_patch'):
                 if data.get(name, False) != getattr(args, name, False):
                     raise ValueError(f'{index}: --{name.replace("_", "-")} selection differs from the upstream {role} export')
         staged = temp/'incoming' if local else resume_directory(root, role, temp/'manifest')

@@ -210,7 +210,6 @@ def physical_history(nodes, outputs):
 def prefill_precision(graph, layers, head, *, rows=64):
     """Inspect the consumer port contracts on the exported AIR before OMG lowering."""
     enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_number
-    nodes = {n.name: n for n in graph.op}
     problems = []
 
     def dtype(desc):
@@ -228,21 +227,17 @@ def prefill_precision(graph, layers, head, *, rows=64):
                 continue
             actual = dtype(op.input_desc[slot])
             ports[key] = dict(dtype=actual, edge=op.input[slot])
-            if actual != expected:
+            if actual not in ((expected,) if isinstance(expected, str) else expected):
                 problems.append(f'{op.name}.{key}: {op.input[slot]} is {actual}, expected {expected}')
         return ports
 
     matmuls, gdrs = {}, {}
     for op in graph.op:
         if op.type == 'QuantBatchMatmulV4444':
-            ports = check(op, dict(x1='DT_INT8', x2='DT_INT32', scale='DT_FLOAT16', pertoken_scale='DT_FLOAT16'))
+            # Keep the stock converter's floating scale ports and record what AIR actually contains.
+            floating = ('DT_FLOAT', 'DT_FLOAT16')
+            ports = check(op, dict(x1='DT_INT8', x2='DT_INT32', scale=floating, pertoken_scale=floating))
             matmuls[op.name] = ports
-            if 'pertoken_scale' in ports:
-                edge = ports['pertoken_scale']['edge']
-                cast = nodes.get(edge.rsplit(':', 1)[0])
-                if (cast is None or cast.type != 'Cast' or not cast.input_desc or not cast.output_desc
-                        or dtype(cast.input_desc[0]) != 'DT_FLOAT' or dtype(cast.output_desc[0]) != 'DT_FLOAT16'):
-                    problems.append(f'{op.name}.pertoken_scale: expected FP32 to FP16 Cast at {edge}')
         elif op.type == 'ChunkGatedDeltaRule':
             expected = dict.fromkeys(('query', 'key', 'value', 'g', 'beta', 'initial_state'), 'DT_FLOAT16')
             ports = check(op, dict(expected, effective_length='DT_INT16'))
@@ -264,7 +259,7 @@ def check_split_precision(graph, layer, head):
     if report['mismatches']:
         raise ValueError('\n'.join(report['mismatches']))
     matmuls, gdrs = report['matmuls'], report['gdrs']
-    print(f'L{layer} AIR verified: {len(matmuls)} W4 matmuls with FP16 weight and per-token scales, {len(gdrs)} GDR',
+    print(f'L{layer} AIR verified: {len(matmuls)} W4 matmuls, {len(gdrs)} GDR',
           flush=True)
     states = next((g['inputs'] for g in gdrs.values()), {})
     return dict(matmuls=matmuls, gdr_inputs=states)

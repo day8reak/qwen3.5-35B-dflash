@@ -55,7 +55,7 @@ def stage_edges(graph, group):
     if from_core(a) == from_core(b):
         raise ValueError('Could not separate gated product operands by GDR core dependency')
     lhs, rhs = (a, b) if from_core(a) else (b, a)
-    act = inner(rhs, {'Silu', 'SiLU', 'Swish', 'SwishV2', 'Mul'})
+    act = inner(rhs, {'Silu', 'SiLU', 'SiluPatch', 'Swish', 'SwishV2', 'Mul'})
     if act.type == 'Mul':
         x, y = inputs(act)
         if node(strip(x, VIEWS)).type == 'Sigmoid':
@@ -68,7 +68,7 @@ def stage_edges(graph, group):
         silu_input = act.input[0]
     rms_edge = strip(lhs, VIEWS | {'Cast'})
     rms = node(rms_edge)
-    if rms.type in ('RmsNorm', 'RMSNorm', 'AdnRmsNorm'):
+    if rms.type in ('RmsNorm', 'RMSNorm', 'AdnRmsNorm', 'RmsnormPatch'):
         rms_input, gamma = inputs(rms)[:2]
         if rms_edge != rms.name + ':0':
             raise ValueError('Gated output does not read the normalized activation')
