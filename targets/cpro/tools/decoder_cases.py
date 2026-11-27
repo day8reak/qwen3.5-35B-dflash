@@ -228,6 +228,7 @@ def prepare_stage(args, run):
     save_json(working/'manifest.json', dict(**stamp, files=files))
     share_for_transfer(working)
     working.rename(package)
+    print(f'[CPro AIR] 本次导出的模型与 Python 源码：{package/"air-source"}', flush=True)
     size = sum(f['bytes'] for f in files)/2**30
     print(f'{len(groups(args.mode))} AIR, transfer {size:.2f} GiB: {package}', flush=True)
 

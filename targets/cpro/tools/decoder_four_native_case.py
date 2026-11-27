@@ -19,6 +19,7 @@ from qwen35_moe_dflash.target.layer_probe.common import save_json, sized_file
 from qwen35_moe_dflash.target.original_target_source import WRAPPER
 from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name
+from qwen35_moe_dflash.target.prefill_t64.decoder_source import save_air_source
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import (
     MODELING, configure_gate_export, inline_old_silu, inspect_activation_air, omit_gate_output_cast,
@@ -115,6 +116,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                                   all_silu_no_gate_cast=all_silu_no_gate_cast, explicit_conv2d=explicit_conv2d,
                                   physical_convstate=physical_convstate, rms_layers=rms_layers,
                                   rms_silu_token_view=rms_silu_token_view))
+        save_air_source(entry.parent, root/'air-source')
         argv = native_export_argv(entry, 4, export_config)
         env = os.environ.copy()
         trace = work/'activations.txt'

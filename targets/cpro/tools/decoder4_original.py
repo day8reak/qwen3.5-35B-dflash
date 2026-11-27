@@ -16,7 +16,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'model'))
 
 from qwen35_moe_dflash.target.layer_probe.common import checked, identity, save_json, sha, sized_file
-from qwen35_moe_dflash.common.artifacts import output_path, share_for_transfer
+from qwen35_moe_dflash.common.artifacts import files_under, output_path, share_for_transfer
 from qwen35_moe_dflash.common.tool_logs import log_excerpt
 from qwen35_moe_dflash.toolchain.air_input_shape import inspect_input_shape
 
@@ -272,10 +272,11 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
     with tempfile.TemporaryDirectory(dir=run, prefix='export-') as temp:
         work = Path(temp)
         if full:
-            from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
+            from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source, save_air_source
             from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
             staged = export_source(staged, work/'decoder', lookup=True, token_gate=True)
             entry = staged / EXPORTER
+            save_air_source(staged, work/'air-source')
             measured = json.loads((reference / 'manifest.json').read_bytes())
             cfg.update({k: str(v) for k, v in checkpoint_paths(source, config, measured).items()})
         resource_keys = ('model_file', 'quanted_pth') if full else (
@@ -374,6 +375,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 raise ValueError('The generated input files differ from the original four-layer fixture')
         if full:
             from qwen35_moe_dflash.target.prefill_t64.native_40 import pack_goldens
+            files.extend(files_under(work/'air-source', work))
             variant['goldens'], variant['tokens'] = pack_goldens(reference, run, work)
             files.extend(r for backend in variant['goldens'].values() for r in backend.values())
             files.append(variant['tokens'])
@@ -385,12 +387,15 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         bundle = work / 'bundle'
         bundle.mkdir()
         contents = [export_dir, 'inputs', 'manifest.json']
+        if full:
+            contents.append('air-source')
         if split or full:
             contents.append('golden')
         for name in contents:
             (work / name).rename(bundle / name)
         bundle.rename(dest)
     if full:
+        print(f'[CPro AIR] 本次导出的模型与 Python 源码：{dest/"air-source"}', flush=True)
         print(f'40-layer AIR bundle for OMC compilation: {sum(row["bytes"] for row in files) / 2**30:.2f} GiB', flush=True)
     share_for_transfer(dest)
     print(f'{kind} AIR: {dest / export_dir / "export.air"}')
@@ -424,7 +429,7 @@ def ssh_bundle(client, remote, staged, *, kind=KIND, previous=None, fetch=None):
         raise ValueError(f'Expected {kind} AIR at {remote}, got {meta["kind"]}')
     roots = (L0_DIR, 'inputs', 'golden') if kind in (L0_KIND, SPLIT_KIND) else (EXPORT_DIR, 'inputs')
     if kind in FULL_KINDS:
-        roots = (FULL_DIR, 'inputs', 'golden')
+        roots = (FULL_DIR, 'inputs', 'golden', 'air-source')
     missing = []
     linked = 0
     prior_ids = {}

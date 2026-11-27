@@ -3,10 +3,23 @@ import ast
 from pathlib import Path
 from shutil import copyfile
 
-from ..original_target_source import EXPORTER
+from ..original_target_source import EXPORTER, cpro_python_files
 from .decoder_four_silu import MODELING
 from .decoder_four_source import preserve_source
 from .source_model import _call, _definition
+
+
+def save_air_source(source, destination, *, decoder_files=()):
+    """Keep the final CPro Python sources as regular files in the AIR package."""
+    for path in cpro_python_files(source):
+        saved = destination/'cpro'/path.relative_to(source)
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        copyfile(path, saved)
+    if decoder_files:
+        driver = destination/'decoder'
+        driver.mkdir(exist_ok=True)
+        for path in decoder_files:
+            copyfile(path, driver/path.name)
 
 
 def token_view_decay(source):
