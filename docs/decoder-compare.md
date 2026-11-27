@@ -331,7 +331,7 @@ bash targets/cpro/scripts/decoder_compare.sh source --mode 4 --phase prefill --g
 
 导出完成后，在用例的 `export/package/air-source/` 查看这次送给 TorchAir 的源码。L0 的 Softplus 调用在 `cpro/models/modeling_qwen3_5_moe_hiai_cpro.py`，算子注册在 `cpro/export_glm_model_qwen3_5_moe.py`，单层的 `DecoderGraph.forward` 和 `dynamo_export` 调用在 `decoder/decoder_case_air.py`。源码作为普通文件随 AIR 包传到 OMC 编译机。40 层原生 prefill 的对应目录是 `export/air/air-source/`。
 
-单层 `--mode linear --phase prefill` 导出时，PyTorch 将衰减分支的 64 个 token、每 token 32 个 head 排成 `[64,32]`，直接调用 FP16 `SoftplusPatch`。输出恢复为 `[1,64,32]` 后转 FP32，与 `-exp(A_log)` 相乘。导出日志的 `[GDN decay AIR]` 会打印算子输入形状，并核对乘积通向 `ChunkGatedDeltaRule.g`。上板加载结果以本次新编译 OMC 的 `board/L00/replay/result.json` 为准。
+单层 T64 prefill 直接把 FP16 `[1,64,32]` 输入传给 `SoftplusPatch`，输出转 FP32 后与 `-exp(A_log)` 相乘。可在 `export/package/L00/activations.txt` 查看导出器记录的形状。
 
 如 L0 OMC 编译成功、上板在 `OpUpdateKernelArgs` 停止，可以在 OMC 服务器用 `bash targets/cpro/scripts/decoder_compare.sh l0-decay-report` 读取现有 AIR 与 OMC。它从单层 `ChunkGatedDeltaRule` 的命名输入 `g` 回溯 `SoftplusPatch` 和衰减乘法，再显示 OMC 可见图中的生产者、消费者与图输出。OMG 元数据可能只暴露 `GraphOp` 边界。
 

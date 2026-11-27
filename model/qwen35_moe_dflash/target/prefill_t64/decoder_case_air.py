@@ -110,10 +110,9 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     gates = inspect_shared_gates(graph, len(group))
     if audit['mismatches']:
         raise ValueError('\n'.join(audit['mismatches']))
-    linear_prefill = (ref['mode'], ref['phase']) == ('linear', 'prefill')
     operators = inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,
                                        check_convs=True, gdn_conv=gdn_conv,
-                                       rms_silu_token_view=linear_prefill, decay_token_view=linear_prefill)
+                                       rms_silu_token_view=(ref['mode'], ref['phase']) == ('linear', 'prefill'))
     bindings = {node: list(args)[index] for node, index in evidence['nodes'].items()}
     if (set(bindings.values()) != set(args) or set(bindings) !=
             {n.name for n in graph.op if n.type in ('Data', 'RefData')}):

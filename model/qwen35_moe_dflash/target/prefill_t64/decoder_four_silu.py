@@ -356,18 +356,15 @@ def gate_product(graph, gate):
     return mul, norm
 
 
-_ACTIVATION_VIEWS = {'Reshape', 'View', 'Identity', 'TensorMove', 'Unsqueeze', 'ExpandDims', 'Squeeze'}
-
-
-def activation_product_path(graph, edge):
-    """Follow a custom activation's data output across its views and widening cast to the FP32 product."""
+def rms_gate_path(graph, edge):
+    """Follow the custom gate's data output across its views and FP32 cast to the RMS product."""
     chain = []
     widened = False
     while True:
         uses = [op for op in graph.op if (op.type == 'Mul' and edge in op.input)
-                or ((op.type in _ACTIVATION_VIEWS or op.type == 'Cast') and op.input and op.input[0] == edge)]
+                or (op.type in ('Reshape', 'View', 'Identity', 'TensorMove', 'Cast') and op.input and op.input[0] == edge)]
         if len(uses) != 1 or uses[0] in chain:
-            raise ValueError(f'{edge}: expected one data path to the activation product, found {[op.name for op in uses]}')
+            raise ValueError(f'{edge}: expected one data path to the RMS gate product, found {[op.name for op in uses]}')
         op = uses[0]
         chain.append(op)
         if op.type == 'Mul':
@@ -380,9 +377,6 @@ def activation_product_path(graph, edge):
                 raise ValueError(f'{op.name}: expected one FP16 to FP32 gate cast')
             widened = True
         edge = op.name + ':0'
-
-
-rms_gate_path = activation_product_path
 
 
 def inspect_gdn_convs(graph, count, rows):
@@ -428,8 +422,7 @@ def activation_port_shape(desc):
 
 def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu=True, softplus=False, rows=64,
                            check_convs=False, gdn_conv="conv2d", moe_silu=True, gdn_silu_site=None,
-                           all_silu_no_gate_cast=False, rms_gate_count=None, rms_silu_token_view=False,
-                           decay_token_view=False):
+                           all_silu_no_gate_cast=False, rms_gate_count=None, rms_silu_token_view=False):
     """Cross-check static FX input shapes and serialized AIR edges, without modifying the graph."""
     from .decode_cache_control import graph_message
 
@@ -447,11 +440,10 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
     if rms_gate_count is not None:
         gate_count = rms_gate_count
     gate_shape = (rows, 4096) if rms_silu_token_view else (rows * 32, 128)
-    decay_shape = (rows, 32) if decay_token_view else (1, rows, 32)
     expected = {GE_TYPE: Counter({(1, 8192, rows): 0 if gdn_silu_site == 'gate' else linear,
                                   gate_shape: gate_count,
                                   (rows, 512): expert_layers, (rows * 8, 512): expert_layers}),
-                "SoftplusPatch": Counter({decay_shape: linear if softplus else 0})}
+                "SoftplusPatch": Counter({(1, rows, 32): linear if softplus else 0})}
     if not silu:
         expected[GE_TYPE].clear()
     ops = {op.name: op for op in graph.op if op.type in expected}
@@ -494,22 +486,10 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
         if op.type == 'SoftplusPatch':
             # The decay product is computed in FP32 on both sides of this patch.
             cast_in = by_name[op.input[0].rsplit(':', 1)[0]]
-            while decay_token_view and cast_in.type in _ACTIVATION_VIEWS:
-                cast_in = by_name[cast_in.input[0].rsplit(':', 1)[0]]
             if (cast_in.type != 'Cast' or [d.dtype for d in cast_in.input_desc] != [1]
                     or [d.dtype for d in cast_in.output_desc] != [2]):
                 raise ValueError(f'{name}: expected a FP32 to FP16 cast of biased_a')
-            if decay_token_view:
-                from .attention_steps import AttentionSteps
-                walk = AttentionSteps(graph, by_name, [])
-                chain, _ = activation_product_path(graph, name + ':0')
-                g = walk.gdr['g']
-                if walk.strip(g) != chain[-1].name + ':0':
-                    raise ValueError(f'{name}: decay product {chain[-1].name}:0 does not feed GDR.g ({g})')
-                print(f'[GDN decay AIR] {name} FP16 {list(shape)} → ' + ' → '.join(n.name for n in chain)
-                      + f' → ChunkGatedDeltaRule.g ({g})', flush=True)
-            else:
-                gate_product(graph, name + ':0')
+            gate_product(graph, name + ':0')
         elif shape == gate_shape:
             if rms_silu_token_view:
                 chain, _ = rms_gate_path(graph, name + ':0')
