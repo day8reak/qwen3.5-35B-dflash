@@ -10,7 +10,7 @@ BACKENDS = ('cpu', '310p', 'cpro')
 METRICS = ('error_ratio', 'cosine')
 
 
-def read_groups(path):
+def read_groups(path, metrics=METRICS):
     groups = {}
     with path.open(encoding='utf-8-sig', newline='') as stream:
         reader = csv.DictReader(stream)
@@ -25,7 +25,7 @@ def read_groups(path):
             if original != description:
                 raise ValueError(f'{path}:{reader.line_num}: inconsistent description for {key}')
             metric = row['metric']
-            if metric in METRICS:
+            if metric in metrics:
                 matrix = matrices.setdefault(metric, {})
                 actual = row['actual/reference']
                 if actual not in BACKENDS or actual in matrix:
@@ -72,10 +72,10 @@ def a8_cosine(board, stage, tensor, scope):
     return matrix, note
 
 
-def render(csv_path):
-    groups = read_groups(csv_path)
+def render(csv_path, metrics=METRICS):
+    groups = read_groups(csv_path, metrics)
     reports = {}
-    for metric in METRICS:
+    for metric in metrics:
         blocks = []
         for (stage, tensor, scope), (description, matrices) in groups.items():
             matrix = matrices.get(metric, {})

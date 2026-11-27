@@ -377,6 +377,8 @@ L0 共享专家门控默认对 FP16 点积的结果执行 `.float()` 再做 sigm
 
 已有完整 L0 dump 时，在 35 运行 `python3 targets/cpro/tools/l0_dump_report.py "$case_dir"`，其中 `case_dir` 指向本次的 `1-linear-prefill-t64` 目录。它对比准备送板的 hidden 与 CPU、310P 的 L0 入口，再用本次 AIR 的输入名和首个 RMSNorm 的完整节点名查找 dump。对逻辑维度匹配的候选，脚本按字节数列出连续 FP16、FP32 或 FP16 前缀等可能读法，与送板输入及两端归一化后的 `hidden` 比较。长度多出 32 字节时分别列出偏移 0 和 32 的结果。报告给出有效 token 的误差和全 64 行是否与输入相等。文件名中的序号、比较分数和相同内容分组都不自动决定端口归属。
 
+要一次生成整层逐步三端矩阵并定位首个大偏差，在 35 运行 `python3 targets/cpro/tools/compare_operator_dump.py --case "$case_dir"`。结果在 `board/L00/dump-comparison/`。其他层或模型也可使用此离线工具，端口映射和读表方法见[通用算子 dump 三端对比](guides/operator-dump-comparison.md)。
+
 确认第一个 RMSNorm 的 x、z 各为完整的 FP16 ND 原始文件后，可在原命令后加 `--rms-io <x文件> <z文件>`，路径相对 `board/L00/replay/dump/`。它会对比 x 与送板输入、z 与两端的 `hidden`，范围是有效 token。带分片或有格式头的文件需先确认解析器的格式。
 
 - 板端的 `model_run_tool_internal` 使用 V2，显式传入 `--input_shape` 和 `--output_shape`。每项按端口顺序写作 `名称:物理维度`，同一方向的多个端口用分号连接。旧编译记录缺少输出名称时，同机可用的 OMG 可以从现有 OMC 补读元数据；仍缺名称时，执行端通过 `runtime.json` 配套的描述查询工具读取板上模型。完整调用保存在该次 `replay/run.sh` 和 `replay/result.json` 的 `argv` 字段。
