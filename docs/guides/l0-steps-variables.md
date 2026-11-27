@@ -1,0 +1,92 @@
+# L0 逐步三端对比变量表
+
+适用于 `decoder_compare.sh l0-steps`，使用四层 T64 prefill 的实际输入比较 CPU、310P 和 CPro。L0 是第一层 linear attention。它向下一层传递 `block_out`，向后续推理调用保存 `new_history` 和 `recurrent_cache`。四层模型中的 RoPE 位于 L3 full attention。
+
+下表给出比较时的逻辑形状，省略大小为 1 的 batch 维。T64 表示 64 个物理位置，当前 prompt 有 19 个有效 token。常规激活按位置 0–18 计算指标。三个后端分别从各自的上游结果继续计算，因此某个观测点的误差包含上游已经产生的差异。
+
+## 入口与四路投影 · entry-projections
+
+同一投影有三个观测点。`*_a8` 是 DynamicQuant 对该投影**输入**生成的 INT8 激活，`*_scale` 是每个 token 的浮点尺度，无后缀变量是使用这些激活和 W4 权重得到的投影输出。CPU 的对称量化参考对每行计算 `scale = max(abs(x)) / 127`，零行的 scale 为 0。下表中的尺度都属于激活。
+
+| 报告变量 | 直接上游与含义 | T64 逻辑形状 |
+|---|---|---|
+| `block_entry` | L0 收到的 hidden，同时送入 input RMSNorm 和第一条残差。CPU、310P 使用实测的层入口作为共同起点，CPro 从四层包的 embedding 和 scale 算到这里。 | 64×2048 |
+| `hidden` | `input_layernorm(block_entry)`，QKV、z、a、b 四个投影共同读取它。 | 64×2048 |
+| `qkv_a8`、`qkv_scale`、`qkv` | `in_proj_qkv(hidden)` 的输入编码、输入尺度、混合 QKV 投影结果。输出沿通道分为 Q 2048、K 2048、V 4096。 | 64×2048、64、64×8192 |
+| `z_a8`、`z_scale`、`z` | `in_proj_z(hidden)` 的输入编码、输入尺度、门控投影。后面的 `gate_silu` 从这里取值。 | 64×2048、64、64×4096 |
+| `a_a8`、`a_scale`、`a` | `in_proj_a(hidden)` 的输入编码、输入尺度、衰减分支的原始值。每个 token 每个 value head 一个值。 | 64×2048、64、64×32 |
+| `b_a8`、`b_scale`、`b` | `in_proj_b(hidden)` 的输入编码、输入尺度、更新分支的原始值。后面取 sigmoid 得到 `beta`。 | 64×2048、64、64×32 |
+
+## 卷积、历史与 Q/K/V · convolution
+
+| 报告变量 | 直接上游与含义 | T64 逻辑形状 |
+|---|---|---|
+| `window` | 沿时间拼接旧卷积历史和本轮 `qkv`，取末 67 个位置作为宽度 4 的因果卷积输入。开头 3 个是历史位置，当前报告的有效 token 从窗口下标 3 开始取。 | 8192 通道 × 67 位置 |
+| `new_history` | 上述拼接结果的末 4 个位置，对应本轮 **卷积前** `qkv` 的物理位置 60–63。它对应四层报告中的 `conv_state_0`。 | 8192×4，整份缓存 |
+| `conv` | 每个通道独立对 `window` 做因果卷积；观测点是卷积 SiLU 的输入。 | 8192×64 |
+| `conv_silu` | `SiLU(conv)`，当前 CPro 图用 FP16 SiluPatch。Q/K/V 从这一结果拆分。 | 8192×64 |
+| `query` | 取卷积激活的 Q 通道，按 head 整理并展开到 32 个 value head，作为 GDR 的查询。 | 64×32×128 |
+| `key` | 取卷积激活的 K 通道，按同样的 head 顺序展开，作为 GDR 的键。 | 64×32×128 |
+| `value` | 取卷积激活的 V 通道，整理为 32 个 value head，作为写入递推状态的值。 | 64×32×128 |
+
+## 衰减、更新与递推 · gdr
+
+| 报告变量 | 直接上游与含义 | T64 逻辑形状 |
+|---|---|---|
+| `biased_a` | `a.float() + dt_bias` 的加法结果。CPro 从该结果转换到 SoftplusPatch 的 FP16 输入端口。 | 64×32 |
+| `softplus` | `softplus(biased_a)`，得到正的步长。CPro 在 SoftplusPatch 输出端取值。 | 64×32 |
+| `g` | `-exp(A_log) × softplus`，送入 GDR 的对数衰减系数。 | 64×32 |
+| `beta` | `sigmoid(b)`，控制每个 token 对递推状态的更新强度。 | 64×32 |
+| `core` | GDR 读取 `query/key/value/g/beta`、初始状态和有效长度后产生的逐 token 输出，供后面的 RMSNorm 使用。 | 64×32×128 |
+| `final_state` | 同一次 GDR 的第二个输出，表示处理完 19 个有效 token 时的递推状态。 | 32×128×128，整份状态 |
+| `recurrent_cache` | 从 `final_state` 写回、供下次调用读取的缓存值。CPU 参考在写回时舍入到 FP16。它对应四层报告中的 `recurrent_state_0`。 | 32×128×128，整份缓存 |
+
+## 门控、输出投影与第一条残差 · attention-output
+
+| 报告变量 | 直接上游与含义 | T64 逻辑形状 |
+|---|---|---|
+| `rms` | `core` 在每个 head 的 128 维上做 RMSNorm，再乘该层的 gamma。它是门控乘法的一侧。 | 64×32×128 |
+| `gate_silu` | 对 `z` 做 SiLU，构成门控乘法的另一侧。当前 CPro 的 SiluPatch 输入、输出均为 FP16，使用 64×4096 视图。 | 64×32×128 |
+| `product` | `rms × gate_silu` 的逐元素乘积。当前 CPro 在两个分支汇合处做 FP32 乘法。 | 64×32×128 |
+| `gated` | 将 `product` 转回 FP16，并合并 32 个 head，形成 `out_proj` 的浮点输入。 | 64×4096 |
+| `out_a8`、`out_scale`、`out` | `out_proj(gated)` 的输入编码、输入尺度、GDN 最终输出。查 `out_scale[t]` 时，从同一后端的 `gated[t, :]` 求行绝对最大值再除以 127。 | 64×4096、64、64×2048 |
+| `residual` | 第一条残差相加，`block_entry + out`。 | 64×2048 |
+| `post_norm` | `post_attention_layernorm(residual)`，进入 MoE 的 hidden。共享专家和路由器都读取它。 | 64×2048 |
+
+## 共享专家与路由器 · shared-router
+
+| 报告变量 | 直接上游与含义 | T64 逻辑形状 |
+|---|---|---|
+| `shared_gate_proj_a8`、`shared_gate_proj_scale`、`shared_gate_proj` | 共享专家从 `post_norm` 计算 gate 投影。依次是输入编码、输入尺度和 512 维 gate 输出。 | 64×2048、64、64×512 |
+| `shared_up_a8`、`shared_up_scale`、`shared_up` | 共享专家从 `post_norm` 计算平行的 up 投影。依次是输入编码、输入尺度和 512 维 up 输出。 | 64×2048、64、64×512 |
+| `shared_silu` | `SiLU(shared_gate_proj)`。 | 64×512 |
+| `shared_product` | `shared_silu × shared_up`，是共享专家 down 投影的输入。 | 64×512 |
+| `shared_down_a8`、`shared_down_scale`、`shared_down` | 对 `shared_product` 量化并做 down 投影，得到共享专家的 2048 维输出。 | 64×512、64、64×2048 |
+| `shared_gate_logit` | `shared_expert_gate(post_norm)`，每个 token 一个标量，决定整个共享专家输出占多大权重。 | 64×1 |
+| `shared_weighted` | `shared_down × sigmoid(shared_gate_logit)`，共享专家对 MoE 的最终贡献。 | 64×2048 |
+| `router_logits_a8`、`router_logits_scale`、`router_logits` | 路由器从 `post_norm` 计算每个 token 对全部 256 个路由专家的打分。依次是输入编码、输入尺度和专家分数。 | 64×2048、64、64×256 |
+| `expert_ids` | 每个 token 实际选中的 Top‑K 专家编号。三端比较时展开成 256 列的 0/1 集合。报告还给出 CPro 与 310P 集合的 Jaccard，即交集大小除以并集大小。 | 原始 64×K；比较 19×256 |
+
+## 路由专家、汇总与层输出 · experts-output
+
+| 报告变量 | 直接上游与含义 | 比较单位与宽度 |
+|---|---|---|
+| `route_map` | 路由分发产生的行索引。脚本用它把分组矩阵乘的物理行还原到对应的 token 和专家。这个辅助变量不单列精度矩阵。 | 每个 token–专家分配一项 |
+| `route_weights` | 实际送入路由汇总算子的 Top‑K 权重，按专家 ID 对齐，未选中的专家填 0。 | 原始 64×K；比较 19×256 |
+| `expert_gate_up` | 选中专家的第一跳分组 W4 矩阵乘，把 gate 和 up 拼在一起输出，各占 512 维。 | 每个共同的 token–专家对 × 1024 |
+| `expert_product` | 对该专家计算 `SiLU(gate) × up`。310P 在融合 SwiGLU 的乘积输出处取值。 | 每个共同的 token–专家对 × 512 |
+| `expert_down` | 选中专家对 `expert_product` 做第二跳 W4 down 投影，得到该专家的输出。 | 每个共同的 token–专家对 × 2048 |
+| `routed` | 同一个 token 下，把各个 `expert_down` 乘对应的 `route_weights` 后求和。 | 每 token × 2048 |
+| `moe_out` | `shared_weighted + routed`，共享专家与路由专家合并后的 MoE 输出。 | 每 token × 2048 |
+| `block_out` | 第二条残差相加，`residual + moe_out`。这是 L0 的最终 hidden，也是 L1 收到的输入。 | 每 token × 2048 |
+
+## 与矩阵文件对照
+
+| 报告范围 | 取哪些值 |
+|---|---|
+| `valid19` | 取有效 token 0–18。`window` 跳过开头 3 个历史位置，从窗口下标 3 起取 19 行。有效长度随 YAML prompt 改变。 |
+| `full_state` | 对 `new_history`、`final_state`、`recurrent_cache` 分别比较完整张量。`new_history` 是物理尾部，后两个是按有效长度更新的递推状态。 |
+| `physical60_63` | 另取 `block_entry`、`qkv`、`out`、`residual`、`post_norm`、`moe_out`、`block_out` 的物理位置 60–63。本次 prompt 下这四行都是 padding。 |
+| `valid19_common_M_of_N` | 专家中间量仅在三端都选择了同一专家的同一 token 上比较。M 是共同分配数，N 是有效 token 数乘每 token 的 Top‑K。 |
+
+查看整层误差从哪里放大，可以沿 `block_entry → hidden → out → residual → post_norm → moe_out → block_out` 阅读同一范围的矩阵。若 `moe_out` 出现明显变化，分别看 `shared_weighted`、`expert_ids`、`route_weights` 和 `routed`。切片本身的影响可用 `comparison.json` 中的 `four_layer_cache_control` 检查，它记录两个 L0 缓存与原四层 OMC 返回值的对照。

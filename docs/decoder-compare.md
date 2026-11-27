@@ -347,6 +347,8 @@ bash targets/cpro/scripts/decoder_compare.sh diagnose --mode 4 --phase prefill
 
 ### 四层 T64 实际输入下的 L0 逐步精度
 
+各组的变量、直接上游、逻辑形状和比较范围见 [L0 逐步三端对比变量表](guides/l0-steps-variables.md)。
+
 保留已运行的 `4-prefill-t64`。这组诊断使用其中的四层 AIR、物理尾部 ConvState、Conv2D 和自定义激活，支持 RMS 门控的 `[64,4096]` 视图。两台机器使用同一版仓库。
 
 1. 在 CPU、310P golden 生成环境执行 `bash targets/cpro/scripts/decoder_compare.sh l0-steps-reference`。脚本用原 YAML 的 prompt 再取一次 L0 的实际张量，对齐四层 fixture 的 token、输入 hidden 和两个返回缓存，并在 CPU 上用原 W4 权重独立计算。
