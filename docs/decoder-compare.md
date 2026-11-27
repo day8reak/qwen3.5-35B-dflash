@@ -367,6 +367,8 @@ bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-con
 
 `--rmsnorm-patch` 在普通和 GDN 门控 RMSNorm 的 PyTorch 调用处使用 `torch.ops.npu.rmsnorm_patch`。模型按现有 dtype 传入 x 和 gamma，直接使用算子返回的 z。kernel 注册的 `x, gamma → z` 均为 FP16 ND，gamma 长度等于 x 的最后一维。单层普通 RMSNorm 传入预计算的有效 gamma，门控 RMSNorm 使用原权重。OpDef 没有 epsilon 参数，精度对照需核实 kernel 的固定 epsilon。源 AIR 各端口的实际 dtype 见 `export/package/L00/case.json` 的 `rmsnorm_nodes[].air_dtypes`。
 
+L0 共享专家门控默认对 FP16 点积的结果执行 `.float()` 再做 sigmoid。`--shared-gate-fp16-sigmoid` 只去掉点积结果的这次转换。78 导出时和 35 的传输、编译、上板均传同一开关。导出器沿源 AIR 验证 FP16 MatMul → FP16 Sigmoid → FP16 Mul，日志和 `L00/case.json` 的 `shared_gates` 记录实际节点名。做加载对照时，两次使用同一份 golden 和相同的 `--dump` 设置。可用独立的 `--run-root` 存放实验产物，在 78 用 `decoder_transfer.sh golden --local-source <原 case 目录>` 接收已有 golden 后执行 `decoder_air.sh`。
+
 `--dump` 使用原 decoder 用例目录。78 保存同一批 token 和 L0 入口的 CPU/310P 中间值。35 只编译一个完整 L0 OMC，使用 V2 和 `--enable_item=2` 执行一次，再运行 `data_proc_tool_internal`，拉回解析器输出。从用例目录可查看
 
 - `board/L00/replay/dump/` 和 `dump-inventory.json`（同级）。完整文件树、文件大小、板端推理时间窗口和解析器命令。`parser.log` 保存解析器输出。

@@ -12,7 +12,7 @@ import uuid
 
 from qwen35_moe_dflash.common.artifacts import share_for_transfer
 from qwen35_moe_dflash.common.hashing import sha256_file
-from qwen35_moe_dflash.target.prefill_t64.decoder_cases import FOUR_LAYER_CONTROLS, case_name, groups
+from qwen35_moe_dflash.target.prefill_t64.decoder_cases import EXPORT_CONTROLS, case_name, groups
 
 
 def receipt(root, role):
@@ -82,7 +82,7 @@ def publish(root, role, args):
         header['generation'] = uuid.uuid4().hex
     else:
         header['gdn_conv'] = args.gdn_conv
-        header.update({name: getattr(args, name) for name in (*FOUR_LAYER_CONTROLS, 'rmsnorm_patch') if getattr(args, name, False)})
+        header.update({name: getattr(args, name) for name in EXPORT_CONTROLS if getattr(args, name, False)})
     dest = receipt(root, role)
     with tempfile.TemporaryDirectory(prefix='.publish-', dir=root) as staging:
         tmp = Path(staging)/dest.name
@@ -216,7 +216,7 @@ def receive(root, remote, role, args):
         if (data['stage'], data['case']) != (role, root.name) or data.get('gdn_conv', args.gdn_conv) != args.gdn_conv:
             raise ValueError(f'{index}: stage, case or GDN convolution mismatch')
         if role != 'golden':
-            for name in (*FOUR_LAYER_CONTROLS, 'rmsnorm_patch'):
+            for name in EXPORT_CONTROLS:
                 if data.get(name, False) != getattr(args, name, False):
                     raise ValueError(f'{index}: --{name.replace("_", "-")} selection differs from the upstream {role} export')
         staged = temp/'incoming' if local else resume_directory(root, role, temp/'manifest')

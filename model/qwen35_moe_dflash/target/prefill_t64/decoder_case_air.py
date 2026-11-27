@@ -78,7 +78,8 @@ def bind_outputs(graph, converter_edges):
     return result
 
 
-def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges, gdn_conv, rmsnorm_patch):
+def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges, gdn_conv, rmsnorm_patch,
+                shared_gate_fp16_sigmoid=False):
     rows = 64 if ref['phase'] == 'prefill' else 1
     name = case_name(group)
     linear = sum(i % 4 != 3 for i in group)
@@ -110,7 +111,7 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     audit = prefill_precision(graph, group, final, rows=rows)
     from .decoder_rmsnorm import inspect_ports
     norms = inspect_ports(graph) if rmsnorm_patch else []
-    gates = inspect_shared_gates(graph, len(group))
+    gates = inspect_shared_gates(graph, len(group), fp16_sigmoid=shared_gate_fp16_sigmoid)
     if audit['mismatches']:
         raise ValueError('\n'.join(audit['mismatches']))
     operators = inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,
@@ -132,7 +133,7 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
 
 
 @torch.no_grad()
-def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d', rmsnorm_patch=False):
+def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d', rmsnorm_patch=False, shared_gate_fp16_sigmoid=False):
     plan = groups(ref['mode'])
     paths = checkpoint_paths(source, config, ref)
     driver = Path(__file__)
@@ -185,7 +186,7 @@ def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d', 
                     dest = Path(tmp_case)/'case'
                     dest.mkdir()
                     export_case(dest, fixtures, ref, group, final, blocks, Head(model) if final else None,
-                                exporter, edges, gdn_conv, rmsnorm_patch)
+                                exporter, edges, gdn_conv, rmsnorm_patch, shared_gate_fp16_sigmoid)
                     dest.rename(root/case_name(group))
             del blocks, model
     finally:

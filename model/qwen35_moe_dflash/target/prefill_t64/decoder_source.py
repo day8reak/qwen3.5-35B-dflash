@@ -22,7 +22,7 @@ def save_air_source(source, destination, *, decoder_files=()):
             copyfile(path, driver/path.name)
 
 
-def fp16_shared_gate(source):
+def fp16_shared_gate(source, *, fp16_sigmoid=False):
     tree = ast.parse(source)
     moe = _definition(tree, 'Qwen3_5MoeSparseMoeBlock')
     forward = _definition(moe, 'forward')
@@ -30,10 +30,11 @@ def fp16_shared_gate(source):
                 and ast.unparse(call.func) in ('F.sigmoid', 'torch.sigmoid')
                 and len(call.args) == 1 and 'self.shared_expert_gate' in ast.unparse(call.args[0])]
     gate, = sigmoid.args
-    expr = 'F.linear(hidden_states_flat.half(), self.shared_expert_gate.weight.half()).float()'
+    linear = 'F.linear(hidden_states_flat.half(), self.shared_expert_gate.weight.half())'
+    expr = linear if fp16_sigmoid else linear + '.float()'
     if ast.unparse(gate) == expr:
         return source
-    if ast.unparse(gate) not in ('self.shared_expert_gate(hidden_states_flat)',
+    if ast.unparse(gate) not in (linear, linear + '.float()', 'self.shared_expert_gate(hidden_states_flat)',
                                  'self.shared_expert_gate(hidden_states_flat.to(self.shared_expert_gate.weight.dtype))'):
         raise ValueError(f'Unrecognized CPro scalar shared expert gate: {ast.unparse(gate)}')
     sigmoid.args = [ast.parse(expr, mode='eval').body]
@@ -69,7 +70,7 @@ def lookup_exporter(source):
     return preserve_source(source, ast.unparse(tree))
 
 
-def inspect_shared_gates(graph, layers):
+def inspect_shared_gates(graph, layers, *, fp16_sigmoid=False):
     nodes = {n.name: n for n in graph.op}
     def source(edge):
         op = nodes[edge.rsplit(':', 1)[0]]
@@ -80,21 +81,38 @@ def inspect_shared_gates(graph, layers):
     for sigmoid in graph.op:
         if sigmoid.type != 'Sigmoid' or not sigmoid.input:
             continue
-        cast = source(sigmoid.input[0])
-        if cast.type != 'Cast' or not cast.input:
+        producer = source(sigmoid.input[0])
+        cast_name = None
+        if fp16_sigmoid:
+            mm = producer
+        else:
+            if producer.type != 'Cast' or not producer.input or [p.dtype for p in producer.output_desc] != [1]:
+                continue
+            cast_name = producer.name
+            mm = source(producer.input[0])
+        dtype = 2 if fp16_sigmoid else 1  # GE DT_FLOAT16 / DT_FLOAT
+        if (mm.type not in ('MatMul', 'MatMulV2') or [p.dtype for p in mm.input_desc[:2]] != [2, 2]
+                or [p.dtype for p in mm.output_desc] != [2] or sigmoid.input_desc[0].dtype != dtype):
             continue
-        mm = source(cast.input[0])
-        if (mm.type in ('MatMul', 'MatMulV2') and [p.dtype for p in mm.input_desc[:2]] == [2, 2]
-                and [p.dtype for p in mm.output_desc] == [2] and [p.dtype for p in cast.output_desc] == [1]
-                and sigmoid.input_desc[0].dtype == 1):
-            gates.append(dict(matmul=mm.name, cast=cast.name, sigmoid=sigmoid.name))
+        row = dict(matmul=mm.name, cast=cast_name, sigmoid=sigmoid.name)
+        if fp16_sigmoid:
+            consumers = [op for op in graph.op if op.type == 'Mul'
+                         and any(edge and not edge.endswith(':-1') and source(edge).name == sigmoid.name for edge in op.input)]
+            if ([p.dtype for p in sigmoid.output_desc] != [2] or len(consumers) != 1
+                    or [p.dtype for p in consumers[0].input_desc] != [2, 2]
+                    or [p.dtype for p in consumers[0].output_desc] != [2]):
+                raise ValueError(f'{sigmoid.name}: expected the FP16 shared expert gate to feed an FP16 Mul without a precision cast')
+            row['mul'] = consumers[0].name
+            print(f'[AIR] shared gate FP16: {mm.name} → {sigmoid.name} → {row["mul"]}', flush=True)
+        gates.append(row)
+    path = 'FP16 MatMul → FP16 Sigmoid → FP16 Mul' if fp16_sigmoid else 'FP16 MatMul → FP32 Cast → Sigmoid'
     if len(gates) != layers:
-        raise ValueError(f'Expected {layers} FP16 shared gate MatMuls with FP32 cast before sigmoid; found {gates}')
-    print(f'[AIR] {len(gates)} shared gate: FP16 MatMul → FP32 Cast → Sigmoid', flush=True)
+        raise ValueError(f'Expected {layers} shared gates with {path}; found {gates}')
+    print(f'[AIR] {len(gates)} shared gate: {path}', flush=True)
     return gates
 
 
-def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_patch=False):
+def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_patch=False, shared_gate_fp16_sigmoid=False):
     """Keep imported helpers beside the run-local model; preserve editable sources."""
     from .decoder_four_silu import remove_activation_views, update_activation_calls
 
@@ -106,7 +124,7 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
                 continue
             (dest/rel).symlink_to(path.resolve(), target_is_directory=path.is_dir())
     model = remove_activation_views((source/MODELING).read_text())
-    model = update_activation_calls(fp16_shared_gate(model))
+    model = update_activation_calls(fp16_shared_gate(model, fp16_sigmoid=shared_gate_fp16_sigmoid))
     tree = ast.parse(model)
     restore_qlinear_scales(tree)
     model = preserve_source(model, ast.unparse(tree))

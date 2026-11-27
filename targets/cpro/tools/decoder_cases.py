@@ -13,7 +13,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/'model'))
-from qwen35_moe_dflash.target.prefill_t64.decoder_cases import FOUR_LAYER_CONTROLS, MODES, PHASES, case_name, directory_name, groups
+from qwen35_moe_dflash.target.prefill_t64.decoder_cases import EXPORT_CONTROLS, FOUR_LAYER_CONTROLS, MODES, PHASES, case_name, directory_name, groups
 
 
 def required(name):
@@ -184,10 +184,8 @@ def prepare_stage(args, run):
         stamp['gdn_conv'] = args.gdn_conv
     if source_conv == 'original' and not getattr(args, 'physical_convstate', False) and os.getenv('DECODER_CONV_CONTROL'):
         stamp['conv_control'] = sha(required('DECODER_CONV_CONTROL'))
-    controls = {name: getattr(args, name) for name in FOUR_LAYER_CONTROLS if getattr(args, name, False)}
+    controls = {name: getattr(args, name) for name in EXPORT_CONTROLS if getattr(args, name, False)}
     stamp.update(controls)
-    if args.rmsnorm_patch:
-        stamp['rmsnorm_patch'] = True
     stamp.update(reference_sha256=sha(fixture/'reference.json'), config=sha(cfg),
                  cpro_source=str(prepared),
                  cpro_sources={str(p.relative_to(prepared)): sha(p) for p in cpro_python_files(prepared)},
@@ -209,9 +207,10 @@ def prepare_stage(args, run):
         stamp['adapters']['decoder_four_native_case'] = sha(decoder_four_native_case.__file__)
     else:
         exporter = decoder_case_air.export
+        options['shared_gate_fp16_sigmoid'] = args.shared_gate_fp16_sigmoid
     if package.exists():
         prior = json.loads((package/'manifest.json').read_bytes())
-        if (any(prior.get(k, False) != stamp.get(k, False) for k in (*FOUR_LAYER_CONTROLS, 'rmsnorm_patch'))
+        if (any(prior.get(k, False) != stamp.get(k, False) for k in EXPORT_CONTROLS)
                 or any(prior.get(k) != v for k, v in stamp.items())):
             raise ValueError('Existing export uses different sources or reference')
         for row in prior['files']:
@@ -234,6 +233,7 @@ def prepare_stage(args, run):
         from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
         with tempfile.TemporaryDirectory(dir=run, prefix='decoder-source-') as tmp:
             adapted = export_source(prepared, Path(tmp)/'source', rmsnorm_patch=args.rmsnorm_patch,
+                                    shared_gate_fp16_sigmoid=args.shared_gate_fp16_sigmoid,
                                     fold_norm_gamma=exporter is decoder_case_air.export)
             exporter(working, fixture, ref, src, cfg, adapted, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
@@ -289,7 +289,7 @@ def worker(args, action, root, remote):
             cmd.extend(['--local-source', str(args.local_source)])
     if getattr(args, 'gdn_conv', 'conv2d') != 'conv2d' or any(getattr(args, k, False) for k in FOUR_LAYER_CONTROLS):
         cmd.extend(['--gdn-conv', args.gdn_conv])
-    for control in FOUR_LAYER_CONTROLS:
+    for control in EXPORT_CONTROLS:
         value = getattr(args, control, False)
         if value:
             cmd.append('--' + control.replace('_', '-'))
@@ -297,8 +297,6 @@ def worker(args, action, root, remote):
                 cmd.append(value)
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
-    if getattr(args, 'rmsnorm_patch', False):
-        cmd.append('--rmsnorm-patch')
     if args.dump:
         cmd.append('--dump')
     if getattr(args, 'gate_probe', False):
@@ -391,6 +389,8 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--rmsnorm-patch', action='store_true', help='use the custom FP16 RmsnormPatch in the CPro decoder')
+    parser.add_argument('--shared-gate-fp16-sigmoid', action='store_true',
+                        help='run the L0 shared expert sigmoid on its FP16 MatMul result')
     parser.add_argument('--dump', action='store_true',
                         help='capture L0 Python intermediates and dump one complete linear prefill OMC on the board')
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
@@ -400,6 +400,8 @@ def main():
                                  'l0-decay-report', 'l0-original-omg', 'l0-dump'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
     a = parser.parse_args()
+    if a.shared_gate_fp16_sigmoid and (a.mode, a.phase) != ('linear', 'prefill'):
+        parser.error('--shared-gate-fp16-sigmoid is an L0 control for --mode linear --phase prefill')
     if a.dump and ((a.mode, a.phase) != ('linear', 'prefill') or a.gate_probe):
         parser.error('--dump requires --mode linear --phase prefill with the regular decoder stages')
     if a.rms_silu_token_view and a.action in ('prepare', 'golden', 'air', '_air'):
@@ -461,7 +463,7 @@ def main():
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
                               gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
                               rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view,
-                              physical_convstate=a.physical_convstate,
+                              physical_convstate=a.physical_convstate, shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid,
                               omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
         return 0
@@ -499,6 +501,7 @@ def main():
                 original = a.gate_probe == 'l0-original-omg'
                 return 0 if board(root/'board', a.mode, a.phase, remote/'export', ddk, config, diag, False,
                                   step=a.action, gdn_conv=a.gdn_conv, original_omg=original, rmsnorm_patch=a.rmsnorm_patch,
+                                  shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid,
                                   original_board_args=original or a.original_board_args, operator_dump=not original,
                                   replace_inputs=a.replace_inputs, replace_weights=a.replace_weights) else 1
             if a.gate_probe == 'l0-embedding':
@@ -550,6 +553,7 @@ def main():
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
                          original_board_args=a.original_board_args, no_patch=a.no_patch, rmsnorm_patch=a.rmsnorm_patch, dump=a.dump,
+                         shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid,
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
                          gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site,
                          all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate,
