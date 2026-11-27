@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-decoder_compare.sh {golden|air|compile|execute|diagnose|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-shared-gate-reference|l0-shared-gate|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
+decoder_compare.sh {golden|air|compile|execute|diagnose|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-shared-gate-reference|l0-shared-gate|l0-shared-gate-fp16|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
                    [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only|--gdn-silu-site {conv|gate}|--all-silu-no-gate-cast|--rms-silu-layers LAYERS|--rms-silu-token-view] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data.
@@ -24,6 +24,7 @@ l0-steps    Read out L0 from the existing four-layer AIR, run with its real inpu
 l0-steps-same-input   Run the L0 readouts with the saved 310P hidden as the CPro decoder input.
 l0-shared-gate-reference   Export the L0 scalar gate weight and saved reference rows on the golden host.
 l0-shared-gate   Compare the saved gate logits and weighted outputs offline on the CPro host.
+l0-shared-gate-fp16   Run one same-input L0 shared-router OMC with FP16 scalar MatMul and an FP32 cast before sigmoid.
 gate-report Compare AIR and OMC gate edges, kernel build logs and metadata for the full model and the silu-cast-mul probe.
 prepare     On the combined reference/export host: capture reference, compute CPU golden, export static AIR.
 board       On the DDK host: fetch, compile, run on device and compare CPU / 310P / CPro.
@@ -63,7 +64,7 @@ case "${1:-}" in
     l0-steps-reference)
         shift
         exec bash "$0" golden --gate-probe l0-steps --mode 4 --phase prefill "$@" ;;
-    l0-steps|l0-steps-same-input)
+    l0-steps|l0-steps-same-input|l0-shared-gate-fp16)
         mode=$1
         shift
         bash "$0" compile --gate-probe "$mode" --mode 4 --phase prefill "$@"

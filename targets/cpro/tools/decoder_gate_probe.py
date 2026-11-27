@@ -35,9 +35,13 @@ def input_wire(node, fallback_shape):
 
 
 def probe_cases(raw, meta, mode):
-    if mode in ('l0-steps', 'l0-steps-same-input'):
+    if mode in ('l0-steps', 'l0-steps-same-input', 'l0-shared-gate-fp16'):
         from qwen35_moe_dflash.target.prefill_t64.l0_accuracy_air import readouts
-        yield from readouts(raw, meta, same_input=mode == 'l0-steps-same-input')
+        for label, step, wires in readouts(raw, meta, same_input=mode != 'l0-steps'):
+            if mode != 'l0-shared-gate-fp16' or label == 'shared-router':
+                yield label, step, wires
+                if mode == 'l0-shared-gate-fp16':
+                    return
         return
     if mode == 'gdn-bisect':
         from qwen35_moe_dflash.target.prefill_t64.gdn_layer_air import gdn_load_sections
@@ -119,7 +123,21 @@ def compile_cases(folder, case, meta, record, ddk, mode):
         directory = 'weight' if mode == 'slices' else meta['air_directory']
         air = base/directory/'export.air'
         air.parent.mkdir(parents=True)
-        air.write_bytes(slice_air(raw, step, wires))
+        feeds = {f'l0_feed_{i}': wires[e] for i, e in enumerate(step['inputs'])}
+        outputs = [wires[e] for e in step['outputs']]
+        if mode == 'l0-shared-gate-fp16':
+            from l0_shared_gate_fp16 import narrow_matmul
+            control = folder.parent/'l0-steps-same-input'/label
+            saved_case = read(control/'case.json')
+            if (saved_case['source_air'] != record or saved_case['inputs'] != feeds
+                    or saved_case['outputs'] != outputs):
+                raise ValueError('Retained shared-router AIR has different readout or feed bindings')
+            saved_air, = [f for f in saved_case['files'] if f['path'] == directory + '/export.air']
+            edge, = [e for e in step['outputs'] if 'shared_gate_logit' in wires[e]['aliases']]
+            payload = narrow_matmul(sized_file(control, saved_air).read_bytes(), edge)
+        else:
+            payload = slice_air(raw, step, wires)
+        air.write_bytes(payload)
         source = identity(air, base)
         files = [source]
         nodes = step['nodes']
@@ -144,8 +162,6 @@ def compile_cases(folder, case, meta, record, ddk, mode):
             else:
                 target.symlink_to(weight)
             files.append(item)
-        feeds = {f'l0_feed_{i}': wires[e] for i, e in enumerate(step['inputs'])}
-        outputs = [wires[e] for e in step['outputs']]
         case_info = dict(native_tool_args=True, files=files, air_directory=directory, inputs=feeds,
                          outputs=outputs, source_air=record)
         if meta.get('rms_silu_token_view'):
