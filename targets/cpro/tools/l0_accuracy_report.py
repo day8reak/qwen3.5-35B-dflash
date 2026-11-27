@@ -49,18 +49,20 @@ def reference_matches(refs, directory, fixture):
             and np.array_equal(refs['ids'], read_tensor(sized_file(directory, ids), ids)))
 
 
-def get_reference(root, remote, folder):
-    rel = Path('l0-steps-reference/values.npz')
+def get_reference(root, remote, folder, filename='values.npz'):
+    rel = Path('l0-steps-reference')/filename
     local_root = os.getenv('DECODER_GOLDEN_LOCAL_ROOT')
     mounted = Path(local_root).expanduser()/root.name/rel if local_root else root/rel
     if mounted.is_file():
         return mounted
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
     from pull_artifacts import DEFAULT_CONFIG
     role = 'golden' if 'golden' in read(DEFAULT_CONFIG) else 'air'
     configured = os.getenv('DECODER_' + role.upper() + '_REMOTE_ROOT')
     source = (Path(configured)/root.name if configured else remote)/rel
     print(f'接收 L0 CPU/310P 参考文件 {source}', flush=True)
-    dest = folder/'values.npz'
+    dest = folder/filename
     with tempfile.TemporaryDirectory(dir=folder) as tmp, ssh_reader(role) as fetch:
         staged = Path(tmp)/dest.name
         fetch(source, staged)
@@ -315,9 +317,6 @@ def run(root, remote, action, ddk, config, args):
     report = read(folder/'compile.json')
     if report['air'] != record or not report['complete']:
         raise ValueError('L0 readouts must be compiled from the current four-layer AIR')
-    # Import the existing SSH configuration helper only on hosts doing a remote transfer.
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
     for filename in ('comparison.json','matrices.csv','cosine.txt','error_ratio.txt','result.json'):
         (folder/filename).unlink(missing_ok=True)
     old_reference = parent/'l0-steps/values.npz'

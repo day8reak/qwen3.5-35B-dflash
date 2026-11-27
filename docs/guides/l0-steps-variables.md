@@ -90,3 +90,21 @@
 | `valid19_common_M_of_N` | 专家中间量仅在三端都选择了同一专家的同一 token 上比较。M 是共同分配数，N 是有效 token 数乘每 token 的 Top‑K。 |
 
 查看整层误差从哪里放大，可以沿 `block_entry → hidden → out → residual → post_norm → moe_out → block_out` 阅读同一范围的矩阵。若 `moe_out` 出现明显变化，分别看 `shared_weighted`、`expert_ids`、`route_weights` 和 `routed`。切片本身的影响可用 `comparison.json` 中的 `four_layer_cache_control` 检查，它记录两个 L0 缓存与原四层 OMC 返回值的对照。
+
+## 复算共享专家的标量门控
+
+已有 `l0-steps-reference` 和 `l0-steps-same-input` 结果时，先在 CPU/310P golden 生成服务器提取 `layers.0.mlp.shared_expert_gate.weight` 和实测有效行。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh l0-shared-gate-reference
+```
+
+在保留同输入上板结果和四层 AIR 的 CPro 服务器执行离线复算。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh l0-shared-gate
+```
+
+每个 token 的门控分数等于该行 `post_norm` 与 2048 维权重的点积。先对照用 checkpoint 权重复算的 310P 分数和 310P 实测值，再把同一权重作用在 CPro 的 `post_norm` 上。两个预测值之间的差给出了只改变门控输入时的效果。CPro 预测值与板上分数之间的偏差还包含门控实现和中间量读回的影响。两端的点积均按 FP16 输入、FP32 累加计算。
+
+脚本也会沿 AIR 中 sigmoid 的输入回溯到 `post_norm`，记录沿途算子，并比较可识别的 2048 维浮点常量与参考权重。每端的 `shared_down × sigmoid(实测 logit)` 可核对门控读数和加权输出是否相符。最后固定 CPro 的 `shared_down`，代入 310P 实测 logit，观察共享专家输出误差改变多少。逐 token 结果在 `board/L00-L03/l0-steps-same-input/shared-gate.json`。这两步只读已有张量和权重，无需重新导出、编译或上板。

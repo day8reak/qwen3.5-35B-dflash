@@ -281,6 +281,9 @@ def worker(args, action, root, remote):
         label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
         if args.gate_probe == 'l0-embedding':
             label = '采集原 310P embedding 查表及乘法，与四层 CPro 输入逐 token 对照'
+        elif args.gate_probe == 'l0-shared-gate':
+            label = {'reference': '提取共享专家标量门控权重与已采集的参考值',
+                     'compile': '用已回传的 L0 张量离线复算共享专家门控'}[action]
         elif args.gate_probe == 'l0-steps-same-input':
             label = {'compile': '从 embedding 乘法之后切 L0 并编译诊断 OMC',
                      'execute': '用实测 310P 入口运行 L0 三端对照'}[action]
@@ -343,11 +346,13 @@ def main():
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
-                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding'), help=argparse.SUPPRESS)
+                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate'), help=argparse.SUPPRESS)
     a = parser.parse_args()
     probe_actions = ('compile', 'execute', '_compile', '_execute')
     if a.gate_probe == 'l0-embedding':
         probe_actions = ('golden', '_reference')
+    elif a.gate_probe == 'l0-shared-gate':
+        probe_actions = ('golden', '_reference', 'compile', '_compile')
     elif a.gate_probe == 'l0-steps':
         probe_actions += ('golden', '_reference')
     if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
@@ -420,6 +425,13 @@ def main():
             if a.gate_probe == 'l0-embedding':
                 from l0_embedding import diagnose
                 return 0 if diagnose(root, *source_config('reference')) else 1
+            if a.gate_probe == 'l0-shared-gate':
+                from l0_shared_gate import prepare, report
+                if a.action == 'reference':
+                    prepare(root)
+                else:
+                    report(root, remote)
+                return 0
             if a.gate_probe in ('l0-steps', 'l0-steps-same-input'):
                 if a.action == 'reference':
                     from l0_accuracy_reference import prepare
