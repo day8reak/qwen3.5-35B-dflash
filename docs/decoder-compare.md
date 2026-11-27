@@ -329,6 +329,10 @@ bash targets/cpro/scripts/decoder_compare.sh source --mode 4 --phase prefill --g
 
 ### 共享专家门控的 L0 整层回归
 
+如 L0 OMC 编译成功、上板在 `OpUpdateKernelArgs` 停止，可以在 OMC 服务器用 `bash targets/cpro/scripts/decoder_compare.sh l0-decay-report` 读取现有 AIR 与 OMC。它从单层 `ChunkGatedDeltaRule` 的命名输入 `g` 回溯 `SoftplusPatch` 和衰减乘法，再显示 OMC 可见图中的生产者、消费者与图输出。OMG 元数据可能只暴露 `GraphOp` 边界。
+
+在板端执行服务器用 `bash targets/cpro/scripts/decoder_board.sh --mode linear --phase prefill --gdn-conv conv2d --original-board-args` 对同一 OMC 改用原 V2 加载参数。如果仍重现相同加载错误，在合设的 OMC 与板端执行服务器运行 `bash targets/cpro/scripts/decoder_compare.sh l0-original-omg`。它以同一 AIR 调用原 CPro OMG 入口，再用相同的原 V2 参数对照。新 OMC、回执和三端比较写入 `board/original-omg/`，第一次编译的 OMC 留在 `board/L00/omc/`。
+
 已有 L0 golden 时，在 AIR 生成环境执行 `bash targets/cpro/scripts/decoder_air.sh --mode linear --phase prefill --gdn-conv conv2d` 即可复用同一份输入和参考输出。单层导出在加载 checkpoint 并将权重转到 FP16 后，为普通 RMSNorm 预先计算 `gamma = weight + 1.0`，将其作为 buffer 传入原 `npu_rms_norm`。如已有 OMG 的 `Add_3 compileInfo is null` 日志，可在覆盖产物前，在 OMC 生成环境执行 `bash targets/cpro/scripts/decoder_compare.sh diagnose --mode linear --phase prefill` 查看同名 AIR 节点的操作数与消费端。普通 RMSNorm 的 gamma 对应 `RmsNorm` 的第二个输入。
 
 在合设的 CPU/310P golden 与 CPro AIR 生成环境执行：

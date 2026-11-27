@@ -51,9 +51,11 @@ def transfer(client, remote, dest):
         ssh_file(client, remote/rel, dest/rel, row)
 
 
-def compiled(case, base, ddk, diagnosis, bundle_stamp):
+def compiled(case, base, ddk, diagnosis, bundle_stamp, *, original_omg=False):
     dest = base/'omc'
     stamp = dict(bundle=bundle_stamp)
+    if original_omg:
+        stamp['original_omg'] = True
     if ddk is not None:
         stamp['omg'] = sha(ddk/'tools/tools_omg/master/omg')
     if not dest.exists():
@@ -71,7 +73,7 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
             shutil.rmtree(work)
         work.mkdir()
         (work/folder).symlink_to(case/folder, target_is_directory=True)
-        if native_tool_args(meta):
+        if original_omg or native_tool_args(meta):
             code, argv, _ = compile_native_prefill(work, f'{folder}/export.air', ddk)
         else:
             code, argv, _ = compile_omg(work, f'{folder}/export.air', ddk, diagnosis, None)
@@ -83,7 +85,7 @@ def compiled(case, base, ddk, diagnosis, bundle_stamp):
         io = inspect(read_omc(model, ddk_root=ddk)[0], enum=GE_PROTO)
         data = dict(stamp=stamp, argv=argv, model=identity(model, work), output_shape=io['output_shape'],
                     weights=[identity(p, work) for p in sorted(model.parent.rglob('*.weight'))])
-        if meta.get('rms_silu_token_view'):
+        if meta.get('rms_silu_token_view') or original_omg:
             from decoder_gate_report import token_gate_build_shapes
             data['rms_silu_kernel_ports'] = token_gate_build_shapes(work/'compile.log')
         for direction in ('inputs', 'outputs'):
@@ -218,12 +220,12 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     return values
 
 
-def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board',
+def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board', original_omg=False,
           replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False,
           native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
           all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False, rms_silu_token_view=False):
     bundle = run/'package'
-    if step == 'execute' and not bundle.is_dir():
+    if (step == 'execute' or original_omg) and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
     if step != 'execute' and recovery and bundle.is_dir() and not bundle.is_symlink():
         with tempfile.TemporaryDirectory(dir=run) as tmp:
@@ -253,12 +255,23 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
     ref = read(fixture/'reference.json')
     length = ref['prompt_length']
     stamp = sha(bundle/'manifest.json')
+    if original_omg:
+        baseline = read(run/'L00/omc/build.json')
+        if baseline['stamp']['bundle'] != stamp:
+            raise ValueError('The retained L00 OMC and the received AIR package belong to different exports')
+        run = run/'original-omg'
+        run.mkdir(exist_ok=True)
+        link = run/'package'
+        if not link.is_symlink() and not link.exists():
+            link.symlink_to('../package', target_is_directory=True)
+        if link.resolve(strict=True) != bundle.resolve(strict=True):
+            raise ValueError(f'{link} does not refer to the baseline package')
     if step == 'compile':
         for group in groups(mode):
             case = bundle/case_name(group)
             base = run/case.name
             base.mkdir(exist_ok=True)
-            compiled(case, base, ddk, diagnosis, stamp)
+            compiled(case, base, ddk, diagnosis, stamp, original_omg=original_omg)
         return True
     runtime = read(config.parent/read(config)['assets'])['environment']
     pieces = read(fixture/'tokens.json')
@@ -273,7 +286,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
         progress = dict(mode=mode, phase=phase, bundle_sha256=stamp, layer=group[0], case=name)
         save_json(run/'comparison.json', dict(status='RUNNING', **progress))
         try:
-            build, model, weights = compiled(case, base, ddk, diagnosis, stamp)
+            build, model, weights = compiled(case, base, ddk, diagnosis, stamp, original_omg=original_omg)
             board_case = directory_name(mode, phase)
             if mode == 'layerwise':
                 board_case += '-' + case.name

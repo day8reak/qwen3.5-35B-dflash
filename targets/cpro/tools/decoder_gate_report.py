@@ -67,17 +67,34 @@ def show_graph(air, names, trace_shapes):
     return chains
 
 
-def show_omc_edges(model, chains):
+def show_omc_edges(model, chains, *, decay=False, ddk=None):
     """Read explicit references in each serialized graph's own namespace."""
-    document, _ = read_omc(model)
-    targets = set(chains)
-    expected_names = targets | {name for chain in chains.values() for name in chain}
+    document, _ = read_omc(model, ddk_root=ddk)
     seen = set()
     graph_count = 0
     print(f'  OMC 连线 {model}')
     for path, graph in graphs(document, include_nested=True):
         graph_count += 1
         ops = [op for op in graph['op'] if isinstance(op, dict)]
+        targets = set(chains)
+        if decay:
+            from qwen35_moe_dflash.target.prefill_t64.attention_steps import VIEWS
+            # Follow a renamed activation through visible casts/views to its Mul in this graph.
+            linked = {op['name'] for op in ops if op.get('type') == 'SoftplusPatch'}
+            previous = None
+            while previous != linked:
+                previous = linked.copy()
+                for op in ops:
+                    if op.get('type') not in VIEWS | {'Mul'}:
+                        continue
+                    inputs = [edge.removesuffix(':0') for edge in op.get('input', []) if isinstance(edge, str)]
+                    sources = op.get('src_name', op.get('srcName', []))
+                    indices = op.get('src_index', op.get('srcIndex', []))
+                    if linked.intersection(inputs) or any(s in linked and str(i) == '0' for s, i in zip(sources, indices)):
+                        linked.add(op['name'])
+            targets.update(linked)
+            targets.update(op['name'] for op in ops if op.get('type') == 'ChunkGatedDeltaRule')
+        expected_names = targets | {name for chain in chains.values() for name in chain}
         named = [op for op in ops if op.get('name') in expected_names]
         uses = {name: [] for name in targets}
         unknown_ports = []
@@ -114,6 +131,9 @@ def show_omc_edges(model, chains):
                       f'src_index={op.get("src_index", op.get("srcIndex", []))}')
                 continue
             seen.add(name)
+            if decay:
+                print(f'      {name} ({op.get("type")}) input={op.get("input", [])} '
+                      f'src_name={op.get("src_name", op.get("srcName", []))}')
             dest = op.get('dst_name', op.get('dstName', []))
             slots = op.get('dst_index', op.get('dstIndex', []))
             print(f'      {name}:0 ({op.get("type")}) →', ' | '.join(uses[name]) or '本图未见显式消费者输入或图输出')
@@ -122,9 +142,63 @@ def show_omc_edges(model, chains):
         for name in sorted(targets - local_names):
             if uses[name]:
                 print(f'      本图引用 {name}:0，但未见同名生产者：', ' | '.join(uses[name]))
-    missing = sorted(targets - seen)
+    missing = sorted(set(chains) - seen)
     if missing:
-        print(f'    在 {graph_count} 个可见图中未找到同名门控节点：{", ".join(missing)}')
+        print(f'    在 {graph_count} 个可见图中未找到同名源节点：{", ".join(missing)}')
+
+
+def report_linear_decay(root, ddk):
+    from qwen35_moe_dflash.target.prefill_t64.attention_steps import AttentionSteps, operands
+    from qwen35_moe_dflash.target.layer_probe.common import sha
+
+    board = root/'board'
+    case = board/'package/L00'
+    meta = read(case/'case.json')
+    build_dir = board/'L00/omc'
+    build = read(build_dir/'build.json')
+    if build['stamp']['bundle'] != sha(board/'package/manifest.json'):
+        raise ValueError('The retained L00 OMC and AIR package belong to different exports')
+    receipt_file = board/'L00/replay/result.json'
+    if receipt_file.is_file():
+        receipt = read(receipt_file)
+        if receipt.get('omc_sha256') != build['model']['sha256']:
+            raise ValueError('The retained replay used a different OMC')
+        print(f'[L00 replay] {receipt["status"]}, exit={receipt.get("exitcode")}')
+    air = case/meta.get('air_directory', 'weight')/'export.air'
+    _, graph = graph_message(air.read_bytes(), 'NetOutput')
+    nodes = {op.name: op for op in graph.op}
+    walk = AttentionSteps(graph, nodes, [])
+    soft, = [op for op in graph.op if op.type == 'SoftplusPatch']
+    gdr, = [op for op in graph.op if op.type == 'ChunkGatedDeltaRule']
+    ports = dict(zip((v.decode() for v in gdr.attr['_input_name_key'].list.s),
+                     gdr.attr['_input_name_value'].list.i, strict=True))
+    slot = ports['g']
+    source = soft.name + ':0'
+    edge = gdr.input[slot]
+    print(f'[源 AIR] {air}\n  {edge} → {gdr.name}.g (input[{slot}])')
+    path_names = {soft.name, gdr.name}
+    if walk.depends(edge, source):
+        pending = [edge]
+        visited = set()
+        while pending:
+            current = pending.pop()
+            if current == source or current in visited:
+                continue
+            visited.add(current)
+            op = walk.node(current)
+            path_names.add(op.name)
+            for upstream in operands(op):
+                if walk.depends(upstream, source):
+                    print(f'  {upstream} ({walk.node(upstream).type}) → {op.name} ({op.type})')
+                    pending.append(upstream)
+        print('  AIR 已连到 ChunkGatedDeltaRule.g')
+    else:
+        print(f'  AIR 中 {gdr.name}.g 的数据依赖未经过 {source}')
+        for op in graph.op:
+            if source in operands(op):
+                path_names.add(op.name)
+                print(f'  {source} → {op.name} ({op.type})')
+    show_omc_edges(sized_file(build_dir, build['model']), dict.fromkeys(path_names, ()), decay=True, ddk=ddk)
 
 
 def silu_build_ports(line):

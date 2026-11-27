@@ -28,6 +28,8 @@ l0-input-rmsnorm       Export, compile and run this RMSNorm on the same 310P inp
 l0-shared-gate-reference   Export the L0 scalar gate weight and saved reference rows on the golden host.
 l0-shared-gate   Compare the saved gate logits and weighted outputs offline on the CPro host.
 l0-shared-gate-fp16   Run one same-input L0 shared-router OMC with FP16 scalar MatMul and an FP32 cast before sigmoid.
+l0-decay-report   Show the SoftplusPatch to GDR decay path in the retained single-layer AIR and visible OMC graphs.
+l0-original-omg   Compile the retained single-layer AIR with the original OMG command and replay with the original V2 flags.
 gate-report Compare AIR and OMC gate edges, kernel build logs and metadata for the full model and the silu-cast-mul probe.
 prepare     On the combined reference/export host: capture reference, compute CPU golden, export static AIR.
 board       On the DDK host: fetch, compile, run on device and compare CPU / 310P / CPro.
@@ -55,6 +57,13 @@ HELP
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    l0-decay-report)
+        shift
+        exec bash "$0" compile --mode linear --phase prefill --gate-probe l0-decay-report "$@" ;;
+    l0-original-omg)
+        shift
+        bash "$0" compile --mode linear --phase prefill --gate-probe l0-original-omg "$@"
+        exec bash "$0" execute --mode linear --phase prefill --gate-probe l0-original-omg "$@" ;;
     l0-embedding)
         shift
         exec bash "$0" golden --gate-probe l0-embedding --mode 4 --phase prefill "$@" ;;

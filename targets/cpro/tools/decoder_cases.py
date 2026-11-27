@@ -314,6 +314,10 @@ def worker(args, action, root, remote):
                      'execute': '使用四层真实输入上板，按计算顺序生成 L0 三端矩阵'}[action]
         elif args.gate_probe == 'report':
             label = '对照四层和门控小图的已有 AIR、编译日志及上板记录'
+        elif args.gate_probe == 'l0-decay-report':
+            label = '查看现有 L0 AIR 和 OMC 的 Softplus 衰减支路'
+        elif args.gate_probe == 'l0-original-omg':
+            label = {'compile': '用原 CPro OMG 参数编译已有 L0 AIR', 'execute': '用原 V2 参数执行对照 OMC'}[action]
         elif args.gate_probe == 'gdn-bisect':
             label = {'compile': '从已有单层 GDN AIR 分段切图并编译 OMC',
                      'execute': '逐个上板并汇总复现同一加载错误的最小切片'}[action]
@@ -369,7 +373,8 @@ def main():
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
                         choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate', 'l0-shared-gate-fp16',
-                                 'l0-input-rmsnorm', 'l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc'), help=argparse.SUPPRESS)
+                                 'l0-input-rmsnorm', 'l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc',
+                                 'l0-decay-report', 'l0-original-omg'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
     a = parser.parse_args()
     if a.rmsnorm_air is not None and (a.gate_probe != 'l0-input-rmsnorm-omc'
@@ -381,13 +386,14 @@ def main():
         probe_actions = ('golden', '_reference')
     elif a.gate_probe == 'l0-shared-gate':
         probe_actions = ('golden', '_reference', 'compile', '_compile')
-    elif a.gate_probe in ('l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc'):
+    elif a.gate_probe in ('l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc', 'l0-decay-report'):
         probe_actions = ('compile', '_compile')
     elif a.gate_probe == 'l0-steps':
         probe_actions += ('golden', '_reference')
-    if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
+    probe_mode = 'linear' if a.gate_probe in ('l0-original-omg', 'l0-decay-report') else '4'
+    if a.gate_probe and ((a.mode, a.phase) != (probe_mode, 'prefill') or
                          a.action not in probe_actions):
-        parser.error('gate-probe uses the existing four-layer T64 prefill export')
+        parser.error(f'{a.gate_probe} requires --mode {probe_mode} --phase prefill and its supported stage')
     if any(getattr(a, name) for name in FOUR_LAYER_CONTROLS):
         if (a.mode, a.phase) != ('4', 'prefill'):
             parser.error('use --mode 4 --phase prefill for this four-layer control')
@@ -452,6 +458,16 @@ def main():
     if a.action.startswith('_'):
         a.action = a.action[1:]
         if a.gate_probe:
+            if a.gate_probe == 'l0-decay-report':
+                from decoder_gate_report import report_linear_decay
+                report_linear_decay(root, board_config('compile')[0])
+                return 0
+            if a.gate_probe == 'l0-original-omg':
+                from decoder_cases_board import board
+                ddk, config, diag = board_config(a.action)
+                return 0 if board(root/'board', a.mode, a.phase, remote/'export', ddk, config, diag, False,
+                                  step=a.action, gdn_conv=a.gdn_conv, original_omg=True, original_board_args=True,
+                                  replace_inputs=a.replace_inputs, replace_weights=a.replace_weights) else 1
             if a.gate_probe == 'l0-embedding':
                 from l0_embedding import diagnose
                 return 0 if diagnose(root, *source_config('reference')) else 1
