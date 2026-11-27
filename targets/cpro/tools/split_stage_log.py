@@ -14,7 +14,7 @@ from qwen35_moe_dflash.execution.hdc_run import Hdc
 from qwen35_moe_dflash.execution.serial_transport import _environment
 from qwen35_moe_dflash.target.layer_probe.common import save_json
 from qwen35_moe_dflash.target.prefill_t64.chain_hilog import (
-    _client_records, _snapshot, _window, load, retained_tool_window,
+    _client_records, _snapshot, _window, client_pids, load, retained_tool_window, tool_client_tids,
 )
 from qwen35_moe_dflash.target.prefill_t64.whole_run import hiai_failure_stage
 
@@ -217,10 +217,9 @@ def load_report(replay, expected_kinds=None):
     print(f'{replay}: {receipt["case"]} load_model, V2 exit={receipt["exitcode"]}; OMC {model["sha256"]}')
     print(f'Manifests and replay receipt agree: {len(io["inputs"])} ordered inputs, {len(weights)} external weight files, '
           f'{sum(row["bytes"] for row in manifest["weights"]):,} external weight bytes.')
-    tids = re.findall(r'\bclient_tid=(\d+)', stdout)
     window = replay/'window.log'
     if window.is_file():
-        matches = service_context(window, tids)
+        matches = service_context(window, client_pids(window, tool_client_tids(stdout)))
         if not matches:
             print('No failed service Load RPC matched this client in the saved window.')
     else:
@@ -242,6 +241,11 @@ def saved_report(path):
         try:
             for failure in row.get('service_failures', []):
                 print(f"Saved hiaiserver context for client {failure['client']}:", *failure['lines'], sep='\n')
+            window = folder/'window.log'
+            if not row.get('service_failures') and window.is_file():
+                stdout = (folder/'tool.stdout').read_text(errors='replace')
+                if hiai_failure_stage(stdout) == 'load_model':
+                    service_context(window, client_pids(window, tool_client_tids(stdout)))
             summarize_execution(row, folder)
         except (OSError, ValueError, KeyError) as exc:
             print(f'{folder}: {exc}', file=sys.stderr)

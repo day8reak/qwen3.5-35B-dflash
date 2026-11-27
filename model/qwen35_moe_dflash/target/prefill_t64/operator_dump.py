@@ -7,6 +7,7 @@ import shutil
 
 from ...execution.hdc_run import _relative
 from ..layer_probe.common import save_json
+from .chain_hilog import tool_client_tids
 
 
 def collect(hdc, remote, out, tool_dir, receipt):
@@ -54,7 +55,7 @@ def collect(hdc, remote, out, tool_dir, receipt):
         report['status'] = 'FILES_RECEIVED_REVIEW_REQUIRED'
     _, window = hdc.shell(f'cd {remote} && stat -c "%n %y" tool.started tool.exitcode', 'dump-device-window')
     _, stdout = hdc.shell(f'cat {remote}/tool.stdout', 'dump-model-stdout')
-    tids = sorted(set(re.findall(r'client_tid=(\d+)', stdout)))
+    tids = tool_client_tids(stdout)
     inventory = out/'dump-inventory.json'
     save_json(inventory, dict(**report, attempt=receipt['attempt'], model_argv=receipt['argv'],
                               omc_sha256=receipt['omc_sha256'], model_exitcode=receipt['exitcode'],

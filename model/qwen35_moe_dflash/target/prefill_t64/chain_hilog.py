@@ -11,6 +11,14 @@ from ...common.artifacts import output_path
 from .chain_board import load
 
 
+def tool_client_tids(stdout):
+    tids = re.findall(r'\bclient_tid=(\d+)\b', stdout)
+    if not tids:
+        # Dump mode omits the profiling configuration, but reports the bound thread.
+        tids = re.findall(r'^\s*bind tid:\s*(\d+)\s+success\.\s*$', stdout, re.MULTILINE)
+    return list(dict.fromkeys(tids))
+
+
 def _window(snapshot, dest, start, end, *, signals=None):
     # HiLog records local month/day and time. Device marker mtimes use the same clock.
     # tar/FS mtimes and the text format can differ in fractional precision.
@@ -136,9 +144,10 @@ def diagnose_v2(replay_dir, hilog=None):
                + ' elif test -f tool.stderr && test ! -s tool.stderr; then marker=tool.stderr;'
                + ' else marker=../complete; fi'
                + ' && echo "$marker" && stat -c "%y" "$marker" && stat -c "%y" tool.exitcode'
-               + ' && sed -n "s/.*client_tid=\\([0-9][0-9]*\\).*/\\1/p" tool.stdout')
+               + ' && cat tool.stdout')
     _, details = hdc.shell(command, 'v2-log-markers')
-    marker, start_text, end_text, *tids = details.splitlines()
+    marker, start_text, end_text, *stdout = details.splitlines()
+    tids = tool_client_tids('\n'.join(stdout))
     start, end = (datetime.fromisoformat(t[:19]) for t in (start_text, end_text))
     if end < start:
         raise ValueError('The V2 exit marker predates the start marker')
@@ -150,20 +159,26 @@ def diagnose_v2(replay_dir, hilog=None):
     _client_records(window, out, tids)
 
 
+_CLIENT_HEADER = re.compile(r'^\S+\s+\S+\s+(\d+)\s+(\d+)\s+[VDIWEF]\s+\S*/model_run_tool[^\s/:]*[/:]')
+
+
+def client_pids(window, tids):
+    with window.open(errors='replace') as stream:
+        return sorted({m[1] for line in stream if (m := _CLIENT_HEADER.match(line)) and m[2] in tids})
+
+
 def _client_records(window, out, tids):
-    header = re.compile(r'^\S+\s+\S+\s+(\d+)\s+(\d+)\s+[VDIWEF]\s+\S*/model_run_tool[^\s/:]*[/:]')
-    with window.open() as stream:
-        pids = {m[1] for line in stream if (m := header.match(line)) and m[2] in tids}
+    pids = client_pids(window, tids)
     if not pids:
         print(f'No matching model_run_tool thread in this window for client_tid={",".join(tids) or "unknown"}.')
         return []
     client_log = out / 'client.log'
     with window.open() as stream, client_log.open('x') as client:
         for line in stream:
-            if (m := header.match(line)) and m[1] in pids:
+            if (m := _CLIENT_HEADER.match(line)) and m[1] in pids:
                 client.write(line)
     print(f'V2 client_tid={",".join(tids)} matched PID {", ".join(sorted(pids))}. Client records: {client_log}')
-    return sorted(pids)
+    return pids
 
 
 def retained_tool_window(hdc, name, remote, board, folder, *, expected_exit=None):
@@ -178,7 +193,7 @@ def retained_tool_window(hdc, name, remote, board, folder, *, expected_exit=None
         _, body = hdc.shell(f'cd {remote} && cat {filename}', name + '-' + filename)
         (folder / filename).write_text(body + '\n' if body else '')
         if filename == 'tool.stdout':
-            tids = re.findall(r'\bclient_tid=(\d+)', body)
+            tids = tool_client_tids(body)
         print(f'{filename}\n{body}', flush=True)
     if int(code) == 0:
         return None
