@@ -349,6 +349,16 @@ bash targets/cpro/scripts/decoder_compare.sh diagnose --mode 4 --phase prefill
 
 各组的变量、直接上游、逻辑形状和比较范围见 [L0 逐步三端对比变量表](guides/l0-steps-variables.md)。
 
+要定位进入 L0 前的差异，在 CPU/310P golden 生成服务器运行一条命令。它使用原 `inference_segment.py`、原 YAML 和现有四层输入包，加载原 segment 1 到 NPU，在 L0 forward 前停止。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh l0-embedding
+```
+
+默认读同一用例的 `export/fixture` 和 `export/package/L00-L03`。AIR 生成环境分开部署时，`DECODER_EMBEDDING_CASE` 可指向 golden 服务器可读的本次 `L00-L03` 目录，只需其中的 `case.json` 以及 `inputs/inputs_embeds.bin`、`inputs/embed_scale.bin`。
+
+`l0-embedding/result.json` 记录实际执行的查表或逐行乘法、数据类型、源码位置、与 L0 实测 FP16 hidden 相符的观测点，以及各有效 token 的编码和 scale 对照。只观察到浮点查表时，仅能确定这次 forward 用到的查表类型。若观测点都不能还原入口，状态为 `ENTRY_PATH_UNRESOLVED`。这项诊断取数在 input RMSNorm 之前，后续投影的激活编码见 `qkv_a8`。
+
 保留已运行的 `4-prefill-t64`。这组诊断使用其中的四层 AIR、物理尾部 ConvState、Conv2D 和自定义激活，支持 RMS 门控的 `[64,4096]` 视图。两台机器使用同一版仓库。
 
 1. 在 CPU、310P golden 生成环境执行 `bash targets/cpro/scripts/decoder_compare.sh l0-steps-reference`。脚本用原 YAML 的 prompt 再取一次 L0 的实际张量，对齐四层 fixture 的 token、输入 hidden 和两个返回缓存，并在 CPU 上用原 W4 权重独立计算。

@@ -279,7 +279,9 @@ def worker(args, action, root, remote):
              'diagnose': '读取已失败的板端运行日志', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
     if getattr(args, 'gate_probe', False):
         label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
-        if args.gate_probe == 'l0-steps':
+        if args.gate_probe == 'l0-embedding':
+            label = '采集原 310P embedding 查表及乘法，与四层 CPro 输入逐 token 对照'
+        elif args.gate_probe == 'l0-steps':
             label = {'reference': '采集 L0 真实 310P 中间量并计算 CPU 对照', 'compile': '从四层 AIR 导出 L0 中间量并编译',
                      'execute': '使用四层真实输入上板，按计算顺序生成 L0 三端矩阵'}[action]
         elif args.gate_probe == 'report':
@@ -338,10 +340,12 @@ def main():
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
-                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps'), help=argparse.SUPPRESS)
+                        choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-embedding'), help=argparse.SUPPRESS)
     a = parser.parse_args()
     probe_actions = ('compile', 'execute', '_compile', '_execute')
-    if a.gate_probe == 'l0-steps':
+    if a.gate_probe == 'l0-embedding':
+        probe_actions = ('golden', '_reference')
+    elif a.gate_probe == 'l0-steps':
         probe_actions += ('golden', '_reference')
     if a.gate_probe and ((a.mode, a.phase) != ('4', 'prefill') or
                          a.action not in probe_actions):
@@ -410,6 +414,9 @@ def main():
     if a.action.startswith('_'):
         a.action = a.action[1:]
         if a.gate_probe:
+            if a.gate_probe == 'l0-embedding':
+                from l0_embedding import diagnose
+                return 0 if diagnose(root, *source_config('reference')) else 1
             if a.gate_probe == 'l0-steps':
                 if a.action == 'reference':
                     from l0_accuracy_reference import prepare

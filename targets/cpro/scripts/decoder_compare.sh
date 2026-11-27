@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-decoder_compare.sh {golden|air|compile|execute|diagnose|l0-steps-reference|l0-steps|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
+decoder_compare.sh {golden|air|compile|execute|diagnose|l0-embedding|l0-steps-reference|l0-steps|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
                    [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only|--gdn-silu-site {conv|gate}|--all-silu-no-gate-cast|--rms-silu-layers LAYERS|--rms-silu-token-view] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data.
@@ -18,6 +18,7 @@ gate-upstream  Reconnect the first gate to its original z projection, RMSNorm, t
 gdn-export  Export one L0 linear attention AIR from the retained four-layer T64 physical-history package.
 gdn-whole   Export the same L0 module, compile one OMC and replay on the board with synthetic inputs.
 gdn-bisect  Cut the retained standalone L0 GDN at multiple depths, compile OMCs, replay them and report minimal reproductions.
+l0-embedding  Observe the 310P embedding path up to L0 and compare its token rows with the retained CPro inputs.
 l0-steps-reference  Capture CPU and 310P L0 intermediates for the existing four-layer YAML prompt.
 l0-steps    Read out L0 from the existing four-layer AIR, run with its real inputs and write three-way matrices.
 gate-report Compare AIR and OMC gate edges, kernel build logs and metadata for the full model and the silu-cast-mul probe.
@@ -47,6 +48,9 @@ HELP
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    l0-embedding)
+        shift
+        exec bash "$0" golden --gate-probe l0-embedding --mode 4 --phase prefill "$@" ;;
     l0-steps-reference)
         shift
         exec bash "$0" golden --gate-probe l0-steps --mode 4 --phase prefill "$@" ;;
