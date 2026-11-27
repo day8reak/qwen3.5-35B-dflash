@@ -375,6 +375,8 @@ L0 共享专家门控默认对 FP16 点积的结果执行 `.float()` 再做 sigm
 - `board/package/fixture/l0-steps-reference/values.npz` 和同级的 `tensors.json`。CPU、310P 参考张量及其名称、dtype 和形状。
 - `board/comparison.json` 和 `board/matrices.csv`。同一次推理的整层输出三端比较。中间值与 Python 变量的对应关系待根据本机解析器的实际 dump 格式确认，状态为 `PENDING_PORT_MAPPING`。
 
+已有完整 L0 dump 时，在 35 运行 `python3 targets/cpro/tools/l0_dump_report.py "$case_dir"`，其中 `case_dir` 指向本次的 `1-linear-prefill-t64` 目录。它离线对比准备送板的 hidden 与 CPU、310P 的 L0 入口，并列出 AIR 的 RMSNorm 端口和 dump 文件名候选。确认第一个 RMSNorm 的 x、z 各为完整的 FP16 ND 原始文件后，可在原命令后加 `--rms-io <x文件> <z文件>`，路径相对 `board/L00/replay/dump/`。它会对比 x 与送板输入、z 与两端的 `hidden`，范围是有效 token。带分片或有格式头的文件需先确认解析器的格式。
+
 - 板端的 `model_run_tool_internal` 使用 V2，显式传入 `--input_shape` 和 `--output_shape`。每项按端口顺序写作 `名称:物理维度`，同一方向的多个端口用分号连接。旧编译记录缺少输出名称时，同机可用的 OMG 可以从现有 OMC 补读元数据；仍缺名称时，执行端通过 `runtime.json` 配套的描述查询工具读取板上模型。完整调用保存在该次 `replay/run.sh` 和 `replay/result.json` 的 `argv` 字段。
 - 板端固定使用 `/data/local/tmp/qwen35_case_<用例>/work`，例如 `qwen35_case_40-prefill-t64/work`。逐层模式在用例名后追加层号，例如 `40x1-prefill-t64-L00`。
 - 每次上传当前 OMC。脚本按清单里的文件标识和板上的字节数复用输入、外置权重，缺失或变化的文件随 OMC 一次上传。成功后一次拉回输出目录并按槽位绑定，删除板端 OMC 和输出，留下当前输入和权重。失败现场保留到同用例下次启动，路径见 `result.json` 的 `remote` 字段。
