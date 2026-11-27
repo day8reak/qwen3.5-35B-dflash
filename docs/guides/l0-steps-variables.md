@@ -108,3 +108,5 @@ bash targets/cpro/scripts/decoder_compare.sh l0-shared-gate
 每个 token 的门控分数等于该行 `post_norm` 与 2048 维权重的点积。先对照用 checkpoint 权重复算的 310P 分数和 310P 实测值，再把同一权重作用在 CPro 的 `post_norm` 上。两个预测值之间的差给出了只改变门控输入时的效果。CPro 预测值与板上分数之间的偏差还包含门控实现和中间量读回的影响。两端的点积均按 FP16 输入、FP32 累加计算。
 
 脚本也会沿 AIR 中 sigmoid 的输入回溯到 `post_norm`，记录沿途算子，并比较可识别的 2048 维浮点常量与参考权重。每端的 `shared_down × sigmoid(实测 logit)` 可核对门控读数和加权输出是否相符。最后固定 CPro 的 `shared_down`，代入 310P 实测 logit，观察共享专家输出误差改变多少。逐 token 结果在 `board/L00-L03/l0-steps-same-input/shared-gate.json`。这两步只读已有张量和权重，无需重新导出、编译或上板。
+
+当标量门控的 OMC 输出槽声明为 FP32 时，报告另外从原始 bin 的第 0 字节起按小端 FP16 连续读取有效 token 的分数，并与点积对照。读原始字节可以识别两个相邻 FP16 被当成一个 FP32 的情况。报告同时记录 AIR 生产端和消费端 dtype、OMC 槽位和文件路径。分别把两种解读的分数代入 `shared_down × sigmoid(logit)`，可判断哪种解读与同一切片中实测的共享专家贡献相符。逐 token 的 `observed_cpro` 保留按 OMC 描述读取的结果，`raw_as_fp16` 单列字节解读实验。

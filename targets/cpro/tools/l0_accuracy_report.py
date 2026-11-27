@@ -70,7 +70,7 @@ def get_reference(root, remote, folder, filename='values.npz'):
     return dest
 
 
-def compiled_readouts(base, row):
+def compiled_output_slots(base, row):
     build = read(base/'omc/build.json')
     receipt = read(base/'replay/result.json')
     if receipt['status'] != 'EXECUTED' or receipt['omc_sha256'] != build['model']['sha256']:
@@ -78,13 +78,18 @@ def compiled_readouts(base, row):
     outputs = row['outputs']
     by_edge = {w['edge']: w for w in outputs}
     assigned = set()
-    result = {}
     for i, (spec, item, public) in enumerate(zip(build['outputs'], receipt['outputs'], outputs, strict=True)):
         wire = by_edge.get(spec['name'], public)
         if wire['edge'] in assigned:
             raise ValueError(f'{base}: ambiguous compiled output {i} {spec["name"]}')
         assigned.add(wire['edge'])
-        arr = read_tensor(sized_file(base/'replay', item), spec)
+        yield i, wire, spec, sized_file(base/'replay', item)
+
+
+def compiled_readouts(base, row):
+    result = {}
+    for _, wire, spec, path in compiled_output_slots(base, row):
+        arr = read_tensor(path, spec)
         for role in wire['aliases']:
             result[role] = arr
     return result

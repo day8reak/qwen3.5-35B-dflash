@@ -58,6 +58,7 @@ def prepare(root):
 def gate_constant(root, groups, source, trace):
     """Inspect only the dependency cone between post_norm and the input of the gate sigmoid."""
     from decoder_gate_probe import air_bundle
+    from qwen35_moe_dflash.target.prefill_t64.attention_slice import descriptor, port_info
     from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
     from qwen35_moe_dflash.target.prefill_t64.l0_split import slice_dependencies
     from qwen35_moe_dflash.target.prefill_t64.layer_template import parameter
@@ -74,6 +75,14 @@ def gate_constant(root, groups, source, trace):
     boundary = edge('attention-output', 'post_norm')
     logit = edge('shared-router', 'shared_gate_logit')
     trace.update(air=str(path), input=boundary, output=logit)
+    producer = nodes[logit.rsplit(':', 1)[0]]
+    trace['producer_ports'] = dict(node=producer.name, op=producer.type,
+                                   inputs=[port_info(graph, d) for d in producer.input_desc],
+                                   output=port_info(graph, descriptor(nodes, logit)))
+    trace['consumers'] = [dict(node=op.name, op=op.type, slot=i, port=port_info(graph, op.input_desc[i]))
+                          for op in graph.op for i, e in enumerate(op.input)
+                          if e == logit and i < len(op.input_desc)]
+    print(f'AIR 门控输出：{trace["producer_ports"]}，消费端：{trace["consumers"]}')
     kept, used = slice_dependencies(nodes, [logit], {boundary}, 'L0 scalar gate')
     if used != {boundary}:
         raise ValueError(f'{logit} does not consume {boundary}')
@@ -117,7 +126,7 @@ def weighted(down, logit):
 
 
 def report(root, remote):
-    from l0_accuracy_report import compiled_readouts, get_reference, reference_matches
+    from l0_accuracy_report import compiled_output_slots, compiled_readouts, get_reference, reference_matches
 
     folder = root/'board/L00-L03/l0-steps-same-input'
     control = read(folder/'comparison.json')
@@ -174,6 +183,25 @@ def report(root, remote):
     result['tokens'] = [dict(token=t, observed_310p=float(measured_nz[t, 0]), predicted_310p=float(pred_nz[t, 0]),
                              observed_cpro=float(measured_cpro[t, 0]), predicted_cpro=float(pred_cpro[t, 0]))
                         for t in range(valid)]
+    # Read the returned bytes before any dtype conversion. Only the first valid scalars
+    # have a host comparison here; a padded public buffer may contain unrelated trailing bytes.
+    (slot, wire, spec, path), = (item for item in compiled_output_slots(folder/'shared-router', groups['shared-router'])
+                                 if 'shared_gate_logit' in item[1]['aliases'])
+    result['gate_readout'] = dict(slot=slot, air_edge=wire['edge'], omc=spec, file=str(path),
+                                  file_bytes=path.stat().st_size)
+    print(f'OMC 门控输出槽与原始文件：{result["gate_readout"]}')
+    if spec['dtype'] == 'float32':
+        half = np.fromfile(path, dtype='<f2', count=valid).astype(np.float32).reshape(valid, 1)
+        if np.isfinite(half).all():
+            compare('原始输出前缀按连续 FP16 读取 vs CPro 输入点积', half, pred_cpro)
+            compare('CPro down × sigmoid(FP16 解读) vs CPro 实测 shared_weighted',
+                    weighted(cpro['shared_down'], half), cpro['shared_weighted'])
+            compare('CPro down × sigmoid(FP16 解读) vs 310P 实测 shared_weighted',
+                    weighted(cpro['shared_down'], half), nz['shared_weighted'])
+            for token, value in zip(result['tokens'], half[:, 0], strict=True):
+                token['raw_as_fp16'] = float(value)
+        else:
+            print('原始输出前缀按 FP16 解读含有非有限值')
     dest = folder/'shared-gate.json'
     save_json(dest, result)
     print(f'{valid} 个有效 token 的门控分数和 AIR 依赖：{dest}')
