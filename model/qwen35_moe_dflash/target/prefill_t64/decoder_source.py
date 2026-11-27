@@ -9,6 +9,26 @@ from .decoder_four_source import preserve_source
 from .source_model import _call, _definition
 
 
+def token_view_decay(source):
+    """Call SoftplusPatch on [token, head], then restore [batch, token, head] for the decay."""
+    from .source_model import _convert, _expr, _one
+
+    tree = ast.parse(source)
+    forward = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
+    kernel = _call(forward, 'torch.ops.npu.softplus_patch')
+    value, = kernel.args
+    use = _one((n for n in ast.walk(forward) if isinstance(n, ast.Call) and
+                isinstance(n.func, ast.Attribute) and n.func.value is kernel), 'consumer of GDN SoftplusPatch')
+    if (use.func.attr == 'reshape_as' and [ast.unparse(arg) for arg in use.args] == ['a']
+            and ast.unparse(value).endswith('.reshape(-1, 32)')):
+        return source
+    if use.func.attr not in ('float', 'to'):
+        raise ValueError(f'Unexpected consumer of the GDN SoftplusPatch: {ast.unparse(use)}')
+    kernel.args[0] = _convert(value, 'reshape', [_expr('-1'), ast.Constant(32)])
+    use.func.value = _convert(kernel, 'reshape_as', [_expr('a')])
+    return preserve_source(source, ast.unparse(tree))
+
+
 def fp16_shared_gate(source):
     tree = ast.parse(source)
     moe = _definition(tree, 'Qwen3_5MoeSparseMoeBlock')
@@ -81,7 +101,7 @@ def inspect_shared_gates(graph, layers):
     return gates
 
 
-def export_source(source, dest, *, lookup=False, token_gate=False, fold_norm_gamma=False):
+def export_source(source, dest, *, lookup=False, token_gate=False, decay_token_view=False, fold_norm_gamma=False):
     """Keep imported helpers beside the run-local model; preserve editable sources."""
     from .decoder_four_silu import inline_old_silu, token_view_rms_gate
 
@@ -95,6 +115,8 @@ def export_source(source, dest, *, lookup=False, token_gate=False, fold_norm_gam
     model = fp16_shared_gate((source/MODELING).read_text())
     if token_gate:
         model = token_view_rms_gate(inline_old_silu(model))
+    if decay_token_view:
+        model = token_view_decay(model)
     if fold_norm_gamma:
         tree = ast.parse(model)
         norm = _definition(_definition(tree, 'Qwen3_5MoeRMSNorm'), 'forward')

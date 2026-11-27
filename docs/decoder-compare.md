@@ -329,6 +329,8 @@ bash targets/cpro/scripts/decoder_compare.sh source --mode 4 --phase prefill --g
 
 ### 共享专家门控的 L0 整层回归
 
+单层 `--mode linear --phase prefill` 导出时，PyTorch 将衰减分支的 64 个 token、每 token 32 个 head 排成 `[64,32]`，直接调用 FP16 `SoftplusPatch`。输出恢复为 `[1,64,32]` 后转 FP32，与 `-exp(A_log)` 相乘。导出日志的 `[GDN decay AIR]` 会打印算子输入形状，并核对乘积通向 `ChunkGatedDeltaRule.g`。上板加载结果以本次新编译 OMC 的 `board/L00/replay/result.json` 为准。
+
 如 L0 OMC 编译成功、上板在 `OpUpdateKernelArgs` 停止，可以在 OMC 服务器用 `bash targets/cpro/scripts/decoder_compare.sh l0-decay-report` 读取现有 AIR 与 OMC。它从单层 `ChunkGatedDeltaRule` 的命名输入 `g` 回溯 `SoftplusPatch` 和衰减乘法，再显示 OMC 可见图中的生产者、消费者与图输出。OMG 元数据可能只暴露 `GraphOp` 边界。
 
 在板端执行服务器用 `bash targets/cpro/scripts/decoder_board.sh --mode linear --phase prefill --gdn-conv conv2d --original-board-args` 对同一 OMC 改用原 V2 加载参数。如果仍重现相同加载错误，在合设的 OMC 与板端执行服务器运行 `bash targets/cpro/scripts/decoder_compare.sh l0-original-omg`。它以同一 AIR 调用原 CPro OMG 入口，再用相同的原 V2 参数对照。新 OMC、回执和三端比较写入 `board/original-omg/`，第一次编译的 OMC 留在 `board/L00/omc/`。

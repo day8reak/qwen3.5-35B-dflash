@@ -219,8 +219,9 @@ def prepare_stage(args, run):
     else:
         from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
         with tempfile.TemporaryDirectory(dir=run, prefix='decoder-source-') as tmp:
-            token_gate = (args.mode, args.phase) == ('linear', 'prefill')
-            adapted = export_source(prepared, Path(tmp)/'source', token_gate=token_gate,
+            linear_prefill = (args.mode, args.phase) == ('linear', 'prefill')
+            adapted = export_source(prepared, Path(tmp)/'source', token_gate=linear_prefill,
+                                    decay_token_view=linear_prefill,
                                     fold_norm_gamma=exporter is decoder_case_air.export)
             exporter(working, fixture, ref, src, cfg, adapted, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
