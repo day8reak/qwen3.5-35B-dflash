@@ -96,7 +96,7 @@ def inspect_shared_gates(graph, layers):
 
 def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_patch=False):
     """Keep imported helpers beside the run-local model; preserve editable sources."""
-    from .decoder_four_silu import inline_old_silu, remove_activation_views
+    from .decoder_four_silu import remove_activation_views, update_activation_calls
 
     (dest/'models').mkdir(parents=True)
     for folder in (Path('.'), Path('models')):
@@ -106,7 +106,7 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
                 continue
             (dest/rel).symlink_to(path.resolve(), target_is_directory=path.is_dir())
     model = remove_activation_views((source/MODELING).read_text())
-    model = inline_old_silu(fp16_shared_gate(model))
+    model = update_activation_calls(fp16_shared_gate(model))
     tree = ast.parse(model)
     restore_qlinear_scales(tree)
     model = preserve_source(model, ast.unparse(tree))
@@ -121,6 +121,12 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
         elif operand != 'self.export_gamma':
             raise ValueError(f'Unrecognized ordinary RMSNorm gamma expression: {operand}')
     exporter = (source/EXPORTER).read_text()
+    # A prepared tree can predate direct input forwarding. Update its Meta
+    # registrations too, otherwise FX stops before the GE converter sees x.
+    for name, op in (('silu_patch', 'SiluPatch'), ('softplus_patch', 'SoftplusPatch')):
+        header = f'def {name}_meta(x):\n'
+        guard = f'    if x.dtype != torch.float16:\n        raise ValueError("{op} expects FP16 input")\n'
+        exporter = exporter.replace(header + guard, header)
     if rmsnorm_patch:
         from .decoder_rmsnorm import patch_sources
         model, exporter = patch_sources(model, exporter)

@@ -22,8 +22,8 @@ from qwen35_moe_dflash.target.prefill_t64.decoder_cases import case_name
 from qwen35_moe_dflash.target.prefill_t64.decoder_source import save_air_source
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import inspect_air
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_silu import (
-    MODELING, configure_gate_export, inline_old_silu, inspect_activation_air, omit_gate_output_cast,
-    restore_native_activations, select_gdn_silu,
+    MODELING, configure_gate_export, inspect_activation_air, omit_gate_output_cast,
+    restore_native_activations, select_gdn_silu, update_activation_calls,
 )
 from qwen35_moe_dflash.target.prefill_t64.source_model import adapt_four_layer_convolution
 
@@ -36,7 +36,7 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
     # Editable sources generated before multi-depth export counted 30 GDR calls even at L=4.
     old = 'with cpro_export_contracts(True, chunk_size=64, gdn_layers=30):'
     base_model = (prepared/MODELING).read_text()
-    model = inline_old_silu(base_model)
+    model = update_activation_calls(base_model)
     if gdn_silu_only or gdn_silu_site:
         model = select_gdn_silu(model, gdn_silu_site)
     if all_silu_no_gate_cast or rms_layers is not None:

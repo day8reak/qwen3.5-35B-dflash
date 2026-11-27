@@ -11,11 +11,9 @@ REGISTRATION = '''if not hasattr(torch.ops.npu, "rmsnorm_patch"):
 
 @torch.library.impl(m, "rmsnorm_patch")
 def rmsnorm_patch_meta(x, gamma):
-    if x.dtype != torch.float16 or gamma.dtype != torch.float16:
-        raise ValueError(f"RmsnormPatch requires FP16 x and gamma, got {x.dtype} and {gamma.dtype}")
     if x.ndim < 1 or gamma.ndim != 1 or x.shape[-1] != gamma.shape[0]:
         raise ValueError("RmsnormPatch requires gamma to match the last dimension of x")
-    return torch.empty_like(x)
+    return torch.empty_like(x, dtype=torch.float16)
 
 
 @torchair.register_fx_node_ge_converter(torch.ops.npu.rmsnorm_patch.default)
@@ -58,13 +56,7 @@ def patch_sources(model, exporter):
                 capture = at - 1
                 operand = before_float(prev.value)
                 original_dtype = '.float()'
-        prefix = ast.parse(f'''rms_gamma = {ast.unparse(before_float(gamma))}
-if rms_x.dtype == torch.float32:
-    rms_x = rms_x.half()
-if rms_gamma.dtype == torch.float32:
-    rms_gamma = rms_gamma.half()
-''').body
-        suite[at:at] = prefix
+        suite[at:at] = ast.parse(f'rms_gamma = {ast.unparse(before_float(gamma))}').body
         suite[capture:capture] = ast.parse(f'rms_x = {ast.unparse(operand)}').body
         z = _expr('torch.ops.npu.rmsnorm_patch(rms_x.contiguous(), rms_gamma.contiguous())' + original_dtype)
         if isinstance(use, ast.Subscript) and ast.unparse(use.slice) == '0':
@@ -103,10 +95,14 @@ def inspect_ports(graph):
             ports = [*op.input_desc, *op.output_desc]
             if (len(op.input_desc) != 2 or len(op.output_desc) != 1
                     or any(p.name and p.name != name for p, name in zip(ports, ('x', 'gamma', 'z')))
-                    or any(p.dtype != 2 or p.layout != 'ND' for p in ports)):
-                raise ValueError(f'{op.name}: expected RmsnormPatch FP16/ND (x, gamma) -> z')
-            rows.append(dict(node=op.name, inputs=list(op.input), output=op.name + ':0'))
+                    or any(p.layout != 'ND' for p in ports)
+                    or any(p.dtype not in (1, 2) for p in op.input_desc) or op.output_desc[0].dtype != 2):
+                raise ValueError(f'{op.name}: expected RmsnormPatch ND floating x and gamma, FP16 z')
+            types = op.output_desc[0].DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_number
+            rows.append(dict(node=op.name, inputs=list(op.input), output=op.name + ':0',
+                             air_dtypes={name: types[p.dtype].name for name, p in zip(('x', 'gamma', 'z'), ports)}))
     if not rows:
         raise ValueError('The requested RmsnormPatch did not reach the decoder AIR')
-    print(f'[RMSNorm AIR] {len(rows)} RmsnormPatch (FP16 x, gamma → FP16 z)', flush=True)
+    for row in rows:
+        print(f'[RMSNorm AIR] {row["node"]}: {row["air_dtypes"]}', flush=True)
     return rows

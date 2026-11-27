@@ -99,7 +99,7 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 模型使用 FP16 `SiluPatch` 和原生 `F.softplus`。导出检查 14 个 `SiluPatch` 和 0 个 `SoftplusPatch`，包括 L0–L2 的 6 个卷积与门控激活，以及四层 MoE 的 8 个激活。在同一用例目录保留了基线的成功执行记录时，运行器还会对照两次运行的输入槽位。
 
-四个调用位置均直接使用 `torch.ops.npu.silu_patch`，传入连续 FP16 张量，算子返回同形状的 FP16 张量。GDN 卷积的激活以 FP16 送入 Q/K/V 分支。RMSNorm 门控的激活显式转回 FP32 再相乘。共享专家和路由专家将激活转回对应投影的 dtype 再相乘。旧版个人源码里的标准 SiLU 包装函数会在四层导出副本中展开；`export/package/L00-L03/source.diff` 可查看 `--silu-only` 或 `--physical-convstate` 实际采用的修改。
+四个调用位置均直接使用 `torch.ops.npu.silu_patch`，按上游 dtype 传入连续张量，算子返回同形状的 FP16 张量。GDN 卷积的激活以 FP16 送入 Q/K/V 分支。RMSNorm 门控的激活显式转回 FP32 再相乘。共享专家和路由专家将激活转回对应投影的 dtype 再相乘。`export/package/L00-L03/source.diff` 可查看 `--silu-only` 或 `--physical-convstate` 实际采用的修改。
 
 V2 执行完毕后，终端以 `PASSED` 或 `FAILED_ACCURACY` 打印 `comparison.json` 的路径。精度未达标时会列出未通过项并以状态码 1 退出。加载或执行阶段的异常仍可从该阶段的报错和 `replay/result.json` 定位。
 
@@ -117,7 +117,7 @@ bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv con
 bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --softplus-only
 ```
 
-SiLU 使用原生实现。导出检查 0 个 `SiluPatch`、3 个 `SoftplusPatch`，L0–L2 的 GDN 衰减分支各一处。`a.float() + dt_bias` 转为 FP16 后进入 `SoftplusPatch`，其 FP16 输出转回 FP32 后与 `-exp(A_log)` 相乘。三处激活的输入和输出形状均为 `[1,64,32]`。
+SiLU 使用原生实现。导出检查 0 个 `SiluPatch`、3 个 `SoftplusPatch`，L0–L2 的 GDN 衰减分支各一处。`a.float() + dt_bias` 的结果直接进入 `SoftplusPatch`，其 FP16 输出转回 FP32 后与 `-exp(A_log)` 相乘。三处激活的输入和输出形状均为 `[1,64,32]`。
 
 对照三次运行时固定源码、Conv2D、权重、输入和编译环境。若原生激活和 `--softplus-only` 均能加载执行，只有 `--silu-only` 在 `UpdateArgsForAicore` 处失败，就优先排查引入 SiluPatch 后的编译任务及其参数。加载阶段还没有产生可比较的推理输出。
 
@@ -145,7 +145,7 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 |---|---|
 | L3 full attention 的 RoPE | 用 INT32 `position_ids` 取 cos/sin 表中的行，Q/K 旋转在 FP32 计算，结果转回 hidden 的 dtype。 |
 | A8W4 投影 | 导出器使用 CPro 的 `QLinear`，激活为 INT8，W4 权重打包在 INT32 中。权重 scale 使用原加载器的 dtype，逐 token scale 走原 TorchAir converter。单层的 `case.json` 记录每个 W4 matmul 在 AIR 中实际收到的 dtype。 |
-| GDN 和激活 | 默认对齐导出使用 Conv2D、SiluPatch 和 SoftplusPatch。卷积、门控和专家使用上游给出的激活形状。Softplus 的偏置加法和下游衰减乘法用 FP32，自定义激活的输入输出用 FP16。GDR 使用 T64 chunk、FP16 的 Q/K/V、g、beta 和状态，`effective_length` 为 INT16。 |
+| GDN 和激活 | 默认对齐导出使用 Conv2D、SiluPatch 和 SoftplusPatch。自定义激活直接接收上游张量。Softplus 的偏置加法和下游衰减乘法用 FP32。激活 kernel 的注册类型为 FP16。GDR 使用 T64 chunk、FP16 的 Q/K/V、g、beta 和状态，`effective_length` 为 INT16。 |
 | MoE | 专家分支使用实际量化后的 INT8 张量进行 reshape，已量化输入直接使用。路由和共享专家门控按对应权重及输出 dtype 运算。 |
 
 导出日志打印实际命令和源码对照目录。导出完成后可在 `export/package/L00-L03/source.diff` 查看导出器、模型、wrapper 和 `utils.py` 相对配置目录的逐行差异。若配置目录本身已手改，差异以该目录当前的源码为准。
@@ -331,7 +331,7 @@ bash targets/cpro/scripts/decoder_compare.sh source --mode 4 --phase prefill --g
 
 导出完成后，在用例的 `export/package/air-source/` 查看这次送给 TorchAir 的源码。L0 的 Softplus 调用在 `cpro/models/modeling_qwen3_5_moe_hiai_cpro.py`，算子注册在 `cpro/export_glm_model_qwen3_5_moe.py`，单层的 `DecoderGraph.forward` 和 `dynamo_export` 调用在 `decoder/decoder_case_air.py`。源码作为普通文件随 AIR 包传到 OMC 编译机。40 层原生 prefill 的对应目录是 `export/air/air-source/`。
 
-单层 T64 prefill 直接把 FP16 `[1,64,32]` 输入传给 `SoftplusPatch`，输出转 FP32 后与 `-exp(A_log)` 相乘。可在 `export/package/L00/activations.txt` 查看导出器记录的形状。
+单层 T64 prefill 将偏置加法的 `[1,64,32]` 结果直接传给 `SoftplusPatch`，输出转 FP32 后与 `-exp(A_log)` 相乘。可在 `export/package/L00/activations.txt` 查看导出器记录的形状。
 
 如 L0 OMC 编译成功、上板在 `OpUpdateKernelArgs` 停止，可以在 OMC 服务器用 `bash targets/cpro/scripts/decoder_compare.sh l0-decay-report` 读取现有 AIR 与 OMC。它从单层 `ChunkGatedDeltaRule` 的命名输入 `g` 回溯 `SoftplusPatch` 和衰减乘法，再显示 OMC 可见图中的生产者、消费者与图输出。OMG 元数据可能只暴露 `GraphOp` 边界。
 
@@ -365,7 +365,7 @@ bash targets/cpro/scripts/decoder_prepare.sh --mode linear --phase prefill --gdn
 bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-conv conv2d --rmsnorm-patch --dump
 ```
 
-`--rmsnorm-patch` 在普通和 GDN 门控 RMSNorm 的 PyTorch 调用处使用 `torch.ops.npu.rmsnorm_patch`。AIR 端口为 FP16 ND 的 `x, gamma → z`，gamma 长度等于 x 的最后一维。单层普通 RMSNorm 传入预计算的有效 gamma，门控 RMSNorm 使用原权重。OpDef 没有 epsilon 参数，精度对照需核实 kernel 的固定 epsilon。实际节点见 `export/package/L00/case.json` 的 `rmsnorm_nodes`。
+`--rmsnorm-patch` 在普通和 GDN 门控 RMSNorm 的 PyTorch 调用处使用 `torch.ops.npu.rmsnorm_patch`。模型按现有 dtype 传入 x 和 gamma。kernel 注册的 `x, gamma → z` 均为 FP16 ND，gamma 长度等于 x 的最后一维。单层普通 RMSNorm 传入预计算的有效 gamma，门控 RMSNorm 使用原权重。OpDef 没有 epsilon 参数，精度对照需核实 kernel 的固定 epsilon。源 AIR 各端口的实际 dtype 见 `export/package/L00/case.json` 的 `rmsnorm_nodes[].air_dtypes`。
 
 `--dump` 使用原 decoder 用例目录。78 保存同一批 token 和 L0 入口的 CPU/310P 中间值。35 只编译一个完整 L0 OMC，使用 V2 和 `--enable_item=2` 执行一次，再运行 `data_proc_tool_internal`，拉回解析器输出。从用例目录可查看
 

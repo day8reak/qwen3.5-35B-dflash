@@ -19,8 +19,6 @@ def activation_registration(name, ge_type):
 
 @torch.library.impl(m, "{name}")
 def {name}_meta(x):
-    if x.dtype != torch.float16:
-        raise ValueError("{ge_type} expects FP16 input")
     ret = x.size()
     z = torch.empty(ret, dtype=torch.float16, device='meta')
     return torch.empty_like(z)
@@ -51,11 +49,8 @@ def silu_same_dtype(x):
 '''
 
 
-def _silu_call(value, owner=None):
-    # dtype is static while TorchAir traces this call. Keep the original tensor on the FP16 path.
-    owner = owner or value
-    operand = f'({value}.half() if {owner}.dtype == torch.float32 else {value}).contiguous()'
-    return f'torch.ops.npu.silu_patch({operand})'
+def _silu_call(value):
+    return f'torch.ops.npu.silu_patch({value}.contiguous())'
 
 
 _CONV_SILU = _silu_call('conv_out')
@@ -76,18 +71,20 @@ _ROUTED = ('self.act_fn(x1) * x2',
 MOE_SILU_CALLS = (_SHARED_ACT, _SHARED, _ROUTED)
 SILU_CALLS = (_GATE, _CONV, *MOE_SILU_CALLS)
 SOFTPLUS_CALL = ('F.softplus(a.float() + self.dt_bias)',
-                 'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).to(torch.float16).contiguous()).float()')
+                 'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).contiguous()).float()')
 CONV_HELPER_CALL = ('F.silu(out[:, :, -seq_len:])',
-                    _silu_call('out[:, :, -seq_len:]', 'out') + '.to(out.dtype)')
+                    _silu_call('out[:, :, -seq_len:]') + '.to(out.dtype)')
 
 
-def inline_old_silu(model):
-    """Inline this adapter's old wrappers in the export copy of an editable model."""
+def update_activation_calls(model):
+    """Update casts and wrappers from older versions in the run-local Python copy."""
+    model = model.replace('torch.ops.npu.softplus_patch((a.float() + self.dt_bias).to(torch.float16).contiguous()',
+                          'torch.ops.npu.softplus_patch((a.float() + self.dt_bias).contiguous()')
     for value, owner in (('gate', 'gate'), ('conv_out', 'conv_out'), ('x1', 'x1'),
                          ('out[:, :, -seq_len:]', 'out')):
-        old = f'torch.ops.npu.silu_patch({value}.to(torch.float16).contiguous()'
-        # Keep any previously selected token-view reshape following the operand.
-        model = model.replace(old, _silu_call(value, owner).removesuffix(')'))
+        for old in (f'{value}.to(torch.float16)', f'({value}.half() if {owner}.dtype == torch.float32 else {value})'):
+            model = model.replace(f'torch.ops.npu.silu_patch({old}.contiguous()',
+                                  _silu_call(value).removesuffix(')'))
     if _OLD_SILU_HELPERS not in model:
         return model
     model = model.replace(_OLD_SILU_HELPERS, '')
@@ -492,14 +489,9 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
         z, = op.output_desc
         shape = traced[name]
         consumers = read_edges(name + ':0', z.dtype)
-        if (x.dtype, z.dtype) != (2, 2) or not consumers:
-            raise ValueError(f'{name}: expected a connected FP16 -> FP16 {op.type}')
+        if x.dtype not in (1, 2) or z.dtype != 2 or not consumers:
+            raise ValueError(f'{name}: expected a connected floating input and FP16 output, got {dtype(x)} → {dtype(z)}')
         if op.type == 'SoftplusPatch':
-            # The decay product is computed in FP32 on both sides of this patch.
-            cast_in = by_name[op.input[0].rsplit(':', 1)[0]]
-            if (cast_in.type != 'Cast' or [d.dtype for d in cast_in.input_desc] != [1]
-                    or [d.dtype for d in cast_in.output_desc] != [2]):
-                raise ValueError(f'{name}: expected a FP32 to FP16 cast of biased_a')
             gate_product(graph, name + ':0')
         elif shape == gate_shape:
             if all_silu_no_gate_cast:
@@ -518,10 +510,11 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
             if dims and dims != (-2,):  # GE's unknown-rank marker
                 if len(dims) != len(shape) or any(d != -1 and d != actual for d, actual in zip(dims, shape)):
                     raise ValueError(f'{name}: AIR port {dims} differs from traced shape {shape}')
-        ports = dict(x=activation_port_shape(x), z=activation_port_shape(z))
+        ports = dict(x=dict(dtype=dtype(x), **activation_port_shape(x)),
+                     z=dict(dtype=dtype(z), **activation_port_shape(z)))
         records[op.type].append(dict(name=name, shape=list(shape), numel=prod(shape), consumers=consumers,
                                      air_ports=ports))
-        print(f'{name}: converter input={shape}; FP16 x={ports["x"]} -> FP16 z={ports["z"]}; consumers={consumers}', flush=True)
+        print(f'{name}: converter input={shape}; x={ports["x"]} -> z={ports["z"]}; consumers={consumers}', flush=True)
     result = {}
     if check_convs:
         if gdn_conv == 'taps':
@@ -535,6 +528,7 @@ def inspect_activation_air(path, shape_trace, *, layers=4, full_only=False, silu
             continue
         nodes = records[op_type]
         print(f'{op_type}: {len(nodes)} nodes, native shapes {dict(+expected[op_type])}', flush=True)
+        # input/output describe the registered kernel. air_ports records each source edge.
         result[name] = dict(type=op_type, nodes=nodes, input='x:float16', output='z:float16',
                             shape_source='converter')
     return result
