@@ -121,9 +121,9 @@ footer {color:var(--muted); border-top:1px solid var(--line); margin-top:16px; p
 <article class="risk">
 <h3 id="prefill-convstate">Prefill 的 ConvState 写回</h3>
 <p><strong>风险</strong>　Decode 会把写回的卷积状态当作历史输入。即使首个 token 相同，下一步也可能从不同的状态开始计算。</p>
-<p><strong>板端实测</strong>　四层图的第一层（L0）输入 19 个有效 token，补齐至 64。用本次 QKV 和旧状态重建卷积窗口，548,864 个元素全部一致。写回缓存与有效末四行（15–18）和物理末四行（60–63）均有明显偏差。</p>
-<p><strong>工具限制（同事反馈）</strong>　<span class="term">model_run_tool</span> 无法显示实际有效长度（<span class="term">effective_length</span>）。按此反馈，用该工具验证原生 <span class="term">linear_attention_convstate_update</span> 的写回行为，当前仅适用于 64 个 token 全部有效的用例。</p>
-<p><strong>框架验证</strong>　少于 64 个有效 token 的场景需接入后续推理框架。用同一组 19 个 token 复测，核对框架记录的有效长度、算子收到的更新控制量，以及下一步 Decode 读回的缓存，确认工具限制是否解释本次写回偏差。</p>
+<p><strong>第一层卷积窗口已对齐</strong>　四层 CPro 图使用原生 <span class="term">linear_attention_convstate_update</span>，分别运行了 19 和 64 个有效 token。两次均用各自的 QKV 和旧状态重建窗口，每次 548,864 个元素全部一致。</p>
+<p><strong>满 64 个 token 时，返回缓存仍有偏差</strong>　19 个有效 token 时，整图返回的 L0 缓存与有效末四行、物理末四行都存在偏差。64 个 token 全部有效时，两种取法都指向第 60–63 行，返回缓存与这四行 QKV 只有 5 / 32,768 个元素相同，最大绝对误差 45.125。此次状态值取自整图的公开输出，算子输出端口到缓存读回之间的偏差来源仍待定位。</p>
+<p><strong>后续验证</strong>　同事反馈 <span class="term">model_run_tool</span> 无法显示运行时实际采用的 <span class="term">effective_length</span>。满长用例也复现了写回偏差。用显式拼接和切片的 40 层图复测同一组 64 个 token，再在推理框架中核对有效长度、缓存写回和下一步 Decode 读回的值。</p>
 </article>
 <article class="risk">
 <h3>Decode 的全注意力层</h3>
