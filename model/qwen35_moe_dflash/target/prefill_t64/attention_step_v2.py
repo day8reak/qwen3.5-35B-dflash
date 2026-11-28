@@ -123,9 +123,10 @@ def observed_named_shape(native, direction, specs):
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
            external_weights=(), build_records=None, release_after_pull=True, hdc_timeout=660, board_case=None,
            replace_inputs=False, replace_weights=False, decoder_shapes=None, shape_config=None, original_board_args=False,
-           operator_dump=False):
+           operator_dump=False, dump_edges=()):
     from ..prefill_output_inventory import _logged_slots
 
+    operator_dump = operator_dump or bool(dump_edges)
     env = _environment()
     input_names = [f'input_{i}.bin' for i in range(len(files))]
     if not operands or len(operands) != len(files) or not outputs:
@@ -234,7 +235,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         receipt['model_execution'] = 'EXECUTED'
         if operator_dump:
             from .operator_dump import collect
-            collect(hdc, remote, out, tool.parent, receipt)
+            collect(hdc, remote, out, tool.parent, receipt, edges=dump_edges)
         print(f'[{name}] 将整个输出目录拉回服务器，读取 {len(outputs)} 个输出槽 → {out}/outputs', flush=True)
         _, listing = hdc.shell(f'cd {remote}/outputs && find . -type f -print', 'output-files')
         output_files = [line[2:] for line in listing.splitlines() if line.startswith('./')]

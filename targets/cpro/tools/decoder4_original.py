@@ -643,7 +643,8 @@ def original_filename(name, src, dtype, *, fresh_zero_states, token_ids_input=No
 
 
 def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, load_control=None, replace_replay=False,
-          replace_inputs=False, replace_weights=False, original_board_args=False, input_overrides=None, replay_dir=None):
+          replace_inputs=False, replace_weights=False, original_board_args=False, input_overrides=None, replay_dir=None,
+          dump_edges=()):
     import numpy as np
     from parse_model_json import GE_PROTO, dtype as ge_dtype, inspect, read_omc
     from qwen35_moe_dflash.target.prefill_smoke_plan import _nd_view_key
@@ -777,7 +778,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
                external_weights=weights, build_records=(compiled['primary'], compiled['weights']),
                replace_inputs=replace_inputs, replace_weights=replace_weights,
                board_case='40-prefill-t64' if kind in FULL_KINDS else '4-prefill-t64',
-               hdc_timeout=7200 if kind in FULL_KINDS else 660)
+               hdc_timeout=7200 if kind in FULL_KINDS else 660, dump_edges=dump_edges)
     except RuntimeError:
         if not (out / 'result.json').is_file():
             raise

@@ -314,14 +314,14 @@ def worker(args, action, root, remote):
         cmd.extend(['--valid64-from', str(args.valid64_from.resolve())])
     if args.dump:
         cmd.append('--dump')
+    if args.inspect_attempt:
+        cmd.extend(['--inspect-attempt', args.inspect_attempt])
     if getattr(args, 'cache_existing_golden', False):
         cmd.append('--cache-existing-golden')
     if getattr(args, 'gate_probe', False):
         cmd.extend(['--gate-probe', args.gate_probe])
         if args.repeat_to_64:
             cmd.append('--repeat-to-64')
-        if args.inspect_attempt:
-            cmd.extend(['--inspect-attempt', args.inspect_attempt])
         if args.rmsnorm_air:
             cmd.extend(['--rmsnorm-air', args.rmsnorm_air])
     if args.recovery:
@@ -330,7 +330,12 @@ def worker(args, action, root, remote):
              'compile': '编译 OMC 并保存 I/O 描述', 'execute': '上板执行已编译 OMC 并比较三端结果',
              'diagnose': '诊断已保留的 OMG 编译或板端失败记录', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
     if args.valid64_from:
-        label = '复用 40 层 OMC，运行 CPro valid64 Prefill'
+        if args.inspect_attempt:
+            label = '离线复核 40 层 valid64 的 L0 ConvState'
+        elif args.dump:
+            label = '复用 40 层 OMC，对比同次重放的 L0 QKV 尾部与返回缓存'
+        else:
+            label = '复用 40 层 OMC，运行 CPro valid64 Prefill'
     if action == 'reference' and (args.mode, args.phase) == ('40', 'prefill'):
         label = '归档已有 40 层 golden' if args.cache_existing_golden else '准备 40 层 golden，优先复用 CPU 和 310P 参考'
     if getattr(args, 'gate_probe', False):
@@ -442,9 +447,9 @@ def main():
         parser.error('--valid64-from requires execute --mode 40 --phase prefill with explicit ConvState slices')
     if a.repeat_to_64 and a.gate_probe != 'l0-convstate-dump':
         parser.error('--repeat-to-64 requires l0-convstate-dump')
-    if a.inspect_attempt is not None and (a.gate_probe != 'l0-convstate-dump'
+    if a.inspect_attempt is not None and (not (a.gate_probe == 'l0-convstate-dump' or (a.valid64_from and a.dump))
             or not a.inspect_attempt.startswith('attempt-') or Path(a.inspect_attempt).name != a.inspect_attempt):
-        parser.error('--inspect-attempt requires l0-convstate-dump and the name of an attempt directory')
+        parser.error('--inspect-attempt requires l0-convstate-dump or --valid64-from with --dump, and an attempt name')
     # Keep these settings in artifact manifests so an older AIR cannot silently replace this recipe.
     aligned_prefill = a.mode in ('linear', '4', '40') and a.phase == 'prefill' and not a.no_patch
     a.shared_gate_fp16_sigmoid = aligned_prefill
@@ -454,8 +459,8 @@ def main():
     if a.cache_existing_golden and ((a.mode, a.phase) != ('40', 'prefill')
                                     or a.action not in ('golden', '_reference') or a.gate_probe):
         parser.error('--cache-existing-golden requires golden --mode 40 --phase prefill')
-    if a.dump and ((a.mode, a.phase) != ('linear', 'prefill') or a.gate_probe):
-        parser.error('--dump requires --mode linear --phase prefill with the regular decoder stages')
+    if a.dump and not a.valid64_from and ((a.mode, a.phase) != ('linear', 'prefill') or a.gate_probe):
+        parser.error('--dump requires linear prefill or a 40-layer --valid64-from replay')
     if a.rms_silu_token_view and a.action in ('prepare', 'golden', 'air', '_air'):
         parser.error('--rms-silu-token-view selects historical AIRs. Omit it when exporting the native gate shape.')
     if a.no_patch and a.rmsnorm_patch:
@@ -559,8 +564,8 @@ def main():
         a.action = a.action[1:]
         if a.valid64_from:
             from decoder_prefill40_valid64 import execute
-            execute(root/'board', a.valid64_from, board_config('execute')[1], a)
-            return 0
+            config = None if a.inspect_attempt else board_config('execute')[1]
+            return 0 if execute(root/'board', a.valid64_from, config, a) else 1
         if a.gate_probe:
             if a.repeat_to_64:
                 from decoder_convstate_valid64 import full_replay

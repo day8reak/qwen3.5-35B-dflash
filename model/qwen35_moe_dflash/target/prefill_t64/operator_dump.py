@@ -1,5 +1,6 @@
 """Collect data_proc_tool's export after one successful V2 decoder invocation."""
 from collections import Counter
+from glob import escape
 from pathlib import PurePosixPath
 import re
 import shlex
@@ -10,7 +11,7 @@ from ..layer_probe.common import save_json
 from .chain_hilog import tool_client_tids
 
 
-def collect(hdc, remote, out, tool_dir, receipt):
+def collect(hdc, remote, out, tool_dir, receipt, *, edges=()):
     destination = remote / 'operator-dump'
     parser = tool_dir / 'data_proc_tool_internal'
     argv = [str(parser), f'--result_path={destination}/']
@@ -26,8 +27,17 @@ def collect(hdc, remote, out, tool_dir, receipt):
     report['parser_exitcode'] = int(code.strip())
     _, log = hdc.shell(f'cat {remote}/parser.log', 'dump-parser-log')
     (out/'parser.log').write_text(log + '\n')
+    predicate = ''
+    if edges:
+        report['requested_edges'] = sorted(edges)
+        patterns = []
+        for edge in sorted(edges):
+            name, slot = edge.rsplit(':', 1)
+            pattern = f'_*_*_{escape(name)}_[a-zA-Z]*_[0-9]*_{int(slot)}.dump'
+            patterns.append('-name ' + shlex.quote(pattern))
+        predicate = r'\( ' + ' -o '.join(patterns) + r' \) '
     _, listing = hdc.shell(f'cd {destination} && test -z "$(find . -type l -print)" && '
-                           r'find . -type f -exec stat -c "%s %n" {} \;', 'dump-files')
+                           'find . -type f ' + predicate + r'-exec stat -c "%s %n" {} \;', 'dump-files')
     files = report['files']
     for line in listing.splitlines():
         size, name = line.split(' ./', 1)
@@ -35,7 +45,13 @@ def collect(hdc, remote, out, tool_dir, receipt):
     if files:
         if sum(files.values()) > shutil.disk_usage(out).free:
             raise OSError(f'Insufficient host space to retrieve {destination}')
-        hdc.receive_tree(destination, out/'dump', files)
+        if edges:
+            for name in files:
+                local = out/'dump'/name
+                local.parent.mkdir(parents=True, exist_ok=True)
+                hdc.receive(destination/name, local)
+        else:
+            hdc.receive_tree(destination, out/'dump', files)
         for name, size in files.items():
             if (out/'dump'/name).stat().st_size != size:
                 raise ValueError(f'Incomplete dumped file: {name}')
