@@ -310,6 +310,8 @@ def worker(args, action, root, remote):
                 cmd.append(value)
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
+    if args.cpu_valid64_from:
+        cmd.extend(['--cpu-valid64-from', str(args.cpu_valid64_from)])
     if args.valid64_from:
         cmd.extend(['--valid64-from', str(args.valid64_from.resolve())])
     if args.dump:
@@ -338,6 +340,8 @@ def worker(args, action, root, remote):
             label = '复用 40 层 OMC，运行 CPro valid64 Prefill'
     if action == 'reference' and (args.mode, args.phase) == ('40', 'prefill'):
         label = '归档已有 40 层 golden' if args.cache_existing_golden else '准备 40 层 golden，优先复用 CPU 和 310P 参考'
+    if args.cpu_valid64_from:
+        label = '从 64 个实测 token ID 生成 40 层 CPU golden'
     if getattr(args, 'gate_probe', False):
         label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
         if args.gate_probe == 'l0-embedding':
@@ -441,7 +445,12 @@ def main():
                         help='inspect a retained l0-convstate-dump attempt on this host without replaying it')
     parser.add_argument('--valid64-from', type=Path, metavar='INPUTS_JSON',
                         help='replay the compiled 40-layer physical-tail OMC with saved CPro valid64 token IDs')
+    parser.add_argument('--cpu-valid64-from', type=Path, metavar='INPUTS_JSON',
+                        help='generate only the 40-layer CPU golden from a successful CPro valid64 replay')
     a = parser.parse_args()
+    if a.cpu_valid64_from and ((a.mode, a.phase) != ('40', 'prefill') or a.action not in ('golden', '_reference')
+            or any((a.valid64_from, a.cache_existing_golden, a.dump, a.gate_probe, a.inspect_attempt))):
+        parser.error('--cpu-valid64-from requires golden --mode 40 --phase prefill')
     if a.valid64_from and ((a.mode, a.phase) != ('40', 'prefill') or a.action not in ('execute', '_execute')
                            or a.gate_probe):
         parser.error('--valid64-from requires execute --mode 40 --phase prefill with explicit ConvState slices')
@@ -541,6 +550,15 @@ def main():
         parser.error('--recovery applies to board --mode layerwise')
     from qwen35_moe_dflash.common.artifacts import output_path
     parent = a.run_root or Path(os.getenv('DECODER_RUN_ROOT', required('AI_RUN_DIR')/'target/tests'))
+    if a.cpu_valid64_from:
+        case = output_path(a.run or (a.run_root or required('AI_RUN_DIR')/'target/golden/valid64-cpu')/slug)
+        if a.action == 'golden':
+            a.cpu_valid64_from = a.cpu_valid64_from.expanduser().absolute()
+            worker(a, 'reference', case, case)
+        else:
+            from decoder_cpu_valid64 import generate
+            generate(case, a.cpu_valid64_from, *source_config('reference'))
+        return 0
     selected = a.run or parent/slug
     if a.valid64_from and not (a.run or a.run_root):
         from decoder_prefill40_valid64 import select_case

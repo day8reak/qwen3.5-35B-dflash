@@ -66,6 +66,8 @@ plan        Print the layers, sequence length and number of OMCs without running
 --physical-convstate  Use the last four physical QKV rows for four-layer T64 ConvState and omit the position control.
                       Defaults to Conv2D and works with any patched activation selection.
 --recovery  Reuse verified completed OMC outputs in layerwise mode when resuming on the same board.
+--cpu-valid64-from INPUTS_JSON  With golden --mode 40 --phase prefill, use the successful CPro
+             valid64 input (local path or the configured omc host) to generate only the CPU reference.
 DECODER_ENV may point to a host-local shell configuration file.
 HELP
 }

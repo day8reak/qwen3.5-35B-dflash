@@ -20,7 +20,7 @@ from . import last4
 from .segment_prefix import tensor_record
 
 
-def decoder(cpu, block, i, hidden, controls, with_head, *, before=None):
+def decoder(cpu, block, i, hidden, controls, with_head, *, before=None, gdn_stages=None):
     names = (('key_cache', 'value_cache') if i % 4 == 3 else ('conv_state', 'recurrent_state'))
     roles = [f'{name}_{i}' for name in names]
     decode = hidden.shape[1] == 1
@@ -39,7 +39,7 @@ def decoder(cpu, block, i, hidden, controls, with_head, *, before=None):
                                     valid_length=None if decode else valid)
     else:
         # The QKV projection sees the physical input. Only valid rows advance GDR.
-        mix, states = cpu.gdn(x, block.linear_attn, prefix + 'linear_attn', before, valid_length=valid)
+        mix, states = cpu.gdn(x, block.linear_attn, prefix + 'linear_attn', before, valid_length=valid, stages=gdn_stages)
     physical_mix = torch.zeros_like(hidden)
     physical_mix[:, :valid] = mix
     residual = hidden + physical_mix
@@ -49,6 +49,18 @@ def decoder(cpu, block, i, hidden, controls, with_head, *, before=None):
         last = norm(final[:, valid-1:valid], cpu.model.model.norm)
         outputs['logits'] = cpu.project(last, 'lm_head', cpu.model.lm_head).float()
     return outputs
+
+
+def load_cpu_group(owner, source, checkpoint, quant_directory, group):
+    with pf.working_directory(source), pf.hf_config_prefix(checkpoint, 4, {}):
+        model = owner.load_npu_model(str(checkpoint), 'cpu', torch.float16, variant='nz',
+                                     layer_num=len(group), start_layer_idx=group[0], quant_enable=True)
+    model.eval().to(dtype=torch.float16)
+    if (model.model.start_layer_idx != group[0] or [b.block_type for b in model.model.layers] != [
+            'full_attention' if j % 4 == 3 else 'linear_attention' for j in group]):
+        raise ValueError(f'CPU loader selected the wrong decoder layers for {group}')
+    verify_floating_weights(model, checkpoint, start_layer=group[0])
+    return CpuPrefill(SimpleNamespace(model=model), quant_directory)
 
 
 @torch.inference_mode()
@@ -142,23 +154,14 @@ def prepare(run, mode, capture, source, *, per_layer_air=True):
                     source = source.resolve()
                     driver = pf.import_source(source)
                     owner = sys.modules[driver.Qwen3_5MoeForCausalLMWrapper.__module__]
-                with pf.working_directory(source), pf.hf_config_prefix(checkpoint, 4, {}):
-                    model = owner.load_npu_model(str(checkpoint), 'cpu', torch.float16, variant='nz',
-                                                 layer_num=len(group), start_layer_idx=group[0], quant_enable=True)
-                model.eval().to(dtype=torch.float16)
+                cpu = load_cpu_group(owner, source, checkpoint, cfg['quanted_pth'], group)
                 if yaml_prompt and mode == '40' and i == 0:
-                    cpu_entry = model.model.embed_tokens(torch.from_numpy(ids).long())
+                    cpu_entry = cpu.model.model.embed_tokens(torch.from_numpy(ids).long())
                     different = (cpu_entry.view(torch.int16) != hidden.view(torch.int16)).sum().item()
                     print(f'[embedding] CPU 查表 vs 310P L0 入口，全部 64 行 FP16 位模式差异 {different}/{hidden.numel()}', flush=True)
                     if different:
                         raise ValueError('CPU checkpoint lookup differs from the captured 310P L0 input')
                     hidden = cpu_entry
-                if (model.model.start_layer_idx != group[0] or [b.block_type for b in model.model.layers] != [
-                        'full_attention' if j % 4 == 3 else 'linear_attention' for j in group]):
-                    raise ValueError(f'CPU loader selected the wrong decoder layers for {group}')
-                verify_floating_weights(model, checkpoint, start_layer=group[0])
-                cpu = CpuPrefill(SimpleNamespace(model=model), cfg['quanted_pth'])
-                del model
             print(f'L{i} CPU W4 reference', flush=True)
             outputs = decoder(cpu, cpu.model.model.layers[local], i, hidden, controls, head)
             if prefix_only:
