@@ -19,6 +19,10 @@ section {padding-top:31px}
 h2 {font-size:23px; line-height:1.45; letter-spacing:-.015em; margin:0 0 12px}
 h3 {font-size:18px; line-height:1.4; margin:0 0 7px}
 p + p {margin-top:7px}
+.milestones {list-style:none; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin:0; padding:0}
+.milestones li {border-top:2px solid var(--teal); padding-top:8px}
+.milestones strong {display:block; color:var(--teal)}
+.milestones p {font-size:15px; margin-top:3px}
 .matrix {width:100%; border-collapse:collapse; font-size:15px; line-height:1.55}
 .matrix th,.matrix td {padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; text-align:left}
 .matrix thead {background:#edf3f5}
@@ -51,6 +55,7 @@ footer {color:var(--muted); border-top:1px solid var(--line); margin-top:16px; p
 @media screen and (max-width:720px) {
   main {margin:0; border:0} header {padding:23px 20px} .content {padding:0 20px 25px}
   .risks {grid-template-columns:1fr; gap:12px} section {padding-top:24px}
+  .milestones {grid-template-columns:1fr; gap:10px}
   h2 {font-size:21px} .matrix {font-size:14px}
   .matrix th,.matrix td {padding:8px}
   .fixes,.fixes tbody,.fixes tr,.fixes tbody th,.fixes td {display:block; width:auto}
@@ -67,6 +72,7 @@ footer {color:var(--muted); border-top:1px solid var(--line); margin-top:16px; p
   header h1 {font-size:21pt} header .project {color:var(--teal); font-size:9pt; margin-bottom:2mm}
   header .lead {font-size:11pt; color:var(--ink); margin-top:3mm}
   .content {padding:0} section {padding-top:5mm} h2 {font-size:15pt; margin-bottom:2mm}
+  .milestones {gap:4mm; break-inside:avoid} .milestones p {font-size:9pt}
   h3 {font-size:11pt} .risks {display:grid; grid-template-columns:1fr 1fr; gap:3mm}
   .risk {break-inside:avoid; margin-top:2mm; padding:2mm 3mm}
   .risk p,.next,.matrix,.small {font-size:9pt; line-height:1.45} .next {padding:2mm 3mm}
@@ -85,6 +91,14 @@ footer {color:var(--muted); border-top:1px solid var(--line); margin-top:16px; p
 <p class="lead">输入“世界上最高的山是什么”，跑完 40 层后，logits 排名第一的 token 与 CPro 吐出的首个 token 一致。连续生成仍有两处待定位，分别是Prefill 写回的卷积状态，以及 Decode 全注意力层的输出。</p>
 </header>
 <div class="content">
+<section aria-labelledby="plan">
+<h2 id="plan">总体计划</h2>
+<ol class="milestones">
+<li><strong><time datetime="2026-11-30">11 月 30 日</time> · 精度对齐</strong><p>核对 Prefill 状态写回和 Decode 输出，验证连续生成的 token。</p></li>
+<li><strong>精度对齐后 · 蓝区适配</strong><p>在蓝区部署模型，跑通 Prefill 和 Decode。</p></li>
+<li><strong><time datetime="2026-12-30">12 月 30 日</time> · 性能达标</strong><p>在蓝区实测端到端推理性能，按项目性能目标验收。</p></li>
+</ol>
+</section>
 <section aria-labelledby="evidence">
 <h2 id="evidence">首个 token 一致，为什么还要查下一步</h2>
 <p>首个 token 由当前 logits 的最高分决定，后续 token 的计算还要读取 Prefill 留下的状态。已有三端矩阵中，第 2 层卷积状态的 310P–CPro 余弦已降至 <strong>0.250325</strong>，同一对平台的 logits 余弦仍为 <strong>0.989347</strong>。</p>
