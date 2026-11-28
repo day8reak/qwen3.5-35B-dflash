@@ -316,6 +316,8 @@ def worker(args, action, root, remote):
         cmd.append('--cache-existing-golden')
     if getattr(args, 'gate_probe', False):
         cmd.extend(['--gate-probe', args.gate_probe])
+        if args.inspect_attempt:
+            cmd.extend(['--inspect-attempt', args.inspect_attempt])
         if args.rmsnorm_air:
             cmd.extend(['--rmsnorm-air', args.rmsnorm_air])
     if args.recovery:
@@ -350,7 +352,8 @@ def worker(args, action, root, remote):
         elif args.gate_probe == 'l0-decay-report':
             label = '查看现有 L0 AIR 和 OMC 的 Softplus 衰减支路'
         elif args.gate_probe == 'l0-convstate-dump':
-            label = '复用四层 OMC，提取 L0 ConvState 的三个输入和两个输出'
+            label = ('从已回收的四层 dump 离线提取 L0 ConvState' if args.inspect_attempt else
+                     '复用四层 OMC，提取 L0 ConvState 的三个输入和两个输出')
         elif args.gate_probe == 'l0-dump':
             label = '复用已有 OMC，回收 L0 算子 dump'
         elif args.gate_probe == 'l0-original-omg':
@@ -422,7 +425,12 @@ def main():
                                  'l0-input-rmsnorm', 'l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc',
                                  'l0-decay-report', 'l0-original-omg', 'l0-dump', 'l0-convstate-dump'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
+    parser.add_argument('--inspect-attempt', metavar='attempt-NAME',
+                        help='inspect a retained l0-convstate-dump attempt on this host without replaying it')
     a = parser.parse_args()
+    if a.inspect_attempt is not None and (a.gate_probe != 'l0-convstate-dump'
+            or not a.inspect_attempt.startswith('attempt-') or Path(a.inspect_attempt).name != a.inspect_attempt):
+        parser.error('--inspect-attempt requires l0-convstate-dump and the name of an attempt directory')
     # Keep these settings in artifact manifests so an older AIR cannot silently replace this recipe.
     aligned_prefill = a.mode in ('linear', '4', '40') and a.phase == 'prefill' and not a.no_patch
     a.shared_gate_fp16_sigmoid = aligned_prefill
@@ -533,6 +541,9 @@ def main():
     if a.action.startswith('_'):
         a.action = a.action[1:]
         if a.gate_probe:
+            if a.inspect_attempt:
+                from decoder_l0_convstate_dump import inspect_attempt
+                return 0 if inspect_attempt(root/'board', a.inspect_attempt) else 1
             if a.gate_probe == 'l0-decay-report':
                 from decoder_gate_report import report_linear_decay
                 report_linear_decay(root, board_config('compile')[0])

@@ -5,7 +5,7 @@ import numpy as np
 
 from decoder_gate_probe import air_bundle
 from operator_dump_files import calibrate, decoded, index_files
-from qwen35_moe_dflash.target.layer_probe.common import metrics, read_tensor, save_json, sized_file
+from qwen35_moe_dflash.target.layer_probe.common import metrics, read_tensor, save_json, sha, sized_file
 from qwen35_moe_dflash.target.prefill_t64.attention_steps import only, operands
 from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
 
@@ -38,6 +38,41 @@ def shaped(name, value):
     if tuple(d for d in value.shape if d != 1) != tuple(d for d in shape if d != 1):
         raise ValueError(f'{name}: unexpected axes {value.shape}, expected {shape}')
     return value.reshape(shape)
+
+
+def inspect_attempt(board, attempt):
+    from decoder_cases_board import output_order, read
+    from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import output_shape
+
+    base = board/'L00-L03'
+    replay = base/'operator-dump'/attempt/base.name/'replay'
+    receipt = read(replay/'result.json')
+    dump = receipt.get('operator_dump', {})
+    print(f"[L0 ConvState] {replay} | attempt={receipt.get('attempt')} | "
+          f"V2={receipt.get('exitcode')} parser={dump.get('parser_exitcode')} "
+          f"files={len(dump.get('files', {}))}", flush=True)
+    if (receipt.get('status') != 'EXECUTED' or receipt.get('case') != base.name or receipt.get('exitcode') != 0
+            or dump.get('status') != 'FILES_RECEIVED_REVIEW_REQUIRED' or dump.get('parser_exitcode') != 0):
+        raise ValueError(f"{replay}: incomplete model or dump receipt: {receipt.get('error') or dump.get('status')}")
+    bundle = board/'package'
+    case = bundle/base.name
+    fixture = bundle/'fixture'
+    build = read(base/'omc/build.json')
+    if (receipt['fixture_sha256'] != sha(bundle/'manifest.json') or build['stamp']['bundle'] != receipt['fixture_sha256']
+            or receipt['omc_sha256'] != build['model']['sha256']):
+        raise ValueError(f'{replay}: the retained model or reference package differs from this attempt')
+    meta, ref = read(case/'case.json'), read(fixture/'reference.json')
+    if not meta.get('native_convstate'):
+        raise ValueError(f'{case}: the retained AIR must use the native ConvState update')
+    golden = dict(ref['outputs'])
+    if meta.get('hidden_trace'):
+        golden['hidden_layers'] = dict(shape=list(output_shape('hidden_layers', len(meta['layers']))))
+    names = output_order(build['outputs'], meta['outputs'], golden)
+    if len(receipt['outputs']) != len(names):
+        raise ValueError(f'{replay}: incomplete public model outputs')
+    slot = names.index('conv_state_0')
+    output = dict(receipt['outputs'][slot], dtype=build['outputs'][slot]['dtype'], shape=golden['conv_state_0']['shape'])
+    return report_ports(case, replay, fixture, ref, (replay, output))
 
 
 def report_ports(case, replay, fixture, ref, returned_cache):
@@ -176,4 +211,6 @@ def report_ports(case, replay, fixture, ref, returned_cache):
         print(f'  {name} {point["edge"]} {point.get("source", "UNRESOLVED")}', flush=True)
     for label, score in report['same_input'].items():
         print(f'  {label}: 相同元素 {score["exact_elements"]}/{score["total_elements"]}，max_abs={score["max_abs"]}', flush=True)
+    for label, score in report['reference'].items():
+        print(f'  {label}: cosine={score["cosine"]}, max_abs={score["max_abs"]}', flush=True)
     return report['status'] == 'COMPLETE'

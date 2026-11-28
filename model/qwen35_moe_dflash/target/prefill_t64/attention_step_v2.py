@@ -283,7 +283,21 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
         if uncertain:
             print(f'HDC lost execution acknowledgement. Check {remote}/tool.exitcode. Board lock owner {token}', flush=True)
         elif held:
-            _release_global(hdc, GLOBAL_LOCK, token)
+            try:
+                released = _release_global(hdc, GLOBAL_LOCK, token,
+                                           completed_work=remote if receipt['status'] == 'EXECUTED' else None)
+            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                receipt.update(lock_release='UNCONFIRMED', lock_release_error=str(exc))
+                save_json(out/'result.json', receipt)
+                if receipt['status'] != 'FAILED':
+                    raise
+                print(f'{name}: also failed to release board lock: {exc}', flush=True)
+            else:
+                receipt['lock_release'] = released
+                save_json(out/'result.json', receipt)
+                if released == 'ALREADY_ABSENT':
+                    print(f'{name}: board lock already absent at release; completed work still belongs to {token}',
+                          flush=True)
     return receipt
 
 

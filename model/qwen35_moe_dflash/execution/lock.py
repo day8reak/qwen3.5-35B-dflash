@@ -39,9 +39,28 @@ def _acquire_global(hdc, lock, token, wait_seconds):
             last_update = elapsed
         time.sleep(min(5, wait_seconds - elapsed))
 
-def _release_global(hdc, lock, token):
-    hdc.shell("test -d " + shlex.quote(str(lock)) + " && test ! -L " + shlex.quote(str(lock))
-              + " && read -r probe_lock_owner < " + shlex.quote(str(lock / "owner"))
-              + " && test \"$probe_lock_owner\" = " + shlex.quote(token)
-              + " && rm " + shlex.quote(str(lock / "owner")) + " && rmdir " + shlex.quote(str(lock)),
-              "release-global-model-io-lock", timeout=min(60, hdc.timeout))
+def _release_global(hdc, lock, token, *, completed_work=None):
+    path = shlex.quote(str(lock))
+    owner = shlex.quote(str(lock / 'owner'))
+    expected = shlex.quote(token)
+    absent = "echo LOCK_ABSENT; exit 1"
+    if completed_work is not None:
+        work = shlex.quote(str(completed_work))
+        marker = shlex.quote(str(completed_work / '.qwen35-hdc-owner'))
+        absent = f'''test -d {work} && test ! -L {work} && test -f {marker} && test ! -L {marker} &&
+    IFS= read -r work_owner < {marker} && test "$work_owner" = {expected} ||
+    {{ echo LOCK_ABSENT_WORK_OWNER_UNCONFIRMED; exit 1; }}
+    echo ALREADY_ABSENT; exit 0'''
+    command = f'''test -x {shlex.quote(str(lock.parent))} || {{ echo LOCK_PARENT_INACCESSIBLE; exit 1; }}
+if test -L {path}; then echo LOCK_SYMLINK; exit 1; fi
+if test ! -e {path}; then {absent}; fi
+test -d {path} || {{ echo LOCK_NOT_DIRECTORY; exit 1; }}
+test -f {owner} && test ! -L {owner} && IFS= read -r lock_owner < {owner} ||
+    {{ echo LOCK_OWNER_UNREADABLE; exit 1; }}
+test "$lock_owner" = {expected} || {{ echo LOCK_OWNER_MISMATCH; exit 1; }}
+rm {owner} && rmdir {path} && echo RELEASED'''
+    status, response = hdc.shell(command, 'release-global-model-io-lock', allow_failure=True,
+                                 timeout=min(60, hdc.timeout))
+    if status or response not in ('RELEASED', 'ALREADY_ABSENT'):
+        raise RuntimeError(f'Cannot release {lock}: remote exit {status}, {response!r}')
+    return response

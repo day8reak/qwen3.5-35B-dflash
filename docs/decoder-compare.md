@@ -97,6 +97,12 @@ r="${AI_RUN_DIR:?}/target/tests/native-convstate-4layer"
 bash targets/cpro/scripts/decoder_compare.sh l0-convstate-dump --run-root "$r"
 ```
 
+如果上次在释放板锁时中断，先查看该次 `replay/result.json`。其中 `status=EXECUTED`、`exitcode=0`、`operator_dump.status=FILES_RECEIVED_REVIEW_REQUIRED` 和 `parser_exitcode=0` 表示推理及 dump 回收已完成。在 35 上使用同一实验目录和回执路径里的 `attempt-*` 目录名，直接提取五个端口。该命令只读已保存的模型、参考数据和 dump，把分析结果写回该次 replay。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh l0-convstate-dump --run-root "$r" --inspect-attempt "$attempt_dirname"
+```
+
 只有 78 的 AIR 时，先在 35 运行 `decoder_transfer.sh air` 和 `decoder_omc.sh`，两条命令都使用本节四层实验的 `--mode 4 --phase prefill --native-convstate --rmsnorm-patch --hidden-trace --run-root "$r"`，跨目录传输时另给 78 的 `--remote-run`。随后执行上面的 dump 命令。它用四层原 OMC 执行一次，在终端打印本次 replay 目录。
 
 `l0-convstate.npz` 保存 L0 的 `mixed_qkv`、`old_conv_state`、`linear_update_tensor`、`new_conv_state`、`padded`。`l0-convstate.json` 记录 AIR 边、原始文件、数据来源和缺失或歧义。旧状态与控制量有同次送板输入可核对，输出 0 有整图返回的 L0 缓存可核对。缺少唯一可解码的中间值时会标记 `INCOMPLETE` 并保留候选。

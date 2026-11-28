@@ -31,6 +31,7 @@ l0-shared-gate-fp16   Run one same-input L0 shared-router OMC with FP16 scalar M
 l0-decay-report   Show the SoftplusPatch to GDR decay path in the retained single-layer AIR and visible OMC graphs.
 l0-original-omg   Compile the retained single-layer AIR with the original OMG command and replay with the original V2 flags.
 l0-convstate-dump   Replay the native four-layer OMC and extract the five ports of the L0 ConvState update.
+                    --inspect-attempt attempt-NAME reads an existing replay on the execution host.
 l0-dump     Replay the retained OMC with --enable_item=2. With --mode 4, inspect L0 padding and the L1 QKV tail in the full four-layer model.
 --rmsnorm-patch  Export the decoder with FP16 RmsnormPatch(x, gamma). Use the same switch for transfer, compile and replay.
 --hidden-trace   For 4- or 40-layer prefill, append a [layers,64,2048] post-decoder output and compare each layer over valid tokens.
