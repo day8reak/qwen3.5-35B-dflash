@@ -303,6 +303,8 @@ def worker(args, action, root, remote):
         cmd.extend(board_upload_flags(args))
     if args.dump:
         cmd.append('--dump')
+    if getattr(args, 'cache_existing_golden', False):
+        cmd.append('--cache-existing-golden')
     if getattr(args, 'gate_probe', False):
         cmd.extend(['--gate-probe', args.gate_probe])
         if args.rmsnorm_air:
@@ -312,6 +314,8 @@ def worker(args, action, root, remote):
     label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
              'compile': '编译 OMC 并保存 I/O 描述', 'execute': '上板执行已编译 OMC 并比较三端结果',
              'diagnose': '诊断已保留的 OMG 编译或板端失败记录', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
+    if action == 'reference' and (args.mode, args.phase) == ('40', 'prefill'):
+        label = '归档已有 40 层 golden' if args.cache_existing_golden else '准备 40 层 golden，优先复用 CPU 和 310P 参考'
     if getattr(args, 'gate_probe', False):
         label = '从四层 AIR 切出并编译门控对照' if action == 'compile' else '上板执行门控对照'
         if args.gate_probe == 'l0-embedding':
@@ -395,6 +399,8 @@ def main():
     parser.add_argument('--rmsnorm-patch', action='store_true', help='use the custom FP16 RmsnormPatch in the CPro decoder')
     parser.add_argument('--dump', action='store_true',
                         help='capture L0 Python intermediates and dump one complete linear prefill OMC on the board')
+    parser.add_argument('--cache-existing-golden', action='store_true',
+                        help='archive the completed 40-layer prefill golden from this case')
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
     parser.add_argument('--gate-probe', nargs='?', const='slices',
                         choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate', 'l0-shared-gate-fp16',
@@ -406,6 +412,9 @@ def main():
     aligned_prefill = a.mode in ('linear', '4', '40') and a.phase == 'prefill' and not a.no_patch
     a.shared_gate_fp16_sigmoid = aligned_prefill
     a.qlinear_scale_fp16 = aligned_prefill
+    if a.cache_existing_golden and ((a.mode, a.phase) != ('40', 'prefill')
+                                    or a.action not in ('golden', '_reference') or a.gate_probe):
+        parser.error('--cache-existing-golden requires golden --mode 40 --phase prefill')
     if a.dump and ((a.mode, a.phase) != ('linear', 'prefill') or a.gate_probe):
         parser.error('--dump requires --mode linear --phase prefill with the regular decoder stages')
     if a.rms_silu_token_view and a.action in ('prepare', 'golden', 'air', '_air'):
@@ -492,6 +501,10 @@ def main():
     if not remote.is_absolute() or '..' in remote.parts:
         parser.error('remote case must be an absolute path on the export host')
     native = (a.mode, a.phase) == ('40', 'prefill')
+    if native:
+        cache_root = required('AI_RUN_DIR')/'target/golden'/slug
+        if root.is_relative_to(cache_root) or cache_root.is_relative_to(root):
+            parser.error('Select an experiment --run-root separate from the persistent 40-layer golden directory')
     if a.action == '_diagnose':
         from split_stage_log import diagnose_case
         return 0 if diagnose_case(root, a.mode, a.phase) else 1
@@ -550,7 +563,12 @@ def main():
         if a.action == 'transfer':
             receive(root, remote, a.artifact, a)
             return 0
-        if native:
+        if native and a.action == 'reference':
+            from decoder_golden_cache import prepare
+            prepare(root, cache_root, a, *source_config('reference'))
+            if a.cache_existing_golden:
+                return 0
+        elif native:
             code = native40(a, site, remote/'export')
             if code:
                 return code
@@ -578,6 +596,9 @@ def main():
         marker = root/'.decoder-case'
         if root.exists() and any(root.iterdir()) and (marker.is_symlink() or not marker.is_file() or marker.read_text() != slug):
             raise ValueError(f'{root} contains files from an unknown run; choose another --run-root')
+        if a.cache_existing_golden:
+            worker(a, 'reference', root, remote)
+            return 0
         for key in ('CPRO_PATCHED_SOURCE', 'CPRO_ORIGINAL_PATCHED_SOURCE', 'DECODER_CONV_CONTROL', 'TARGET_SOURCE', 'CPRO_SOURCE', 'NZ_CONFIG', 'TARGET_CONFIG', 'DECODER_ENV',
                     'CPRO_TRANSFER_CONFIG', 'RUNTIME_CONFIG', 'TBE_DIAGNOSIS'):
             if os.getenv(key) and Path(os.environ[key]).expanduser().resolve().is_relative_to(root):

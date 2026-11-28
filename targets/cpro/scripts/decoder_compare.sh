@@ -6,7 +6,7 @@ usage() {
 decoder_compare.sh {golden|air|compile|execute|diagnose|l0-dump|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-input-rmsnorm-air|l0-input-rmsnorm-omc|l0-input-rmsnorm|l0-shared-gate-reference|l0-shared-gate|l0-shared-gate-fp16|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
                    [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only|--gdn-silu-site {conv|gate}|--all-silu-no-gate-cast|--rms-silu-layers LAYERS|--rms-silu-token-view] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--rmsnorm-patch] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
-golden      Generate CPU and 310P reference data.
+golden      Generate CPU and 310P reference data. 40-layer T64 prefill reuses matching references from AI_RUN_DIR/target/golden/40-prefill-t64.
 air         Export CPro AIR from the golden case.
 compile     Compile the local AIR package with OMG and record OMC I/O.
 transfer {golden|air|omc}  Receive a stage from its producer on this downstream host.
@@ -33,6 +33,7 @@ l0-original-omg   Compile the retained single-layer AIR with the original OMG co
 l0-dump     Replay the retained OMC with --enable_item=2. With --mode 4, inspect L0 padding and the L1 QKV tail in the full four-layer model.
 --rmsnorm-patch  Export the decoder with FP16 RmsnormPatch(x, gamma). Use the same switch for transfer, compile and replay.
 decoder_prepare.sh --reuse-golden-from CASE_DIR  Copy the existing CPU/310P inputs and references before exporting AIR.
+golden --mode 40 --phase prefill --cache-existing-golden  Archive a completed 40-layer golden from the selected case for automatic reuse.
 decoder_run.sh --check-padding-from CASE_DIR  Dump the previous four-layer prefill OMC and report L0/L1 padding before running the new case.
 Patched linear L0, four-layer and 40-layer prefill use FP16 W4 weight scales and an FP16 MatMul feeding each shared expert sigmoid by default.
 --dump      On 78 retain L0 CPU/310P intermediates; on 35 compile one complete linear prefill OMC, run V2 once with --enable_item=2 and retrieve the dump.

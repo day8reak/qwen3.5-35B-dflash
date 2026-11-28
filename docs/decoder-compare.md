@@ -67,7 +67,18 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 ### 用相同的算子配置跑 40 层单块 prefill
 
-78 端按当前 prompt 生成 40 层 CPU、310P golden，导出一张 L0–L39 的 T64 AIR。三端走 wrapper 的 token ID 查表分支。QLinear 的 W4 权重 scale 和共享专家门控沿用已验证的 FP16 设置，GDN 的 `out_proj` 直接送入残差加法。
+78 端按当前 prompt 准备 40 层 CPU、310P golden，导出一张 L0–L39 的 T64 AIR。三端走 wrapper 的 token ID 查表分支。QLinear 的 W4 权重 scale 和共享专家门控沿用已验证的 FP16 设置，GDN 的 `out_proj` 直接送入残差加法。
+
+Golden 独立保存在 78 的 `$AI_RUN_DIR/target/golden/40-prefill-t64/<版本>/`。其中 `export/reference/` 是 310P 的输入、输出和 token 对照表，`export/L00/cpu/` 至 `export/L39/cpu/` 是逐层 CPU 结果。`binding.json` 记录 prompt、NZ 配置、参考实现、运行库版本及 checkpoint 文件信息。首次生成后，同一配置再次运行下方的准备命令会打印 `[golden] 复用`，直接把已保存的参考文件交给 AIR 导出。仅修改 CPro 源码或更换实验的 `--run-root` 都能复用。更换 prompt 或 checkpoint 会保存另一版。
+
+如果在更新代码前已经跑完 40 层 golden，在重新运行准备命令前，先在 78 归档当前 case 一次。旧清单记录的是权重路径，使用这条命令时应确认原权重和参考计算环境仍与那次运行一致。脚本检查旧采集、40 份 CPU 清单及其与 310P 输入的对应关系。
+
+```bash
+bash targets/cpro/scripts/decoder_golden.sh --mode 40 --phase prefill --cache-existing-golden \
+  --run-root "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16"
+```
+
+首次生成和以后复用均执行
 
 ```bash
 bash targets/cpro/scripts/decoder_prepare.sh --mode 40 --phase prefill --gdn-conv conv2d --rmsnorm-patch \
