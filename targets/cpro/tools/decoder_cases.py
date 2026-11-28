@@ -208,6 +208,7 @@ def prepare_stage(args, run):
     else:
         exporter = decoder_case_air.export
         options['shared_gate_fp16_sigmoid'] = args.shared_gate_fp16_sigmoid
+        options['qlinear_scale_fp16'] = args.qlinear_scale_fp16
     if package.exists():
         prior = json.loads((package/'manifest.json').read_bytes())
         if (any(prior.get(k, False) != stamp.get(k, False) for k in EXPORT_CONTROLS)
@@ -234,6 +235,7 @@ def prepare_stage(args, run):
         with tempfile.TemporaryDirectory(dir=run, prefix='decoder-source-') as tmp:
             adapted = export_source(prepared, Path(tmp)/'source', rmsnorm_patch=args.rmsnorm_patch,
                                     shared_gate_fp16_sigmoid=args.shared_gate_fp16_sigmoid,
+                                    qlinear_scale_fp16=args.qlinear_scale_fp16,
                                     fold_norm_gamma=exporter is decoder_case_air.export)
             exporter(working, fixture, ref, src, cfg, adapted, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
@@ -391,6 +393,8 @@ def main():
     parser.add_argument('--rmsnorm-patch', action='store_true', help='use the custom FP16 RmsnormPatch in the CPro decoder')
     parser.add_argument('--shared-gate-fp16-sigmoid', action='store_true',
                         help='run the L0 shared expert sigmoid on its FP16 MatMul result')
+    parser.add_argument('--qlinear-scale-fp16', action='store_true',
+                        help='use FP16 W4 group scales in the L0 linear prefill QLinear projections')
     parser.add_argument('--dump', action='store_true',
                         help='capture L0 Python intermediates and dump one complete linear prefill OMC on the board')
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
@@ -400,6 +404,8 @@ def main():
                                  'l0-decay-report', 'l0-original-omg', 'l0-dump'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
     a = parser.parse_args()
+    if a.qlinear_scale_fp16 and (a.mode, a.phase) != ('linear', 'prefill'):
+        parser.error('--qlinear-scale-fp16 is an L0 control for --mode linear --phase prefill')
     if a.shared_gate_fp16_sigmoid and (a.mode, a.phase) != ('linear', 'prefill'):
         parser.error('--shared-gate-fp16-sigmoid is an L0 control for --mode linear --phase prefill')
     if a.dump and ((a.mode, a.phase) != ('linear', 'prefill') or a.gate_probe):
@@ -464,6 +470,7 @@ def main():
                               gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
                               rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view,
                               physical_convstate=a.physical_convstate, shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid,
+                              qlinear_scale_fp16=a.qlinear_scale_fp16,
                               omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
         return 0
@@ -501,7 +508,7 @@ def main():
                 original = a.gate_probe == 'l0-original-omg'
                 return 0 if board(root/'board', a.mode, a.phase, remote/'export', ddk, config, diag, False,
                                   step=a.action, gdn_conv=a.gdn_conv, original_omg=original, rmsnorm_patch=a.rmsnorm_patch,
-                                  shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid,
+                                  shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid, qlinear_scale_fp16=a.qlinear_scale_fp16,
                                   original_board_args=original or a.original_board_args, operator_dump=not original,
                                   replace_inputs=a.replace_inputs, replace_weights=a.replace_weights) else 1
             if a.gate_probe == 'l0-embedding':
@@ -553,7 +560,7 @@ def main():
             if not board(site, a.mode, a.phase, remote/'export', ddk, config, diag, a.recovery,
                          gdn_conv=a.gdn_conv, step=a.action, replace_inputs=a.replace_inputs, replace_weights=a.replace_weights,
                          original_board_args=a.original_board_args, no_patch=a.no_patch, rmsnorm_patch=a.rmsnorm_patch, dump=a.dump,
-                         shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid,
+                         shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid, qlinear_scale_fp16=a.qlinear_scale_fp16,
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
                          gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site,
                          all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate,

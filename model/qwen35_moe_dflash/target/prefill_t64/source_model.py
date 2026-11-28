@@ -54,8 +54,8 @@ def _convert(node, method, arguments=()):
                     args=list(arguments), keywords=[])
 
 
-def restore_qlinear_scales(tree):
-    """Undo only our two weight-scale casts when reusing a prepared CPro source."""
+def configure_qlinear_weight_scale(tree, *, fp16=False):
+    """Normalize both historical weight-scale casts before selecting the export policy."""
     cls = _definition(tree, 'QLinear')
     init = _definition(cls, '__init__')
     scale = _one((call for call in ast.walk(init) if isinstance(call, ast.Call)
@@ -69,6 +69,11 @@ def restore_qlinear_scales(tree):
         source = scale_arg.func.value
         if isinstance(source, ast.Call) and ast.unparse(source).endswith('.to(torch.float16)'):
             scale_arg.func.value = source.func.value
+    if fp16:
+        if not (isinstance(scale_arg, ast.Call) and isinstance(scale_arg.func, ast.Attribute)):
+            raise ValueError('Expected the CPro QLinear weight scale view at matmul input 2')
+        scale.args[1] = _convert(scale.args[1], 'to', [_expr('torch.float16')])
+        scale_arg.func.value = _convert(scale_arg.func.value, 'to', [_expr('torch.float16')])
 
 
 def _rotate_fp32(tree, original):
@@ -205,7 +210,7 @@ def stage_model(text, *, single_token=True, trace_chunk=False):
     tree = ast.parse(text)
     original = digest == _ORIGINAL
     if not original:
-        restore_qlinear_scales(tree)
+        configure_qlinear_weight_scale(tree)
     _rotate_fp32(tree, original)
     _adapt_gdn(tree, original, single_token)
     if trace_chunk:

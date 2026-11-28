@@ -42,7 +42,8 @@ def load(case):
     for row in meta.get('rmsnorm_nodes', ()):
         if row['inputs'][0] == entry:
             edges['hidden'] = row['output']
-    raw = (package/meta.get('air_directory', 'weight')/'export.air').read_bytes()
+    air = package/meta.get('air_directory', 'weight')/'export.air'
+    raw = air.read_bytes()
     notes = []
     try:
         for label, section, _ in readouts(raw, meta, dump_edges=edges):
@@ -82,6 +83,7 @@ def load(case):
         return aligned(role, values, valid)
 
     return dict(points=points, references=references, root=replay/'dump', files=inventory['files'], views=views,
+                air=air, valid_rows=valid, history_role='new_history',
                 observed=observed, anchors=anchors, air_types=air_types, notes=notes,
                 peers={k: edges[k] for k in ('expert_ids', 'route_map') if k in edges},
                 attempt=receipt['attempt'], output=base/'dump-comparison')

@@ -6,7 +6,7 @@ from shutil import copyfile
 from ..original_target_source import EXPORTER, cpro_python_files
 from .decoder_four_silu import MODELING
 from .decoder_four_source import preserve_source
-from .source_model import _call, _definition, restore_qlinear_scales
+from .source_model import _call, _definition, configure_qlinear_weight_scale
 
 
 def save_air_source(source, destination, *, decoder_files=()):
@@ -142,7 +142,8 @@ def inspect_shared_gates(graph, layers, *, fp16_sigmoid=False):
     return gates
 
 
-def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_patch=False, shared_gate_fp16_sigmoid=False):
+def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_patch=False,
+                  shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False):
     """Keep imported helpers beside the run-local model; preserve editable sources."""
     from .decoder_four_silu import remove_activation_views, update_activation_calls
 
@@ -156,7 +157,7 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
     model = remove_activation_views((source/MODELING).read_text())
     model = update_activation_calls(fp16_shared_gate(model, fp16_sigmoid=shared_gate_fp16_sigmoid))
     tree = ast.parse(model)
-    restore_qlinear_scales(tree)
+    configure_qlinear_weight_scale(tree, fp16=qlinear_scale_fp16)
     model = preserve_source(model, ast.unparse(tree))
     if fold_norm_gamma:
         tree = ast.parse(model)

@@ -224,7 +224,7 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
 
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board', original_omg=False,
           replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False, rmsnorm_patch=False,
-          operator_dump=False, dump=False, shared_gate_fp16_sigmoid=False,
+          operator_dump=False, dump=False, shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False,
           native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
           all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False, rms_silu_token_view=False):
     bundle = run/'package'
@@ -244,7 +244,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
     if manifest.get('gdn_conv', 'conv2d') != gdn_conv:
         raise ValueError(f'{bundle}: expected GDN {gdn_conv}. Select the same --gdn-conv as the AIR export.')
     for key, selected in dict(no_patch=no_patch, rmsnorm_patch=rmsnorm_patch, shared_gate_fp16_sigmoid=shared_gate_fp16_sigmoid,
-                              native_activations=native_activations,
+                              qlinear_scale_fp16=qlinear_scale_fp16, native_activations=native_activations,
                               silu_only=silu_only, softplus_only=softplus_only, gdn_silu_only=gdn_silu_only,
                               gdn_silu_site=gdn_silu_site, all_silu_no_gate_cast=all_silu_no_gate_cast,
                               physical_convstate=physical_convstate, rms_silu_layers=rms_silu_layers,

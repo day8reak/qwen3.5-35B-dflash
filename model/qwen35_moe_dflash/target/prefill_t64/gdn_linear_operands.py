@@ -42,6 +42,21 @@ def operand_comparison(cpu, native, cpro):
     return dict(operands={k: _array_identity(v) for k, v in values.items()}, pairs=pairs)
 
 
+def static_operand(edge, nodes, types, folder, directory):
+    n = nodes[edge.rsplit(':', 1)[0]]
+    if not edge.endswith(':0'):
+        raise ValueError(f'Expected a single-output weight at {edge}')
+    if n.type == 'Cast':
+        return static_operand(n.input[0], nodes, types, folder, directory).astype(types[n.output_desc[0].dtype])
+    if n.type in ('Identity', 'TensorMove'):
+        return static_operand(n.input[0], nodes, types, folder, directory)
+    bound = parameter(n, types, folder, directory)
+    if bound is None:
+        raise ValueError(f'Cannot read static matmul operand from {edge} ({n.type})')
+    dtype, shape, path = bound
+    return np.fromfile(path, dtype=dtype).reshape(shape)
+
+
 def fixed_operands(raw, folder, steps, params):
     _, graph = graph_message(raw, 'QuantBatchMatmulV4444')
     nodes = {n.name: n for n in graph.op}
@@ -54,20 +69,6 @@ def fixed_operands(raw, folder, steps, params):
         while edge.endswith(':0') and nodes[edge[:-2]].type in VIEWS:
             edge = nodes[edge[:-2]].input[0]
         return edge
-
-    def constant(edge, directory):
-        n = nodes[edge.rsplit(':', 1)[0]]
-        if not edge.endswith(':0'):
-            raise ValueError(f'Expected a single-output weight at {edge}')
-        if n.type == 'Cast':
-            return constant(n.input[0], directory).astype(types[n.output_desc[0].dtype])
-        if n.type in ('Identity', 'TensorMove'):
-            return constant(n.input[0], directory)
-        bound = parameter(n, types, folder, directory)
-        if bound is None:
-            raise ValueError(f'Cannot read static matmul operand from {edge} ({n.type})')
-        dtype, shape, path = bound
-        return np.fromfile(path, dtype=dtype).reshape(shape)
 
     with TemporaryDirectory() as tmp:
         for p in PROJECTIONS:
@@ -90,8 +91,8 @@ def fixed_operands(raw, folder, steps, params):
                 raise ValueError(f'{name}: unexpected activation or per-token scale path at {edge}')
             w, groups = params[p + '_weights']
             packed, scales = params[p + '_310p_operands']
-            cpro_w = constant(ports['x2'], Path(tmp))
-            cpro_s = constant(ports['scale'], Path(tmp))
+            cpro_w = static_operand(ports['x2'], nodes, types, folder, Path(tmp))
+            cpro_s = static_operand(ports['scale'], nodes, types, folder, Path(tmp))
             if cpro_w.dtype != np.int32 or cpro_s.dtype != np.float16:
                 raise ValueError(f'{name}: constant dtypes disagree with the checked AIR input ports')
             result[name] = dict(node=op.name, ports=ports, pertoken_scale_cast=scale_cast.name,

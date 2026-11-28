@@ -208,6 +208,9 @@ def receive(root, remote, role, args):
     with reader as fetch, tempfile.TemporaryDirectory(dir=root, prefix='.handoff-') as temp:
         temp = Path(temp)
         index = receipt(source, role)
+        if local and role == 'golden' and not index.is_file():
+            # An AIR host may itself have received this golden from the reference host.
+            index = source/site_name/'.decoder-transfer.json'
         fetch(index, temp/'manifest')
         manifest = (temp/'manifest').read_bytes()
         data = json.loads(manifest)

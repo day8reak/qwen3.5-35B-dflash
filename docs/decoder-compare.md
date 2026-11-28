@@ -369,6 +369,8 @@ bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-con
 
 L0 共享专家门控默认对 FP16 点积的结果执行 `.float()` 再做 sigmoid。`--shared-gate-fp16-sigmoid` 只去掉点积结果的这次转换。78 导出时和 35 的传输、编译、上板均传同一开关。导出器检查源 AIR 中 MatMul 的两个输入、输出和 Sigmoid 的输入均为 FP16，并检查两者之间的边。Sigmoid 之后仍按 PyTorch 模型对齐共享专家输出的 dtype。导出日志和 `L00/case.json` 的 `shared_gates` 记录 Sigmoid 输出类型，以及经过 Cast 或变形后到达的消费者、输入槽和端口类型。如果无法定位唯一的 Mul，日志会列出匹配结果，`mul` 记为 `null`。做加载对照时，两次使用同一份 golden 和相同的 `--dump` 设置。可用独立的 `--run-root` 存放实验产物，在 78 用 `decoder_transfer.sh golden --local-source <原 case 目录>` 接收已有 golden 后执行 `decoder_air.sh`。
 
+在 L0 prefill 对照 W4 分组权重尺度时，两端加 `--qlinear-scale-fp16`。这个开关恢复 PyTorch `QLinear` 注册 `scale` buffer 和传入 matmul 第三个参数前的 FP16 转换。逐 token 的 `pertoken_scale` 沿用现有表达式。78 的 `[QLinear AIR]` 日志同时列出两个端口的 dtype，并检查每个 W4 matmul 的 `scale` 为 `DT_FLOAT16`。使用独立的 `--run-root` 保存该组的模型、dump 和对比结果。78 的 `decoder_prepare.sh --reuse-golden-from <基线 case 目录>` 会先接收基线已发布的 golden，再导出 AIR。CPU、310P 的输入及中间参考逐文件取自基线。
+
 `--dump` 使用原 decoder 用例目录。78 保存同一批 token 和 L0 入口的 CPU/310P 中间值。35 只编译一个完整 L0 OMC，使用 V2 和 `--enable_item=2` 执行一次，再运行 `data_proc_tool_internal`，拉回解析器输出。从用例目录可查看
 
 - `board/L00/replay/dump/` 和 `dump-inventory.json`（同级）。完整文件树、文件大小、板端推理时间窗口和解析器命令。`parser.log` 保存解析器输出。

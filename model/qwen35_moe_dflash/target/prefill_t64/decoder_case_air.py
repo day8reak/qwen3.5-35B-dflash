@@ -79,7 +79,7 @@ def bind_outputs(graph, converter_edges):
 
 
 def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges, gdn_conv, rmsnorm_patch,
-                shared_gate_fp16_sigmoid=False):
+                shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False):
     rows = 64 if ref['phase'] == 'prefill' else 1
     name = case_name(group)
     linear = sum(i % 4 != 3 for i in group)
@@ -112,6 +112,13 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
     from .decoder_rmsnorm import inspect_ports
     norms = inspect_ports(graph) if rmsnorm_patch else []
     gates = inspect_shared_gates(graph, len(group), fp16_sigmoid=shared_gate_fp16_sigmoid)
+    if qlinear_scale_fp16:
+        for node, ports in audit['matmuls'].items():
+            weight = ports['scale']['dtype']
+            token = ports['pertoken_scale']['dtype']
+            print(f'[QLinear AIR] {node} scale={weight} pertoken_scale={token}', flush=True)
+            if weight != 'DT_FLOAT16':
+                audit['mismatches'].append(f'{node}: expected FP16 W4 weight scale, got {weight}')
     if audit['mismatches']:
         raise ValueError('\n'.join(audit['mismatches']))
     operators = inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,
@@ -127,13 +134,15 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
         dump_nodes = dict(silu_patch=operators['silu_patch'], softplus_patch=operators['softplus_patch'],
                           gdr_ports=audit['gdrs'])
     save_json(dest/'case.json', dict(layers=group, rmsnorm_nodes=norms, qlinear_ports=audit['matmuls'], **dump_nodes,
+                                     qlinear_scale_fp16=qlinear_scale_fp16,
                                      shared_gates=gates, gdn_convs=operators['gdn_convs'],
                                      inputs=bindings, outputs=bind_outputs(graph, edges),
                                      files=files_under(dest, dest)))
 
 
 @torch.no_grad()
-def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d', rmsnorm_patch=False, shared_gate_fp16_sigmoid=False):
+def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d', rmsnorm_patch=False,
+           shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False):
     plan = groups(ref['mode'])
     paths = checkpoint_paths(source, config, ref)
     driver = Path(__file__)
@@ -186,7 +195,7 @@ def export(root, fixtures, ref, source, config, prepared, *, gdn_conv='conv2d', 
                     dest = Path(tmp_case)/'case'
                     dest.mkdir()
                     export_case(dest, fixtures, ref, group, final, blocks, Head(model) if final else None,
-                                exporter, edges, gdn_conv, rmsnorm_patch, shared_gate_fp16_sigmoid)
+                                exporter, edges, gdn_conv, rmsnorm_patch, shared_gate_fp16_sigmoid, qlinear_scale_fp16)
                     dest.rename(root/case_name(group))
             del blocks, model
     finally:

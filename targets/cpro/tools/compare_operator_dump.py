@@ -75,6 +75,7 @@ def mapped_profile(path):
     return dict(points=points, references=references, views=views, root=root/config['dump_dir'],
                 files=inventory['files'], air_types={p['edge']:p.get('air_dtype') for p in points},
                 notes=[], peers={}, anchors={}, observed={}, attempt=inventory['attempt'],
+                air=root/config['air'] if 'air' in config else None, valid_rows=config.get('valid_rows'),
                 output=root/'dump-comparison')
 
 
@@ -106,6 +107,11 @@ def run(profile, args):
 
     def candidates(edge):
         return decoded(root, index, edge, air_types.get(edge), rules, args.padding_offset)
+
+    if args.quant_boundary:
+        from operator_dump_quant import diagnose
+        diagnose(profile, args.quant_boundary, candidates, folder)
+        return
 
     peers = {}
     for name, edge in profile['peers'].items():
@@ -197,6 +203,8 @@ def main():
     group.add_argument('--case', type=Path, help='auto-map a complete L0 linear prefill case')
     group.add_argument('--mapping', type=Path, help='ordered reference and AIR port mapping for any layer/model')
     p.add_argument('--output', type=Path)
+    p.add_argument('--quant-boundary', nargs='+', metavar='PROJECTION',
+                   help='check DynamicQuant dump readings and replay the named W4 projections offline')
     p.add_argument('--min-cosine', type=float, default=0.99)
     p.add_argument('--max-rel-l2', type=float, default=0.05)
     p.add_argument('--padding-offset', type=int, choices=(0,32), help='confirmed payload offset for +32-byte dumps')

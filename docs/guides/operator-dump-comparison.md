@@ -12,6 +12,18 @@ python3 targets/cpro/tools/compare_operator_dump.py --case "$case_dir"
 
 解析器按已观察到的 CPro 文件名提取节点、尾部输出槽、dtype 和形状，采用文件声明的 dtype。L0 配置还会用同一次的输入和公共输出检查能否逐元素复现某种编码。内容相同的重复输出合并。若文件多出 32 字节且偏移未确定，分别比较偏移 0 和 32。多种读法给出不同判定时标为 `AMBIGUOUS`；全都超限时标为 `LARGE_ERROR_ALL_CANDIDATES`，各张候选矩阵保留。已从工具格式确认偏移时，可传 `--padding-offset 0` 或 `--padding-offset 32`。文件缺失、形状不符等记在各点的 `issues`，首个超限点以前的缺口列在 `earlier_unresolved`。脚本本身不运行模型。
 
+## 核查 DynamicQuant 到 W4 投影
+
+在 35 上用同一次回传的数据运行
+
+```bash
+python3 targets/cpro/tools/compare_operator_dump.py --case "$case_dir" --quant-boundary qkv z a b
+```
+
+脚本沿所选投影的 AIR 输入边找到 DynamicQuant，用它本次的输入 dump 计算每行 `max(abs(x))/127` 和最近整数编码。对每个候选分别列出偏移、编码差和 scale 偏差。用于诊断的兼容条件为编码逐项差至多 1，scale 非负且与复算值接近（rtol 0.002，atol 为 FP16 最小正次正规数）。在所选行上两项各有唯一兼容数值时，直接用这两份板端数值、AIR 中打包的 I4ZN 权重和分组尺度做 CPU 复算。JSON 给出复算结果相对 CPro 输出 dump 和 310P 实测的指标。L0 的 QKV 还核对与本次公开返回的卷积缓存是否匹配。缺少输入或外置权重时，已有观测和缺口一并保存在 `dump-comparison/quant-boundary.json`。
+
+`--mapping` 模式也支持该选项。提供 `air` 并用 `--quant-boundary` 指定映射里的 W4 投影名称。此项复算采用稠密的行优先投影输出、无平滑参数的逐行 INT8 量化和 K 轴分组大小 256。配置中的 `valid_rows` 决定使用前多少行，省略时使用全部物理行。
+
 ## 其他层或模型
 
 同一工具可读取任意层的 CPU/310P 数值 NPZ 和同次板端的 `dump-inventory.json`。写一份 JSON 映射，路径相对映射文件目录。`points` 按希望检查的前向顺序排列，`edge` 使用该模型实际 AIR/OMC 算子名和输出槽。下列名字仅作示例。

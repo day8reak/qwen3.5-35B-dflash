@@ -32,6 +32,8 @@ l0-decay-report   Show the SoftplusPatch to GDR decay path in the retained singl
 l0-original-omg   Compile the retained single-layer AIR with the original OMG command and replay with the original V2 flags.
 l0-dump     Run the complete L0 prefill OMC with V2 --enable_item=2 and retrieve the parsed operator dump.
 --rmsnorm-patch  Export the decoder with FP16 RmsnormPatch(x, gamma). Use the same switch for transfer, compile and replay.
+decoder_prepare.sh --reuse-golden-from CASE_DIR  Copy the existing CPU/310P inputs and references before exporting AIR.
+--qlinear-scale-fp16  On linear L0 prefill, export the W4 weight group scale in FP16. Pass this switch on both hosts.
 --shared-gate-fp16-sigmoid  On linear L0 prefill, feed the FP16 scalar MatMul directly to sigmoid. Pass this switch on both hosts.
 --dump      On 78 retain L0 CPU/310P intermediates; on 35 compile one complete linear prefill OMC, run V2 once with --enable_item=2 and retrieve the dump.
 gate-report Compare AIR and OMC gate edges, kernel build logs and metadata for the full model and the silu-cast-mul probe.
