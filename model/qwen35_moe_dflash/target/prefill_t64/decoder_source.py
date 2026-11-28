@@ -6,7 +6,7 @@ from shutil import copyfile
 from ..original_target_source import EXPORTER, WRAPPER, cpro_python_files
 from .decoder_four_silu import MODELING
 from .decoder_four_source import preserve_source
-from .source_model import _assignment, _call, _definition, configure_qlinear_weight_scale
+from .source_model import _call, _definition, configure_qlinear_weight_scale
 
 
 def save_air_source(source, destination, *, decoder_files=()):
@@ -49,46 +49,6 @@ def fp16_embedding_entry(source):
               ('inputs_embeds', 'inputs_embeds.to(torch.float16)', 'inputs_embeds.half()')]
     entry.value = ast.parse('inputs_embeds.to(torch.float16)', mode='eval').body
     return preserve_source(source, ast.unparse(tree))
-
-
-def mask_gdn_prefill_output(tree):
-    """Match the reference attention contribution on padded rows before the residual."""
-    cls = _definition(tree, 'Qwen3_5MoeGatedDeltaNet')
-    init = _definition(cls, '__init__')
-    forward = _definition(cls, 'forward')
-    projection = _assignment(forward, 'output')
-    if ast.unparse(projection.value) != 'self.out_proj(core_attn_out)':
-        raise ValueError('Expected the GDN output projection before masking padded rows')
-    # Materialize the T64 indices before tracing. This keeps a vector Range/Cast
-    # out of OMG constant folding, including when the GDR length port is INT16.
-    buffer, = ast.parse(
-        "self.register_buffer('gdn_prefill_rows', torch.arange(64, dtype=torch.int32), persistent=False)"
-    ).body
-    if not any(ast.dump(stmt) == ast.dump(buffer) for stmt in init.body):
-        init.body.append(buffer)
-    mask, = ast.parse(
-        'if effective_length is not None and seq_len > 1:\n'
-        '    rows = self.gdn_prefill_rows\n'
-        '    if seq_len != rows.numel():\n'
-        '        rows = torch.arange(seq_len, device=output.device, dtype=torch.int32)\n'
-        '    valid_rows = rows.view(1, -1, 1) < effective_length.int().reshape(-1, 1, 1)\n'
-        '    output = torch.where(valid_rows, output, 0.0)'
-    ).body
-    index = forward.body.index(projection) + 1
-    following = forward.body[index]
-    if isinstance(following, ast.If) and ast.dump(following.test) == ast.dump(mask.test):
-        # Support prepared source copies which already contain the previous mask.
-        old_body = ast.parse(
-            'rows = torch.arange(seq_len, device=output.device, dtype=effective_length.dtype)\n'
-            'valid_rows = rows.view(1, -1, 1) < effective_length.reshape(-1, 1, 1)\n'
-            'output = torch.where(valid_rows, output, 0.0)'
-        ).body
-        if ast.dump(following) != ast.dump(mask) and (
-                following.orelse or list(map(ast.dump, following.body)) != list(map(ast.dump, old_body))):
-            raise ValueError('Unrecognized GDN prefill output mask in the supplied CPro source')
-        forward.body[index] = mask
-    else:
-        forward.body.insert(index, mask)
 
 
 def lookup_exporter(source):
@@ -210,7 +170,6 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
     model = remove_activation_views((source/MODELING).read_text())
     model = update_activation_calls(fp16_shared_gate(model, fp16_sigmoid=shared_gate_fp16_sigmoid))
     tree = ast.parse(model)
-    mask_gdn_prefill_output(tree)
     configure_qlinear_weight_scale(tree, fp16=qlinear_scale_fp16)
     model = preserve_source(model, ast.unparse(tree))
     if fold_norm_gamma or native_prefill:
