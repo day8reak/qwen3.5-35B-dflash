@@ -80,7 +80,7 @@ def external_embedding_path(graph, inputs):
 
 
 def inspect_air(path, *, layers=4, physical_history=None, require_control=False, conv2d_rows=None,
-                check_embedding=False):
+                check_embedding=False, lookup_vocab_size=None):
     _, graph = graph_message(path.read_bytes(), 'NetOutput')
     nodes = {n.name: n for n in graph.op}
     net, = [n for n in graph.op if n.type == 'NetOutput']
@@ -209,6 +209,34 @@ def inspect_air(path, *, layers=4, physical_history=None, require_control=False,
                     operator_counts={kind: counts[kind] for kind in ('SiluPatch', 'SoftplusPatch', 'QuantBatchMatmulV4444')})
     if check_embedding:
         boundary['embedding_path'] = external_embedding_path(graph, inputs)
+    if lookup_vocab_size is not None:
+        from .attention_steps import only
+
+        table_shape = [lookup_vocab_size, 2048]
+        lookups = []
+        for op in graph.op:
+            if op.type not in ('Gather', 'GatherV2', 'GatherV2D') or len(op.input) < 2:
+                continue
+            for edge in chain(op.input[0]):
+                table = nodes[edge.rsplit(':', 1)[0]]
+                if table.type == 'FileConstant':
+                    dims = table.attr['shape'].list.i if 'shape' in table.attr else ()
+                elif table.type == 'Const' and 'value' in table.attr:
+                    dims = table.attr['value'].t.desc.shape.dim
+                else:
+                    continue
+                if list(dims or table.output_desc[0].shape.dim) == table_shape:
+                    lookups.append(op.name)
+        gather = nodes[only(lookups, f'embedding Gather for the {table_shape} checkpoint table')]
+        index_sources = set(chain(gather.input[1]))
+        ids = only((row['name'] for row in inputs if row['name'] + ':0' in index_sources), 'embedding index input')
+        int32 = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name['DT_INT32'].number
+        desc = nodes[ids].output_desc[0]
+        if (list(desc.shape.dim) != [1, 64] or desc.dtype != int32
+                or len(gather.input_desc) < 2 or gather.input_desc[1].dtype != int32):
+            raise ValueError(f'{ids} → {gather.name} input[1]: expected INT32 token IDs with input shape [1,64]')
+        boundary['token_ids_input'] = ids
+        print(f'[embedding AIR] {ids} INT32[1,64] → {gather.name} input[1] (INT32), table {table_shape}', flush=True)
     if conv2d_rows is not None:
         from .decoder_four_silu import inspect_gdn_convs
         boundary['gdn_convs'] = inspect_gdn_convs(graph, len(linear_layers), conv2d_rows)

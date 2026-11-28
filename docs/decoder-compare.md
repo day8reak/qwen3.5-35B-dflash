@@ -377,7 +377,7 @@ bash targets/cpro/scripts/decoder_compare.sh source --mode 4 --phase prefill --g
 - `board/matrices.csv` 包含三端的 3×3 矩阵，行是 actual，列是 reference。`board/comparison.json` 包含 prompt、logits 位置、预测 token 和未达阈值的张量。逐层模式还有 `board/Lxx/matrices.csv`。
 - 线性层比较完整 conv/recurrent 状态，full 层比较有效 K/V。逐层模式另外检查写入区以外的 KV。单层和四层的 logits 取所测最后一层输出并接原模型 head。
 - 四层 T64 的 310P golden 通过 wrapper 的 `if` 分支将 INT8 embedding 行乘以逐 token FP32 scale。两个操作数按实际调用保存到 `export/fixture/embedding_inputs/`，包括 padding 行。CPU 用这两份数据重建 L0 输入，四层 CPro OMC 直接接收这两份数据。四层图返回 logits、前三层的 conv/recurrent state 和 L3 的 K/V，共 9 个输出。
-- 40 层 T64 整网推理默认走 wrapper 的 `else` 分支。CPU、310P 和 CPro 都用同一组 token ID 查 checkpoint 的 `embed_tokens`。生成 40 层 golden 时，CPU 查表结果与 310P 实测 L0 入口的 64 行按 FP16 位模式核对。CPro T64 图接收 `input_ids.bin`（INT64，形状 `[1,64]`）。切换旧的外部 embedding 整网时，重新导 AIR、编译 OMC，首次运行加 `--replace-inputs --replace-weights`。独立 decoder block 和 T1 对照接收已采集的入口 hidden 与状态。其余算子配置见[原 CPro 整网 prefill](target-prefill40-single.md)。
+- 40 层 T64 整网推理默认走 wrapper 的 `else` 分支。CPU、310P 和 CPro 都用同一组 token ID 查 checkpoint 的 `embed_tokens`。生成 40 层 golden 时，CPU 查表结果与 310P 实测 L0 入口的 64 行按 FP16 位模式核对。CPro 接收小端 INT32 的 `input_ids.bin`，形状 `[1,64]`，共 256 字节。AIR 导出时沿词表 Gather 的索引输入确定 token ID 节点，记录在 `export/air/manifest.json` 的 `boundary.token_ids_input`。上板时按这个节点名区分同形状的 `position_ids`。已有 40 层 golden 的实验可以在 78 运行 `decoder_air.sh` 重新导出，再在 35 运行 `decoder_run.sh` 编译上板。独立 decoder block 和 T1 对照接收已采集的入口 hidden 与状态。其余算子配置见[原 CPro 整网 prefill](target-prefill40-single.md)。
 
 ### 共享专家门控的 L0 整层回归
 

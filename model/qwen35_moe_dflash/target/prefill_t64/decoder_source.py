@@ -70,8 +70,8 @@ def lookup_exporter(source):
     args = {kw.arg: kw for kw in call.keywords}
     for key in ('inputs_embeds', 'embed_scale'):
         args[key].value = ast.Constant(None)
-    # Distinguish token IDs from position_ids even if OMG reorders identically shaped slots.
-    args['input_ids'].value = ast.parse('input_ids.long()', mode='eval').body
+    # This is the example input to TorchAir, so Gather receives INT32 directly.
+    args['input_ids'].value = ast.parse('input_ids.to(torch.int32)', mode='eval').body
     for n in ast.walk(tree):
         if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) in ('embedding_weight_path', 'embedding_scale_path'):
             key = ast.unparse(n.targets[0])

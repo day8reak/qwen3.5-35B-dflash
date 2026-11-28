@@ -86,15 +86,18 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     def tensor(name):
         return read_array(reference, meta['inputs'][name])
 
-    ids = tensor('input_ids').astype('<i4')
-    digest = hashlib.sha256(ids.tobytes()).hexdigest()
-    if ids.shape != (1, 64) or (not yaml_prompt and digest != VALID19_IDS_SHA256):
-        raise ValueError('Unexpected prompt token IDs')
+    captured_ids = tensor('input_ids')
     vocab = int(cfg.get('vocab_size', 248320))
-    if np.any(ids < 0) or np.any(ids >= vocab):
+    if captured_ids.shape != (1, 64) or not np.issubdtype(captured_ids.dtype, np.integer):
+        raise ValueError('Expected integer prompt token IDs with shape [1,64]')
+    if np.any(captured_ids < 0) or np.any(captured_ids >= vocab):
         raise ValueError('Captured token ID outside the embedding vocabulary')
+    ids = captured_ids.astype('<i4', copy=False)
+    digest = hashlib.sha256(ids.tobytes()).hexdigest()
+    if not yaml_prompt and digest != VALID19_IDS_SHA256:
+        raise ValueError('Unexpected prompt token IDs')
     if lookup:
-        embedding_files = {'input_ids': ids.astype('<i8')}
+        embedding_files = {'input_ids': ids}
     elif decoder_fixture:
         from qwen35_moe_dflash.target.prefill_t64.decoder_embedding import retained_embedding
         rows = retained_embedding(reference, meta)
@@ -145,7 +148,7 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
                    reference_inputs={k: meta['inputs'][entry_name if k == 'embedding' else k]['sha256']
                                      for k in REFERENCE_INPUT_NAMES})
     if lookup:
-        print('[40/prefill] wrapper else: input_ids INT64[1,64] → embed_tokens', flush=True)
+        print('[40/prefill] wrapper else: input_ids INT32[1,64] → embed_tokens', flush=True)
         return dict(**fixture, prompt=meta['prompt'], embedding='lookup')
     measured = tensor(entry_name)
     if measured.shape != (1, 64, 2048) or measured.dtype != np.float16:
@@ -249,6 +252,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             else:
                 same_control = saved['fixture']['conv_state_control'].startswith('trial [')
         if (same_control and saved['fixture'].get('embedding') == 'lookup' and saved['kind'] == kind
+                and saved.get('boundary', {}).get('token_ids_input')
                 and saved['sources'] == sources and saved['config_sha256'] == sha(config)
                 and saved['fixture']['reference_sha256'] == sha(reference/'manifest.json')):
             with tempfile.TemporaryDirectory(dir=run, prefix='check-source-') as tmp:
@@ -360,7 +364,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                                                       standalone=standalone)
             else:
                 boundary = inspect_air(air, layers=layers, physical_history=full and not native_convstate,
-                                       require_control=native_convstate)
+                                       require_control=native_convstate,
+                                       lookup_vocab_size=int(cfg.get('vocab_size', 248320)) if full else None)
                 if uses_baseline:
                     same_boundary(base_boundary, boundary)
                 variant['boundary'] = boundary
@@ -382,8 +387,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if full:
             from parse_model_json import GE_PROTO
             ports = [(GE_PROTO[p['dtype_raw']], p['shape']) for p in abi['inputs']]
-            if ports.count(('INT64', [1, 64])) != 1 or ('INT8', [1, 64, 2048]) in ports or ('FP32', [1, 64, 1]) in ports:
-                raise ValueError('Expected 40-layer lookup AIR with one INT64 token-ID input and no external embedding inputs')
+            if ('INT8', [1, 64, 2048]) in ports or ('FP32', [1, 64, 1]) in ports:
+                raise ValueError('Expected 40-layer lookup AIR without external embedding inputs')
         files = [identity(p, work) for p in sorted(air.parent.rglob('*')) if p.is_file()]
         files.extend(identity(p, work) for p in sorted((work / 'inputs').glob('*.bin')))
         if uses_baseline:
@@ -556,6 +561,8 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
     meta = json.loads((bundle / 'manifest.json').read_bytes())
     if kind in FULL_KINDS:
         check_full_precision(meta, bundle, rmsnorm_patch)
+        if not meta['boundary'].get('token_ids_input'):
+            raise ValueError(f'{bundle}: rerun decoder_air.sh for 40-layer prefill with INT32 embedding indices before compiling')
     if meta['kind'] != kind:
         raise ValueError(f'Expected {kind} AIR at {bundle}, got {meta["kind"]}')
     for row in meta['files']:
@@ -600,9 +607,13 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
     print(f'Compiled {kind} OMC: {dest / model.relative_to(out)}', flush=True)
 
 
-def original_filename(name, src, dtype, *, fresh_zero_states):
+def original_filename(name, src, dtype, *, fresh_zero_states, token_ids_input=None):
     """Match the original exporter's descriptors, before singleton dimensions can fold."""
     dims = tuple(src['shape'])
+    if name == token_ids_input:
+        if (dtype, dims) != ('int32', (1, 64)):
+            raise ValueError(f'{name}: expected INT32[1,64] for input_ids, got {dtype}{dims}')
+        return 'input_ids.bin'
     known = {
         ('int64', (1, 64)): 'input_ids',
         ('int8', (1, 64, 2048)): 'inputs_embeds',
@@ -713,7 +724,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
             if _nd_view_key((ge_dtype(src['dtype_raw'], GE_PROTO), src['shape'])) != _nd_view_key(
                     (abi['inputs'][i]['dtype'], spec['shape'])):
                 raise ValueError(f'AIR and compiled typed view differ for {name}: {src} vs {spec}')
-            path = directory / original_filename(name, src, spec['dtype'], fresh_zero_states=fresh)
+            path = directory / original_filename(name, src, spec['dtype'], fresh_zero_states=fresh,
+                                                  token_ids_input=meta.get('boundary', {}).get('token_ids_input'))
         if path.stat().st_size != spec['bytes']:
             raise ValueError(f'{name} {path}: expected {spec["bytes"]} bytes')
         if path.name == 'output_pos.bin':
