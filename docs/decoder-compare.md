@@ -65,6 +65,29 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 三端共用 310P wrapper 实际收到的 INT8 embedding 编码和逐 token FP32 scale，先相乘再舍入到 FP16。78 检查 CPU 重建和送板操作数重建与 310P 实测 L0 入口全部 64 行逐元素相同，并检查 CPro AIR 中从两个外部输入到首个 RMSNorm 的路径。四层导出检查 36 个 W4 matmul 的分组权重 scale、4 个共享门控以及 3 个 GDR。35 在 `4-prefill-t64/board/comparison.json` 和 `matrices.csv` 输出四层 logits、L0–L2 的六个状态和 L3 的 K/V 三端对比。
 
+### 检查 L0 的 padding 是否传入 L1 的卷积缓存
+
+已有 `qlinear-scale-fp16/4-prefill-t64` 的四层结果时，在 78 复用这次 golden，导出到新目录。
+
+```bash
+bash targets/cpro/scripts/decoder_prepare.sh --mode 4 --phase prefill --gdn-conv conv2d --rmsnorm-patch \
+  --reuse-golden-from "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16/4-prefill-t64" \
+  --run-root "${AI_RUN_DIR:?}/target/tests/gdn-padding"
+```
+
+在 35 用已有四层 OMC 抓一次中间 dump，再编译和运行新四层 OMC。
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --rmsnorm-patch \
+  --check-padding-from "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16/4-prefill-t64" \
+  --run-root "${AI_RUN_DIR:?}/target/tests/gdn-padding" \
+  --remote-run "${AI_RUN_DIR:?}/target/tests/gdn-padding/4-prefill-t64" --replace-inputs --replace-weights
+```
+
+补丁在 PyTorch 的 `Qwen3_5MoeGatedDeltaNet.forward` 内，按 `effective_length` 把 padding 行的 GDN 投影贡献置零，然后由 decoder 加回原残差。78 的 `export/package/air-source/cpro/models/modeling_qwen3_5_moe_hiai_cpro.py` 保留实际生成本次 AIR 的源码。
+
+旧 case 的 `board/L00-L03/operator-dump/attempt-*/L00-L03/replay/gdn-padding.json` 记录 L0 投影、第一条残差的 GDN 输入、L0 整层输出和 L1 QKV。对 T64、有效 19 行的用例，查看位置 60–63 的非零元素数和 L1 QKV 相对 CPU、310P 卷积缓存的 cosine、relative L2。如果同目录下有入口和权重来源匹配的单层 golden，也列出 310P 实测 `out_proj_0` 的尾行。新 case 的 `board/comparison.json` 给出三端输出矩阵。
+
 ### 用原始源码跑四层 T64 prefill
 
 在 AIR 生成服务器的个人配置（`air.env` 或共用的 `decoder.env`）中，将 `CPRO_SOURCE` 设为自己的完整 CPro 工程根目录，该目录下应能看到 `export_glm_model_qwen3_5_moe.py`。模型实现可直接改 `$CPRO_SOURCE/models/modeling_qwen3_5_moe_hiai_cpro.py`，修改算子注册或 GE 转换时再改根目录的导出脚本。目录放在会被重建的 case 之外。手改源码也可以使用 `--no-patch`，该参数会运行你指定的源码现状。已有四层 golden 时，两台服务器各运行一条命令。

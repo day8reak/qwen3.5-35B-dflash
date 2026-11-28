@@ -337,7 +337,7 @@ def worker(args, action, root, remote):
         elif args.gate_probe == 'l0-decay-report':
             label = '查看现有 L0 AIR 和 OMC 的 Softplus 衰减支路'
         elif args.gate_probe == 'l0-dump':
-            label = '执行完整 L0 OMC，解析并回收算子中间 dump'
+            label = '复用已有 OMC，回收 L0 算子 dump'
         elif args.gate_probe == 'l0-original-omg':
             label = {'compile': '用原 CPro OMG 参数编译已有 L0 AIR', 'execute': '用原 V2 参数执行对照 OMC'}[action]
         elif args.gate_probe == 'gdn-bisect':
@@ -428,6 +428,8 @@ def main():
     elif a.gate_probe == 'l0-dump':
         probe_actions = ('execute', '_execute')
     probe_mode = 'linear' if a.gate_probe in ('l0-original-omg', 'l0-decay-report', 'l0-dump') else '4'
+    if a.gate_probe == 'l0-dump' and a.mode == '4':
+        probe_mode = '4'
     if a.gate_probe and ((a.mode, a.phase) != (probe_mode, 'prefill') or
                          a.action not in probe_actions):
         parser.error(f'{a.gate_probe} requires --mode {probe_mode} --phase prefill and its supported stage')

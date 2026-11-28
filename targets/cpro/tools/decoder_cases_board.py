@@ -288,18 +288,27 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
     pieces = read(fixture/'tokens.json')
     feeds = {k: (fixture, v) for k, v in cpro_input_records(ref).items()}
     if operator_dump:
-        case = bundle/'L00'
+        case = bundle/case_name(groups(mode)[0])
         base = run/case.name
         build, model, weights = compiled(case, base, ddk, diagnosis, stamp)
         directory = base/'operator-dump'
         directory.mkdir(exist_ok=True)
         attempt = Path(tempfile.mkdtemp(dir=directory, prefix='attempt-'))/case.name
         attempt.mkdir()
-        print(f'完整 L0 中间结果目录：{attempt}/replay', flush=True)
-        replay(attempt, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, False,
-               directory_name(mode, phase) + '-dump', replace_inputs, replace_weights, shape_config=config,
-               original_board_args=original_board_args or gdn_conv == 'original', operator_dump=True)
-        return read(attempt/'replay/result.json')['operator_dump']['status'] == 'FILES_RECEIVED_REVIEW_REQUIRED'
+        print(f'[{case.name}] 中间结果目录：{attempt}/replay', flush=True)
+        values = replay(attempt, case, build, model, weights, feeds, ref['outputs'], runtime, stamp, False,
+                        directory_name(mode, phase) + '-dump', replace_inputs, replace_weights, shape_config=config,
+                        original_board_args=original_board_args or gdn_conv == 'original', operator_dump=True)
+        received = read(attempt/'replay/result.json')['operator_dump']['status'] == 'FILES_RECEIVED_REVIEW_REQUIRED'
+        if received and mode == '4':
+            from decoder_gdn_padding import report_padding
+            try:
+                report_padding(case, attempt/'replay', fixture, ref, values['conv_state_1'])
+            except (ValueError, KeyError, OSError) as exc:
+                destination = attempt/'replay/gdn-padding.json'
+                save_json(destination, dict(status='INCOMPLETE', issue=str(exc)))
+                print(f'[padding] dump 已回收，尾行对照未完成：{exc}，见 {destination}', flush=True)
+        return received
     scores = {b: {r: {} for r in ('cpu', '310p', 'cpro')} for b in ('cpu', '310p', 'cpro')}
     failures, unchanged, predictions = [], {}, {}
     for group in groups(mode):

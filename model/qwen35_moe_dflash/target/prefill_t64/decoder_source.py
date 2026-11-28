@@ -6,7 +6,7 @@ from shutil import copyfile
 from ..original_target_source import EXPORTER, WRAPPER, cpro_python_files
 from .decoder_four_silu import MODELING
 from .decoder_four_source import preserve_source
-from .source_model import _call, _definition, configure_qlinear_weight_scale
+from .source_model import _assignment, _call, _definition, configure_qlinear_weight_scale
 
 
 def save_air_source(source, destination, *, decoder_files=()):
@@ -49,6 +49,23 @@ def fp16_embedding_entry(source):
               ('inputs_embeds', 'inputs_embeds.to(torch.float16)', 'inputs_embeds.half()')]
     entry.value = ast.parse('inputs_embeds.to(torch.float16)', mode='eval').body
     return preserve_source(source, ast.unparse(tree))
+
+
+def mask_gdn_prefill_output(tree):
+    """Match the reference attention contribution on padded rows before the residual."""
+    forward = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
+    projection = _assignment(forward, 'output')
+    if ast.unparse(projection.value) != 'self.out_proj(core_attn_out)':
+        raise ValueError('Expected the GDN output projection before masking padded rows')
+    mask, = ast.parse(
+        'if effective_length is not None and seq_len > 1:\n'
+        '    rows = torch.arange(seq_len, device=output.device, dtype=effective_length.dtype)\n'
+        '    valid_rows = rows.view(1, -1, 1) < effective_length.reshape(-1, 1, 1)\n'
+        '    output = torch.where(valid_rows, output, 0.0)'
+    ).body
+    index = forward.body.index(projection) + 1
+    if ast.dump(forward.body[index]) != ast.dump(mask):
+        forward.body.insert(index, mask)
 
 
 def lookup_exporter(source):
@@ -170,6 +187,7 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
     model = remove_activation_views((source/MODELING).read_text())
     model = update_activation_calls(fp16_shared_gate(model, fp16_sigmoid=shared_gate_fp16_sigmoid))
     tree = ast.parse(model)
+    mask_gdn_prefill_output(tree)
     configure_qlinear_weight_scale(tree, fp16=qlinear_scale_fp16)
     model = preserve_source(model, ast.unparse(tree))
     if fold_norm_gamma or native_prefill:

@@ -9,6 +9,14 @@ from .gdr_stage_air import stage_edges
 from .l0_split import plan, slice_dependencies, wire
 
 
+def before_padding_mask(walk, edge):
+    """Return the projected values selected for valid rows in the PyTorch where."""
+    node = walk.node(walk.strip(edge))
+    if node.type in ('Select', 'SelectV2'):
+        return walk.strip(node.input[1])
+    return walk.strip(edge)
+
+
 def recurrent_writeback(graph, nodes, state, cache):
     """Prove that the exposed GDR state and the returned FP16 cache have the same values."""
     initial = port_info(graph, descriptor(nodes, state))['dtype']
@@ -84,7 +92,8 @@ def four_layer_gdn(raw, meta):
     from .attention_steps import NORMS, operands
     from .decoder_four_silu import activation_port_shape
 
-    if list(meta['layers']) != [0, 1, 2, 3] or not meta.get('physical_convstate'):
+    if list(meta['layers']) != [0, 1, 2, 3] or not (
+            meta.get('physical_convstate') or meta.get('native_convstate') is False):
         raise ValueError('Select the four-layer T64 AIR with physical ConvState')
     _, graph = graph_message(raw, 'ChunkGatedDeltaRule')
     nodes = {op.name: op for op in graph.op}
@@ -128,7 +137,7 @@ def four_layer_gdn(raw, meta):
                 projections.append(op.name + ':0')
     projection = only(projections, 'L0 gated out_proj')
     residual_inputs = (e for op in graph.op if op.type in ('Add', 'AddV2') for e in operands(op)
-                       if walk.strip(e) == projection)
+                       if before_padding_mask(walk, e) == projection)
     out = only(residual_inputs, 'L0 out_proj output entering the residual')
     inputs, outputs = [hidden, history, state, length], [out, history_out, state_out]
     kept, used = slice_dependencies(nodes, outputs, set(inputs), 'L0 linear_attn')
@@ -179,7 +188,8 @@ def gdn_load_sections(raw, meta):
     wires.update(zip(operands(net), meta['outputs'], strict=True))
     edges = stage_edges(graph, 'gdr')
     walk = AttentionSteps(graph, nodes, [])
-    product = walk.strip(_project_input(nodes, outputs['out']))
+    projection = before_padding_mask(walk, outputs['out'])
+    product = walk.strip(_project_input(nodes, projection))
     mul = walk.expect(product, {'Mul'})
     if not walk.depends(product, edges['core']):
         raise ValueError(f'{product} is not downstream of the GDR core')
@@ -218,12 +228,13 @@ def gdn_load_sections(raw, meta):
     gate_operand = only((e for e in operands(mul) if not walk.depends(e, core)), 'z gate operand')
     add_wire(gate_operand, 'gate_operand', mul.input_desc[list(mul.input).index(gate_operand)], [[2048, 128]])
     out = outputs['out']
+    mask_length = [inputs['length']] if projection != walk.strip(out) else []
 
     # Cuts follow data edges. Cross-cut cases keep both producers at a join or
     # replace only one side of the gate, which can change OMG task construction.
     cases = [
         ('gdn-front', entry, [core, *caches], 3, True),
-        ('gdn-tail', [hidden, core], [out], 2, False),
+        ('gdn-tail', [hidden, core, *mask_length], [out], 2, False),
         ('pre-gdr', [hidden, history], qkv_results + decay_results, 3, False),
         ('gdr-state', gdr_inputs, [core, outputs['recurrent_cache']], 0, True),
         ('qkv-path', [hidden, history], qkv_results, 1, False),
@@ -233,7 +244,7 @@ def gdn_load_sections(raw, meta):
         ('decay-path', [hidden], [edges['g']], 1, False),
         ('beta-path', [hidden], [edges['beta']], 1, False),
         ('gate-product', [hidden, core], [product], 1, False),
-        ('out-proj', [product], [out], 1, False),
+        ('out-proj', [product, *mask_length], [out], 1, False),
         ('z-gate', [hidden], [gate_operand], 1, False),
         ('rms-mul', [core, gate_operand], [product], 0, False),
         ('through-gate', entry, [product, *caches], 4, True),
@@ -287,7 +298,7 @@ def stages(raw, meta, *, whole=False):
     conv = walk.node(walk.nearest(conv_patch.input[0], CONVS))
     projections = dict(qkv=walk.nearest(conv.input[0], {MATMUL}), z=walk.nearest(gate_patch.input[0], {MATMUL}),
                        a=walk.nearest(gdr['g'], {MATMUL}), b=walk.nearest(gdr['beta'], {MATMUL}),
-                       out=walk.strip(decoder['results']['out_proj']))
+                       out=before_padding_mask(walk, decoder['results']['out_proj']))
     if len(set(projections.values())) != 5 or any(walk.node(e).type != MATMUL for e in projections.values()):
         raise ValueError(f'expected five distinct L0 W4 projections: {projections}')
     quant = {p: walk.node(walk.strip(walk.node(e).input[0])) for p,e in projections.items()}

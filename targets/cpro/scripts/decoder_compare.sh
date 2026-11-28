@@ -30,9 +30,10 @@ l0-shared-gate   Compare the saved gate logits and weighted outputs offline on t
 l0-shared-gate-fp16   Run one same-input L0 shared-router OMC with FP16 scalar MatMul and an FP32 cast before sigmoid.
 l0-decay-report   Show the SoftplusPatch to GDR decay path in the retained single-layer AIR and visible OMC graphs.
 l0-original-omg   Compile the retained single-layer AIR with the original OMG command and replay with the original V2 flags.
-l0-dump     Run the complete L0 prefill OMC with V2 --enable_item=2 and retrieve the parsed operator dump.
+l0-dump     Replay the retained OMC with --enable_item=2. With --mode 4, inspect L0 padding and the L1 QKV tail in the full four-layer model.
 --rmsnorm-patch  Export the decoder with FP16 RmsnormPatch(x, gamma). Use the same switch for transfer, compile and replay.
 decoder_prepare.sh --reuse-golden-from CASE_DIR  Copy the existing CPU/310P inputs and references before exporting AIR.
+decoder_run.sh --check-padding-from CASE_DIR  Dump the previous four-layer prefill OMC and report L0/L1 padding before running the new case.
 Patched linear L0, four-layer and 40-layer prefill use FP16 W4 weight scales and an FP16 MatMul feeding each shared expert sigmoid by default.
 --dump      On 78 retain L0 CPU/310P intermediates; on 35 compile one complete linear prefill OMC, run V2 once with --enable_item=2 and retrieve the dump.
 gate-report Compare AIR and OMC gate edges, kernel build logs and metadata for the full model and the silu-cast-mul probe.

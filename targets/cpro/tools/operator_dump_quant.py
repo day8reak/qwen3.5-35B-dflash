@@ -60,6 +60,9 @@ def matmul_inputs(edge, nodes):
         raise ValueError('Missing mapped projection edge')
     output = list(path_to_input(edge, nodes, VIEWS))[-1]
     op = nodes[output.rsplit(':', 1)[0]]
+    if op.type in ('Select', 'SelectV2') and output.endswith(':0'):
+        output = list(path_to_input(op.input[1], nodes, VIEWS))[-1]
+        op = nodes[output.rsplit(':', 1)[0]]
     if op.type != 'QuantBatchMatmulV4444' or not output.endswith(':0'):
         raise ValueError(f'{output} is not an A8W4 projection output')
     slots = dict(zip((s.decode() for s in op.attr['_input_name_key'].list.s),

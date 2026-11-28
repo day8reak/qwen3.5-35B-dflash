@@ -2,7 +2,7 @@
 from .attention_steps import AttentionSteps, CONVS, MATMUL, NORMS, only, operands
 from .decode_cache_control import graph_message
 from .decoder_four_silu import rms_gate_path
-from .gdn_layer_air import four_layer_gdn
+from .gdn_layer_air import before_padding_mask, four_layer_gdn
 from .l0_split import slice_dependencies, wire
 
 
@@ -81,10 +81,12 @@ def readouts(raw, meta, *, same_input=False, dump_edges=None):
                               'L0 RMS gate activation'))
     projections = dict(qkv=walk.nearest(history, {MATMUL}), z=walk.nearest(gate.input[0], {MATMUL}),
                        a=walk.nearest(soft.input[0], {MATMUL}), b=walk.nearest(gdr_inputs['beta'], {MATMUL}),
-                       out=walk.strip(out))
+                       out=before_padding_mask(walk, out))
     edges.update(projections, conv_silu=conv_silu.name+':0', conv=conv_silu.input[0], gate_silu=gate.name+':0')
     for key, edge in projections.items():
         quant_edges(key, edge)
+    if projections['out'] != walk.strip(out):
+        edges['out'] = out
     gate_path, rms = rms_gate_path(graph, gate.name + ':0')
     edges.update(product=gate_path[-1].name+':0', rms=rms)
     residual = consumer(out, added)
