@@ -47,6 +47,16 @@ python3 targets/cpro/tools/plot_decoder_hidden.py "$trace_root/40-prefill-t64/bo
 
 每张图给出 CPro 对 CPU、310P 对 CPU 和 CPro 对 310P，图例斜线右侧是 reference。图中标注 CPro 对 CPU 的首次越线与相邻层最大恶化位置。cosine ≤ 0.99 为越线，error_ratio 是超出 `np.isclose(rtol=1e-3, atol=1e-5)` 的元素占比，超过 0.1% 为越线。定位时对照原整图和这次诊断图的 logits，额外输出可能影响编译器优化。
 
+### 19 个有效 token 的逐层结果
+
+每层比较 38,912 个元素。三组对比的 cosine 最大单层跌幅都出现在 L30 → L31，CPro 对 CPU 从 0.997469 降到 0.980852，310P 对 CPU 从 0.998441 降到 0.990783，CPro 对 310P 从 0.997593 降到 0.983469。CPro 对 CPU 在 L7 已有一次较小的下降，到 L36 取得最低值 0.975394。
+
+![三个后端在 40 层 decoder 输出上的 cosine](assets/prefill40-valid19/hidden_cosine.png)
+
+CPro 对 CPU 的超差比例在 L0 已达 95.76%，L30 和 L31 分别为 99.50% 和 99.62%。这个比例统计超差元素的个数，每个超差元素的权重相同。[逐层绘图数据（CSV）](assets/prefill40-valid19/hidden_metrics.csv)
+
+![三个后端在 40 层 decoder 输出上的逐元素超差比例](assets/prefill40-valid19/hidden_error_ratio.png)
+
 ## 既有的单 logits 导出流程
 
 
