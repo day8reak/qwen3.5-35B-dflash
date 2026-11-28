@@ -138,6 +138,22 @@ bash targets/cpro/scripts/decoder_compare.sh execute --mode 40 --phase prefill \
 
 40 层图走 token ID 查表路径，沿用此次的 64 个 ID 和因果 mask，从第 63 行取 logits。在 `board/valid64/attempt-*/replay/cpro-valid64.json` 查看 CPro top-1 的 ID、文本和各个输出文件。整网的 K/V 和已导出到模型边界的 hidden states 随本次 replay 一并保存。这条命令只运行板端 Prefill。
 
+#### 在 78 保存并复用 64 个有效 token 的 CPU golden
+
+在 78 上，把 35 上成功的 **40 层**回放路径传给 golden 入口。首次运行从该回放读取 64 个 token ID、attention mask 和控制量，用 CPU 连续计算 L00–L39，在位置 63 取 logits。
+
+```bash
+replay=/path/on/omc-host/40-prefill-t64/board/valid64/attempt-NAME
+bash targets/cpro/scripts/decoder_golden.sh --mode 40 --phase prefill \
+  --cpu-valid64-from "$replay/inputs.json"
+```
+
+路径在 78 可读时直接取本地文件。远端输入按回放保存在 78，首次接收使用配置的 `DECODER_TRANSFER_ENV` 或启动脚本的 Python 环境。传输有 Paramiko 和 `omc` 端点配置时沿用已有 SSH 设置，其他情况走系统 `sftp`，使用 SSH 密钥或终端输入的密码。省略传输配置时，系统 `sftp` 使用 SSH 别名 `omc`。
+
+运行结束时，`COMPLETE` 后面的清单在 `$AI_RUN_DIR/target/golden/40-prefill-t64/valid64-cpu/<版本>/manifest.json`。其中 `outputs` 给出 logits、40 层 hidden、每层缓存及 L0 混合 QKV 的文件和形状。相同输入和 CPU 参考配置重跑会打印 `REUSED`。每个版本保留自己的 `inputs/inputs.json`，可以直接从这份本地输入复用。切换实验的 `--run-root` 仍使用同一 golden 目录。
+
+如旧版已生成完整 CPU 结果，且权重和运行环境自当时起一致，可用 `--cache-existing-golden --cpu-valid64-from "$old_attempt/inputs/inputs.json"` 归档。归档清单会注明权重版本信息是在归档时记录的。
+
 ### 用相同的算子配置跑 40 层单块 prefill
 
 78 端按当前 prompt 准备 40 层 CPU、310P golden，导出一张 L0–L39 的 T64 AIR。三端走 wrapper 的 token ID 查表分支。QLinear 的 W4 权重 scale 和共享专家门控沿用已验证的 FP16 设置，GDN 的 `out_proj` 直接送入残差加法。

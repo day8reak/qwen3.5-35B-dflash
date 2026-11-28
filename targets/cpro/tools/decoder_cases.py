@@ -449,7 +449,7 @@ def main():
                         help='generate only the 40-layer CPU golden from a successful CPro valid64 replay')
     a = parser.parse_args()
     if a.cpu_valid64_from and ((a.mode, a.phase) != ('40', 'prefill') or a.action not in ('golden', '_reference')
-            or any((a.valid64_from, a.cache_existing_golden, a.dump, a.gate_probe, a.inspect_attempt))):
+            or any((a.valid64_from, a.dump, a.gate_probe, a.inspect_attempt))):
         parser.error('--cpu-valid64-from requires golden --mode 40 --phase prefill')
     if a.valid64_from and ((a.mode, a.phase) != ('40', 'prefill') or a.action not in ('execute', '_execute')
                            or a.gate_probe):
@@ -551,13 +551,15 @@ def main():
     from qwen35_moe_dflash.common.artifacts import output_path
     parent = a.run_root or Path(os.getenv('DECODER_RUN_ROOT', required('AI_RUN_DIR')/'target/tests'))
     if a.cpu_valid64_from:
-        case = output_path(a.run or (a.run_root or required('AI_RUN_DIR')/'target/golden/valid64-cpu')/slug)
+        cache = output_path(required('AI_RUN_DIR')/'target/golden'/slug/'valid64-cpu')
+        case = output_path(a.run or (a.run_root/slug if a.run_root else cache))
         if a.action == 'golden':
-            a.cpu_valid64_from = a.cpu_valid64_from.expanduser().absolute()
+            from decoder_valid64_inputs import local_plan
+            a.cpu_valid64_from = local_plan(cache, a.cpu_valid64_from)
             worker(a, 'reference', case, case)
         else:
             from decoder_cpu_valid64 import generate
-            generate(case, a.cpu_valid64_from, *source_config('reference'))
+            generate(cache, case, a.cpu_valid64_from, *source_config('reference'), archive=a.cache_existing_golden)
         return 0
     selected = a.run or parent/slug
     if a.valid64_from and not (a.run or a.run_root):

@@ -15,7 +15,7 @@ from qwen35_moe_dflash.common.hashing import sha256_file
 from qwen35_moe_dflash.target.prefill_t64.native_40 import capture_and_cpu
 
 
-def reference_inputs(source, config):
+def reference_inputs(source, config, *, valid64_cpu=False):
     cfg = yaml.safe_load(config.read_text())
     weights = {}
     for name in ('model_file', 'quanted_pth'):
@@ -42,10 +42,12 @@ def reference_inputs(source, config):
             packages[name] = metadata.version(name)
         except metadata.PackageNotFoundError:
             packages[name] = None
-    return dict(case='40-prefill-t64', embedding='checkpoint_lookup', prompt=cfg['prompts'][0],
-                packages=packages, capture=hashlib.sha256(inspect.getsource(capture_and_cpu).encode()).hexdigest(),
-                nz_config=sha256_file(config), nz_sources={n: sha256_file(source/n) for n in nz_files if (source/n).is_file()},
-                reference_math={n: sha256_file(target/n) for n in math_files}, checkpoints=weights)
+    binding = dict(case='40-prefill-t64', embedding='checkpoint_lookup', packages=packages,
+                   nz_config=sha256_file(config), nz_sources={n: sha256_file(source/n) for n in nz_files if (source/n).is_file()},
+                   reference_math={n: sha256_file(target/n) for n in math_files}, checkpoints=weights)
+    if not valid64_cpu:
+        binding.update(prompt=cfg['prompts'][0], capture=hashlib.sha256(inspect.getsource(capture_and_cpu).encode()).hexdigest())
+    return binding
 
 
 def complete(case, binding):
