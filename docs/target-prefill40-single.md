@@ -18,6 +18,35 @@ python3 targets/cpro/tools/split_stage_log.py --load-replay "${DECODER_RUN_ROOT:
 
 在重复运行覆盖 `board/replay` 前查看这份记录。`SubGraph_0` 是子图名。要定位内部具体算子，需要服务端记录的任务编号、kernel 名或算子名以及对应的编译映射。
 
+## 查看哪一层的 hidden 开始偏离
+
+诊断参数 `--hidden-trace` 在原生 40 层 wrapper 的 `hidden_states = layer_outputs[0]` 处取数，每层取第二次残差相加的结果，L39 取最终 norm 之前的值。一次 prefill 返回原 logits、80 个缓存和一个按 L0 到 L39 排列的 `[40,64,2048]` 输出。30 个 GDN 层各保留 conv 和 recurrent state，10 个 full-attention 层各保留 K 和 V。三端沿用 checkpoint embedding lookup，比较范围为同一 prompt 的有效 token。
+
+两台服务器更新到同一版本。在 78 使用已有 40 层 golden，另选实验目录导出诊断 AIR。
+
+```bash
+base="${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16/40-prefill-t64"
+trace_root="${AI_RUN_DIR:?}/target/tests/qlinear-hidden-trace"
+bash targets/cpro/scripts/decoder_prepare.sh --reuse-golden-from "$base" \
+  --run-root "$trace_root" --mode 40 --phase prefill --gdn-conv conv2d --rmsnorm-patch --hidden-trace
+```
+
+在 35 编译并上板。只有一个整图 OMC，使用普通推理模式。
+
+```bash
+trace_root="${AI_RUN_DIR:?}/target/tests/qlinear-hidden-trace"
+bash targets/cpro/scripts/decoder_run.sh --run-root "$trace_root" --remote-run "$trace_root/40-prefill-t64" \
+  --mode 40 --phase prefill --gdn-conv conv2d --rmsnorm-patch --hidden-trace
+```
+
+结果位于 `$trace_root/40-prefill-t64/board/`。安装了 Matplotlib 的执行环境会在写完 `matrices.csv` 后生成 `hidden_cosine.png`、`hidden_error_ratio.png`，精度未过阈值也会绘图。已有 CSV 时可在装有 NumPy 和 Matplotlib 的机器上执行下面的命令。
+
+```bash
+python3 targets/cpro/tools/plot_decoder_hidden.py "$trace_root/40-prefill-t64/board/matrices.csv"
+```
+
+每张图给出 CPro 对 CPU、310P 对 CPU 和 CPro 对 310P，图例斜线右侧是 reference。图中标注 CPro 对 CPU 的首次越线与相邻层最大恶化位置。cosine ≤ 0.99 为越线，error_ratio 是超出 `np.isclose(rtol=1e-3, atol=1e-5)` 的元素占比，超过 0.1% 为越线。定位时对照原整图和这次诊断图的 logits，额外输出可能影响编译器优化。
+
 ## 既有的单 logits 导出流程
 
 

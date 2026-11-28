@@ -39,7 +39,7 @@ def _dump(node):
     return ast.dump(node, include_attributes=False)
 
 
-def patch_cpro_wrapper(source: str) -> str:
+def patch_cpro_wrapper(source: str, *, all_layer_hidden=False) -> str:
     """Patch one structurally verified original class; reject unknown variants."""
     tree = ast.parse(source)
     classes = [n for n in tree.body if isinstance(n, ast.ClassDef)
@@ -105,6 +105,12 @@ def patch_cpro_wrapper(source: str) -> str:
         f"{base}    raise ValueError('incomplete target feature or state outputs')\n"
         f"{base}return lm_logits, *kv_caches_out, torch.cat(_dflash_hidden, dim=-1)\n"
     )
+    if all_layer_hidden:
+        # Batch is one. Concatenating raw decoder outputs on axis zero gives
+        # [layer, token, channel] without rounding the residual stream.
+        before = f"{base}_dflash_hidden = []\n"
+        capture = f"{inner}_dflash_hidden.append(hidden_states)\n"
+        tail = f"{base}return lm_logits, *kv_caches_out, torch.cat(_dflash_hidden, dim=0)\n"
     # Insert text at AST-verified statement boundaries. Bytes outside these
     # three changes (including other wrappers and quantization) stay unchanged.
     edits = [(loop.lineno - 1, loop.lineno - 1, before),

@@ -153,7 +153,7 @@ def inspect_shared_gates(graph, layers, *, fp16_sigmoid=False):
 
 
 def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_patch=False,
-                  shared_gate_fp16_sigmoid=True, qlinear_scale_fp16=True, native_prefill=False):
+                  shared_gate_fp16_sigmoid=True, qlinear_scale_fp16=True, native_prefill=False, hidden_trace=False):
     """Keep imported helpers beside the run-local model; preserve editable sources."""
     from .decoder_four_silu import remove_activation_views, update_activation_calls
 
@@ -162,6 +162,10 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
         for path in (source/folder).iterdir():
             rel = folder/path.name
             if path.name == '__pycache__' or rel in (Path('models'), Path(EXPORTER), Path(MODELING)):
+                continue
+            if hidden_trace and rel == Path(WRAPPER):
+                from ..original_target_source import patch_cpro_wrapper
+                (dest/rel).write_text(patch_cpro_wrapper(path.read_text(), all_layer_hidden=True))
                 continue
             if native_prefill and not lookup and rel == Path(WRAPPER):
                 (dest/rel).write_text(fp16_embedding_entry(path.read_text()))

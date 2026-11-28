@@ -112,6 +112,8 @@ def native40(args, run, remote):
     argv = [sys.executable, '-u', str(tool), args.action, '--aligned40', '--gdn-conv', args.gdn_conv, '--run', str(run)]
     if args.rmsnorm_patch and args.action != 'reference':
         argv.append('--rmsnorm-patch')
+    if args.hidden_trace and args.action != 'reference':
+        argv.append('--hidden-trace')
     if args.action in ('board', 'execute'):
         argv.extend(board_upload_flags(args))
     if args.action in ('compile', 'execute', 'board'):
@@ -397,6 +399,7 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--rmsnorm-patch', action='store_true', help='use the custom FP16 RmsnormPatch in the CPro decoder')
+    parser.add_argument('--hidden-trace', action='store_true', help='return post-decoder hidden states from the native 40-layer prefill')
     parser.add_argument('--dump', action='store_true',
                         help='capture L0 Python intermediates and dump one complete linear prefill OMC on the board')
     parser.add_argument('--cache-existing-golden', action='store_true',
@@ -412,6 +415,8 @@ def main():
     aligned_prefill = a.mode in ('linear', '4', '40') and a.phase == 'prefill' and not a.no_patch
     a.shared_gate_fp16_sigmoid = aligned_prefill
     a.qlinear_scale_fp16 = aligned_prefill
+    if a.hidden_trace and (a.mode, a.phase) != ('40', 'prefill'):
+        parser.error('--hidden-trace requires --mode 40 --phase prefill')
     if a.cache_existing_golden and ((a.mode, a.phase) != ('40', 'prefill')
                                     or a.action not in ('golden', '_reference') or a.gate_probe):
         parser.error('--cache-existing-golden requires golden --mode 40 --phase prefill')
@@ -474,7 +479,7 @@ def main():
     if a.action == 'plan':
         schedule = groups(a.mode)
         print(json.dumps(dict(directory=slug, mode=a.mode, phase=a.phase, gdn_conv=a.gdn_conv, rows=64 if a.phase == 'prefill' else 1,
-                              prompt='310P YAML prompts[0]', dump=a.dump, rmsnorm_patch=a.rmsnorm_patch, no_patch=a.no_patch, native_activations=a.native_activations,
+                              prompt='310P YAML prompts[0]', dump=a.dump, hidden_trace=a.hidden_trace, rmsnorm_patch=a.rmsnorm_patch, no_patch=a.no_patch, native_activations=a.native_activations,
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
                               gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
                               rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view,
@@ -647,7 +652,7 @@ def main():
             site = root/'board'
             if site.is_symlink() or not site.is_dir():
                 raise ValueError(f'Provide the compiled case at {site}')
-            for filename in ('comparison.json', 'matrices.csv'):
+            for filename in ('comparison.json', 'matrices.csv', 'hidden_cosine.png', 'hidden_error_ratio.png'):
                 (site/filename).unlink(missing_ok=True)
             worker(a, 'execute', root, remote)
         else:

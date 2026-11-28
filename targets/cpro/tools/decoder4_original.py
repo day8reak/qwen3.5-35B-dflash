@@ -58,7 +58,9 @@ def four_precision(air, layers=4, *, check_shared_gates=False, rmsnorm_patch=Fal
     return result
 
 
-def check_full_precision(meta, bundle, rmsnorm_patch):
+def check_full_precision(meta, bundle, rmsnorm_patch, hidden_trace=False):
+    if meta.get('hidden_trace', False) != hidden_trace:
+        raise ValueError(f'{bundle}: --hidden-trace selection differs from the exported AIR')
     if not (meta.get('shared_gate_fp16_sigmoid') and meta.get('qlinear_scale_fp16')):
         raise ValueError(f'{bundle}: regenerate the 40-layer AIR with FP16 QLinear weight scales and shared gates')
     if bool(meta.get('precision', {}).get('rmsnorm_nodes')) != rmsnorm_patch:
@@ -209,7 +211,7 @@ def full_source_hashes(source):
 
 
 def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=None, l0_capture=None, prepared=None,
-           layer=None, head=True, standalone=True, rmsnorm_patch=False):
+           layer=None, head=True, standalone=True, rmsnorm_patch=False, hidden_trace=False):
     import yaml
     split = kind in (L0_KIND, SPLIT_KIND)
     full = kind in FULL_KINDS
@@ -251,7 +253,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 same_control = conv_control.read_bytes() == (dest/'inputs/conv_state_pos.bin').read_bytes()
             else:
                 same_control = saved['fixture']['conv_state_control'].startswith('trial [')
-        if (same_control and saved['fixture'].get('embedding') == 'lookup' and saved['kind'] == kind
+        if (same_control and saved.get('hidden_trace', False) == hidden_trace
+                and saved['fixture'].get('embedding') == 'lookup' and saved['kind'] == kind
                 and saved.get('boundary', {}).get('token_ids_input')
                 and saved['sources'] == sources and saved['config_sha256'] == sha(config)
                 and saved['fixture']['reference_sha256'] == sha(reference/'manifest.json')):
@@ -263,7 +266,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                     from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
                     tree = taps_source(tree, Path(tmp)/'variant')
                 from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
-                tree = export_source(tree, Path(tmp)/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch, native_prefill=True)
+                tree = export_source(tree, Path(tmp)/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch,
+                                     native_prefill=True, hidden_trace=hidden_trace)
                 if full_source_hashes(tree) == saved['silu_patch']['source_sha256']:
                     for row in saved['files']:
                         checked(dest, row)
@@ -295,7 +299,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if full:
             from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source, save_air_source
             from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
-            staged = export_source(staged, work/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch, native_prefill=True)
+            staged = export_source(staged, work/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch,
+                                   native_prefill=True, hidden_trace=hidden_trace)
             entry = staged / EXPORTER
             save_air_source(staged, work/'air-source')
             measured = json.loads((reference / 'manifest.json').read_bytes())
@@ -364,7 +369,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                                                       standalone=standalone)
             else:
                 boundary = inspect_air(air, layers=layers, physical_history=full and not native_convstate,
-                                       require_control=native_convstate,
+                                       require_control=native_convstate, hidden_trace=hidden_trace,
                                        lookup_vocab_size=int(cfg.get('vocab_size', 248320)) if full else None)
                 if uses_baseline:
                     same_boundary(base_boundary, boundary)
@@ -400,7 +405,9 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
             from qwen35_moe_dflash.target.prefill_t64.native_40 import pack_goldens
             files.extend(files_under(work/'air-source', work))
             variant.update(shared_gate_fp16_sigmoid=True, qlinear_scale_fp16=True)
-            variant['goldens'], variant['tokens'] = pack_goldens(reference, run, work)
+            if hidden_trace:
+                variant['hidden_trace'] = True
+            variant['goldens'], variant['tokens'] = pack_goldens(reference, run, work, hidden_trace=hidden_trace)
             files.extend(r for backend in variant['goldens'].values() for r in backend.values())
             files.append(variant['tokens'])
         if split:
@@ -544,7 +551,8 @@ def compile_native_prefill(out, air_path, ddk, *, external_weights=True):
     return result.returncode, argv, os.environ.get('SOC_VERSION')
 
 
-def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weights=True, rmsnorm_patch=False):
+def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weights=True, rmsnorm_patch=False,
+          hidden_trace=False):
     from decoder4_prefill import pull_air
 
     run.mkdir(parents=True, exist_ok=True)
@@ -560,7 +568,7 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
             incoming.rename(bundle)
     meta = json.loads((bundle / 'manifest.json').read_bytes())
     if kind in FULL_KINDS:
-        check_full_precision(meta, bundle, rmsnorm_patch)
+        check_full_precision(meta, bundle, rmsnorm_patch, hidden_trace)
         if not meta['boundary'].get('token_ids_input'):
             raise ValueError(f'{bundle}: rerun decoder_air.sh for 40-layer prefill with INT32 embedding indices before compiling')
     if meta['kind'] != kind:
@@ -804,6 +812,7 @@ def main():
     parser.add_argument('--source', type=Path)
     parser.add_argument('--prepared-source', type=Path, help='run the edited aligned40 exporter and model directly')
     parser.add_argument('--rmsnorm-patch', action='store_true', help='use RmsnormPatch in the aligned40 PyTorch export')
+    parser.add_argument('--hidden-trace', action='store_true', help='append all 40 post-decoder hidden states')
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--conv-control', type=Path)
     parser.add_argument('--config', type=Path)
@@ -825,6 +834,8 @@ def main():
     parser.add_argument('--replay', type=Path, help='include a retained four-layer load failure in the offline audit')
     parser.add_argument('--gdn-conv', choices=('conv2d', 'taps', 'original'), default='conv2d')
     args = parser.parse_args()
+    if args.hidden_trace and not args.aligned40:
+        parser.error('--hidden-trace requires --aligned40')
     if args.gdn_conv != 'conv2d' and not args.aligned40:
         parser.error('For this native exporter selecting a GDN convolution requires --aligned40')
     if args.retry_load and (args.action != 'board' or not args.aligned):
@@ -877,7 +888,8 @@ def main():
         if kind in (KIND, *FULL_KINDS) and (not args.source or not args.reference):
             parser.error('native export requires --source and --reference')
         export(run, args.source, args.config, args.reference, args.conv_control, kind=kind, baseline=args.baseline,
-               prepared=args.prepared_source.resolve(strict=True) if args.prepared_source else None, rmsnorm_patch=args.rmsnorm_patch)
+               prepared=args.prepared_source.resolve(strict=True) if args.prepared_source else None,
+               rmsnorm_patch=args.rmsnorm_patch, hidden_trace=args.hidden_trace)
         return
     if args.action == 'execute' and not args.aligned40:
         parser.error('execute requires --aligned40')
@@ -904,12 +916,12 @@ def main():
             raise FileNotFoundError(f'Run compile and make its outputs available here: {compiled}')
         build(run, args.ddk.resolve(), args.tbe_diagnosis, args.remote_air or bundle, kind=kind,
               bundle=bundle, platform=None if args.aligned or args.aligned40 else 'kirinx90',
-              external_weights=not args.retry_load, rmsnorm_patch=args.rmsnorm_patch)
+              external_weights=not args.retry_load, rmsnorm_patch=args.rmsnorm_patch, hidden_trace=args.hidden_trace)
     else:
         manifest = bundle / 'manifest.json'
         air_meta = json.loads(manifest.read_bytes())
         if args.aligned40:
-            check_full_precision(air_meta, bundle, args.rmsnorm_patch)
+            check_full_precision(air_meta, bundle, args.rmsnorm_patch, args.hidden_trace)
         record = json.loads(compiled.read_bytes())
         if (air_meta['kind'] != kind or record['air_manifest_sha256'] != sha(manifest)
                 or not (run / 'air').samefile(bundle)):
@@ -943,7 +955,16 @@ def main():
         if args.aligned40:
             from qwen35_moe_dflash.target.prefill_t64.native_40 import compare
             from l0_silu_omcs import write_matrices
-            return 0 if compare(bundle, replay, write_matrices) else 1
+            passed = compare(bundle, replay, write_matrices)
+            if args.hidden_trace:
+                from plot_decoder_hidden import plot
+                try:
+                    plot(run/'matrices.csv', run)
+                except ModuleNotFoundError as exc:
+                    if exc.name != 'matplotlib':
+                        raise
+                    print(f'Matplotlib 未安装。可在绘图机运行 python3 targets/cpro/tools/plot_decoder_hidden.py {run}/matrices.csv')
+            return 0 if passed else 1
 
 
 if __name__ == '__main__':

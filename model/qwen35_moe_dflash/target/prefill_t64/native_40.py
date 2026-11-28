@@ -6,8 +6,8 @@ import tempfile
 
 import numpy as np
 
-from ..layer_probe.common import identity, read_tensor, save_json, sha, sized_file
-from .chain_reference import YAML_BASIS, LAYERS
+from ..layer_probe.common import identity, metrics, read_tensor, save_json, sha, sized_file
+from .chain_reference import HIDDEN, YAML_BASIS, LAYERS
 from .decoder_four_boundary import output_roles, output_shape, state_roles
 from .l0_split import YAML_CPU_BASIS, score
 
@@ -38,9 +38,11 @@ def capture_and_cpu(run, reference, source, config):
     prepare(run, '40', reference, source, per_layer_air=False)
 
 
-def pack_goldens(reference, run, work):
+def pack_goldens(reference, run, work, *, hidden_trace=False):
     ref = read(reference / 'manifest.json')
     capture_sha = sha(reference / 'manifest.json')
+    if hidden_trace and [b['layer'] for b in ref['blocks']] != list(range(LAYERS)):
+        raise ValueError(f'{reference}: expected ordered L0–L39 hidden states')
     records = {'cpu': {}, '310p': {}}
     for backend in records:
         (work / 'golden' / backend).mkdir(parents=True)
@@ -50,10 +52,13 @@ def pack_goldens(reference, run, work):
         if (meta['basis'], meta['mode'], meta['layer'], meta['capture_sha256']) != (YAML_CPU_BASIS, '40', i, capture_sha):
             raise ValueError(f'{cpu}: reference belongs to another layer or capture')
         roles = state_roles(i) + (('logits',) if i == LAYERS - 1 else ())
-        for name in roles:
-            for backend, folder, outputs in (('cpu', cpu, meta['outputs']), ('310p', reference, ref['outputs'])):
-                row = outputs[name]
-                if tuple(row['shape']) != output_shape(name) or row['dtype'] not in ('float16', 'float32'):
+        for backend, folder, outputs in (('cpu', cpu, meta['outputs']), ('310p', reference, ref['outputs'])):
+            tensors = [(name, outputs[name], output_shape(name)) for name in roles]
+            if hidden_trace:
+                row = meta['outputs']['decoder_hidden'] if backend == 'cpu' else ref['blocks'][i]['hidden']
+                tensors.append((f'hidden_{i}', row, HIDDEN))
+            for name, row, shape in tensors:
+                if tuple(row['shape']) != shape or row['dtype'] not in ('float16', 'float32'):
                     raise ValueError(f'{backend}: unexpected {name} descriptor {row}')
                 dest = Path('golden') / backend / (name + '.bin')
                 shutil.copyfile(sized_file(folder, row), work / dest)
@@ -83,6 +88,17 @@ def compare(bundle, replay, write_matrices):
     for name, spec, record in zip(roles, io['outputs'], result['outputs'], strict=True):
         shape = output_shape(name)
         actual = read_tensor(sized_file(replay, record), spec).reshape(shape)
+        if name == 'hidden_layers':
+            for i, hidden in enumerate(actual):
+                role = f'hidden_{i}'
+                rows = {'cpro': hidden[:valid]}
+                for backend in ('cpu', '310p'):
+                    golden = meta['goldens'][backend][role]
+                    rows[backend] = read_tensor(sized_file(bundle, golden), golden)[0, :valid]
+                for backend, x in rows.items():
+                    for ref, y in rows.items():
+                        pairs[backend][ref][role] = {f'valid{valid}': metrics(x, y)}
+            continue
         values = {}
         for backend in ('cpu', '310p'):
             golden = meta['goldens'][backend][name]

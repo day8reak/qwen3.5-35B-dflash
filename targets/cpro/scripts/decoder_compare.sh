@@ -32,6 +32,7 @@ l0-decay-report   Show the SoftplusPatch to GDR decay path in the retained singl
 l0-original-omg   Compile the retained single-layer AIR with the original OMG command and replay with the original V2 flags.
 l0-dump     Replay the retained OMC with --enable_item=2. With --mode 4, inspect L0 padding and the L1 QKV tail in the full four-layer model.
 --rmsnorm-patch  Export the decoder with FP16 RmsnormPatch(x, gamma). Use the same switch for transfer, compile and replay.
+--hidden-trace   For native 40-layer prefill, append a [40,64,2048] post-decoder output and compare each layer over valid tokens.
 decoder_prepare.sh --reuse-golden-from CASE_DIR  Copy the existing CPU/310P inputs and references before exporting AIR.
 golden --mode 40 --phase prefill --cache-existing-golden  Archive a completed 40-layer golden from the selected case for automatic reuse.
 decoder_run.sh --check-padding-from CASE_DIR  Dump the previous four-layer prefill OMC and report L0/L1 padding before running the new case.

@@ -8,6 +8,8 @@ from .decoder_cases import state_roles
 
 
 def output_shape(name):
+    if name == 'hidden_layers':
+        return (40, 64, 2048)
     if name == 'logits':
         return (1, 1, 248320)
     if name.startswith('conv_state_'):
@@ -80,12 +82,14 @@ def external_embedding_path(graph, inputs):
 
 
 def inspect_air(path, *, layers=4, physical_history=None, require_control=False, conv2d_rows=None,
-                check_embedding=False, lookup_vocab_size=None):
+                check_embedding=False, lookup_vocab_size=None, hidden_trace=False):
     _, graph = graph_message(path.read_bytes(), 'NetOutput')
     nodes = {n.name: n for n in graph.op}
     net, = [n for n in graph.op if n.type == 'NetOutput']
     outputs = data_edges(net)
     expected = {'logits', *(name for i in range(layers) for name in state_roles(i))}
+    if hidden_trace:
+        expected.add('hidden_layers')
     if len(outputs) != len(expected) or len(set(outputs)) != len(expected):
         raise ValueError(f'{path}: expected {len(expected)} distinct native outputs, found {outputs}')
     conv = [n for n in graph.op if n.type.lower() == 'linearattentionconvstateupdate']
@@ -188,6 +192,13 @@ def inspect_air(path, *, layers=4, physical_history=None, require_control=False,
         own = producer[port] if port < len(producer) else desc
         shape = list(desc.shape.dim or own.shape.dim)
         role = next((aliases[e] for e in chain(edge) if e in aliases), None)
+        if hidden_trace and role is None:
+            if view(shape) == output_shape('hidden_layers'):
+                role = 'hidden_layers'
+            elif not shape:
+                owners = (nodes[src.rsplit(':', 1)[0]] for src in chain(edge))
+                if any(n.type in CONCATS and len(data_edges(n)) in (layers, layers + 1) for n in owners):
+                    role = 'hidden_layers'
         if role is None and view(shape) == (248320,):
             role = 'logits'
         records.append(dict(edge=edge, role=role, shape=shape, dtype=desc.dtype or own.dtype,
