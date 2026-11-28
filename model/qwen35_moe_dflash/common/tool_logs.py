@@ -24,7 +24,8 @@ _KERNEL_FAILURE = re.compile(rb"kernel.*(?:failed|missing|not found|not valid|in
 _PYTHON_FAILURE = re.compile(rb"^(?:Traceback \(most recent call last\):|[\w.]+(?:Error|Exception):)")
 _TRACEBACK_START = b"Traceback (most recent call last):"
 _WORKER_FAILURE = re.compile(rb"COMPILER PROCESS DIED OF NODE|compiler process died, caused by current task|Failed to (?:pre-)?compile node", re.I)
-_PASS_FAILURE = re.compile(rb"ByPassNode.*PreCheck|Pass Run failed|AfterInferShape.*failed to run", re.I)
+_PASS_FAILURE = re.compile(rb"ByPassNode.*PreCheck|Pass Run failed|AfterInferShape.*failed to run"
+                           rb"|RunVerify\(\d+\).*Verify for \[op:[^\]]+\] failed", re.I)
 _BUILD_FAILURE = re.compile(rb"create OpGraphBuilder fail|opGraphBuilder is null|Op Build4NPU failed|OpPreBuild failed\. Node:", re.I)
 _TASK_KERNEL_FAILURE = re.compile(rb"tbe_task_builder\.cc InitKernelAttr\(\d+\).*Get tbe kernel name for op\[[^\]]+\] failed"
                                   rb"|generated_adaptee\.cc OpCompileTask\(\d+\).*Build task failed for op\[", re.I)

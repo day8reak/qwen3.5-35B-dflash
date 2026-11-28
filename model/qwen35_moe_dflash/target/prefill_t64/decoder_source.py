@@ -53,18 +53,41 @@ def fp16_embedding_entry(source):
 
 def mask_gdn_prefill_output(tree):
     """Match the reference attention contribution on padded rows before the residual."""
-    forward = _definition(_definition(tree, 'Qwen3_5MoeGatedDeltaNet'), 'forward')
+    cls = _definition(tree, 'Qwen3_5MoeGatedDeltaNet')
+    init = _definition(cls, '__init__')
+    forward = _definition(cls, 'forward')
     projection = _assignment(forward, 'output')
     if ast.unparse(projection.value) != 'self.out_proj(core_attn_out)':
         raise ValueError('Expected the GDN output projection before masking padded rows')
+    # Materialize the T64 indices before tracing. This keeps a vector Range/Cast
+    # out of OMG constant folding, including when the GDR length port is INT16.
+    buffer, = ast.parse(
+        "self.register_buffer('gdn_prefill_rows', torch.arange(64, dtype=torch.int32), persistent=False)"
+    ).body
+    if not any(ast.dump(stmt) == ast.dump(buffer) for stmt in init.body):
+        init.body.append(buffer)
     mask, = ast.parse(
         'if effective_length is not None and seq_len > 1:\n'
-        '    rows = torch.arange(seq_len, device=output.device, dtype=effective_length.dtype)\n'
-        '    valid_rows = rows.view(1, -1, 1) < effective_length.reshape(-1, 1, 1)\n'
+        '    rows = self.gdn_prefill_rows\n'
+        '    if seq_len != rows.numel():\n'
+        '        rows = torch.arange(seq_len, device=output.device, dtype=torch.int32)\n'
+        '    valid_rows = rows.view(1, -1, 1) < effective_length.int().reshape(-1, 1, 1)\n'
         '    output = torch.where(valid_rows, output, 0.0)'
     ).body
     index = forward.body.index(projection) + 1
-    if ast.dump(forward.body[index]) != ast.dump(mask):
+    following = forward.body[index]
+    if isinstance(following, ast.If) and ast.dump(following.test) == ast.dump(mask.test):
+        # Support prepared source copies which already contain the previous mask.
+        old_body = ast.parse(
+            'rows = torch.arange(seq_len, device=output.device, dtype=effective_length.dtype)\n'
+            'valid_rows = rows.view(1, -1, 1) < effective_length.reshape(-1, 1, 1)\n'
+            'output = torch.where(valid_rows, output, 0.0)'
+        ).body
+        if ast.dump(following) != ast.dump(mask) and (
+                following.orelse or list(map(ast.dump, following.body)) != list(map(ast.dump, old_body))):
+            raise ValueError('Unrecognized GDN prefill output mask in the supplied CPro source')
+        forward.body[index] = mask
+    else:
         forward.body.insert(index, mask)
 
 

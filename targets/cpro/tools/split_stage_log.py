@@ -315,17 +315,23 @@ def diagnose_four_accuracy(board, comparison, receipt):
 
 
 def report_compile_node(work):
-    """Look up the operator named in a failed OMG tiling task in its source AIR."""
+    """Locate the last named OMG tiling or RunVerify failure in the retained AIR."""
     log = work/'compile.log'
     if not log.is_file():
         return False
-    pattern = re.compile(r'compile_task\.cc Compile\(\d+\)::\s*"?(\w+)\s+(\S+)\s+compileInfo is null')
+    tiling = re.compile(r'compile_task\.cc Compile\(\d+\)::\s*"?(\w+)\s+(\S+)\s+compileInfo is null')
+    verify = re.compile(r'RunVerify\(\d+\)::\s*"?Verify for \[op:(\S+) type:([^\]]+)\] failed')
+    failure = None
     with log.open(errors='replace') as lines:
-        failure = next((m for line in lines if (m := pattern.search(line))), None)
+        for line in lines:
+            if match := tiling.search(line):
+                failure = ('tiling', match[2], match[1])
+            elif match := verify.search(line):
+                failure = ('RunVerify', match[1], match[2])
     if failure is None:
         return False
-    kind, name = failure.groups()
-    print(f'[OMG tiling] {log} — {name} ({kind})', flush=True)
+    stage, name, kind = failure
+    print(f'[OMG {stage}] {log} — {name} ({kind})', flush=True)
     try:
         from qwen35_moe_dflash.target.prefill_t64.attention_slice import port_info
         from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
@@ -334,16 +340,18 @@ def report_compile_node(work):
         nodes = {node.name: node for node in graph.op}
         print(f'[源 AIR] {air}')
         node = nodes.get(name)
-        if node is None or node.type != kind:
+        if node is None or not (node.type == kind or (node.type, kind) == ('Cast', 'CastT')):
             print(f'源 AIR 中未找到同名同类型节点 {name} ({kind})')
             return True
+        print(f'  {node.name} ({node.type}) 输出端口：{[port_info(graph, p) for p in node.output_desc]}')
         for slot, edge in enumerate(node.input):
             producer, _, index = edge.rpartition(':')
             if not index.isdecimal() or producer not in nodes:
                 continue
             parent = nodes[producer]
             port = port_info(graph, parent.output_desc[int(index)])
-            print(f'  input[{slot}] ← {edge} ({parent.type}, {port}), 上游 {list(parent.input)}')
+            consumer_port = port_info(graph, node.input_desc[slot]) if slot < len(node.input_desc) else None
+            print(f'  input[{slot}] ← {edge} ({parent.type}, {port}), 上游 {list(parent.input)}，接收端 {consumer_port}')
         for consumer in graph.op:
             for slot, edge in enumerate(consumer.input):
                 origin, _, index = edge.rpartition(':')

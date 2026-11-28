@@ -72,19 +72,20 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 ```bash
 bash targets/cpro/scripts/decoder_prepare.sh --mode 4 --phase prefill --gdn-conv conv2d --rmsnorm-patch \
   --reuse-golden-from "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16/4-prefill-t64" \
-  --run-root "${AI_RUN_DIR:?}/target/tests/gdn-padding"
+  --run-root "${AI_RUN_DIR:?}/target/tests/gdn-padding-i32"
 ```
 
-在 35 用已有四层 OMC 抓一次中间 dump，再编译和运行新四层 OMC。
+在 35 编译和运行新四层 OMC。已回收的基线 dump 可以直接查看；首次需要抓取旧 OMC 的中间值时，给下面命令加上 `--check-padding-from "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16/4-prefill-t64"`。
 
 ```bash
 bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --rmsnorm-patch \
-  --check-padding-from "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16/4-prefill-t64" \
-  --run-root "${AI_RUN_DIR:?}/target/tests/gdn-padding" \
-  --remote-run "${AI_RUN_DIR:?}/target/tests/gdn-padding/4-prefill-t64" --replace-inputs --replace-weights
+  --run-root "${AI_RUN_DIR:?}/target/tests/gdn-padding-i32" \
+  --remote-run "${AI_RUN_DIR:?}/target/tests/gdn-padding-i32/4-prefill-t64" --replace-inputs --replace-weights
 ```
 
-补丁在 PyTorch 的 `Qwen3_5MoeGatedDeltaNet.forward` 内，按 `effective_length` 把 padding 行的 GDN 投影贡献置零，然后由 decoder 加回原残差。78 的 `export/package/air-source/cpro/models/modeling_qwen3_5_moe_hiai_cpro.py` 保留实际生成本次 AIR 的源码。
+补丁在 PyTorch 的 `Qwen3_5MoeGatedDeltaNet.forward` 内，按 `effective_length` 把 padding 行的 GDN 投影贡献置零，然后由 decoder 加回原残差。T64 行号 0–63 在模块初始化时生成为 INT32 buffer。前向将每个 batch 的长度转为 INT32 与行号比较，GDR 继续使用原来的 INT16 长度。78 的 `export/package/air-source/cpro/models/modeling_qwen3_5_moe_hiai_cpro.py` 保留实际导出源码。
+
+T64、有效 19 行的 310P 采集曾逐元素核对 L0–L2 的卷积缓存。当前四层对照沿用这一路径，`conv_state` 写入卷积前 QKV 的物理行 60–63。按有效序列接续下一 token 时，长度为 4 的逻辑历史对应行 15–18。此前 `gdn-padding` 的 OMG 日志在 `Cast_38`（输入 shape 为 64）校验阶段停止。在 35 对该目录运行 `decoder_compare.sh diagnose --mode 4 --phase prefill --run-root "${AI_RUN_DIR:?}/target/tests/gdn-padding"` 可查看能与源 AIR 同名匹配的节点和端口。
 
 旧 case 的 `board/L00-L03/operator-dump/attempt-*/L00-L03/replay/gdn-padding.json` 记录 L0 投影、第一条残差的 GDN 输入、L0 整层输出和 L1 QKV。对 T64、有效 19 行的用例，查看位置 60–63 的非零元素数和 L1 QKV 相对 CPU、310P 卷积缓存的 cosine、relative L2。如果同目录下有入口和权重来源匹配的单层 golden，也列出 310P 实测 `out_proj_0` 的尾行。新 case 的 `board/comparison.json` 给出三端输出矩阵。
 
