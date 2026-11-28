@@ -761,7 +761,11 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
         io['load_control'] = dict(external_omc_sha256=previous_receipt['omc_sha256'],
                                   previous_board_attempt=previous_receipt['remote'],
                                   previous_exitcode=previous_receipt['exitcode'])
-    runtime = read_json(config.parent / read_json(config)['assets'])['environment']
+    runtime_config = read_json(config)
+    runtime = read_json(config.parent / runtime_config['assets'])['environment']
+    wait_seconds = runtime_config.get('defaults', {}).get('lock_wait_seconds', 1800) if dump_edges else 0
+    if type(wait_seconds) is not int or not 0 <= wait_seconds <= 7200:
+        raise ValueError(f'{config}: defaults.lock_wait_seconds must be an integer in [0, 7200]')
     if kind in FULL_KINDS:
         out = replay_dir or run/'replay'
         if replace_replay and out.is_dir():
@@ -778,7 +782,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
                external_weights=weights, build_records=(compiled['primary'], compiled['weights']),
                replace_inputs=replace_inputs, replace_weights=replace_weights,
                board_case='40-prefill-t64' if kind in FULL_KINDS else '4-prefill-t64',
-               hdc_timeout=7200 if kind in FULL_KINDS else 660, dump_edges=dump_edges)
+               hdc_timeout=7200 if kind in FULL_KINDS else 660, dump_edges=dump_edges,
+               lock_wait_seconds=wait_seconds)
     except RuntimeError:
         if not (out / 'result.json').is_file():
             raise

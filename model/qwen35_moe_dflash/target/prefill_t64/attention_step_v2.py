@@ -123,7 +123,7 @@ def observed_named_shape(native, direction, specs):
 def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha256=None, slot_config=None,
            external_weights=(), build_records=None, release_after_pull=True, hdc_timeout=660, board_case=None,
            replace_inputs=False, replace_weights=False, decoder_shapes=None, shape_config=None, original_board_args=False,
-           operator_dump=False, dump_edges=()):
+           operator_dump=False, dump_edges=(), lock_wait_seconds=0):
     from ..prefill_output_inventory import _logged_slots
 
     operator_dump = operator_dump or bool(dump_edges)
@@ -155,7 +155,7 @@ def run_v2(out, name, model, operands, files, outputs, runtime, *, fixture_sha25
     held = uncertain = False
     try:
         print(f'[{name}] 检查板卡、固件版本和板端剩余空间', flush=True)
-        _acquire_global(hdc, GLOBAL_LOCK, token, 0)
+        _acquire_global(hdc, GLOBAL_LOCK, token, lock_wait_seconds)
         held = True
         if operator_dump:
             hdc.shell(f'test -x {tool.parent}/data_proc_tool_internal', 'dump-parser-preflight')
