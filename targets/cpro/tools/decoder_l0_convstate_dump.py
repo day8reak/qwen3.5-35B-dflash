@@ -16,6 +16,21 @@ SHAPES = dict(mixed_qkv=(1, 64, 8192), old_conv_state=(1, 8192, 4), linear_updat
 VIEWS = {'Identity', 'TensorMove', 'Reshape', 'View', 'Squeeze', 'ExpandDims', 'Unsqueeze'}
 
 
+def dump_encoding(value, air_type):
+    """Record the parser's dtype; keep floating payloads in the precision actually read."""
+    storage = value.dtype.name
+    info = dict(air_dtype=air_type, dump_dtype=storage)
+    if (storage, air_type) in {('int32', 'DT_INT32'), ('float16', 'DT_FLOAT16'), ('float32', 'DT_FLOAT')}:
+        return dict(info, interpretation='declared_dtype')
+    if storage == 'float32' and air_type == 'DT_FLOAT16':
+        with np.errstate(over='ignore', invalid='ignore'):
+            exact = np.isfinite(value) & (value.astype(np.float16).astype(np.float32) == value)
+        info.update(fp16_roundtrip_exact=int(exact.sum()), total_elements=value.size)
+        if exact.all():
+            return dict(info, interpretation='fp32_dump_losslessly_representable_as_fp16')
+    return dict(info, interpretation='unresolved')
+
+
 def view_chain(nodes, edge):
     while True:
         yield edge
@@ -109,40 +124,44 @@ def report_ports(case, replay, fixture, ref, returned_cache):
                   ports={}, calibration=calibration, same_input={}, reference={})
     values, archive = {}, {}
     for name, edge in edges.items():
-        edge_read = edge
-        readings, issues = decoded(replay/'dump', index, edge, air_types[edge], rules)
-        # Some OMCs keep the matmul or the convolution's input reshape under a different edge.
-        alternatives = []
+        # Search only aliases linked by value-preserving AIR operations. Some
+        # compiled graphs emit an intermediate view and omit its neighbours.
+        candidate_edges = [edge]
         if name == 'mixed_qkv':
-            alternatives = list(view_chain(nodes, edge))[1:]
+            candidate_edges.extend(view_chain(nodes, edge))
         elif name == 'padded':
-            alternatives = [n.input[0] for n in graph.op if n.type == 'Conv2D' and n.input
-                            and edge in view_chain(nodes, n.input[0])]
-        if not readings and not issues and alternatives:
-            for src in alternatives:
-                if air_types[src] != air_types[edge]:
+            for node in graph.op:
+                if node.type == 'Conv2D' and node.input:
+                    chain = list(view_chain(nodes, node.input[0]))
+                    if edge in chain:
+                        candidate_edges.extend(reversed(chain[:chain.index(edge)]))
+        candidate_edges = dict.fromkeys(src for src in candidate_edges if air_types[src] == air_types[edge])
+        point = report['ports'][name] = dict(edge=edge, candidates=[], issues=[],
+                                             indexed_files={src: len(index.get(src, ())) for src in candidate_edges})
+        for src in candidate_edges:
+            readings, issues = decoded(replay/'dump', index, src, air_types[src], rules)
+            for value, sources in readings:
+                try:
+                    value = shaped(name, value)
+                except ValueError as exc:
+                    issues.append(dict(files=sources, issue=str(exc)))
                     continue
-                readings, issues = decoded(replay/'dump', index, src, air_types[src], rules)
-                if readings or issues:
-                    edge_read = src
-                    break
-        point = report['ports'][name] = dict(edge=edge, candidates=[], issues=issues)
-        for value, sources in readings:
-            expected_kind = 'int32' if name == 'linear_update_tensor' else 'float16'
-            try:
-                value = shaped(name, value)
-                if value.dtype.name != expected_kind:
-                    raise ValueError(f'{name}: unresolved dump encoding {value.dtype.name}; expected {expected_kind}')
-            except ValueError as exc:
-                issues.append(dict(files=sources, issue=str(exc)))
-                continue
-            key = f'{name}_candidate_{len(point["candidates"])}'
-            archive[key] = value
-            point['candidates'].append(dict(key=key, files=sources, edge=edge_read))
-        candidates = point['candidates']
-        if len(candidates) == 1 and not issues:
-            values[name] = archive[candidates[0]['key']]
-            point['source'] = 'dump'
+                encoding = dump_encoding(value, air_types[src])
+                if encoding['interpretation'] == 'unresolved':
+                    key = f'{name}_unverified_{len(archive)}'
+                    archive[key] = value
+                    issues.append(dict(files=sources, key=key, encoding=encoding))
+                    continue
+                key = f'{name}_candidate_{len(point["candidates"])}'
+                archive[key] = value
+                point['candidates'].append(dict(key=key, files=sources, edge=src, encoding=encoding))
+            if issues:
+                point['issues'].append(dict(edge=src, details=issues))
+            if point['candidates']:
+                if len(point['candidates']) == 1 and not issues:
+                    values[name] = archive[point['candidates'][0]['key']]
+                    point['source'] = 'dump' if src == edge else 'equivalent_edge_dump'
+                break
         if name in ('old_conv_state', 'linear_update_tensor'):
             role = 'past_conv_state' if name == 'old_conv_state' else 'conv_state_pos'
             path = view_chain(nodes, edge)
@@ -162,7 +181,7 @@ def report_ports(case, replay, fixture, ref, returned_cache):
             archive['returned_conv_state_0'] = public_state
             if name in values:
                 point['matches_returned_state'] = bool(np.array_equal(values[name], public_state))
-            elif edge in cache_path and not readings and not issues:
+            elif edge in cache_path and not point['indexed_files'][edge]:
                 values[name] = public_state
                 point['source'] = 'same_run_public_output'
         if name in values:
@@ -200,17 +219,36 @@ def report_ports(case, replay, fixture, ref, returned_cache):
             elif name == 'padded':
                 observed, golden = observed[..., :valid+3], golden[..., :valid+3]
             report['reference'][name+'_vs_310p_valid'] = metrics(observed, golden)
+    reference_states = {}
     for backend, group in [('cpu', 'cpu'), ('310p', 'outputs')]:
         row = ref[group]['conv_state_0']
-        report['reference']['returned_state_vs_'+backend] = metrics(public_state, read_tensor(sized_file(fixture, row), row))
+        reference_states[backend] = shaped('new_conv_state', read_tensor(sized_file(fixture, row), row))
+        report['reference']['returned_state_vs_'+backend] = metrics(public_state, reference_states[backend])
+    report['reference']['310p_state_vs_cpu_state'] = metrics(reference_states['310p'], reference_states['cpu'])
+    # The reference QKV can still localize a difference between the two time windows
+    # when the optimized board dump omits the CPro projection. Keep it out of same_input.
+    if 'mixed_qkv' in upstream and valid >= 4:
+        qkv = shaped('mixed_qkv', upstream['mixed_qkv']).transpose(0, 2, 1)
+        for label, tail in [('physical_tail', qkv[..., -4:]), ('valid_tail', qkv[..., valid-4:valid])]:
+            report['reference']['310p_state_vs_310p_'+label] = metrics(reference_states['310p'], tail)
+            report['reference']['returned_state_vs_310p_'+label] = metrics(public_state, tail)
     report['status'] = 'COMPLETE' if values.keys() == SHAPES.keys() else 'INCOMPLETE'
     np.savez(replay/'l0-convstate.npz', **archive)
     save_json(replay/'l0-convstate.json', report)
     print(f'[L0 ConvState] {report["status"]} {replay}/l0-convstate.json', flush=True)
     for name, point in report['ports'].items():
         print(f'  {name} {point["edge"]} {point.get("source", "UNRESOLVED")}', flush=True)
+        if point.get('source') in ('dump', 'equivalent_edge_dump'):
+            hit, = point['candidates']
+            print(f'    {hit["edge"]} {hit["encoding"]}', flush=True)
+        if name not in values:
+            print(f'    匹配文件数 {point["indexed_files"]}，可选张量 {len(point["candidates"])}，'
+                  f'解析问题 {len(point["issues"])}（详见 JSON）', flush=True)
     for label, score in report['same_input'].items():
         print(f'  {label}: 相同元素 {score["exact_elements"]}/{score["total_elements"]}，max_abs={score["max_abs"]}', flush=True)
     for label, score in report['reference'].items():
-        print(f'  {label}: cosine={score["cosine"]}, max_abs={score["max_abs"]}', flush=True)
+        print(f'  {label}: cosine={score["cosine"]}, max_abs={score["max_abs"]}, '
+              f'exact={score["exact_elements"]}/{score["total_elements"]}', flush=True)
+    if 'mixed_qkv' not in upstream:
+        print('  该用例未附可绑定的 310P L0 QKV 参考值。', flush=True)
     return report['status'] == 'COMPLETE'

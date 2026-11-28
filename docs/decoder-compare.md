@@ -109,6 +109,8 @@ bash targets/cpro/scripts/decoder_compare.sh l0-convstate-dump --run-root "$r" -
 
 `same_input` 使用本次 CPro QKV 和旧状态重建 310P 采用的拼接窗口，核对全部 67 个位置及影响有效 token 的前 `valid+3` 个位置。写回缓存分别对照物理末四行和有效末四行。新版 78 准备命令还会随 golden 保存 L0 的 310P QKV 和实际卷积输入的后 67 行，用来比较更新前的投影与更新后的窗口。旧用例也可直接核对同输入窗口和缓存。
 
+报告按 dump 文件声明的格式保存数组，并在每个端口的 `encoding` 记录 AIR 和 dump 两端的类型。若 AIR 标为 FP16 而 dump 标为 float，则逐元素检查 FP32 值能否无损往返 FP16；能够确认的数值仍以原始 FP32 数组保存。报告保留编码未确认的候选，并列出各等价边匹配的文件数。在包含同次 310P QKV 的用例中，还对照 310P 自己的写回和物理末四行、有效末四行，供区分两种取行方式。
+
 ### 用相同的算子配置跑 40 层单块 prefill
 
 78 端按当前 prompt 准备 40 层 CPU、310P golden，导出一张 L0–L39 的 T64 AIR。三端走 wrapper 的 token ID 查表分支。QLinear 的 W4 权重 scale 和共享专家门控沿用已验证的 FP16 设置，GDN 的 `out_proj` 直接送入残差加法。
