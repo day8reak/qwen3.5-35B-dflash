@@ -316,6 +316,8 @@ def worker(args, action, root, remote):
         cmd.append('--cache-existing-golden')
     if getattr(args, 'gate_probe', False):
         cmd.extend(['--gate-probe', args.gate_probe])
+        if args.repeat_to_64:
+            cmd.append('--repeat-to-64')
         if args.inspect_attempt:
             cmd.extend(['--inspect-attempt', args.inspect_attempt])
         if args.rmsnorm_air:
@@ -425,9 +427,12 @@ def main():
                                  'l0-input-rmsnorm', 'l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc',
                                  'l0-decay-report', 'l0-original-omg', 'l0-dump', 'l0-convstate-dump'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
+    parser.add_argument('--repeat-to-64', action='store_true', help='fill all 64 tokens of the native CPro L0 dump')
     parser.add_argument('--inspect-attempt', metavar='attempt-NAME',
                         help='inspect a retained l0-convstate-dump attempt on this host without replaying it')
     a = parser.parse_args()
+    if a.repeat_to_64 and a.gate_probe != 'l0-convstate-dump':
+        parser.error('--repeat-to-64 requires l0-convstate-dump')
     if a.inspect_attempt is not None and (a.gate_probe != 'l0-convstate-dump'
             or not a.inspect_attempt.startswith('attempt-') or Path(a.inspect_attempt).name != a.inspect_attempt):
         parser.error('--inspect-attempt requires l0-convstate-dump and the name of an attempt directory')
@@ -541,6 +546,11 @@ def main():
     if a.action.startswith('_'):
         a.action = a.action[1:]
         if a.gate_probe:
+            if a.repeat_to_64:
+                from decoder_convstate_valid64 import full_replay
+                config = None if a.inspect_attempt else board_config(a.action)[1]
+                return 0 if full_replay(root/'board', config, a.inspect_attempt, replace_inputs=a.replace_inputs,
+                                        replace_weights=a.replace_weights) else 1
             if a.inspect_attempt:
                 from decoder_l0_convstate_dump import inspect_attempt
                 return 0 if inspect_attempt(root/'board', a.inspect_attempt) else 1

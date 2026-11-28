@@ -90,7 +90,7 @@ def inspect_attempt(board, attempt):
     return report_ports(case, replay, fixture, ref, (replay, output))
 
 
-def report_ports(case, replay, fixture, ref, returned_cache):
+def report_ports(case, replay, fixture, ref, returned_cache, *, input_overrides=None):
     source, meta, air = air_bundle(case, case.parents[2]/'export/package'/case.name)
     _, graph = graph_message(sized_file(source, air).read_bytes(), 'LinearAttentionConvstateUpdate')
     nodes = {n.name: n for n in graph.op}
@@ -167,9 +167,9 @@ def report_ports(case, replay, fixture, ref, returned_cache):
             path = view_chain(nodes, edge)
             origin = only((e for e in path if e.endswith(':0') and meta['inputs'].get(e[:-2]) == role),
                           f'{name} replay input')
-            spec = meta['input_files'][role]
-            sent = shaped(name, read_tensor(sized_file(case, spec), spec))
-            point.update(feed_edge=origin, feed_file=spec['path'])
+            root, spec = (input_overrides or {}).get(role, (case, meta['input_files'][role]))
+            sent = shaped(name, read_tensor(sized_file(root, spec), spec))
+            point.update(feed_edge=origin, feed_file=str(root/spec['path']))
             archive['sent_'+name] = sent
             if name in values:
                 point['matches_sent'] = bool(np.array_equal(values[name], sent))
@@ -199,6 +199,49 @@ def report_ports(case, replay, fixture, ref, returned_cache):
             expected = joined[..., -67:]
             report['same_input']['window_full'] = metrics(values['padded'], expected)
             report['same_input']['window_for_valid_tokens'] = metrics(values['padded'][..., :valid+3], expected[..., :valid+3])
+    if fixture is not None:
+        compare_references(report, values, public_state, case, fixture, ref, valid)
+    else:
+        scores = report['same_input']
+        if 'mixed_qkv' in values:
+            tail = values['mixed_qkv'][:, 60:64].transpose(0, 2, 1)
+            scores['returned_state_vs_qkv_60_63'] = metrics(public_state, tail)
+            if 'old_conv_state' in values:
+                report['tail_differs_from_old_state'] = not np.array_equal(tail, values['old_conv_state'])
+        report['basis'] = 'CPro L0 same-run QKV, initial state and public conv_state_0; valid64'
+        checks = ('window_full', 'state_vs_physical_tail', 'returned_state_vs_qkv_60_63')
+        if (values.keys() == SHAPES.keys() and report.get('tail_differs_from_old_state') and
+                report['ports']['linear_update_tensor'].get('matches_sent') is not False):
+            exact = all(scores[k]['exact_elements'] == scores[k]['total_elements'] and
+                        not (scores[k]['nonfinite_actual'] or scores[k]['nonfinite_golden']) for k in checks)
+            report['valid64_accuracy'] = 'PASS' if exact else 'FAIL'
+        else:
+            report['valid64_accuracy'] = 'INCOMPLETE'
+    report['status'] = 'COMPLETE' if values.keys() == SHAPES.keys() else 'INCOMPLETE'
+    np.savez(replay/'l0-convstate.npz', **archive)
+    save_json(replay/'l0-convstate.json', report)
+    print(f'[L0 ConvState] {report["status"]} {replay}/l0-convstate.json', flush=True)
+    for name, point in report['ports'].items():
+        print(f'  {name} {point["edge"]} {point.get("source", "UNRESOLVED")}', flush=True)
+        if point.get('source') in ('dump', 'equivalent_edge_dump'):
+            hit, = point['candidates']
+            print(f'    {hit["edge"]} {hit["encoding"]}', flush=True)
+        if name not in values:
+            print(f'    匹配文件数 {point["indexed_files"]}，可选张量 {len(point["candidates"])}，'
+                  f'解析问题 {len(point["issues"])}（详见 JSON）', flush=True)
+    for label, score in report['same_input'].items():
+        print(f'  {label}: 相同元素 {score["exact_elements"]}/{score["total_elements"]}，'
+              f'max_abs={score["max_abs"]}, cos={score["cosine"]}', flush=True)
+    for label, score in report['reference'].items():
+        print(f'  {label}: cosine={score["cosine"]}, max_abs={score["max_abs"]}, '
+              f'exact={score["exact_elements"]}/{score["total_elements"]}', flush=True)
+    if 'valid64_accuracy' in report:
+        print(f'  valid64_accuracy={report["valid64_accuracy"]}', flush=True)
+        return report['status'] == 'COMPLETE' and report['valid64_accuracy'] == 'PASS'
+    return report['status'] == 'COMPLETE'
+
+
+def compare_references(report, values, public_state, case, fixture, ref, valid):
     upstream = {name: read_tensor(sized_file(fixture, row), row)
                 for name, row in ref.get('l0_convstate_310p', {}).items()}
     if not upstream:
@@ -232,23 +275,5 @@ def report_ports(case, replay, fixture, ref, returned_cache):
         for label, tail in [('physical_tail', qkv[..., -4:]), ('valid_tail', qkv[..., valid-4:valid])]:
             report['reference']['310p_state_vs_310p_'+label] = metrics(reference_states['310p'], tail)
             report['reference']['returned_state_vs_310p_'+label] = metrics(public_state, tail)
-    report['status'] = 'COMPLETE' if values.keys() == SHAPES.keys() else 'INCOMPLETE'
-    np.savez(replay/'l0-convstate.npz', **archive)
-    save_json(replay/'l0-convstate.json', report)
-    print(f'[L0 ConvState] {report["status"]} {replay}/l0-convstate.json', flush=True)
-    for name, point in report['ports'].items():
-        print(f'  {name} {point["edge"]} {point.get("source", "UNRESOLVED")}', flush=True)
-        if point.get('source') in ('dump', 'equivalent_edge_dump'):
-            hit, = point['candidates']
-            print(f'    {hit["edge"]} {hit["encoding"]}', flush=True)
-        if name not in values:
-            print(f'    匹配文件数 {point["indexed_files"]}，可选张量 {len(point["candidates"])}，'
-                  f'解析问题 {len(point["issues"])}（详见 JSON）', flush=True)
-    for label, score in report['same_input'].items():
-        print(f'  {label}: 相同元素 {score["exact_elements"]}/{score["total_elements"]}，max_abs={score["max_abs"]}', flush=True)
-    for label, score in report['reference'].items():
-        print(f'  {label}: cosine={score["cosine"]}, max_abs={score["max_abs"]}, '
-              f'exact={score["exact_elements"]}/{score["total_elements"]}', flush=True)
     if 'mixed_qkv' not in upstream:
         print('  该用例未附可绑定的 310P L0 QKV 参考值。', flush=True)
-    return report['status'] == 'COMPLETE'

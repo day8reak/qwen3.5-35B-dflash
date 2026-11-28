@@ -111,6 +111,22 @@ bash targets/cpro/scripts/decoder_compare.sh l0-convstate-dump --run-root "$r" -
 
 报告按 dump 文件声明的格式保存数组，并在每个端口的 `encoding` 记录 AIR 和 dump 两端的类型。若 AIR 标为 FP16 而 dump 标为 float，则逐元素检查 FP32 值能否无损往返 FP16；能够确认的数值仍以原始 FP32 数组保存。报告保留编码未确认的候选，并列出各等价边匹配的文件数。在包含同次 310P QKV 的用例中，还对照 310P 自己的写回和物理末四行、有效末四行，供区分两种取行方式。
 
+#### 用 64 个有效 token 验证第一层写回
+
+在 35 上复用这份原生四层 OMC 和提示词输入包，仅执行 CPro。脚本在原聊天模板的用户消息内重复“世界上最高的山”或完整问题，保留原问题和生成前缀，从已采集的有效行按 token ID 复制 embedding 编码和 scale。必要时用原模板中的换行 token 分隔重复片段。运行时会打印实际文本和长度控制，当前输入的 64 个 token、来源行号及绑定的控制值保存在本次 `inputs.json`。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh l0-convstate-dump --repeat-to-64 \
+  --run-root "${AI_RUN_DIR:?}/target/tests/native-convstate-4layer"
+```
+
+`board/L00-L03/operator-dump-valid64/attempt-*/replay/l0-convstate.json` 给出两项关键结果。
+
+- `window_full` 核对送入卷积的 67 行，由旧状态末 3 行加上本次 64 行 QKV 构成。
+- `returned_state_vs_qkv_60_63` 将四层图实际返回的 `conv_state_0` 与本次 L0 QKV 第 60–63 行逐元素对照。`state_vs_physical_tail` 同时检查算子的状态输出。
+
+当五个端口均可解析，控制输入与送板记录相容，新旧缓存可区分，且两路输出与预期逐元素完全相等且均为有限值时，报告给出 `valid64_accuracy=PASS`。这次检查的结论限于满长输入的 L0 窗口和缓存写回。若已有这次的 dump，可在同一命令后追加 `--inspect-attempt attempt-NAME` 重新分析。
+
 ### 用相同的算子配置跑 40 层单块 prefill
 
 78 端按当前 prompt 准备 40 层 CPU、310P golden，导出一张 L0–L39 的 T64 AIR。三端走 wrapper 的 token ID 查表分支。QLinear 的 W4 权重 scale 和共享专家门控沿用已验证的 FP16 设置，GDN 的 `out_proj` 直接送入残差加法。

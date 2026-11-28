@@ -139,7 +139,8 @@ def output_order(descriptors, source, golden):
 
 
 def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, recovery, board_case=None,
-           replace_inputs=False, replace_weights=False, shape_config=None, original_board_args=False, operator_dump=False):
+           replace_inputs=False, replace_weights=False, shape_config=None, original_board_args=False, operator_dump=False,
+           input_overrides=None):
     meta = read(case/'case.json')
     original_board_args = original_board_args or native_tool_args(meta)
     if 'operator_counts' in meta:
@@ -158,7 +159,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
             print(f'[{case.name}] ConvState 使用本次 QKV 的物理行 60–63，卷积窗口为 67 行。', flush=True)
     if {r['name'] for r in build['inputs']} != set(meta['inputs']):
         raise ValueError(f'{case}: compiled input names differ from AIR')
-    feeds = {**feeds, **{role: (case, row) for role, row in meta.get('input_files', {}).items()}}
+    feeds = {**feeds, **{role: (case, row) for role, row in meta.get('input_files', {}).items()},
+             **(input_overrides or {})}
     operands, paths = [], []
     for spec in build['inputs']:
         role = meta['inputs'][spec['name']]
