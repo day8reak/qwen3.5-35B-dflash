@@ -1,4 +1,4 @@
-"""Independent 40-block CPU W4 golden for the exact inputs of a completed CPro T64 replay."""
+"""40-block CPU W4 golden from a local valid64 prompt or saved CPro inputs."""
 import fcntl
 import hashlib
 import inspect
@@ -11,15 +11,47 @@ import tempfile
 import numpy as np
 import torch
 
+from decoder_convstate_valid64 import repeat_positions
 from decoder_golden_cache import reference_inputs
 from decoder_valid64_inputs import FILES, complete as complete_inputs
 from decoder_prefill40_valid64 import read
+from qwen35_moe_dflash.execution.tokenizer import render
 from qwen35_moe_dflash.target import prefill_fixture as pf
 from qwen35_moe_dflash.target.layer_probe.common import checked, save_json
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import state_roles
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import output_shape
 from qwen35_moe_dflash.target.prefill_t64.segment_prefix import tensor_record
 from qwen35_moe_dflash.target.prefill_t64.split_cpu_reference import decoder, load_cpu_group
+
+
+LENGTH_CONTROLS = (('effective_length', '<i2', 64), ('allQLen', '<i8', 64), ('output_pos', '<i4', 63))
+
+
+def local_inputs(checkpoint, folder):
+    from transformers import AutoTokenizer
+
+    # This is the user message from the original 19-token mountain chat.
+    question = '世界上最高的山是哪座山？'
+    with pf.hf_config_prefix(checkpoint, 4, {}):
+        tokenizer = AutoTokenizer.from_pretrained(str(checkpoint), local_files_only=True)
+    original_ids = tokenizer.encode(render(question), add_special_tokens=False)
+    pieces = tokenizer.batch_decode([[i] for i in original_ids], skip_special_tokens=False)
+    rows, _, prompt = repeat_positions(question, pieces)
+    ids = np.asarray([original_ids[i] for i in rows], dtype='<i4')
+    visible = np.arange(2048) <= np.arange(64)[:, None]
+    mask = np.where(visible, 0, -np.inf).astype('<f4')
+    folder.mkdir()
+    ids.tofile(folder/'input_ids.bin')
+    mask.tofile(folder/'attention_mask.bin')
+    for role, dtype, value in LENGTH_CONTROLS:
+        np.asarray([value], dtype=dtype).tofile(folder/(role+'.bin'))
+    plan = dict(input_origin='local_tokenizer', source_user_text=question, prompt=prompt,
+                source_valid_rows=len(original_ids), source_positions=rows, token_ids=ids.tolist(),
+                physical_rows=64, valid_rows=64, output_pos=63)
+    save_json(folder/'inputs.json', plan)
+    print(f'[CPU golden] 本机分词：{question} | {len(original_ids)} → {len(ids)} 个有效 token | output_pos=63',
+          flush=True)
+    return plan
 
 
 def replay_inputs(plan_path, folder):
@@ -33,21 +65,25 @@ def replay_inputs(plan_path, folder):
     result = read(folder/'replay/result.json')
     if not complete_inputs(folder):
         raise ValueError(f'{plan_path}: inconsistent 40-layer valid64 execution records')
+    return plan, result['attempt']
+
+
+def cpu_controls(folder, plan):
     ids = np.fromfile(folder/'input_ids.bin', '<i4')
     if (ids.size != 64 or not np.array_equal(ids, plan['token_ids']) or ids.min() < 0
             or ids.max() >= output_shape('logits')[-1]):
-        raise ValueError('Saved input_ids differ from the 64 real token IDs in the replay plan')
-    for name, dtype, value in [('effective_length', '<i2', 64), ('allQLen', '<i8', 64), ('output_pos', '<i4', 63)]:
+        raise ValueError('Saved input_ids differ from the 64 real token IDs in the valid64 input plan')
+    for name, dtype, value in LENGTH_CONTROLS:
         if np.fromfile(folder/(name+'.bin'), dtype).tolist() != [value]:
             raise ValueError(f'Unexpected valid64 control {name}')
     mask = np.fromfile(folder/'attention_mask.bin', '<f4').reshape(1, 1, 64, 2048)
     positions = torch.arange(64, dtype=torch.int32)
     allowed = np.arange(2048)[None, :] <= np.arange(64)[:, None]
     if not (np.all(mask[0, 0][allowed] == 0) and np.all(mask[0, 0][~allowed] < 0)):
-        raise ValueError('Expected the replay mask to expose exactly the 64 causal query positions')
+        raise ValueError('Expected the prefill mask to expose exactly the 64 causal query positions')
     controls = dict(position_ids=positions[None], new_kv_cache_pos=positions, valid_rows=64,
                     attention_mask=torch.from_numpy(mask))
-    return plan, result['attempt'], torch.from_numpy(ids).long()[None], controls
+    return torch.from_numpy(ids).long()[None], controls
 
 
 @torch.inference_mode()
@@ -132,13 +168,20 @@ def generate(cache, case, plan_path, source, config, *, archive=False):
     with tempfile.TemporaryDirectory(prefix='.build-', dir=cache) as temp:
         staged = Path(temp)/'golden'
         staged.mkdir()
-        plan, attempt, ids, controls = replay_inputs(plan_path, staged/'inputs')
         reference = reference_inputs(source, config, valid64_cpu=True)
         resources = reference['checkpoints']
         checkpoint, weights = [Path(resources[name]['directory']) for name in ('model_file', 'quanted_pth')]
+        inputs = staged/'inputs'
+        if plan_path is None:
+            plan, attempt = local_inputs(checkpoint, inputs), None
+        else:
+            plan, attempt = replay_inputs(plan_path, inputs)
+        ids, controls = cpu_controls(inputs, plan)
         binding = dict(reference=reference, token_ids=plan['token_ids'], valid_rows=64, output_pos=63,
                        mask_sha256=hashlib.sha256(controls['attention_mask'].numpy().tobytes()).hexdigest(),
                        cpu_driver_sha256=hashlib.sha256(inspect.getsource(compute).encode()).hexdigest())
+        if plan_path is None:
+            binding['input_origin'] = plan['input_origin']
         key = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
         saved = cache/key
         with (cache/(key+'.lock')).open('a') as lock:
@@ -155,9 +198,12 @@ def generate(cache, case, plan_path, source, config, *, archive=False):
             valid = False
             if saved.is_dir():
                 try:
-                    if (read(saved/'binding.json') == binding and complete_inputs(saved/'inputs')
-                            and read(saved/'inputs/inputs.json')['token_ids'] == plan['token_ids']
-                            and all((saved/'inputs'/name).read_bytes() == (staged/'inputs'/name).read_bytes()
+                    saved_inputs = saved/'inputs'
+                    saved_plan = read(saved_inputs/'inputs.json')
+                    same_plan = (saved_plan == plan if plan_path is None else
+                                 complete_inputs(saved_inputs) and saved_plan['token_ids'] == plan['token_ids'])
+                    if (read(saved/'binding.json') == binding and same_plan
+                            and all((saved_inputs/name).read_bytes() == (inputs/name).read_bytes()
                                     for name in FILES if name.endswith('.bin'))):
                         meta = checked_golden(saved, plan['token_ids'], checkpoint, weights)
                         valid = True

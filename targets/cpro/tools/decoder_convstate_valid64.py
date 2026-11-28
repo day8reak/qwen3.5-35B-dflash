@@ -5,8 +5,7 @@ import tempfile
 
 import numpy as np
 
-from decoder_cases_board import compiled, output_order, read, replay
-from decoder_l0_convstate_dump import report_ports
+from decoder_prefill40_valid64 import read
 from qwen35_moe_dflash.target.layer_probe.common import identity, read_array, save_json, sha
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import output_shape
 
@@ -111,6 +110,9 @@ def prepare_inputs(folder, case, meta, fixture, bundle_stamp):
 
 
 def full_replay(board, config, inspect=None, *, replace_inputs=False, replace_weights=False):
+    from decoder_cases_board import compiled, output_order, replay
+    from decoder_l0_convstate_dump import report_ports
+
     case = board/'package/L00-L03'
     base = board/case.name
     stamp = sha(case.parent/'manifest.json')

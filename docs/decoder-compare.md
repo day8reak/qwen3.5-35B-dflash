@@ -140,17 +140,15 @@ bash targets/cpro/scripts/decoder_compare.sh execute --mode 40 --phase prefill \
 
 #### 在 78 保存并复用 64 个有效 token 的 CPU golden
 
-在 78 上，把 35 上成功的 **40 层**回放路径传给 golden 入口。首次运行从该回放读取 64 个 token ID、attention mask 和控制量，用 CPU 连续计算 L00–L39，在位置 63 取 logits。
+在 78 本地运行以下命令。CPU 使用本机 checkpoint 的 tokenizer 编码实测原句「世界上最高的山是哪座山？」和聊天模板，按板端同一规则在用户消息中重复「世界上最高的山」，填满 64 个有效 token。脚本在本地构造因果 mask、初始化空缓存、连续计算 L00–L39，并在位置 63 取 logits。
 
 ```bash
-replay=/path/on/omc-host/40-prefill-t64/board/valid64/attempt-NAME
-bash targets/cpro/scripts/decoder_golden.sh --mode 40 --phase prefill \
-  --cpu-valid64-from "$replay/inputs.json"
+bash targets/cpro/scripts/decoder_golden.sh --mode 40 --phase prefill --cpu-valid64
 ```
 
-路径在 78 可读时直接取本地文件。远端输入按回放保存在 78，首次接收使用配置的 `DECODER_TRANSFER_ENV` 或启动脚本的 Python 环境。传输有 Paramiko 和 `omc` 端点配置时沿用已有 SSH 设置，其他情况走系统 `sftp`，使用 SSH 密钥或终端输入的密码。省略传输配置时，系统 `sftp` 使用 SSH 别名 `omc`。
+首次完成会打印 `[CPU golden] COMPLETE`、top-1 和 `$AI_RUN_DIR/target/golden/40-prefill-t64/valid64-cpu/<版本>/manifest.json`。清单中的 `outputs` 包含 `hidden_0` 到 `hidden_39`、各层状态（含 full attention 的 K/V）、`mixed_qkv_0` 和 `logits`。用同一条命令重跑，输入、权重和 CPU 参考配置一致时会校验并复用这份结果，打印 `REUSED`。指定其他实验的 `--run-root` 也使用这份持久化 golden。
 
-运行结束时，`COMPLETE` 后面的清单在 `$AI_RUN_DIR/target/golden/40-prefill-t64/valid64-cpu/<版本>/manifest.json`。其中 `outputs` 给出 logits、40 层 hidden、每层缓存及 L0 混合 QKV 的文件和形状。相同输入和 CPU 参考配置重跑会打印 `REUSED`。每个版本保留自己的 `inputs/inputs.json`，可以直接从这份本地输入复用。切换实验的 `--run-root` 仍使用同一 golden 目录。
+与已有 CPro 运行逐层比较时，可用两份 `inputs.json` 中的 `token_ids` 核对 64 个位置，并核对 mask 和 `output_pos`。如果需要按一次成功的 40 层回放原样生成 CPU 参考，可以显式使用 `--cpu-valid64-from "$replay/inputs.json"`。这个入口支持本地文件，也支持用已配置的 SSH 端点读取远端回放。
 
 如旧版已生成完整 CPU 结果，且权重和运行环境自当时起一致，可用 `--cache-existing-golden --cpu-valid64-from "$old_attempt/inputs/inputs.json"` 归档。归档清单会注明权重版本信息是在归档时记录的。
 

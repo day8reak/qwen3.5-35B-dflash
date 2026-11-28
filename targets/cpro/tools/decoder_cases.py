@@ -310,6 +310,8 @@ def worker(args, action, root, remote):
                 cmd.append(value)
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
+    if args.cpu_valid64:
+        cmd.append('--cpu-valid64')
     if args.cpu_valid64_from:
         cmd.extend(['--cpu-valid64-from', str(args.cpu_valid64_from)])
     if args.valid64_from:
@@ -340,6 +342,8 @@ def worker(args, action, root, remote):
             label = '复用 40 层 OMC，运行 CPro valid64 Prefill'
     if action == 'reference' and (args.mode, args.phase) == ('40', 'prefill'):
         label = '归档已有 40 层 golden' if args.cache_existing_golden else '准备 40 层 golden，优先复用 CPU 和 310P 参考'
+    if args.cpu_valid64:
+        label = '在本机分词并填满 64 个有效 token，生成 40 层 CPU golden'
     if args.cpu_valid64_from:
         label = '从 64 个实测 token ID 生成 40 层 CPU golden'
     if getattr(args, 'gate_probe', False):
@@ -445,12 +449,17 @@ def main():
                         help='inspect a retained l0-convstate-dump attempt on this host without replaying it')
     parser.add_argument('--valid64-from', type=Path, metavar='INPUTS_JSON',
                         help='replay the compiled 40-layer physical-tail OMC with saved CPro valid64 token IDs')
-    parser.add_argument('--cpu-valid64-from', type=Path, metavar='INPUTS_JSON',
-                        help='generate only the 40-layer CPU golden from a successful CPro valid64 replay')
+    cpu_input = parser.add_mutually_exclusive_group()
+    cpu_input.add_argument('--cpu-valid64', action='store_true',
+                           help='build 64 valid tokens on this host and generate only the 40-layer CPU golden')
+    cpu_input.add_argument('--cpu-valid64-from', type=Path, metavar='INPUTS_JSON',
+                           help='generate only the 40-layer CPU golden from a successful CPro valid64 replay')
     a = parser.parse_args()
-    if a.cpu_valid64_from and ((a.mode, a.phase) != ('40', 'prefill') or a.action not in ('golden', '_reference')
+    if (a.cpu_valid64 or a.cpu_valid64_from) and ((a.mode, a.phase) != ('40', 'prefill') or a.action not in ('golden', '_reference')
             or any((a.valid64_from, a.dump, a.gate_probe, a.inspect_attempt))):
-        parser.error('--cpu-valid64-from requires golden --mode 40 --phase prefill')
+        parser.error('CPU valid64 requires golden --mode 40 --phase prefill')
+    if a.cpu_valid64 and a.cache_existing_golden:
+        parser.error('--cache-existing-golden requires a completed golden as input; omit it for --cpu-valid64')
     if a.valid64_from and ((a.mode, a.phase) != ('40', 'prefill') or a.action not in ('execute', '_execute')
                            or a.gate_probe):
         parser.error('--valid64-from requires execute --mode 40 --phase prefill with explicit ConvState slices')
@@ -550,12 +559,13 @@ def main():
         parser.error('--recovery applies to board --mode layerwise')
     from qwen35_moe_dflash.common.artifacts import output_path
     parent = a.run_root or Path(os.getenv('DECODER_RUN_ROOT', required('AI_RUN_DIR')/'target/tests'))
-    if a.cpu_valid64_from:
+    if a.cpu_valid64 or a.cpu_valid64_from:
         cache = output_path(required('AI_RUN_DIR')/'target/golden'/slug/'valid64-cpu')
         case = output_path(a.run or (a.run_root/slug if a.run_root else cache))
         if a.action == 'golden':
-            from decoder_valid64_inputs import local_plan
-            a.cpu_valid64_from = local_plan(cache, a.cpu_valid64_from)
+            if a.cpu_valid64_from:
+                from decoder_valid64_inputs import local_plan
+                a.cpu_valid64_from = local_plan(cache, a.cpu_valid64_from)
             worker(a, 'reference', case, case)
         else:
             from decoder_cpu_valid64 import generate
