@@ -239,7 +239,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
           operator_dump=False, dump=False, shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False,
           native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
           all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False, rms_silu_token_view=False,
-          native_convstate=False, hidden_trace=False):
+          native_convstate=False, hidden_trace=False, l0_convstate_dump=False):
     bundle = run/'package'
     if (step == 'execute' or original_omg) and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -314,6 +314,15 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
                         directory_name(mode, phase) + '-dump', replace_inputs, replace_weights, shape_config=config,
                         original_board_args=original_board_args or gdn_conv == 'original', operator_dump=True)
         received = read(attempt/'replay/result.json')['operator_dump']['status'] == 'FILES_RECEIVED_REVIEW_REQUIRED'
+        if received and l0_convstate_dump:
+            from decoder_l0_convstate_dump import report_ports
+            replay_dir = attempt/'replay'
+            try:
+                return report_ports(case, replay_dir, fixture, ref, values['conv_state_0'])
+            except (OSError, ValueError, KeyError, IndexError) as exc:
+                save_json(replay_dir/'l0-convstate.json', dict(status='INCOMPLETE', issue=str(exc)))
+                print(f'[L0 ConvState] {exc}；原始 dump 在 {replay_dir}', flush=True)
+                return False
         if received and mode == '4':
             from decoder_gdn_padding import report_padding
             try:

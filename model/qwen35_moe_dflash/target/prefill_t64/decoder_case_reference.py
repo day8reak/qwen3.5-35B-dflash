@@ -19,7 +19,7 @@ from .segment_prefix import tensor_record
 from .split_cpu_reference import decoder
 
 
-def capture(root, mode, phase, source, config, *, hidden_trace=False):
+def capture(root, mode, phase, source, config, *, hidden_trace=False, l0_convstate=False):
     schedule = groups(mode)
     layers = [i for group in schedule for i in group]
     rows = 64 if phase == 'prefill' else 1
@@ -34,6 +34,9 @@ def capture(root, mode, phase, source, config, *, hidden_trace=False):
     if external:
         report['embedding_inputs'] = {}
         (root/'embedding_inputs').mkdir()
+    if l0_convstate:
+        report['l0_convstate_310p'] = {}
+        (root/'l0_convstate_310p').mkdir()
     active = False
     prefill_token = None
     prefill_cache = {}
@@ -148,6 +151,33 @@ def capture(root, mode, phase, source, config, *, hidden_trace=False):
                                 last_row = cpu(result[0][:, valid-1, :])
                             for role, value in zip(state_roles(i), result[1], strict=True):
                                 record('outputs', role, value)
+                    if l0_convstate and i == 0:
+                        # Observe the original NZ projection and the window actually consumed by conv1d.
+                        from functools import wraps
+                        from unittest.mock import patch
+                        from torch.nn import functional as F
+
+                        def qkv(mod, args, kwargs, result):
+                            if active:
+                                record('l0_convstate_310p', 'mixed_qkv', result)
+
+                        hook(block.linear_attn.in_proj_qkv, qkv)
+                        forward = block.linear_attn.forward
+                        conv1d = F.conv1d
+
+                        @wraps(forward)
+                        def observed_forward(*args, **kwargs):
+                            if not active:
+                                return forward(*args, **kwargs)
+                            @wraps(conv1d)
+                            def observe_window(input, weight, *tail, **options):
+                                if tuple(input.shape) in ((1, 8192, 67), (1, 8192, 68)):
+                                    record('l0_convstate_310p', 'padded', input[..., -67:])
+                                return conv1d(input, weight, *tail, **options)
+                            with patch.object(F, 'conv1d', observe_window):
+                                return forward(*args, **kwargs)
+
+                        stack.enter_context(patch.object(block.linear_attn, 'forward', observed_forward))
                     hook(block, enter, True)
                     hook(block, leave)
                     if f'out_proj_{i}' in wanted:

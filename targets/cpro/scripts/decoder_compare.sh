@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat <<'HELP'
-decoder_compare.sh {golden|air|compile|execute|diagnose|l0-dump|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-input-rmsnorm-air|l0-input-rmsnorm-omc|l0-input-rmsnorm|l0-shared-gate-reference|l0-shared-gate|l0-shared-gate-fp16|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
+decoder_compare.sh {golden|air|compile|execute|diagnose|l0-convstate-dump|l0-dump|l0-embedding|l0-steps-reference|l0-steps|l0-steps-same-input|l0-input-rmsnorm-air|l0-input-rmsnorm-omc|l0-input-rmsnorm|l0-shared-gate-reference|l0-shared-gate|l0-shared-gate-fp16|gdn-export|gdn-whole|gdn-bisect|gate-probe|gate-upstream|gate-report|transfer|prepare|board|source|plan} [--mode {linear|full|4|40|layerwise} --phase {prefill|decode}]
                    [--gdn-conv {conv2d|taps|original}] [--physical-convstate] [--no-patch|--native-activations|--silu-only|--softplus-only|--gdn-silu-only|--gdn-silu-site {conv|gate}|--all-silu-no-gate-cast|--rms-silu-layers LAYERS|--rms-silu-token-view] [--run-root DIR] [--remote-run DIR] [--patched-source DIR] [--rmsnorm-patch] [--recovery] [--replace-inputs] [--replace-weights]
 source      Generate or select the editable CPro source directory.
 golden      Generate CPU and 310P reference data. 40-layer T64 prefill reuses matching references from AI_RUN_DIR/target/golden/40-prefill-t64.
@@ -30,6 +30,7 @@ l0-shared-gate   Compare the saved gate logits and weighted outputs offline on t
 l0-shared-gate-fp16   Run one same-input L0 shared-router OMC with FP16 scalar MatMul and an FP32 cast before sigmoid.
 l0-decay-report   Show the SoftplusPatch to GDR decay path in the retained single-layer AIR and visible OMC graphs.
 l0-original-omg   Compile the retained single-layer AIR with the original OMG command and replay with the original V2 flags.
+l0-convstate-dump   Replay the native four-layer OMC and extract the five ports of the L0 ConvState update.
 l0-dump     Replay the retained OMC with --enable_item=2. With --mode 4, inspect L0 padding and the L1 QKV tail in the full four-layer model.
 --rmsnorm-patch  Export the decoder with FP16 RmsnormPatch(x, gamma). Use the same switch for transfer, compile and replay.
 --hidden-trace   For 4- or 40-layer prefill, append a [layers,64,2048] post-decoder output and compare each layer over valid tokens.
@@ -66,6 +67,9 @@ HELP
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    l0-convstate-dump)
+        shift
+        exec bash "$0" execute --mode 4 --phase prefill --gate-probe l0-convstate-dump --native-convstate --rmsnorm-patch --hidden-trace "$@" ;;
     l0-dump)
         shift
         exec bash "$0" execute --mode linear --phase prefill --gate-probe l0-dump "$@" ;;

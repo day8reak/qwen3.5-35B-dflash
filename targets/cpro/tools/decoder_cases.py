@@ -165,7 +165,8 @@ def prepare_stage(args, run):
         with tempfile.TemporaryDirectory(dir=run, prefix='.capture-') as tmp:
             working = Path(tmp)/'fixture'
             working.mkdir()
-            ref = decoder_case_reference.capture(working, args.mode, args.phase, src, cfg, hidden_trace=args.hidden_trace)
+            ref = decoder_case_reference.capture(working, args.mode, args.phase, src, cfg,
+                                                 hidden_trace=args.hidden_trace, l0_convstate=args.native_convstate)
             ref['binding'] = binding
             decoder_case_reference.cpu_reference(working, ref, src)
             if args.dump:
@@ -348,6 +349,8 @@ def worker(args, action, root, remote):
             label = '对照四层和门控小图的已有 AIR、编译日志及上板记录'
         elif args.gate_probe == 'l0-decay-report':
             label = '查看现有 L0 AIR 和 OMC 的 Softplus 衰减支路'
+        elif args.gate_probe == 'l0-convstate-dump':
+            label = '复用四层 OMC，提取 L0 ConvState 的三个输入和两个输出'
         elif args.gate_probe == 'l0-dump':
             label = '复用已有 OMC，回收 L0 算子 dump'
         elif args.gate_probe == 'l0-original-omg':
@@ -417,7 +420,7 @@ def main():
     parser.add_argument('--gate-probe', nargs='?', const='slices',
                         choices=('slices', 'upstream', 'report', 'gdn-export', 'gdn-whole', 'gdn-bisect', 'l0-steps', 'l0-steps-same-input', 'l0-embedding', 'l0-shared-gate', 'l0-shared-gate-fp16',
                                  'l0-input-rmsnorm', 'l0-input-rmsnorm-air', 'l0-input-rmsnorm-omc',
-                                 'l0-decay-report', 'l0-original-omg', 'l0-dump'), help=argparse.SUPPRESS)
+                                 'l0-decay-report', 'l0-original-omg', 'l0-dump', 'l0-convstate-dump'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
     a = parser.parse_args()
     # Keep these settings in artifact manifests so an older AIR cannot silently replace this recipe.
@@ -448,11 +451,13 @@ def main():
         probe_actions = ('compile', '_compile')
     elif a.gate_probe == 'l0-steps':
         probe_actions += ('golden', '_reference')
-    elif a.gate_probe == 'l0-dump':
+    elif a.gate_probe in ('l0-dump', 'l0-convstate-dump'):
         probe_actions = ('execute', '_execute')
     probe_mode = 'linear' if a.gate_probe in ('l0-original-omg', 'l0-decay-report', 'l0-dump') else '4'
     if a.gate_probe == 'l0-dump' and a.mode == '4':
         probe_mode = '4'
+    if a.gate_probe == 'l0-convstate-dump' and not a.native_convstate:
+        parser.error('l0-convstate-dump requires the four-layer --native-convstate AIR')
     if a.gate_probe and ((a.mode, a.phase) != (probe_mode, 'prefill') or
                          a.action not in probe_actions):
         parser.error(f'{a.gate_probe} requires --mode {probe_mode} --phase prefill and its supported stage')
@@ -532,13 +537,14 @@ def main():
                 from decoder_gate_report import report_linear_decay
                 report_linear_decay(root, board_config('compile')[0])
                 return 0
-            if a.gate_probe in ('l0-original-omg', 'l0-dump'):
+            if a.gate_probe in ('l0-original-omg', 'l0-dump', 'l0-convstate-dump'):
                 from decoder_cases_board import board
                 ddk, config, diag = board_config(a.action)
                 original = a.gate_probe == 'l0-original-omg'
                 return 0 if board(root/'board', a.mode, a.phase, remote/'export', ddk, config, diag, False,
-                                  step=a.action, gdn_conv=a.gdn_conv, original_omg=original, rmsnorm_patch=a.rmsnorm_patch,
-                                  shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid, qlinear_scale_fp16=a.qlinear_scale_fp16,
+                                  step=a.action, gdn_conv=a.gdn_conv, original_omg=original,
+                                  **{key: getattr(a, key) for key in EXPORT_CONTROLS},
+                                  l0_convstate_dump=a.gate_probe == 'l0-convstate-dump',
                                   original_board_args=original or a.original_board_args, operator_dump=not original,
                                   replace_inputs=a.replace_inputs, replace_weights=a.replace_weights) else 1
             if a.gate_probe == 'l0-embedding':

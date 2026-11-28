@@ -88,6 +88,21 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill \
 
 在 `$r/4-prefill-t64/board/matrices.csv` 查看 `hidden_0` 至 `hidden_3`、`key_cache_3` 和 `value_cache_3`。如有原驱动针对这条提示词的控制 bin，可在 78 设置 `DECODER_CONV_CONTROL`。默认输入首项是有效长度，其余 127 项为零，该默认值在部分有效长度下的原算子语义仍待板端验证。
 
+#### 只看第一层 ConvState 的输入和输出
+
+35 上有这组实验的四层 OMC 时，在同一仓库版本运行
+
+```bash
+r="${AI_RUN_DIR:?}/target/tests/native-convstate-4layer"
+bash targets/cpro/scripts/decoder_compare.sh l0-convstate-dump --run-root "$r"
+```
+
+只有 78 的 AIR 时，先在 35 运行 `decoder_transfer.sh air` 和 `decoder_omc.sh`，两条命令都使用本节四层实验的 `--mode 4 --phase prefill --native-convstate --rmsnorm-patch --hidden-trace --run-root "$r"`，跨目录传输时另给 78 的 `--remote-run`。随后执行上面的 dump 命令。它用四层原 OMC 执行一次，在终端打印本次 replay 目录。
+
+`l0-convstate.npz` 保存 L0 的 `mixed_qkv`、`old_conv_state`、`linear_update_tensor`、`new_conv_state`、`padded`。`l0-convstate.json` 记录 AIR 边、原始文件、数据来源和缺失或歧义。旧状态与控制量有同次送板输入可核对，输出 0 有整图返回的 L0 缓存可核对。缺少唯一可解码的中间值时会标记 `INCOMPLETE` 并保留候选。
+
+`same_input` 使用本次 CPro QKV 和旧状态重建 310P 采用的拼接窗口，核对全部 67 个位置及影响有效 token 的前 `valid+3` 个位置。写回缓存分别对照物理末四行和有效末四行。新版 78 准备命令还会随 golden 保存 L0 的 310P QKV 和实际卷积输入的后 67 行，用来比较更新前的投影与更新后的窗口。旧用例也可直接核对同输入窗口和缓存。
+
 ### 用相同的算子配置跑 40 层单块 prefill
 
 78 端按当前 prompt 准备 40 层 CPU、310P golden，导出一张 L0–L39 的 T64 AIR。三端走 wrapper 的 token ID 查表分支。QLinear 的 W4 权重 scale 和共享专家门控沿用已验证的 FP16 设置，GDN 的 `out_proj` 直接送入残差加法。
