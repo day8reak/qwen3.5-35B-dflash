@@ -205,7 +205,13 @@ def cpu_reference(root, ref, source):
     if ref.get('embedding_inputs') and ref['layers'][0] == 0:
         from .decoder_embedding import retained_embedding
         codes, scales = retained_embedding(root, ref)(tensor('input_ids').numpy())
-        hidden = (torch.from_numpy(codes).float() * torch.from_numpy(scales)).half()
+        rebuilt = (torch.from_numpy(codes).float() * torch.from_numpy(scales)).half()
+        if (ref['mode'], ref['phase']) == ('4', 'prefill'):
+            different = (rebuilt.view(torch.int16) != hidden.view(torch.int16)).sum().item()
+            print(f'[embedding] CPU vs 310P L0 入口，全部 64 行 FP16 位模式差异 {different}/{hidden.numel()}', flush=True)
+            if different:
+                raise ValueError('CPU external embedding differs from the captured 310P L0 input')
+        hidden = rebuilt
     owner = pf.import_source(source)
     loader = sys.modules[owner.Qwen3_5MoeForCausalLMWrapper.__module__].load_npu_model
     checkpoint = Path(ref['model_file'])

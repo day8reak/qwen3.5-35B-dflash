@@ -207,7 +207,7 @@ def physical_history(nodes, outputs):
     return matches[0]
 
 
-def prefill_precision(graph, layers, head, *, rows=64):
+def prefill_precision(graph, layers, head, *, rows=64, qlinear_scale_fp16=False):
     """Inspect the consumer port contracts on the exported AIR before OMG lowering."""
     enum = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_number
     problems = []
@@ -236,8 +236,12 @@ def prefill_precision(graph, layers, head, *, rows=64):
         if op.type == 'QuantBatchMatmulV4444':
             # Keep the stock converter's floating scale ports and record what AIR actually contains.
             floating = ('DT_FLOAT', 'DT_FLOAT16')
-            ports = check(op, dict(x1='DT_INT8', x2='DT_INT32', scale=floating, pertoken_scale=floating))
+            weight_type = 'DT_FLOAT16' if qlinear_scale_fp16 else floating
+            ports = check(op, dict(x1='DT_INT8', x2='DT_INT32', scale=weight_type, pertoken_scale=floating))
             matmuls[op.name] = ports
+            if qlinear_scale_fp16 and 'scale' in ports and 'pertoken_scale' in ports:
+                print(f"[QLinear AIR] {op.name} scale={ports['scale']['dtype']} "
+                      f"pertoken_scale={ports['pertoken_scale']['dtype']}", flush=True)
         elif op.type == 'ChunkGatedDeltaRule':
             expected = dict.fromkeys(('query', 'key', 'value', 'g', 'beta', 'initial_state'), 'DT_FLOAT16')
             ports = check(op, dict(expected, effective_length='DT_INT16'))

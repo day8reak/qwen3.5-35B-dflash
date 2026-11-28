@@ -106,15 +106,10 @@ def stage_exporter(text):
     return _replace_functions(text, edits)
 
 
-def stage_prefill_exporter(text, *, gdn_layers, split):
-    """Bind the CPro W4 loader and checked converters around the native export call."""
-    text = stage_exporter(text)
-    fn = _function(ast.parse(text), 'export_air')
-    quant = _only(_calls(fn, {'quant_model_inplace'}), 'split W4 load')
-    quant.keywords.append(ast.keyword(arg='qlinear_cls', value=ast.Name(id='CproQLinear', ctx=ast.Load())))
-    if split:
-        load = _only((stmt for stmt in fn.body if quant in ast.walk(stmt)), 'quantization branch')
-        init = ast.parse('''
+def _prepare_prefill_weights(fn, quant):
+    load = _only((stmt for stmt in fn.body if quant in ast.walk(stmt)), 'quantization branch')
+    init = ast.parse('''
+from qwen35_moe_dflash.target.prefill_t64.source_exporter import half_model_preserving_qlinear_scales
 from models.modeling_qwen3_5_moe_hiai_cpro import Qwen3_5MoeRMSNorm
 half_model_preserving_qlinear_scales(model_wrapper.model.eval(), CproQLinear)
 for module in model_wrapper.model.modules():
@@ -122,8 +117,28 @@ for module in model_wrapper.model.modules():
         gamma = (module.weight + 1.0).detach().contiguous()
         module.register_buffer('export_gamma', gamma, persistent=False)
 ''').body
-        where = fn.body.index(load) + 1
+    where = fn.body.index(load) + 1
+    if [ast.dump(s) for s in fn.body[where:where + len(init)]] != [ast.dump(s) for s in init]:
         fn.body[where:where] = init
+
+
+def initialize_native_prefill_weights(text):
+    from .decoder_four_source import preserve_source
+    tree = ast.parse(text)
+    fn = _function(tree, 'export_air')
+    quant = _only(_calls(fn, {'quant_model_inplace'}), 'W4 load')
+    _prepare_prefill_weights(fn, quant)
+    return preserve_source(text, ast.unparse(tree))
+
+
+def stage_prefill_exporter(text, *, gdn_layers, split):
+    """Bind the CPro W4 loader and checked converters around the native export call."""
+    text = stage_exporter(text)
+    fn = _function(ast.parse(text), 'export_air')
+    quant = _only(_calls(fn, {'quant_model_inplace'}), 'split W4 load')
+    quant.keywords.append(ast.keyword(arg='qlinear_cls', value=ast.Name(id='CproQLinear', ctx=ast.Load())))
+    if split:
+        _prepare_prefill_weights(fn, quant)
     call, = [n for n in ast.walk(fn) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
              and ast.unparse(n.value.func) == 'torchair.dynamo_export']
     branch, = [n for n in ast.walk(fn) if isinstance(n, ast.If) and call in n.body]

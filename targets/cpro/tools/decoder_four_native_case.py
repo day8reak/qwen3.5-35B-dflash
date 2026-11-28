@@ -71,13 +71,15 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
 def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=False, native_activations=False,
            silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
            all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False,
-           rmsnorm_patch=False):
+           rmsnorm_patch=False, shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False):
     dest = root/case_name(ref['layers'])
     if dest.is_dir():
         saved = json.loads((dest/'case.json').read_bytes())
         if (saved.get('air_directory') != EXPORT_DIR or saved.get('gdn_conv', 'conv2d') != gdn_conv
                 or saved.get('no_patch', False) != no_patch
                 or saved.get('rmsnorm_patch', False) != rmsnorm_patch
+                or saved.get('shared_gate_fp16_sigmoid', False) != shared_gate_fp16_sigmoid
+                or saved.get('qlinear_scale_fp16', False) != qlinear_scale_fp16
                 or saved.get('native_activations', False) != native_activations
                 or saved.get('silu_only', False) != silu_only or saved.get('softplus_only', False) != softplus_only
                 or saved.get('gdn_silu_only', False) != gdn_silu_only
@@ -107,7 +109,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         use_native_tools = gdn_conv == 'original' or activation_control or physical_convstate
         explicit_conv2d = (activation_control or physical_convstate) and gdn_conv == 'conv2d'
         physical_history = physical_convstate or not use_native_tools
-        depth = select_native_depth(cfg, work, 4) if use_native_tools else None
+        depth = select_native_depth(cfg, work, 4)
         export_config = work/'export.yaml'
         export_config.write_text(yaml.safe_dump(cfg))
         entry = ((source/EXPORTER).resolve(strict=True) if no_patch else
@@ -127,7 +129,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
             if physical_convstate:
                 print('[L00-L03] ConvState：拼接旧状态与本次 QKV，末 4 行写回，末 67 行送卷积。\n'
                       '  默认对齐源码补丁：L3 RoPE 按 position_ids 取表，FP32 旋转 Q/K 后转回 hidden dtype；'
-                      'W4 matmul 沿用原 QLinear scale 和 TorchAir converter；GDR 使用 FP16 算子端口；'
+                      'W4 matmul 使用 FP16 分组权重 scale；GDR 使用 FP16 算子端口；'
                       'MoE 使用量化后的 INT8 激活并对齐门控 dtype。', flush=True)
             if physical_convstate or silu_only or restrict_silu_to_gdn or gate_control:
                 with (case/'source.diff').open('w', encoding='utf-8') as changes:
@@ -162,7 +164,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         (work/EXPORT_DIR).rename(case/EXPORT_DIR)
         air = case/EXPORT_DIR/'export.air'
         boundary = inspect_air(air, layers=4, physical_history=physical_history, require_control=not physical_history,
-                               conv2d_rows=64 if explicit_conv2d else None)
+                               conv2d_rows=64 if explicit_conv2d else None, check_embedding=not no_patch)
         if physical_convstate:
             print(f'[L00-L03] AIR 实测 ConvState：原更新算子 {boundary["convstate_update_nodes"]} 个，'
                   f'显式拼接的缓存 {boundary["physical_conv_caches"]} 份', flush=True)
@@ -199,13 +201,15 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         if not no_patch:
             if explicit_conv2d:
                 observations['gdn_convs'] = boundary['gdn_convs']
-            precision = four_precision(air, check_shared_gates=True, rmsnorm_patch=rmsnorm_patch)
+            precision = four_precision(air, check_shared_gates=True, rmsnorm_patch=rmsnorm_patch,
+                                       shared_gate_fp16_sigmoid=shared_gate_fp16_sigmoid, qlinear_scale_fp16=qlinear_scale_fp16)
             if precision['mismatches']:
                 raise ValueError('\n'.join(precision['mismatches']))
             observations['precision'] = precision
+            observations['embedding_path'] = boundary['embedding_path']
         control = None if physical_history else os.getenv('DECODER_CONV_CONTROL')
         measured = prefill_inputs(case/'inputs', fixture, cfg, control, physical_history=physical_history,
-                                  decoder_fixture=True)
+                                  decoder_fixture=True, require_same_entry=not no_patch)
         files = files_under(case, case)
         by_path = {r['path']: r for r in files}
         names, feeds = {}, {}
@@ -225,7 +229,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         save_json(case/'case.json', dict(air_directory=EXPORT_DIR, layers=ref['layers'], argv=argv,
                   gdn_conv=gdn_conv, native_convstate=not physical_history, native_tool_args=use_native_tools,
                   physical_convstate=physical_convstate, rmsnorm_patch=rmsnorm_patch,
-                  **({'export_configuration': depth} if depth else {}),
+                  shared_gate_fp16_sigmoid=shared_gate_fp16_sigmoid, qlinear_scale_fp16=qlinear_scale_fp16,
+                  export_configuration=depth,
                   inputs=names, input_files=feeds, outputs=outputs, files=files, fixture=measured,
                   **observations))
         case.rename(dest)

@@ -32,7 +32,55 @@ def data_edges(op):
     return [edge for edge in op.input if edge and not edge.endswith(':-1')]
 
 
-def inspect_air(path, *, layers=4, physical_history=None, require_control=False, conv2d_rows=None):
+def external_embedding_path(graph, inputs):
+    from .attention_steps import NORMS, only
+
+    nodes = {n.name: n for n in graph.op}
+    types = graph.DESCRIPTOR.file.enum_types_by_name['DataType'].values_by_name
+    fp16, fp32 = (types[d].number for d in ('DT_FLOAT16', 'DT_FLOAT'))
+
+    def port(dtype, shape):
+        return only((r['name'] + ':0' for r in inputs if r['dtype'] == types[dtype].number
+                     and r['shape'] == shape), f'{dtype}{shape} embedding input')
+
+    codes = port('DT_INT8', [1, 64, 2048])
+    scale = port('DT_FLOAT', [1, 64, 1])
+
+    def origin(edge):
+        dtypes = []
+        while edge.endswith(':0'):
+            op = nodes[edge.rsplit(':', 1)[0]]
+            if op.type not in ('Cast', 'Identity', 'Reshape', 'View', 'TensorMove'):
+                break
+            dtypes.append(op.output_desc[0].dtype)
+            edge = op.input[0]
+        return edge, dtypes
+
+    products = []
+    for op in graph.op:
+        if op.type != 'Mul' or len(data_edges(op)) != 2:
+            continue
+        paths = dict(origin(e) for e in data_edges(op))
+        if set(paths) == {codes, scale}:
+            if (any(d != fp32 for d in paths[scale]) or
+                    any(d not in (fp32, fp16, types['DT_INT8'].number) for d in paths[codes]) or
+                    [d.dtype for d in op.input_desc] != [fp32, fp32] or op.output_desc[0].dtype != fp32):
+                raise ValueError(f'{op.name}: expected FP32 external embedding multiplication')
+            products.append(op.name + ':0')
+    product = only(products, 'external embedding × scale')
+    norms = []
+    for op in graph.op:
+        if op.type in NORMS:
+            edge, dtypes = origin(op.input[0])
+            if edge == product and fp16 in dtypes:
+                norms.append(op.name)
+    norm = only(norms, 'L0 input RMSNorm on the FP16-rounded embedding')
+    print(f'[embedding AIR] {codes} (INT8) × {scale} (FP32) → {product} (FP32) → FP16 → {norm}', flush=True)
+    return dict(inputs_embeds=codes, embed_scale=scale, product=product, entry_dtype='float16', input_norm=norm)
+
+
+def inspect_air(path, *, layers=4, physical_history=None, require_control=False, conv2d_rows=None,
+                check_embedding=False):
     _, graph = graph_message(path.read_bytes(), 'NetOutput')
     nodes = {n.name: n for n in graph.op}
     net, = [n for n in graph.op if n.type == 'NetOutput']
@@ -159,6 +207,8 @@ def inspect_air(path, *, layers=4, physical_history=None, require_control=False,
     boundary = dict(inputs=inputs, outputs=records,
                     convstate_update_nodes=len(conv), physical_conv_caches=len(set(history_inputs.values())),
                     operator_counts={kind: counts[kind] for kind in ('SiluPatch', 'SoftplusPatch', 'QuantBatchMatmulV4444')})
+    if check_embedding:
+        boundary['embedding_path'] = external_embedding_path(graph, inputs)
     if conv2d_rows is not None:
         from .decoder_four_silu import inspect_gdn_convs
         boundary['gdn_convs'] = inspect_gdn_convs(graph, len(linear_layers), conv2d_rows)

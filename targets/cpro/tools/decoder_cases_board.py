@@ -249,8 +249,13 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
                               gdn_silu_site=gdn_silu_site, all_silu_no_gate_cast=all_silu_no_gate_cast,
                               physical_convstate=physical_convstate, rms_silu_layers=rms_silu_layers,
                               rms_silu_token_view=rms_silu_token_view).items():
-        if manifest.get(key, False) != selected:
-            raise ValueError(f'{bundle}: --{key.replace("_", "-")} selection differs from the AIR export')
+        if manifest.get(key, False) == selected:
+            continue
+        if key in ('shared_gate_fp16_sigmoid', 'qlinear_scale_fp16'):
+            if original_omg or operator_dump:
+                continue
+            raise ValueError(f'{bundle}: existing AIR has a different {key} setting. Regenerate the AIR with decoder_prepare.sh.')
+        raise ValueError(f'{bundle}: --{key.replace("_", "-")} selection differs from the AIR export')
     from decoder_handoff import runtime_file
     for row in manifest['files']:
         if step != 'execute' or runtime_file(row['path']):

@@ -3,7 +3,7 @@ import ast
 from pathlib import Path
 from shutil import copyfile
 
-from ..original_target_source import EXPORTER, cpro_python_files
+from ..original_target_source import EXPORTER, WRAPPER, cpro_python_files
 from .decoder_four_silu import MODELING
 from .decoder_four_source import preserve_source
 from .source_model import _call, _definition, configure_qlinear_weight_scale
@@ -38,6 +38,16 @@ def fp16_shared_gate(source, *, fp16_sigmoid=False):
                                  'self.shared_expert_gate(hidden_states_flat.to(self.shared_expert_gate.weight.dtype))'):
         raise ValueError(f'Unrecognized CPro scalar shared expert gate: {ast.unparse(gate)}')
     sigmoid.args = [ast.parse(expr, mode='eval').body]
+    return preserve_source(source, ast.unparse(tree))
+
+
+def fp16_embedding_entry(source):
+    tree = ast.parse(source)
+    forward = _definition(_definition(tree, 'Qwen3_5MoeForCausalLMCproWrapper'), 'forward')
+    entry, = [s for s in forward.body if isinstance(s, ast.Assign)
+              and ast.unparse(s.targets[0]) == 'hidden_states' and ast.unparse(s.value) in
+              ('inputs_embeds', 'inputs_embeds.to(torch.float16)', 'inputs_embeds.half()')]
+    entry.value = ast.parse('inputs_embeds.to(torch.float16)', mode='eval').body
     return preserve_source(source, ast.unparse(tree))
 
 
@@ -143,7 +153,7 @@ def inspect_shared_gates(graph, layers, *, fp16_sigmoid=False):
 
 
 def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_patch=False,
-                  shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False):
+                  shared_gate_fp16_sigmoid=True, qlinear_scale_fp16=True, native_prefill=False):
     """Keep imported helpers beside the run-local model; preserve editable sources."""
     from .decoder_four_silu import remove_activation_views, update_activation_calls
 
@@ -153,13 +163,16 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
             rel = folder/path.name
             if path.name == '__pycache__' or rel in (Path('models'), Path(EXPORTER), Path(MODELING)):
                 continue
+            if native_prefill and not lookup and rel == Path(WRAPPER):
+                (dest/rel).write_text(fp16_embedding_entry(path.read_text()))
+                continue
             (dest/rel).symlink_to(path.resolve(), target_is_directory=path.is_dir())
     model = remove_activation_views((source/MODELING).read_text())
     model = update_activation_calls(fp16_shared_gate(model, fp16_sigmoid=shared_gate_fp16_sigmoid))
     tree = ast.parse(model)
     configure_qlinear_weight_scale(tree, fp16=qlinear_scale_fp16)
     model = preserve_source(model, ast.unparse(tree))
-    if fold_norm_gamma:
+    if fold_norm_gamma or native_prefill:
         tree = ast.parse(model)
         norm = _definition(_definition(tree, 'Qwen3_5MoeRMSNorm'), 'forward')
         call = _call(norm, 'torch_npu.npu_rms_norm')
@@ -180,6 +193,9 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
         from .decoder_rmsnorm import patch_sources
         model, exporter = patch_sources(model, exporter)
     (dest/MODELING).write_text(model)
+    if native_prefill:
+        from .source_exporter import initialize_native_prefill_weights
+        exporter = initialize_native_prefill_weights(exporter)
     if lookup:
         exporter = lookup_exporter(exporter)
     (dest/EXPORTER).write_text(exporter)

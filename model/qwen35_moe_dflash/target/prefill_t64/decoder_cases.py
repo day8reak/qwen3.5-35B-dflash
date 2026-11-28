@@ -5,7 +5,8 @@ PHASES = ('prefill', 'decode')
 FOUR_LAYER_CONTROLS = ('no_patch', 'native_activations', 'silu_only', 'softplus_only',
                        'gdn_silu_only', 'gdn_silu_site', 'all_silu_no_gate_cast', 'rms_silu_layers',
                        'rms_silu_token_view', 'physical_convstate')
-EXPORT_CONTROLS = (*FOUR_LAYER_CONTROLS, 'rmsnorm_patch', 'shared_gate_fp16_sigmoid', 'qlinear_scale_fp16')
+CLI_EXPORT_CONTROLS = (*FOUR_LAYER_CONTROLS, 'rmsnorm_patch')
+EXPORT_CONTROLS = (*CLI_EXPORT_CONTROLS, 'shared_gate_fp16_sigmoid', 'qlinear_scale_fp16')
 
 
 def directory_name(mode, phase):

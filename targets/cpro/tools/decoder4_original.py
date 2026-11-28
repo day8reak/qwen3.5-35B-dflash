@@ -38,18 +38,19 @@ FULL_DIR = 'glm_export_air_cpro_40block_64_quant'
 REFERENCE_INPUT_NAMES = ('embedding', 'position_ids', 'new_kv_cache_pos', 'effective_length', 'attention_mask')
 
 
-def four_precision(air, layers=4, *, check_shared_gates=False, rmsnorm_patch=False):
+def four_precision(air, layers=4, *, check_shared_gates=False, rmsnorm_patch=False,
+                   shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False):
     from qwen35_moe_dflash.target.prefill_t64.decode_cache_control import graph_message
     from qwen35_moe_dflash.target.prefill_t64.l0_split import prefill_precision
 
     _, graph = graph_message(air.read_bytes(), 'NetOutput')
-    result = prefill_precision(graph, range(layers), head=True)
+    result = prefill_precision(graph, range(layers), head=True, qlinear_scale_fp16=qlinear_scale_fp16)
     if rmsnorm_patch:
         from qwen35_moe_dflash.target.prefill_t64.decoder_rmsnorm import inspect_ports
         result['rmsnorm_nodes'] = inspect_ports(graph)
     if check_shared_gates:
         from qwen35_moe_dflash.target.prefill_t64.decoder_source import inspect_shared_gates
-        result['shared_gates'] = inspect_shared_gates(graph, layers)
+        result['shared_gates'] = inspect_shared_gates(graph, layers, fp16_sigmoid=shared_gate_fp16_sigmoid)
     status = 'MISMATCH' if result['mismatches'] else 'MATCH'
     print(f'{layers}-layer AIR {air} — {status}: {len(result["matmuls"])} W4 matmuls, {len(result["gdrs"])} GDRs')
     for issue in result['mismatches']:
@@ -57,8 +58,15 @@ def four_precision(air, layers=4, *, check_shared_gates=False, rmsnorm_patch=Fal
     return result
 
 
+def check_full_precision(meta, bundle, rmsnorm_patch):
+    if not (meta.get('shared_gate_fp16_sigmoid') and meta.get('qlinear_scale_fp16')):
+        raise ValueError(f'{bundle}: regenerate the 40-layer AIR with FP16 QLinear weight scales and shared gates')
+    if bool(meta.get('precision', {}).get('rmsnorm_nodes')) != rmsnorm_patch:
+        raise ValueError(f'{bundle}: --rmsnorm-patch selection differs from the exported AIR')
+
+
 def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=False, decoder_fixture=False,
-                   yaml_prompt=False, lookup=False):
+                   yaml_prompt=False, lookup=False, require_same_entry=False):
     import numpy as np
     from qwen35_moe_dflash.target.layer_probe.common import read_array
     from qwen35_moe_dflash.target.prefill_t64.chain_reference import BASIS, VALID19_IDS_SHA256, YAML_BASIS
@@ -145,6 +153,12 @@ def prefill_inputs(folder, reference, cfg, conv_control, *, physical_history=Fal
     # Compare at the diagnostic graph's FP16 boundary. The original graph still receives both raw files.
     entry = (quant_embed.astype(np.float32) * embed_scale).astype(np.float16)
     different = entry.view(np.uint16) != measured.view(np.uint16)
+    if require_same_entry:
+        count = int(np.count_nonzero(different))
+        fixture['embedding_changed_fp16_elements_all_rows'] = count
+        print(f'[embedding] CPro 送板编码 × scale 转 FP16 vs 310P L0 入口，全部 64 行差异 {count}/{entry.size}', flush=True)
+        if count:
+            raise ValueError('Four-layer board embedding operands differ from the measured 310P L0 input')
     changes = int(np.count_nonzero(different[:, :valid]))
     print(f'Original embedding * scale, rounded to FP16 vs 310P layer entry: {changes}/{valid*2048} changed')
     tail = {}
@@ -245,7 +259,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                     from qwen35_moe_dflash.target.prefill_t64.gdn_taps import taps_source
                     tree = taps_source(tree, Path(tmp)/'variant')
                 from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source
-                tree = export_source(tree, Path(tmp)/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch)
+                tree = export_source(tree, Path(tmp)/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch, native_prefill=True)
                 if full_source_hashes(tree) == saved['silu_patch']['source_sha256']:
                     for row in saved['files']:
                         checked(dest, row)
@@ -277,7 +291,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if full:
             from qwen35_moe_dflash.target.prefill_t64.decoder_source import export_source, save_air_source
             from qwen35_moe_dflash.target.prefill_t64.chain_air import checkpoint_paths
-            staged = export_source(staged, work/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch)
+            staged = export_source(staged, work/'decoder', lookup=True, rmsnorm_patch=rmsnorm_patch, native_prefill=True)
             entry = staged / EXPORTER
             save_air_source(staged, work/'air-source')
             measured = json.loads((reference / 'manifest.json').read_bytes())
@@ -353,7 +367,8 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
                 print(f'Native AIR boundary: {len(boundary["inputs"])} inputs, '
                       f'{[row["role"] for row in boundary["outputs"]]}', flush=True)
                 if aligned:
-                    variant['precision'] = four_precision(air, layers, check_shared_gates=full, rmsnorm_patch=rmsnorm_patch)
+                    variant['precision'] = four_precision(air, layers, check_shared_gates=full, rmsnorm_patch=rmsnorm_patch,
+                                                          shared_gate_fp16_sigmoid=full, qlinear_scale_fp16=full)
                     if variant['precision']['mismatches']:
                         raise ValueError('Native prefill export differs from the reviewed W4/GDR port contracts')
             staged_files = [EXPORTER, 'models/modeling_qwen3_5_moe_hiai_cpro.py']
@@ -379,6 +394,7 @@ def export(run, source, config, reference, conv_control, *, kind=KIND, baseline=
         if full:
             from qwen35_moe_dflash.target.prefill_t64.native_40 import pack_goldens
             files.extend(files_under(work/'air-source', work))
+            variant.update(shared_gate_fp16_sigmoid=True, qlinear_scale_fp16=True)
             variant['goldens'], variant['tokens'] = pack_goldens(reference, run, work)
             files.extend(r for backend in variant['goldens'].values() for r in backend.values())
             files.append(variant['tokens'])
@@ -538,8 +554,8 @@ def build(run, ddk, diagnosis, remote, *, bundle, kind, platform, external_weigh
                 raise ValueError(f'Expected {kind} AIR at {remote}')
             incoming.rename(bundle)
     meta = json.loads((bundle / 'manifest.json').read_bytes())
-    if kind in FULL_KINDS and bool(meta.get('precision', {}).get('rmsnorm_nodes')) != rmsnorm_patch:
-        raise ValueError(f'{bundle}: --rmsnorm-patch selection differs from the exported AIR')
+    if kind in FULL_KINDS:
+        check_full_precision(meta, bundle, rmsnorm_patch)
     if meta['kind'] != kind:
         raise ValueError(f'Expected {kind} AIR at {bundle}, got {meta["kind"]}')
     for row in meta['files']:
@@ -880,8 +896,8 @@ def main():
     else:
         manifest = bundle / 'manifest.json'
         air_meta = json.loads(manifest.read_bytes())
-        if args.aligned40 and bool(air_meta.get('precision', {}).get('rmsnorm_nodes')) != args.rmsnorm_patch:
-            raise ValueError(f'{bundle}: --rmsnorm-patch selection differs from the compiled model')
+        if args.aligned40:
+            check_full_precision(air_meta, bundle, args.rmsnorm_patch)
         record = json.loads(compiled.read_bytes())
         if (air_meta['kind'] != kind or record['air_manifest_sha256'] != sha(manifest)
                 or not (run / 'air').samefile(bundle)):

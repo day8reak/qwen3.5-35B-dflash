@@ -119,6 +119,8 @@ def prepare(run, mode, capture, source, *, per_layer_air=True):
             dest = case/'cpu'
             stamp = dict(basis=YAML_CPU_BASIS if yaml_prompt else CPU_BASIS, capture_sha256=capture_hash, mode=mode, layer=i,
                          layer_entry_sha256=hashlib.sha256(hidden.contiguous().numpy().tobytes()).hexdigest())
+            if yaml_prompt and mode == '40' and i == 0:
+                stamp['embedding'] = 'checkpoint_lookup'
             if dest.is_dir() and not prefix_only:
                 old = json.loads((dest/'manifest.json').read_bytes())
                 if (any(old.get(k) != v for k, v in stamp.items()) or set(old['outputs']) != set(contracts(i, head))):
@@ -144,6 +146,13 @@ def prepare(run, mode, capture, source, *, per_layer_air=True):
                     model = owner.load_npu_model(str(checkpoint), 'cpu', torch.float16, variant='nz',
                                                  layer_num=len(group), start_layer_idx=group[0], quant_enable=True)
                 model.eval().to(dtype=torch.float16)
+                if yaml_prompt and mode == '40' and i == 0:
+                    cpu_entry = model.model.embed_tokens(torch.from_numpy(ids).long())
+                    different = (cpu_entry.view(torch.int16) != hidden.view(torch.int16)).sum().item()
+                    print(f'[embedding] CPU 查表 vs 310P L0 入口，全部 64 行 FP16 位模式差异 {different}/{hidden.numel()}', flush=True)
+                    if different:
+                        raise ValueError('CPU checkpoint lookup differs from the captured 310P L0 input')
+                    hidden = cpu_entry
                 if (model.model.start_layer_idx != group[0] or [b.block_type for b in model.model.layers] != [
                         'full_attention' if j % 4 == 3 else 'linear_attention' for j in group]):
                     raise ValueError(f'CPU loader selected the wrong decoder layers for {group}')

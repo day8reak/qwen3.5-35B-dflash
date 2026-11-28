@@ -108,17 +108,10 @@ def export_case(dest, fixtures, ref, group, final, blocks, head, exporter, edges
             exporter.torchair.dynamo_export(model=module.eval(), export_path='weight', dynamic=False, **args)
     air = dest/'weight/export.air'
     _, graph = graph_message(air.read_bytes(), 'NetOutput')
-    audit = prefill_precision(graph, group, final, rows=rows)
+    audit = prefill_precision(graph, group, final, rows=rows, qlinear_scale_fp16=qlinear_scale_fp16)
     from .decoder_rmsnorm import inspect_ports
     norms = inspect_ports(graph) if rmsnorm_patch else []
     gates = inspect_shared_gates(graph, len(group), fp16_sigmoid=shared_gate_fp16_sigmoid)
-    if qlinear_scale_fp16:
-        for node, ports in audit['matmuls'].items():
-            weight = ports['scale']['dtype']
-            token = ports['pertoken_scale']['dtype']
-            print(f'[QLinear AIR] {node} scale={weight} pertoken_scale={token}', flush=True)
-            if weight != 'DT_FLOAT16':
-                audit['mismatches'].append(f'{node}: expected FP16 W4 weight scale, got {weight}')
     if audit['mismatches']:
         raise ValueError('\n'.join(audit['mismatches']))
     operators = inspect_activation_air(air, trace, layers=len(group), full_only=linear == 0, softplus=True, rows=rows,

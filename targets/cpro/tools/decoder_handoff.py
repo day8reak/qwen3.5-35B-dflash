@@ -221,6 +221,8 @@ def receive(root, remote, role, args):
         if role != 'golden':
             for name in EXPORT_CONTROLS:
                 if data.get(name, False) != getattr(args, name, False):
+                    if name in ('shared_gate_fp16_sigmoid', 'qlinear_scale_fp16'):
+                        raise ValueError(f'{index}: upstream {role} has a different {name} setting. Regenerate the upstream stage.')
                     raise ValueError(f'{index}: --{name.replace("_", "-")} selection differs from the upstream {role} export')
         staged = temp/'incoming' if local else resume_directory(root, role, temp/'manifest')
         staged.mkdir(exist_ok=True)

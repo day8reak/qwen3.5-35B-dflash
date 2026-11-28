@@ -13,7 +13,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/'model'))
-from qwen35_moe_dflash.target.prefill_t64.decoder_cases import EXPORT_CONTROLS, FOUR_LAYER_CONTROLS, MODES, PHASES, case_name, directory_name, groups
+from qwen35_moe_dflash.target.prefill_t64.decoder_cases import (
+    CLI_EXPORT_CONTROLS, EXPORT_CONTROLS, FOUR_LAYER_CONTROLS, MODES, PHASES, case_name, directory_name, groups,
+)
 
 
 def required(name):
@@ -199,7 +201,8 @@ def prepare_stage(args, run):
             from qwen35_moe_dflash.target.prefill_t64 import decoder_rmsnorm
             stamp['adapters'][decoder_rmsnorm.__name__] = sha(decoder_rmsnorm.__file__)
     options = dict(gdn_conv=args.gdn_conv, rmsnorm_patch=args.rmsnorm_patch)
-    if (args.mode, args.phase) == ('4', 'prefill'):
+    native_four = (args.mode, args.phase) == ('4', 'prefill')
+    if native_four:
         import decoder_four_native_case
         exporter = decoder_four_native_case.export
         options['no_patch'] = args.no_patch
@@ -236,7 +239,7 @@ def prepare_stage(args, run):
             adapted = export_source(prepared, Path(tmp)/'source', rmsnorm_patch=args.rmsnorm_patch,
                                     shared_gate_fp16_sigmoid=args.shared_gate_fp16_sigmoid,
                                     qlinear_scale_fp16=args.qlinear_scale_fp16,
-                                    fold_norm_gamma=exporter is decoder_case_air.export)
+                                    fold_norm_gamma=not native_four, native_prefill=native_four)
             exporter(working, fixture, ref, src, cfg, adapted, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
     save_json(working/'manifest.json', dict(**stamp, files=files))
@@ -289,9 +292,8 @@ def worker(args, action, root, remote):
         cmd.insert(cmd.index('_transfer')+1, args.artifact)
         if args.local_source:
             cmd.extend(['--local-source', str(args.local_source)])
-    if getattr(args, 'gdn_conv', 'conv2d') != 'conv2d' or any(getattr(args, k, False) for k in FOUR_LAYER_CONTROLS):
-        cmd.extend(['--gdn-conv', args.gdn_conv])
-    for control in EXPORT_CONTROLS:
+    cmd.extend(['--gdn-conv', args.gdn_conv])
+    for control in CLI_EXPORT_CONTROLS:
         value = getattr(args, control, False)
         if value:
             cmd.append('--' + control.replace('_', '-'))
@@ -391,10 +393,6 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--rmsnorm-patch', action='store_true', help='use the custom FP16 RmsnormPatch in the CPro decoder')
-    parser.add_argument('--shared-gate-fp16-sigmoid', action='store_true',
-                        help='run the L0 shared expert sigmoid on its FP16 MatMul result')
-    parser.add_argument('--qlinear-scale-fp16', action='store_true',
-                        help='use FP16 W4 group scales in the L0 linear prefill QLinear projections')
     parser.add_argument('--dump', action='store_true',
                         help='capture L0 Python intermediates and dump one complete linear prefill OMC on the board')
     parser.add_argument('--recovery', action='store_true', help='resume the current layerwise board run')
@@ -404,10 +402,10 @@ def main():
                                  'l0-decay-report', 'l0-original-omg', 'l0-dump'), help=argparse.SUPPRESS)
     parser.add_argument('--rmsnorm-air', help='AIR filename in the L0 RMSNorm single-op directory (default: export.air)')
     a = parser.parse_args()
-    if a.qlinear_scale_fp16 and (a.mode, a.phase) != ('linear', 'prefill'):
-        parser.error('--qlinear-scale-fp16 is an L0 control for --mode linear --phase prefill')
-    if a.shared_gate_fp16_sigmoid and (a.mode, a.phase) != ('linear', 'prefill'):
-        parser.error('--shared-gate-fp16-sigmoid is an L0 control for --mode linear --phase prefill')
+    # Keep these settings in artifact manifests so an older AIR cannot silently replace this recipe.
+    aligned_prefill = a.mode in ('linear', '4', '40') and a.phase == 'prefill' and not a.no_patch
+    a.shared_gate_fp16_sigmoid = aligned_prefill
+    a.qlinear_scale_fp16 = aligned_prefill
     if a.dump and ((a.mode, a.phase) != ('linear', 'prefill') or a.gate_probe):
         parser.error('--dump requires --mode linear --phase prefill with the regular decoder stages')
     if a.rms_silu_token_view and a.action in ('prepare', 'golden', 'air', '_air'):

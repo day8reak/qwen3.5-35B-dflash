@@ -45,6 +45,26 @@ bash targets/cpro/scripts/decoder_run.sh
 
 ## 对照 GDN 卷积和自定义源码
 
+### 按单层已通过的配置跑四层 T64 prefill
+
+两台服务器先同步到同一版代码。78 采集本次 prompt 的四层 CPU、310P golden 并导出一个 L0–L3 AIR。
+
+```bash
+bash targets/cpro/scripts/decoder_prepare.sh --mode 4 --phase prefill --gdn-conv conv2d --rmsnorm-patch \
+  --run-root "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16"
+```
+
+78 完成后，在 35 接收该包，编译一个 OMC 并上板。
+
+```bash
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --rmsnorm-patch \
+  --run-root "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16" \
+  --remote-run "${AI_RUN_DIR:?}/target/tests/qlinear-scale-fp16/4-prefill-t64" \
+  --replace-weights --replace-inputs
+```
+
+三端共用 310P wrapper 实际收到的 INT8 embedding 编码和逐 token FP32 scale，先相乘再舍入到 FP16。78 检查 CPU 重建和送板操作数重建与 310P 实测 L0 入口全部 64 行逐元素相同，并检查 CPro AIR 中从两个外部输入到首个 RMSNorm 的路径。四层导出检查 36 个 W4 matmul 的分组权重 scale、4 个共享门控以及 3 个 GDR。35 在 `4-prefill-t64/board/comparison.json` 和 `matrices.csv` 输出四层 logits、L0–L2 的六个状态和 L3 的 K/V 三端对比。
+
 ### 用原始源码跑四层 T64 prefill
 
 在 AIR 生成服务器的个人配置（`air.env` 或共用的 `decoder.env`）中，将 `CPRO_SOURCE` 设为自己的完整 CPro 工程根目录，该目录下应能看到 `export_glm_model_qwen3_5_moe.py`。模型实现可直接改 `$CPRO_SOURCE/models/modeling_qwen3_5_moe_hiai_cpro.py`，修改算子注册或 GE 转换时再改根目录的导出脚本。目录放在会被重建的 case 之外。手改源码也可以使用 `--no-patch`，该参数会运行你指定的源码现状。已有四层 golden 时，两台服务器各运行一条命令。
@@ -77,7 +97,7 @@ bash targets/cpro/scripts/decoder_air.sh --mode 4 --phase prefill --gdn-conv con
 bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv conv2d --native-activations
 ```
 
-此选项以对齐后的 CPro 源码为基础，在本次导出的副本上恢复原生 SiLU 和 Softplus。W4 沿用原始 scale 路径，RoPE、GDR、MoE 的对齐修改继续生效。导出时打印并检查 `SiluPatch=0` 和 `SoftplusPatch=0`，同时检查 W4 和 GDR 端口。两种四层原生卷积对照都从相同的 golden、embedding 权重和 YAML 配置生成输入。原 CPro wrapper 接收 INT8 embedding 及逐 token FP32 scale。普通分层诊断图和 T1 decoder 图接收 FP16 hidden。原生卷积还接收 128 个 INT32 的 `conv_state_pos`，默认首项为有效长度、其余项为零。可用 `DECODER_CONV_CONTROL` 指定原板端 bin。
+此选项以对齐后的 CPro 源码为基础，在本次导出的副本上恢复原生 SiLU 和 Softplus。W4 分组权重 scale 使用 FP16，RoPE、GDR、MoE 的对齐修改继续生效。导出时打印并检查 `SiluPatch=0` 和 `SoftplusPatch=0`，同时检查 W4 和 GDR 端口。两种四层原生卷积对照都从相同的 golden、embedding 权重和 YAML 配置生成输入。原 CPro wrapper 接收 INT8 embedding 及逐 token FP32 scale。普通分层诊断图和 T1 decoder 图接收 FP16 hidden。原生卷积还接收 128 个 INT32 的 `conv_state_pos`，默认首项为有效长度、其余项为零。可用 `DECODER_CONV_CONTROL` 指定原板端 bin。
 
 同一运行目录中保留了成功的 `--no-patch` 记录时，板端执行服务器会先保存其输入槽位，再逐项对照本次的角色、shape、dtype 和已有 bin 内容标识。该对照使用服务器上的清单与执行记录。
 
@@ -293,7 +313,7 @@ bash targets/cpro/scripts/decoder_board.sh --mode 4 --phase prefill --gdn-conv t
 
 ### 从原 CPro 源码生成四层或四十层 prefill
 
-`--gdn-conv original` 保留原 CPro wrapper、`LinearAttentionConvstateUpdate` 的 `linear_update_tensor` 输入和模型源码中的 `F.conv1d`。模型继续使用CPro QLinear 和原始 scale 路径、RoPE、MoE、GDR 接口以及 FP16 输入输出的 `SiluPatch` 和 `SoftplusPatch`。导出单张图，返回 logits 和每层两个状态。四层有 9 个输出，四十层有 81 个输出。板端使用上一节的 V2 参数。
+`--gdn-conv original` 保留原 CPro wrapper、`LinearAttentionConvstateUpdate` 的 `linear_update_tensor` 输入和模型源码中的 `F.conv1d`。模型继续使用 CPro QLinear 和 FP16 分组权重 scale、RoPE、MoE、GDR 接口以及 FP16 输入输出的 `SiluPatch` 和 `SoftplusPatch`。导出单张图，返回 logits 和每层两个状态。四层有 9 个输出，四十层有 81 个输出。板端使用上一节的 V2 参数。
 
 已有对应 CPU 和 310P golden 时，在 AIR 生成服务器运行第一条，在 OMC 生成和板端执行共用的服务器运行第二条。首次运行或更换输入 prompt 时，第一条改用 `decoder_prepare.sh`。两条命令均可将 `--mode 4` 改为 `--mode 40`。
 
@@ -325,7 +345,7 @@ bash targets/cpro/scripts/decoder_compare.sh source --mode 4 --phase prefill --g
 - `board/matrices.csv` 包含三端的 3×3 矩阵，行是 actual，列是 reference。`board/comparison.json` 包含 prompt、logits 位置、预测 token 和未达阈值的张量。逐层模式还有 `board/Lxx/matrices.csv`。
 - 线性层比较完整 conv/recurrent 状态，full 层比较有效 K/V。逐层模式另外检查写入区以外的 KV。单层和四层的 logits 取所测最后一层输出并接原模型 head。
 - 四层 T64 的 310P golden 通过 wrapper 的 `if` 分支将 INT8 embedding 行乘以逐 token FP32 scale。两个操作数按实际调用保存到 `export/fixture/embedding_inputs/`，包括 padding 行。CPU 用这两份数据重建 L0 输入，四层 CPro OMC 直接接收这两份数据。四层图返回 logits、前三层的 conv/recurrent state 和 L3 的 K/V，共 9 个输出。
-- 40 层 T64 整网推理默认走 wrapper 的 `else` 分支。310P 和 CPro 都用同一组 token ID 查 checkpoint 的 `embed_tokens`。CPro T64 图接收 `input_ids.bin`（INT64，形状 `[1,64]`）。切换旧的外部 embedding 整网时，重新导 AIR、编译 OMC，首次运行加 `--replace-inputs --replace-weights`。独立 decoder block 和 T1 对照接收已采集的入口 hidden 与状态。其余算子配置见[原 CPro 整网 prefill](target-prefill40-single.md)。
+- 40 层 T64 整网推理默认走 wrapper 的 `else` 分支。CPU、310P 和 CPro 都用同一组 token ID 查 checkpoint 的 `embed_tokens`。生成 40 层 golden 时，CPU 查表结果与 310P 实测 L0 入口的 64 行按 FP16 位模式核对。CPro T64 图接收 `input_ids.bin`（INT64，形状 `[1,64]`）。切换旧的外部 embedding 整网时，重新导 AIR、编译 OMC，首次运行加 `--replace-inputs --replace-weights`。独立 decoder block 和 T1 对照接收已采集的入口 hidden 与状态。其余算子配置见[原 CPro 整网 prefill](target-prefill40-single.md)。
 
 ### 共享专家门控的 L0 整层回归
 
@@ -351,7 +371,7 @@ bash targets/cpro/scripts/decoder_prepare.sh --mode linear --phase prefill --gdn
 bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-conv conv2d --replace-inputs --replace-weights
 ```
 
-该用例执行 L0 的 GDN、残差和 MoE。CPU 和 CPro 的单层入口来自同一组 embedding 编码和 scale。GDN 门控 SiLU 的原始输入形状为 `[2048,128]`。共享专家的标量门控在 PyTorch 中对 FP16 激活与 FP16 权重做点积，将结果转成 FP32 后做 sigmoid。导出时打印在 AIR 中找到的 `FP16 MatMul → FP32 Cast → Sigmoid` 数量。查看 `$AI_RUN_DIR/target/tests/1-linear-prefill-t64/board/matrices.csv` 中 `hidden_0` 的有效 token，以及同目录的 `comparison.json`。
+该用例执行 L0 的 GDN、残差和 MoE。CPU 和 CPro 的单层入口来自同一组 embedding 编码和 scale。GDN 门控 SiLU 的原始输入形状为 `[2048,128]`。共享专家的标量门控将 FP16 点积结果直接传给 sigmoid。导出时打印 AIR 中的门控数量和端口 dtype。查看 `$AI_RUN_DIR/target/tests/1-linear-prefill-t64/board/matrices.csv` 中 `hidden_0` 的有效 token，以及同目录的 `comparison.json`。
 
 要用板端 dump 观察完整 L0 的自定义 RMSNorm，在 78（310P 与 AIR 环境）执行
 
@@ -367,9 +387,7 @@ bash targets/cpro/scripts/decoder_run.sh --mode linear --phase prefill --gdn-con
 
 `--rmsnorm-patch` 在普通和 GDN 门控 RMSNorm 的 PyTorch 调用处使用 `torch.ops.npu.rmsnorm_patch`。模型按现有 dtype 传入 x 和 gamma，直接使用算子返回的 z。kernel 注册的 `x, gamma → z` 均为 FP16 ND，gamma 长度等于 x 的最后一维。单层普通 RMSNorm 传入预计算的有效 gamma，门控 RMSNorm 使用原权重。OpDef 没有 epsilon 参数，精度对照需核实 kernel 的固定 epsilon。源 AIR 各端口的实际 dtype 见 `export/package/L00/case.json` 的 `rmsnorm_nodes[].air_dtypes`。
 
-L0 共享专家门控默认对 FP16 点积的结果执行 `.float()` 再做 sigmoid。`--shared-gate-fp16-sigmoid` 只去掉点积结果的这次转换。78 导出时和 35 的传输、编译、上板均传同一开关。导出器检查源 AIR 中 MatMul 的两个输入、输出和 Sigmoid 的输入均为 FP16，并检查两者之间的边。Sigmoid 之后仍按 PyTorch 模型对齐共享专家输出的 dtype。导出日志和 `L00/case.json` 的 `shared_gates` 记录 Sigmoid 输出类型，以及经过 Cast 或变形后到达的消费者、输入槽和端口类型。如果无法定位唯一的 Mul，日志会列出匹配结果，`mul` 记为 `null`。做加载对照时，两次使用同一份 golden 和相同的 `--dump` 设置。可用独立的 `--run-root` 存放实验产物，在 78 用 `decoder_transfer.sh golden --local-source <原 case 目录>` 接收已有 golden 后执行 `decoder_air.sh`。
-
-在 L0 prefill 对照 W4 分组权重尺度时，两端加 `--qlinear-scale-fp16`。这个开关恢复 PyTorch `QLinear` 注册 `scale` buffer 和传入 matmul 第三个参数前的 FP16 转换。逐 token 的 `pertoken_scale` 沿用现有表达式。78 的 `[QLinear AIR]` 日志同时列出两个端口的 dtype，并检查每个 W4 matmul 的 `scale` 为 `DT_FLOAT16`。使用独立的 `--run-root` 保存该组的模型、dump 和对比结果。78 的 `decoder_prepare.sh --reuse-golden-from <基线 case 目录>` 会先接收基线已发布的 golden，再导出 AIR。CPU、310P 的输入及中间参考逐文件取自基线。
+L0、四层和四十层的常规 T64 prefill 默认在 PyTorch 中使用 FP16 的 QLinear 分组权重 scale，共享专家的 FP16 MatMul 结果直接进入 sigmoid。导出器记录每个 W4 matmul 的 `scale`、`pertoken_scale` 端口和每层门控的实际 dtype。逐 token 激活 scale 延用原模型的计算路径。需要复用同一深度的参考数据时，78 的 `decoder_prepare.sh --reuse-golden-from <基线 case 目录>` 会先接收已有 golden，再导出 AIR。
 
 `--dump` 使用原 decoder 用例目录。78 保存同一批 token 和 L0 入口的 CPU/310P 中间值。35 只编译一个完整 L0 OMC，使用 V2 和 `--enable_item=2` 执行一次，再运行 `data_proc_tool_internal`，拉回解析器输出。从用例目录可查看
 
