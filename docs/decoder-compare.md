@@ -65,6 +65,29 @@ bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill --gdn-conv con
 
 三端共用 310P wrapper 实际收到的 INT8 embedding 编码和逐 token FP32 scale，先相乘再舍入到 FP16。78 检查 CPU 重建和送板操作数重建与 310P 实测 L0 入口全部 64 行逐元素相同，并检查 CPro AIR 中从两个外部输入到首个 RMSNorm 的路径。四层导出检查 36 个 W4 matmul 的分组权重 scale、4 个共享门控以及 3 个 GDR。35 在 `4-prefill-t64/board/comparison.json` 和 `matrices.csv` 输出四层 logits、L0–L2 的六个状态和 L3 的 K/V 三端对比。
 
+### 四层恢复原 ConvState 更新，比较各层 hidden 和 L3 的 K/V
+
+这组实验在 L0–L2 调用 `torch.ops.my_ops.linear_attention_convstate_update`，后面接现有分组 Conv2D。四层使用当前的 W4、激活和 RMSNorm 设置。CPU、310P 和 CPro 比较同一提示词的有效 token。AIR 导出会检查三个更新节点、三个 Conv2D，以及接入每个更新节点第三个端口的 `INT32[128]` 控制输入。
+
+78 上在仓库根目录运行。使用上一轮的 19-token 提示词，重新采集前四层的参考值。
+
+```bash
+r="${AI_RUN_DIR:?}/target/tests/native-convstate-4layer"
+bash targets/cpro/scripts/decoder_prepare.sh --mode 4 --phase prefill \
+  --native-convstate --rmsnorm-patch --hidden-trace --run-root "$r"
+```
+
+35 上在同版仓库根目录运行。若两台机器的运行目录不同，把 `--remote-run` 设为 78 上的实际 case 绝对路径。
+
+```bash
+r="${AI_RUN_DIR:?}/target/tests/native-convstate-4layer"
+bash targets/cpro/scripts/decoder_run.sh --mode 4 --phase prefill \
+  --native-convstate --rmsnorm-patch --hidden-trace --run-root "$r" \
+  --remote-run "$r/4-prefill-t64" --replace-inputs --replace-weights
+```
+
+在 `$r/4-prefill-t64/board/matrices.csv` 查看 `hidden_0` 至 `hidden_3`、`key_cache_3` 和 `value_cache_3`。如有原驱动针对这条提示词的控制 bin，可在 78 设置 `DECODER_CONV_CONTROL`。默认输入首项是有效长度，其余 127 项为零，该默认值在部分有效长度下的原算子语义仍待板端验证。
+
 ### 用相同的算子配置跑 40 层单块 prefill
 
 78 端按当前 prompt 准备 40 层 CPU、310P golden，导出一张 L0–L39 的 T64 AIR。三端走 wrapper 的 token ID 查表分支。QLinear 的 W4 权重 scale 和共享专家门控沿用已验证的 FP16 设置，GDN 的 `out_proj` 直接送入残差加法。

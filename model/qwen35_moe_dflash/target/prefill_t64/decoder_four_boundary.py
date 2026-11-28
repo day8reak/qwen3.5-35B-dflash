@@ -7,9 +7,9 @@ from .segment_export import OUTPUTS
 from .decoder_cases import state_roles
 
 
-def output_shape(name):
+def output_shape(name, layers=40):
     if name == 'hidden_layers':
-        return (40, 64, 2048)
+        return (layers, 64, 2048)
     if name == 'logits':
         return (1, 1, 248320)
     if name.startswith('conv_state_'):
@@ -193,7 +193,7 @@ def inspect_air(path, *, layers=4, physical_history=None, require_control=False,
         shape = list(desc.shape.dim or own.shape.dim)
         role = next((aliases[e] for e in chain(edge) if e in aliases), None)
         if hidden_trace and role is None:
-            if view(shape) == output_shape('hidden_layers'):
+            if view(shape) == output_shape('hidden_layers', layers):
                 role = 'hidden_layers'
             elif not shape:
                 owners = (nodes[src.rsplit(':', 1)[0]] for src in chain(edge))
@@ -212,7 +212,7 @@ def inspect_air(path, *, layers=4, physical_history=None, require_control=False,
     if set(roles) != expected:
         raise ValueError(f'{path}: cannot identify all native outputs by producer: {[(r["edge"], r["role"]) for r in records]}')
     for r in records:
-        if r['shape'] and view(r['shape']) != view(output_shape(r['role'])):
+        if r['shape'] and view(r['shape']) != view(output_shape(r['role'], layers)):
             raise ValueError(f'{path}: unexpected shape for {r}')
     counts = Counter(n.type for n in graph.op)
     boundary = dict(inputs=inputs, outputs=records,

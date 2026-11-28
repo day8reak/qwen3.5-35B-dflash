@@ -71,7 +71,8 @@ def four_layer_entry(prepared, work, *, native_activations=False, silu_only=Fals
 def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=False, native_activations=False,
            silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
            all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False,
-           rmsnorm_patch=False, shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False):
+           rmsnorm_patch=False, shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False,
+           native_convstate=False, hidden_trace=False):
     dest = root/case_name(ref['layers'])
     if dest.is_dir():
         saved = json.loads((dest/'case.json').read_bytes())
@@ -87,7 +88,9 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
                 or saved.get('all_silu_no_gate_cast', False) != all_silu_no_gate_cast
                 or saved.get('rms_silu_token_view', False)
                 or saved.get('rms_silu_layers', False) != rms_silu_layers
-                or saved.get('physical_convstate', False) != physical_convstate):
+                or saved.get('physical_convstate', False) != physical_convstate
+                or (native_convstate and not saved.get('native_convstate'))
+                or saved.get('hidden_trace', False) != hidden_trace):
             raise ValueError(f'{dest}: existing four-layer export uses a different source mode')
         for row in saved['files']:
             sized_file(dest, row)
@@ -107,8 +110,8 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         gate_control = all_silu_no_gate_cast or rms_layers is not None
         activation_control = native_activations or silu_only or softplus_only or restrict_silu_to_gdn or gate_control
         use_native_tools = gdn_conv == 'original' or activation_control or physical_convstate
-        explicit_conv2d = (activation_control or physical_convstate) and gdn_conv == 'conv2d'
-        physical_history = physical_convstate or not use_native_tools
+        explicit_conv2d = (use_native_tools or native_convstate) and gdn_conv == 'conv2d'
+        physical_history = physical_convstate or not (use_native_tools or native_convstate)
         depth = select_native_depth(cfg, work, 4)
         export_config = work/'export.yaml'
         export_config.write_text(yaml.safe_dump(cfg))
@@ -164,10 +167,10 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         (work/EXPORT_DIR).rename(case/EXPORT_DIR)
         air = case/EXPORT_DIR/'export.air'
         boundary = inspect_air(air, layers=4, physical_history=physical_history, require_control=not physical_history,
-                               conv2d_rows=64 if explicit_conv2d else None, check_embedding=not no_patch)
-        if physical_convstate:
-            print(f'[L00-L03] AIR 实测 ConvState：原更新算子 {boundary["convstate_update_nodes"]} 个，'
-                  f'显式拼接的缓存 {boundary["physical_conv_caches"]} 份', flush=True)
+                               conv2d_rows=64 if explicit_conv2d else None, check_embedding=not no_patch,
+                               hidden_trace=hidden_trace)
+        print(f'[L00-L03] AIR 实测 ConvState：原更新算子 {boundary["convstate_update_nodes"]} 个，'
+              f'显式拼接的缓存 {boundary["physical_conv_caches"]} 份', flush=True)
         if no_patch:
             observations = dict(no_patch=True, operator_counts=boundary['operator_counts'])
             print(f'[L00-L03] 原样导出 AIR 实测节点数: {boundary["operator_counts"]}', flush=True)
@@ -179,7 +182,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
             observations = dict(native_activations=True, operator_counts=counts)
         else:
             observations = inspect_activation_air(air, trace, layers=4, silu=not softplus_only, softplus=not silu_only,
-                                                  check_convs=not use_native_tools, gdn_conv=gdn_conv,
+                                                  check_convs=not (use_native_tools or explicit_conv2d), gdn_conv=gdn_conv,
                                                   moe_silu=not restrict_silu_to_gdn, gdn_silu_site=gdn_silu_site,
                                                   all_silu_no_gate_cast=all_silu_no_gate_cast or rms_layers is not None,
                                                   rms_gate_count=None if rms_layers is None else len(rms_layers))
@@ -228,6 +231,7 @@ def export(root, fixture, ref, source, config, prepared, *, gdn_conv, no_patch=F
         outputs = [dict(name=row['role'], edge=row['edge']) for row in boundary['outputs']]
         save_json(case/'case.json', dict(air_directory=EXPORT_DIR, layers=ref['layers'], argv=argv,
                   gdn_conv=gdn_conv, native_convstate=not physical_history, native_tool_args=use_native_tools,
+                  convstate_update_nodes=boundary['convstate_update_nodes'], hidden_trace=hidden_trace,
                   physical_convstate=physical_convstate, rmsnorm_patch=rmsnorm_patch,
                   shared_gate_fp16_sigmoid=shared_gate_fp16_sigmoid, qlinear_scale_fp16=qlinear_scale_fp16,
                   export_configuration=depth,

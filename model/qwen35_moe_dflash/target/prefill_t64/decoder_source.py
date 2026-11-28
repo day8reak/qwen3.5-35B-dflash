@@ -163,12 +163,14 @@ def export_source(source, dest, *, lookup=False, fold_norm_gamma=False, rmsnorm_
             rel = folder/path.name
             if path.name == '__pycache__' or rel in (Path('models'), Path(EXPORTER), Path(MODELING)):
                 continue
-            if hidden_trace and rel == Path(WRAPPER):
-                from ..original_target_source import patch_cpro_wrapper
-                (dest/rel).write_text(patch_cpro_wrapper(path.read_text(), all_layer_hidden=True))
-                continue
-            if native_prefill and not lookup and rel == Path(WRAPPER):
-                (dest/rel).write_text(fp16_embedding_entry(path.read_text()))
+            if rel == Path(WRAPPER) and (hidden_trace or (native_prefill and not lookup)):
+                wrapper = path.read_text()
+                if native_prefill and not lookup:
+                    wrapper = fp16_embedding_entry(wrapper)
+                if hidden_trace:
+                    from ..original_target_source import patch_cpro_wrapper
+                    wrapper = patch_cpro_wrapper(wrapper, all_layer_hidden=True)
+                (dest/rel).write_text(wrapper)
                 continue
             (dest/rel).symlink_to(path.resolve(), target_is_directory=path.is_dir())
     model = remove_activation_views((source/MODELING).read_text())

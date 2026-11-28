@@ -140,6 +140,8 @@ def prepare_stage(args, run):
     fixture = run/'fixture'
     package = run/'package'
     stamp = dict(mode=args.mode, phase=args.phase)
+    if args.hidden_trace:
+        stamp['hidden_trace'] = True
     if args.dump:
         stamp['dump'] = True
     if args.action == 'reference':
@@ -163,7 +165,7 @@ def prepare_stage(args, run):
         with tempfile.TemporaryDirectory(dir=run, prefix='.capture-') as tmp:
             working = Path(tmp)/'fixture'
             working.mkdir()
-            ref = decoder_case_reference.capture(working, args.mode, args.phase, src, cfg)
+            ref = decoder_case_reference.capture(working, args.mode, args.phase, src, cfg, hidden_trace=args.hidden_trace)
             ref['binding'] = binding
             decoder_case_reference.cpu_reference(working, ref, src)
             if args.dump:
@@ -174,6 +176,10 @@ def prepare_stage(args, run):
     from qwen35_moe_dflash.target.original_target_source import cpro_python_files
     prepared = src if args.no_patch else prepared_source(run, source_conv)
     ref = json.loads((fixture/'reference.json').read_bytes())
+    if args.hidden_trace:
+        hidden = {f'hidden_{i}' for i in ref['layers']}
+        if not all(hidden.issubset(ref[key]) for key in ('outputs', 'cpu')):
+            raise ValueError('Generate four-layer CPU and 310P golden with --hidden-trace before AIR export.')
     if args.dump and not (fixture/'l0-steps-reference/values.npz').is_file():
         raise ValueError('The dump run requires the L0 intermediate golden from decoder_prepare.sh --dump')
     if (ref['mode'], ref['phase']) != (args.mode, args.phase):
@@ -241,7 +247,7 @@ def prepare_stage(args, run):
             adapted = export_source(prepared, Path(tmp)/'source', rmsnorm_patch=args.rmsnorm_patch,
                                     shared_gate_fp16_sigmoid=args.shared_gate_fp16_sigmoid,
                                     qlinear_scale_fp16=args.qlinear_scale_fp16,
-                                    fold_norm_gamma=not native_four, native_prefill=native_four)
+                                    fold_norm_gamma=not native_four, native_prefill=native_four, hidden_trace=args.hidden_trace)
             exporter(working, fixture, ref, src, cfg, adapted, **options)
     files = [r for r in files_under(working, working) if r['path'] != 'manifest.json']
     save_json(working/'manifest.json', dict(**stamp, files=files))
@@ -388,8 +394,11 @@ def main():
     activation_mode.add_argument('--rms-silu-layers', default=False,
                                  choices=('none', '0', '1', '2', '0,1', '0,2', '1,2', '0,1,2'),
                                  help='use FP16 SiluPatch on the selected RMS gates and FP16 F.silu on the other gates')
-    parser.add_argument('--physical-convstate', action='store_true',
-                        help='replace the four-layer T64 ConvState update with concatenation and physical-tail slices')
+    convstate = parser.add_mutually_exclusive_group()
+    convstate.add_argument('--native-convstate', action='store_true',
+                           help='use LinearAttentionConvstateUpdate before grouped Conv2D in four-layer T64 prefill')
+    convstate.add_argument('--physical-convstate', action='store_true',
+                           help='replace the four-layer T64 ConvState update with concatenation and physical-tail slices')
     parser.add_argument('--run-root', type=Path, help='parent directory for the named cases below AI_RUN_DIR')
     parser.add_argument('--run', type=Path, help='explicit path ending in the canonical case name')
     parser.add_argument('--remote-run', type=Path, help='case directory on the export host')
@@ -399,7 +408,7 @@ def main():
     parser.add_argument('--original-board-args', action='store_true',
                         help="use the owner's V2 flags with compiled I/O shapes on the current OMC")
     parser.add_argument('--rmsnorm-patch', action='store_true', help='use the custom FP16 RmsnormPatch in the CPro decoder')
-    parser.add_argument('--hidden-trace', action='store_true', help='return post-decoder hidden states from the native 40-layer prefill')
+    parser.add_argument('--hidden-trace', action='store_true', help='compare every post-decoder hidden state in 4- or 40-layer prefill')
     parser.add_argument('--dump', action='store_true',
                         help='capture L0 Python intermediates and dump one complete linear prefill OMC on the board')
     parser.add_argument('--cache-existing-golden', action='store_true',
@@ -415,8 +424,8 @@ def main():
     aligned_prefill = a.mode in ('linear', '4', '40') and a.phase == 'prefill' and not a.no_patch
     a.shared_gate_fp16_sigmoid = aligned_prefill
     a.qlinear_scale_fp16 = aligned_prefill
-    if a.hidden_trace and (a.mode, a.phase) != ('40', 'prefill'):
-        parser.error('--hidden-trace requires --mode 40 --phase prefill')
+    if a.hidden_trace and (a.mode not in ('4', '40') or a.phase != 'prefill' or a.no_patch):
+        parser.error('--hidden-trace requires patched --mode 4 or 40 with --phase prefill')
     if a.cache_existing_golden and ((a.mode, a.phase) != ('40', 'prefill')
                                     or a.action not in ('golden', '_reference') or a.gate_probe):
         parser.error('--cache-existing-golden requires golden --mode 40 --phase prefill')
@@ -456,7 +465,9 @@ def main():
             parser.error('--physical-convstate changes the CPro model and cannot be used with --no-patch')
         if a.action == 'source':
             parser.error('prepare the editable base with source --gdn-conv original')
-        a.gdn_conv = a.gdn_conv or ('conv2d' if a.physical_convstate else 'original')
+        a.gdn_conv = a.gdn_conv or ('conv2d' if a.physical_convstate or a.native_convstate else 'original')
+        if a.native_convstate and a.gdn_conv != 'conv2d':
+            parser.error('--native-convstate selects the four-layer grouped Conv2D path')
         if a.no_patch and a.gdn_conv != 'original':
             parser.error('--no-patch runs the original GDN convolution from CPRO_SOURCE')
         if a.gdn_conv == 'taps':
@@ -483,7 +494,8 @@ def main():
                               silu_only=a.silu_only, softplus_only=a.softplus_only, gdn_silu_only=a.gdn_silu_only,
                               gdn_silu_site=a.gdn_silu_site, all_silu_no_gate_cast=a.all_silu_no_gate_cast,
                               rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view,
-                              physical_convstate=a.physical_convstate, shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid,
+                              physical_convstate=a.physical_convstate, native_convstate=a.native_convstate,
+                              shared_gate_fp16_sigmoid=a.shared_gate_fp16_sigmoid,
                               qlinear_scale_fp16=a.qlinear_scale_fp16,
                               omcs=len(schedule),
                               graphs=[case_name(group) for group in schedule]), indent=2))
@@ -587,6 +599,7 @@ def main():
                          native_activations=a.native_activations, silu_only=a.silu_only, softplus_only=a.softplus_only,
                          gdn_silu_only=a.gdn_silu_only, gdn_silu_site=a.gdn_silu_site,
                          all_silu_no_gate_cast=a.all_silu_no_gate_cast, physical_convstate=a.physical_convstate,
+                         native_convstate=a.native_convstate, hidden_trace=a.hidden_trace,
                          rms_silu_layers=a.rms_silu_layers, rms_silu_token_view=a.rms_silu_token_view):
                 return 1
         else:

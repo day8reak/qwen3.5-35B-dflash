@@ -19,11 +19,13 @@ from .segment_prefix import tensor_record
 from .split_cpu_reference import decoder
 
 
-def capture(root, mode, phase, source, config):
+def capture(root, mode, phase, source, config, *, hidden_trace=False):
     schedule = groups(mode)
     layers = [i for group in schedule for i in group]
     rows = 64 if phase == 'prefill' else 1
     wanted = {k for group in schedule for k in output_names(group, group[-1] == layers[-1])}
+    if hidden_trace:
+        wanted.update(f'hidden_{i}' for i in layers)
     report = dict(mode=mode, phase=phase, layers=layers, inputs={}, cpro_inputs={}, outputs={},
                   config_sha256=sha(config), source_sha256=sha(source/'inference_segment.py'))
     external = mode != '40'

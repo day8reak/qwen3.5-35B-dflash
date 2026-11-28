@@ -17,7 +17,7 @@ from qwen35_moe_dflash.target.prefill_t64.attention_step_v2 import run_v2
 from qwen35_moe_dflash.target.prefill_t64.decoder_cases import (
     case_name, comparison_view, cpro_input_records, directory_name, groups, preserved_cache,
 )
-from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import view
+from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import output_shape, view
 
 
 def read(path):
@@ -172,6 +172,8 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
         compare_original_inputs(base.parent.parent, operands, meta['inputs'], [s['sha256'] for s in operands],
                                 baseline='no_patch' if meta.get('native_activations') else 'native_activations',
                                 gdn_conv=meta['gdn_conv'])
+    if meta.get('hidden_trace'):
+        golden = {**golden, 'hidden_layers': {'shape': list(output_shape('hidden_layers', len(meta['layers'])))}}
     names = output_order(build['outputs'], meta['outputs'], golden)
     for role, spec in zip(names, build['outputs'], strict=True):
         ref = golden[role]
@@ -222,11 +224,22 @@ def replay(base, case, build, model, weights, feeds, golden, runtime, stamp, rec
     return values
 
 
+def decoder_outputs(values, layers):
+    for role, (folder, row) in values.items():
+        tensor = read_tensor(sized_file(folder, row), row)
+        if role == 'hidden_layers':
+            for layer, hidden in zip(layers, tensor, strict=True):
+                yield f'hidden_{layer}', hidden[None, :, :]
+        else:
+            yield role, tensor
+
+
 def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_conv='conv2d', step='board', original_omg=False,
           replace_inputs=False, replace_weights=False, original_board_args=False, no_patch=False, rmsnorm_patch=False,
           operator_dump=False, dump=False, shared_gate_fp16_sigmoid=False, qlinear_scale_fp16=False,
           native_activations=False, silu_only=False, softplus_only=False, gdn_silu_only=False, gdn_silu_site=False,
-          all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False, rms_silu_token_view=False):
+          all_silu_no_gate_cast=False, physical_convstate=False, rms_silu_layers=False, rms_silu_token_view=False,
+          native_convstate=False, hidden_trace=False):
     bundle = run/'package'
     if (step == 'execute' or original_omg) and not bundle.is_dir():
         raise FileNotFoundError(f'Provide the package and compiled OMCs from the compile stage: {bundle}')
@@ -247,7 +260,8 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
                               qlinear_scale_fp16=qlinear_scale_fp16, native_activations=native_activations,
                               silu_only=silu_only, softplus_only=softplus_only, gdn_silu_only=gdn_silu_only,
                               gdn_silu_site=gdn_silu_site, all_silu_no_gate_cast=all_silu_no_gate_cast,
-                              physical_convstate=physical_convstate, rms_silu_layers=rms_silu_layers,
+                              physical_convstate=physical_convstate, native_convstate=native_convstate,
+                              hidden_trace=hidden_trace, rms_silu_layers=rms_silu_layers,
                               rms_silu_token_view=rms_silu_token_view).items():
         if manifest.get(key, False) == selected:
             continue
@@ -331,9 +345,12 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
             raise
         if mode == 'layerwise':
             feeds['hidden'] = values[f'hidden_{group[-1]}']
-        for role, (folder, row) in values.items():
-            sources = {'cpu': (fixture, ref['cpu'][role]), '310p': (fixture, ref['outputs'][role]), 'cpro': (folder, row)}
-            arrays = {key: read_tensor(sized_file(root, spec), spec) for key, (root, spec) in sources.items()}
+        compared = set()
+        for role, cpro in decoder_outputs(values, group):
+            compared.add(role)
+            cpu, nz = ref['cpu'][role], ref['outputs'][role]
+            arrays = {'cpu': read_tensor(sized_file(fixture, cpu), cpu),
+                      '310p': read_tensor(sized_file(fixture, nz), nz), 'cpro': cpro}
             if role.startswith(('key_cache_', 'value_cache_')):
                 initial = ref['inputs'][role]
                 before = read_tensor(sized_file(fixture, initial), initial)
@@ -351,7 +368,7 @@ def board(run, mode, phase, remote, ddk, config, diagnosis, recovery, *, gdn_con
             if not scores['cpro']['310p'][role][scope]['passed']:
                 failures.append(role)
         # A later failed layer still leaves the completed layer comparisons accessible.
-        write_matrices(base/'matrices.csv', {b: {r: {k: v for k, v in s.items() if k in values}
+        write_matrices(base/'matrices.csv', {b: {r: {k: v for k, v in s.items() if k in compared}
                                                 for r, s in row.items()} for b, row in scores.items()}, display=False)
     print(f'[{mode}/{phase}] 汇总 CPU、310P、CPro 的 3×3 精度矩阵 → {run}', flush=True)
     write_matrices(run/'matrices.csv', scores)
