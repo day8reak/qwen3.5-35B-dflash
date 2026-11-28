@@ -643,7 +643,7 @@ def original_filename(name, src, dtype, *, fresh_zero_states, token_ids_input=No
 
 
 def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, load_control=None, replace_replay=False,
-          replace_inputs=False, replace_weights=False, original_board_args=False):
+          replace_inputs=False, replace_weights=False, original_board_args=False, input_overrides=None, replay_dir=None):
     import numpy as np
     from parse_model_json import GE_PROTO, dtype as ge_dtype, inspect, read_omc
     from qwen35_moe_dflash.target.prefill_smoke_plan import _nd_view_key
@@ -734,6 +734,8 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
                 raise ValueError(f'AIR and compiled typed view differ for {name}: {src} vs {spec}')
             path = directory / original_filename(name, src, spec['dtype'], fresh_zero_states=fresh,
                                                   token_ids_input=meta.get('boundary', {}).get('token_ids_input'))
+        if input_overrides:
+            path = input_overrides.get(path.name, path)
         if path.stat().st_size != spec['bytes']:
             raise ValueError(f'{name} {path}: expected {spec["bytes"]} bytes')
         if path.name == 'output_pos.bin':
@@ -760,7 +762,7 @@ def board(run, ddk, config, directory, input_map, *, kind=KIND, baseline=None, l
                                   previous_exitcode=previous_receipt['exitcode'])
     runtime = read_json(config.parent / read_json(config)['assets'])['environment']
     if kind in FULL_KINDS:
-        out = run/'replay'
+        out = replay_dir or run/'replay'
         if replace_replay and out.is_dir():
             shutil.rmtree(out)
         out.mkdir()

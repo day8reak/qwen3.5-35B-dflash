@@ -310,6 +310,8 @@ def worker(args, action, root, remote):
                 cmd.append(value)
     if action in ('board', 'execute'):
         cmd.extend(board_upload_flags(args))
+    if args.valid64_from:
+        cmd.extend(['--valid64-from', str(args.valid64_from.resolve())])
     if args.dump:
         cmd.append('--dump')
     if getattr(args, 'cache_existing_golden', False):
@@ -327,6 +329,8 @@ def worker(args, action, root, remote):
     label = {'transfer': '接收上游产物', 'reference': '运行 310P 参考并计算 CPU golden', 'air': '从选定的 CPro 源码导出 AIR',
              'compile': '编译 OMC 并保存 I/O 描述', 'execute': '上板执行已编译 OMC 并比较三端结果',
              'diagnose': '诊断已保留的 OMG 编译或板端失败记录', 'board': '读取 AIR、编译 OMC、上板并比较三端结果'}[action]
+    if args.valid64_from:
+        label = '复用 40 层 OMC，运行 CPro valid64 Prefill'
     if action == 'reference' and (args.mode, args.phase) == ('40', 'prefill'):
         label = '归档已有 40 层 golden' if args.cache_existing_golden else '准备 40 层 golden，优先复用 CPU 和 310P 参考'
     if getattr(args, 'gate_probe', False):
@@ -430,7 +434,12 @@ def main():
     parser.add_argument('--repeat-to-64', action='store_true', help='fill all 64 tokens of the native CPro L0 dump')
     parser.add_argument('--inspect-attempt', metavar='attempt-NAME',
                         help='inspect a retained l0-convstate-dump attempt on this host without replaying it')
+    parser.add_argument('--valid64-from', type=Path, metavar='INPUTS_JSON',
+                        help='replay the compiled 40-layer physical-tail OMC with saved CPro valid64 token IDs')
     a = parser.parse_args()
+    if a.valid64_from and ((a.mode, a.phase) != ('40', 'prefill') or a.action not in ('execute', '_execute')
+                           or a.gate_probe):
+        parser.error('--valid64-from requires execute --mode 40 --phase prefill with explicit ConvState slices')
     if a.repeat_to_64 and a.gate_probe != 'l0-convstate-dump':
         parser.error('--repeat-to-64 requires l0-convstate-dump')
     if a.inspect_attempt is not None and (a.gate_probe != 'l0-convstate-dump'
@@ -528,6 +537,9 @@ def main():
     from qwen35_moe_dflash.common.artifacts import output_path
     parent = a.run_root or Path(os.getenv('DECODER_RUN_ROOT', required('AI_RUN_DIR')/'target/tests'))
     selected = a.run or parent/slug
+    if a.valid64_from and not (a.run or a.run_root):
+        from decoder_prefill40_valid64 import select_case
+        selected = select_case(parent, slug, hidden_trace=a.hidden_trace)
     root = output_path(selected)
     if selected.name != slug or root.name != slug or selected.is_symlink():
         parser.error(f'case directory must be named {slug}. Set --run-root to change its parent.')
@@ -545,6 +557,10 @@ def main():
         return 0 if diagnose_case(root, a.mode, a.phase) else 1
     if a.action.startswith('_'):
         a.action = a.action[1:]
+        if a.valid64_from:
+            from decoder_prefill40_valid64 import execute
+            execute(root/'board', a.valid64_from, board_config('execute')[1], a)
+            return 0
         if a.gate_probe:
             if a.repeat_to_64:
                 from decoder_convstate_valid64 import full_replay
@@ -648,7 +664,7 @@ def main():
                     'CPRO_TRANSFER_CONFIG', 'RUNTIME_CONFIG', 'TBE_DIAGNOSIS'):
             if os.getenv(key) and Path(os.environ[key]).expanduser().resolve().is_relative_to(root):
                 raise ValueError(f'{key} must be outside the replaceable result directory {root}')
-        if a.action == 'diagnose' or a.gate_probe:
+        if a.action == 'diagnose' or a.gate_probe or a.valid64_from:
             worker(a, 'reference' if a.action == 'golden' else a.action, root, remote)
             return 0
         if (a.native_activations or a.silu_only or a.softplus_only) and a.action in ('board', 'compile', 'execute', 'transfer'):

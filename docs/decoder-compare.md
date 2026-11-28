@@ -127,6 +127,17 @@ bash targets/cpro/scripts/decoder_compare.sh l0-convstate-dump --repeat-to-64 \
 
 当五个端口均可解析，控制输入与送板记录相容，新旧缓存可区分，且两路输出与预期逐元素完全相等且均为有限值时，报告给出 `valid64_accuracy=PASS`。这次检查的结论限于满长输入的 L0 窗口和缓存写回。若已有这次的 dump，可在同一命令后追加 `--inspect-attempt attempt-NAME` 重新分析。
 
+#### 在已有 40 层 OMC 上重放同一组 64 个 token
+
+在 35 上把上一条四层 valid64 测试的 `inputs.json` 传给整网执行入口。脚本核对编译清单与 AIR 的对应关系，只选择原生 ConvState 更新节点为零、采用显式切片的卷积缓存为 30 份的 T64 图。默认从当前测试目录选择，指定 `--run` 可使用某个具体的 `40-prefill-t64` 目录。
+
+```bash
+bash targets/cpro/scripts/decoder_compare.sh execute --mode 40 --phase prefill \
+  --valid64-from "$inputs_json"
+```
+
+40 层图走 token ID 查表路径，沿用此次的 64 个 ID 和因果 mask，从第 63 行取 logits。在 `board/valid64/attempt-*/replay/cpro-valid64.json` 查看 CPro top-1 的 ID、文本和各个输出文件。整网的 K/V 和已导出到模型边界的 hidden states 随本次 replay 一并保存。这条命令只运行板端 Prefill。
+
 ### 用相同的算子配置跑 40 层单块 prefill
 
 78 端按当前 prompt 准备 40 层 CPU、310P golden，导出一张 L0–L39 的 T64 AIR。三端走 wrapper 的 token ID 查表分支。QLinear 的 W4 权重 scale 和共享专家门控沿用已验证的 FP16 设置，GDN 的 `out_proj` 直接送入残差加法。
