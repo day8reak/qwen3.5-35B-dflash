@@ -11,26 +11,29 @@ from qwen35_moe_dflash.target.layer_probe.common import identity, read_array, sa
 from qwen35_moe_dflash.target.prefill_t64.decoder_four_boundary import output_shape
 
 
-def repeat_positions(prompt, tokens):
+def repeat_positions(configured_prompt, tokens):
     phrase = '世界上最高的山'
-    if phrase not in prompt:
-        raise ValueError(f'Expected the mountain question in the retained fixture, got {prompt!r}')
-    spans = [(i, j) for i in range(len(tokens)) for j in range(i+1, len(tokens)+1)
-             if ''.join(tokens[i:j]) == prompt]
-    if len(spans) == 1:
-        start, stop = spans[0]
-    else:
-        # Individually decoded byte-fragment tokens may not render the Chinese text.
-        starts = [i+3 for i in range(len(tokens)-2) if tokens[i:i+3] == ['<|im_start|>', 'user', '\n']]
+    starts = [i+3 for i in range(len(tokens)-2) if tokens[i:i+3] == ['<|im_start|>', 'user', '\n']]
+    if starts:
         if len(starts) != 1:
             raise ValueError(f'Cannot locate the user message in the retained token pieces: {tokens}')
         start, = starts
         stop = tokens.index('<|im_end|>', start)
-        if '\ufffd' not in ''.join(tokens[start:stop]) or start >= stop:
-            raise ValueError(f'The saved chat message differs from the retained prompt: {tokens}')
+        if '<|im_start|>' in tokens[start:stop]:
+            raise ValueError('Unclosed user message in the retained chat')
+    else:
+        spans = [(i, j) for i in range(len(tokens)) for j in range(i+1, len(tokens)+1)
+                 if ''.join(tokens[i:j]) == configured_prompt]
+        if len(spans) != 1:
+            raise ValueError(f'Cannot locate the configured prompt in the retained token pieces: {tokens}')
+        start, stop = spans[0]
+    source_text = ''.join(tokens[start:stop])
+    # A saved vocabulary piece can contain U+FFFD for one byte of a multibyte character.
+    if phrase not in source_text and not ('\ufffd' in source_text and phrase in configured_prompt):
+        raise ValueError(f'Expected the mountain question in the retained user message, got {source_text!r}')
     choices = [(phrase, list(range(i, j))) for i in range(start, stop) for j in range(i+1, stop+1)
                if ''.join(tokens[i:j]) == phrase]
-    choices.append((prompt, list(range(start, stop))))
+    choices.append((source_text, list(range(start, stop))))
     extra = 64 - len(tokens)
     for text, span in choices:
         copies, separators = divmod(extra, len(span))
@@ -43,7 +46,7 @@ def repeat_positions(prompt, tokens):
                 rows.append(tokens.index('\n'))
         rows.extend(range(start, len(tokens)))
         if len(rows) == 64:
-            return rows, (text+'\n')*separators + text*(copies-separators) + prompt
+            return rows, source_text, (text+'\n')*separators + text*(copies-separators) + source_text
     raise ValueError('Cannot fill T64 with complete copies of the captured mountain text')
 
 
@@ -55,7 +58,7 @@ def prepare_inputs(folder, case, meta, fixture, bundle_stamp):
             hashlib.sha256(ids.astype('<i4').tobytes()).hexdigest() != meta['fixture']['token_sha256']):
         raise ValueError('Captured token IDs or sequence length differ from the compiled input fixture')
     vocab = read(fixture/'tokens.json')
-    positions, prompt = repeat_positions(ref['prompt'], [vocab[i] for i in ids[0, :valid]])
+    positions, source_text, prompt = repeat_positions(ref['prompt'], [vocab[i] for i in ids[0, :valid]])
     specs = meta['input_files']
 
     def original(role):
@@ -98,7 +101,8 @@ def prepare_inputs(folder, case, meta, fixture, bundle_stamp):
         path = folder/(role+'.bin')
         value.tofile(path)
         records[role] = dict(identity(path, folder), dtype=value.dtype.name, shape=list(value.shape))
-    plan = dict(valid_rows=64, physical_rows=64, source_valid_rows=valid, prompt=prompt,
+    plan = dict(valid_rows=64, physical_rows=64, source_valid_rows=valid, source_user_text=source_text,
+                configured_prompt=ref['prompt'], prompt=prompt,
                 token_ids=ids[0, positions].tolist(), source_positions=positions,
                 source_bundle=bundle_stamp, controls=controls, inputs=records)
     save_json(folder/'inputs.json', plan)
